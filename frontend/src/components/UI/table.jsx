@@ -1,0 +1,131 @@
+import React from "react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronsUpDown } from "lucide-react";
+
+/**
+ * The shared record table.
+ *
+ * `loading`, `sortBy`/`onSort`, `emptyState`, and `rowClassName` are additive — a caller that
+ * passes none of them gets exactly the table it got before, so screens can adopt skeletons and
+ * sorting one at a time instead of hand-rolling them per module.
+ *
+ * A column is `{ key, header, render?, sortable?, headerClassName?, cellClassName? }`.
+ */
+
+function SortIndicator({ active, direction }) {
+  if (!active) {
+    return <ChevronsUpDown size={13} className="text-slate-400" aria-hidden="true" />;
+  }
+
+  const Icon = direction === "asc" ? ArrowUpNarrowWide : ArrowDownWideNarrow;
+
+  return <Icon size={13} aria-hidden="true" />;
+}
+
+function HeaderCell({ column, sortBy, sortDirection, onSort, stickyHeader }) {
+  const className = `border-b border-slate-200 bg-slate-50 px-4 py-3 text-left align-middle text-[0.82rem] font-extrabold uppercase text-slate-700 ${
+    stickyHeader ? "sticky top-0 z-10" : ""
+  } ${column.headerClassName || ""}`.trim();
+
+  if (!column.sortable || !onSort) {
+    return <th className={className}>{column.header}</th>;
+  }
+
+  const active = sortBy === column.key;
+
+  return (
+    <th className={className} aria-sort={active ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
+      <button
+        type="button"
+        onClick={() => onSort(column.key)}
+        className={`inline-flex items-center gap-1.5 text-left text-[0.82rem] font-extrabold uppercase transition ${
+          active ? "text-slate-900" : "text-slate-600 hover:text-slate-900"
+        }`}
+      >
+        <span>{column.header}</span>
+        <SortIndicator active={active} direction={sortDirection} />
+      </button>
+    </th>
+  );
+}
+
+function SkeletonRows({ columns, rows }) {
+  return Array.from({ length: rows }).map((_, rowIndex) => (
+    <tr key={`skeleton-${rowIndex}`} className="animate-pulse">
+      {columns.map((column) => (
+        <td key={column.key} className="border-b border-slate-200 px-4 py-3.5">
+          <div className="h-4 w-full rounded bg-slate-200" />
+        </td>
+      ))}
+    </tr>
+  ));
+}
+
+export default function Table({
+  columns = [],
+  data = [],
+  rowKey = "id",
+  emptyMessage = "No records found.",
+  emptyState = null,
+  loading = false,
+  loadingRows = 5,
+  sortBy = "",
+  sortDirection = "asc",
+  onSort,
+  rowClassName,
+  className = "",
+  tableClassName = "",
+  stickyHeader = false,
+}) {
+  return (
+    <div className={`overflow-x-auto ${className}`.trim()}>
+      <table className={`min-w-[760px] w-full border-collapse ${tableClassName}`.trim()}>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <HeaderCell
+                key={column.key}
+                column={column}
+                sortBy={sortBy}
+                sortDirection={sortDirection}
+                onSort={onSort}
+                stickyHeader={stickyHeader}
+              />
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <SkeletonRows columns={columns} rows={loadingRows} />
+          ) : data.length > 0 ? (
+            data.map((row, index) => (
+              <tr
+                key={row[rowKey] ?? index}
+                className={`transition hover:bg-slate-50 ${
+                  typeof rowClassName === "function" ? rowClassName(row, index) || "" : rowClassName || ""
+                }`.trim()}
+              >
+                {columns.map((column) => (
+                  <td
+                    key={column.key}
+                    className={`border-b border-slate-200 px-4 py-3.5 align-middle ${column.cellClassName || ""}`.trim()}
+                  >
+                    {column.render ? column.render(row, index) : row[column.key]}
+                  </td>
+                ))}
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td
+                colSpan={columns.length || 1}
+                className="border-b border-slate-200 px-4 py-3.5 text-center text-slate-500"
+              >
+                {emptyState || emptyMessage}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
