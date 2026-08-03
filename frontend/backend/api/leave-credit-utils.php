@@ -437,13 +437,13 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null): array
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
             d.name AS division,
             des.name AS position,
+            e.gender,
             e.status,
             e.employment_status AS employmentStatus
          FROM employees e
          INNER JOIN divisions d ON d.id = e.division_id
          INNER JOIN designations des ON des.id = e.designation_id
          WHERE e.is_archived = 0
-           AND (e.employment_status IS NULL OR e.employment_status NOT IN ("Job Order", "JO"))
          ORDER BY employeeName ASC, e.id ASC'
     )->fetchAll();
 
@@ -537,6 +537,7 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null): array
             'employeeName' => (string)($employee['employeeName'] ?? ''),
             'division' => (string)($employee['division'] ?? ''),
             'position' => (string)($employee['position'] ?? ''),
+            'gender' => (string)($employee['gender'] ?? ''),
             'status' => (string)($employee['status'] ?? ''),
             'employmentStatus' => (string)($employee['employmentStatus'] ?? ''),
             'year' => $resolvedYear,

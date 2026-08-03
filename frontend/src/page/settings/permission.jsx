@@ -507,14 +507,14 @@ export default function PermissionSettings({
   const showEditor = !isUserMode || Boolean(selectedUser);
 
   return (
-    <div className="grid gap-6 rounded-2xl bg-white p-1">
+    <div className="grid gap-4 rounded-2xl bg-white p-1">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-slate-900 to-slate-700 text-white shadow-sm">
             <ShieldCheck size={22} />
           </div>
           <div className="min-w-0">
-            <h2 className="m-0 text-2xl font-bold leading-tight text-slate-950">Access Control</h2>
+            <h2 className="m-0 text-lg font-bold leading-tight text-slate-950">Access Control</h2>
             <p className="m-0 mt-1 text-sm leading-5 text-slate-500">
               {isUserMode
                 ? "Fine-tune permissions for an individual user."
@@ -579,7 +579,7 @@ export default function PermissionSettings({
               </div>
               <div className="grid max-h-[560px] gap-2 overflow-y-auto pr-1">
                 {filteredUsers.length === 0 ? (
-                  <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-6 text-center text-xs font-medium text-slate-500">
+                  <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs font-medium text-slate-500">
                     No users match your search.
                   </p>
                 ) : (
@@ -706,7 +706,7 @@ export default function PermissionSettings({
 
         <section className="grid min-w-0 gap-5">
           {!showEditor ? (
-            <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-16 text-center">
+            <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-16 text-center">
               <Users size={32} className="text-slate-300" />
               <p className="mt-3 text-sm font-semibold text-slate-700">Select a user to manage permissions</p>
               <p className="mt-1 text-xs text-slate-500">Pick someone from the list to grant individual access.</p>

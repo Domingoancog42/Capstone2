@@ -463,35 +463,6 @@ export const uploadIpcrVerification = async (ipcrId, file, outputId = "") => {
   return response.data;
 };
 
-/** Rewards & Recognition. */
-export const fetchRewardNominations = async () => {
-  const response = await api.get("/rewards.php");
-  return response.data;
-};
-
-export const createRewardNomination = async (payload) => {
-  const response = await api.post("/rewards.php?action=nominate", payload);
-  notifyNotificationsChangedEvent();
-  return response.data;
-};
-
-export const decideRewardNomination = async (payload) => {
-  const response = await api.put("/rewards.php?action=decide", payload);
-  notifyNotificationsChangedEvent();
-  return response.data;
-};
-
-export const archiveRewardNomination = async (id) => {
-  const response = await api.delete("/rewards.php?action=archive", { data: { id } });
-  return response.data;
-};
-
-/** One-time hand-over of nominations stranded in this browser's local storage. */
-export const importRewardNominations = async (nominations) => {
-  const response = await api.post("/rewards.php?action=import", { nominations });
-  return response.data;
-};
-
 /**
  * Service Record (CSC Form No. 1).
  *
@@ -555,6 +526,45 @@ export const uploadOpcrVerification = async (assignmentId, file) => {
     },
   });
   notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+/**
+ * Rewards & Recognition. `fetchAwardCycles` returns every cycle with its nominations nested, plus
+ * the `viewerKey` the screen matches against each nomination to find the signed-in user's own vote.
+ */
+export const fetchAwardCycles = async () => {
+  const response = await api.get("/rewards.php", { params: { action: "list" } });
+  return response.data;
+};
+
+export const createAwardCycle = async (payload) => {
+  const response = await api.post("/rewards.php?action=create", payload);
+  return response.data;
+};
+
+export const updateAwardCycle = async (payload) => {
+  const response = await api.put("/rewards.php?action=update", payload);
+  return response.data;
+};
+
+export const setAwardCycleStatus = async (payload) => {
+  const response = await api.put("/rewards.php?action=status", payload);
+  return response.data;
+};
+
+export const deleteAwardCycle = async (cycleId) => {
+  const response = await api.delete("/rewards.php?action=delete", { data: { cycleId } });
+  return response.data;
+};
+
+export const castAwardNomination = async (payload) => {
+  const response = await api.post("/rewards.php?action=vote", payload);
+  return response.data;
+};
+
+export const withdrawAwardNomination = async (cycleId) => {
+  const response = await api.delete("/rewards.php?action=withdraw", { data: { cycleId } });
   return response.data;
 };
 

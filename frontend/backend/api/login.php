@@ -128,6 +128,7 @@ $statement = $pdo->prepare(
         u.failed_login_attempts,
         u.locked_until,
         u.two_factor_enabled,
+        u.is_archived,
         r.name AS role,
         s.name AS status,
         e.employee_id,
@@ -146,7 +147,6 @@ $statement = $pdo->prepare(
      LEFT JOIN divisions d ON d.id = e.division_id
      LEFT JOIN designations des ON des.id = e.designation_id
      WHERE (u.username = :username_identifier OR u.email = :email_identifier)
-       AND u.is_archived = 0
      LIMIT 1'
 );
 $statement->execute([
@@ -226,6 +226,17 @@ if (!$passwordMatches) {
         'success' => false,
         'message' => 'Invalid username or password.',
     ], 401);
+}
+
+if ((int)($user['is_archived'] ?? 0) === 1) {
+    write_auth_audit($pdo, $user, 'login.archived', 'A login attempt was blocked because the account has been archived.', [
+        'username' => $user['username'],
+    ]);
+
+    json_response([
+        'success' => false,
+        'message' => 'This account is inactive. You cannot log in.',
+    ], 403);
 }
 
 if (strtolower((string)$user['status']) !== 'active') {

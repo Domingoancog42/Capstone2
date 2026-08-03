@@ -88,16 +88,16 @@ function moduleCards(description) {
 const navigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/chief/dashboard" },
-  { key: "profile", label: "Profile", icon: UserRound, path: "/chief/profile" },
-  { key: "employees", label: "Employees", icon: Users, path: "/chief/employees" },
-  { key: "calendar", label: "Calendar", icon: CalendarDays, path: "/chief/calendar" },
+  { key: "profile", label: "My Profile", icon: UserRound, path: "/chief/profile" },
+  { key: "employees", label: "Employee Directory", icon: Users, path: "/chief/employees" },
+  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/chief/calendar" },
   { type: "section", label: "Communication" },
-  { key: "messages", label: "Messages", icon: MessageCircle, path: "/chief/messages" },
+  { key: "messages", label: "Communications", icon: MessageCircle, path: "/chief/messages" },
   { key: "notifications", label: "Notifications", path: "/chief/notifications", hidden: true },
-  { type: "section", label: "Masterfiles" },
+  { type: "section", label: "HR Operations" },
   {
     key: "attendance",
-    label: "Attendance",
+    label: "Time & Attendance",
     icon: ClipboardCheck,
     path: "/chief/attendance/overtime",
     children: [
@@ -106,7 +106,7 @@ const navigationItems = [
   },
   {
     key: "leave",
-    label: "Leave Management",
+    label: "Leave Administration",
     icon: CalendarRange,
     path: "/chief/leave",
     children: [
@@ -118,7 +118,7 @@ const navigationItems = [
   },
   {
     key: "payroll",
-    label: "Payroll",
+    label: "Payroll Management",
     icon: FileText,
     path: "/chief/payroll/generate",
     children: [
@@ -131,7 +131,7 @@ const navigationItems = [
   },
 
   { key: "team", label: "Team Overview", icon: Users, path: "/chief/team", hidden: true },
-  { key: "legacyAttendance", label: "Attendance", icon: ClipboardCheck, path: "/chief/attendance", hidden: true },
+  { key: "legacyAttendance", label: "Time & Attendance", icon: ClipboardCheck, path: "/chief/attendance", hidden: true },
   ...buildSelfServiceNavItems("/chief"),
 ];
 
@@ -273,7 +273,7 @@ export default function ChiefDashboard(props) {
       portalLabel="Chief Workspace"
       navigationItems={navigationItems}
       modules={modules}
-      contentClassName="space-y-4 p-6"
+      contentClassName="space-y-4 p-4"
     />
   );
 }

@@ -553,7 +553,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
           aria-haspopup="menu"
           aria-expanded={open}
           onClick={handleToggle}
-          className={`inline-flex h-10 w-10 items-center justify-center rounded-lg border transition ${
+          className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border transition ${
             open
               ? "border-[#D61E1E]/25 bg-[#D61E1E]/10 text-[#D61E1E]"
               : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-white"
@@ -583,7 +583,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                   }
             }
           >
-            <Bell size={18} />
+            <Bell size={16} />
           </motion.span>
         </button>
         <NotificationBadge count={unreadCount} tone="bell" />
@@ -596,14 +596,14 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.98 }}
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-            className="notification-bell-panel absolute right-0 top-[calc(100%+12px)] z-50 w-[390px] max-w-[calc(100vw-1rem)] overflow-hidden rounded-[1.6rem] border border-slate-200 bg-white shadow-[0_24px_64px_rgba(15,23,42,0.18)]"
+            className="notification-bell-panel absolute right-0 top-[calc(100%+10px)] z-50 w-[350px] max-w-[calc(100vw-1rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_64px_rgba(15,23,42,0.18)]"
           >
-            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-3.5 py-3">
               <div>
-                <p className="m-0 text-sm font-semibold uppercase tracking-[0.16em] text-[#D61E1E]">
+                <p className="m-0 text-xs font-semibold uppercase tracking-[0.16em] text-[#D61E1E]">
                   Notifications
                 </p>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-xs text-slate-500">
                   {unreadCount > 0
                     ? `${unreadCount} unread notification${unreadCount === 1 ? "" : "s"}`
                     : "All notifications are read"}
@@ -638,7 +638,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
               ) : null}
 
               {!loading && latestNotifications.length === 0 ? (
-                <div className="flex flex-col items-center justify-center px-6 py-10 text-center">
+                <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
                   <span className="grid h-14 w-14 place-items-center rounded-full bg-slate-100 text-slate-400">
                     <Inbox size={24} />
                   </span>
@@ -945,9 +945,9 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
             </div>
           </div>
 
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_170px_170px_150px]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,260px)_160px_150px_120px]">
             <div className="min-w-0">
-              <label htmlFor="notificationSearch" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="notificationSearch" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Search Notifications
               </label>
               <div className="relative">
@@ -961,20 +961,20 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                   value={search}
                   onChange={handleSearchChange}
                   placeholder="Search title, message, or type"
-                  className="h-[42px] w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
                 />
               </div>
             </div>
 
             <div className="min-w-0">
-              <label htmlFor="notificationTypeFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="notificationTypeFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Type
               </label>
               <select
                 id="notificationTypeFilter"
                 value={typeFilter}
                 onChange={handleTypeChange}
-                className="h-[42px] w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full appearance-none rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
                 {NOTIFICATION_TYPE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -985,14 +985,14 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
             </div>
 
             <div className="min-w-0">
-              <label htmlFor="notificationStatusFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="notificationStatusFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Status
               </label>
               <select
                 id="notificationStatusFilter"
                 value={statusFilter}
                 onChange={handleStatusChange}
-                className="h-[42px] w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full appearance-none rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
                 {NOTIFICATION_STATUS_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -1003,14 +1003,14 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
             </div>
 
             <div className="min-w-0">
-              <label htmlFor="notificationRowsPerPage" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="notificationRowsPerPage" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Rows Per Page
               </label>
               <select
                 id="notificationRowsPerPage"
                 value={perPage}
                 onChange={handlePerPageChange}
-                className="h-[42px] w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full appearance-none rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
                 {[10, 20, 50].map((option) => (
                   <option key={option} value={option}>
@@ -1051,7 +1051,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
           ) : null}
 
           {allLoading && allNotifications.length === 0 ? (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center">
+            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
               <Loader2 size={26} className="animate-spin text-[#D61E1E]" />
               <p className="m-0 text-base font-semibold text-slate-900">Loading notifications...</p>
               <p className="m-0 max-w-md text-sm leading-6 text-slate-500">
@@ -1061,7 +1061,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
           ) : null}
 
           {!allLoading && allNotifications.length === 0 ? (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center">
+            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
               <span className="grid h-14 w-14 place-items-center rounded-full bg-white text-slate-400 shadow-sm">
                 <Inbox size={24} />
               </span>

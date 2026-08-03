@@ -299,11 +299,6 @@ function reports_definitions(): array
             'description' => 'Employees under a casual appointment.',
             'where' => 'LOWER(COALESCE(e.employment_status, "")) = "casual"',
         ],
-        'employee-job-order' => [
-            'label' => 'Job Order Employees',
-            'description' => 'Employees engaged through job order arrangements.',
-            'where' => 'LOWER(COALESCE(e.employment_status, "")) IN ("job order", "jo")',
-        ],
         'employee-newly-hired' => [
             'label' => 'Newly Hired Employees',
             'description' => 'Employees hired within the selected date range.',
@@ -1897,7 +1892,6 @@ function reports_employee_kpis(PDO $pdo, ?int $divisionId, string $previousMonth
         $metric('LOWER(COALESCE(e.employment_status, "")) IN ("permanent", "regular")', 'badge-check', 'Permanent Employees', 'permanentEmployees'),
         $metric('LOWER(COALESCE(e.employment_status, "")) IN ("contractual", "contract of service", "cos")', 'file-signature', 'Contract of Service', 'cosEmployees'),
         $metric('LOWER(COALESCE(e.employment_status, "")) = "casual"', 'briefcase', 'Casual Employees', 'casualEmployees'),
-        $metric('LOWER(COALESCE(e.employment_status, "")) IN ("job order", "jo")', 'clipboard-list', 'Job Order Employees', 'jobOrderEmployees'),
         $metric('LOWER(COALESCE(e.status, "")) IN ("resigned", "separated", "terminated")', 'log-out', 'Resigned Employees', 'resignedEmployees'),
         $metric('LOWER(COALESCE(e.status, "")) = "retired"', 'sunset', 'Retired Employees', 'retiredEmployees'),
     ];

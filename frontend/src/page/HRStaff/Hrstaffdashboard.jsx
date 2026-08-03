@@ -92,7 +92,7 @@ function StaffMetricCard({ label, value, helper, icon: Icon, tone }) {
         </div>
         <div className="min-w-0">
           <p className="m-0 text-sm font-semibold text-slate-500">{label}</p>
-          <strong className="mt-1 block text-2xl font-semibold text-slate-950">{value}</strong>
+          <strong className="mt-1 block text-lg font-semibold text-slate-950">{value}</strong>
           <p className="m-0 mt-1 text-xs leading-5 text-slate-500">{helper}</p>
         </div>
       </CardContent>
@@ -192,7 +192,7 @@ function HrStaffDashboardOverview({ user }) {
   const welcomeName = user?.full_name || user?.username || "HR Staff";
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6">
+    <div className="mx-auto max-w-7xl space-y-4">
       <DashboardWelcomeBanner name={welcomeName} />
 
       {error ? (
@@ -287,7 +287,7 @@ function HrStaffDashboardOverview({ user }) {
                 </div>
               );
             }) : (
-              <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+              <div className="rounded-xl border border-dashed border-slate-300 px-4 py-5 text-center text-sm text-slate-500">
                 No recent leave activity yet.
               </div>
             )}
@@ -432,17 +432,17 @@ function HrStaffOvertimeWorkspace({ user }) {
 const navigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/hrstaff/dashboard" },
-  { key: "profile", label: "Profile", icon: UserRound, path: "/hrstaff/profile" },
-  { key: "employees", label: "Employees", icon: Users, path: "/hrstaff/employees" },
-  { key: "calendar", label: "Calendar", icon: CalendarDays, path: "/hrstaff/calendar" },
+  { key: "profile", label: "My Profile", icon: UserRound, path: "/hrstaff/profile" },
+  { key: "employees", label: "Employee Directory", icon: Users, path: "/hrstaff/employees" },
+  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/hrstaff/calendar" },
   { type: "section", label: "Communication" },
-  { key: "messages", label: "Messages", icon: MessageCircle, path: "/hrstaff/messages" },
+  { key: "messages", label: "Communications", icon: MessageCircle, path: "/hrstaff/messages" },
   { key: "notifications", label: "Notifications", path: "/hrstaff/notifications", hidden: true },
-  { type: "section", label: "Masterfiles" },
+  { type: "section", label: "HR Operations" },
   ...buildPerformanceRewardsNavItems("/hrstaff"),
   {
     key: "attendance",
-    label: "Attendance",
+    label: "Time & Attendance",
     icon: ClipboardCheck,
     path: "/hrstaff/attendance/overtime",
     children: [
@@ -451,7 +451,7 @@ const navigationItems = [
   },
   {
     key: "leave",
-    label: "Leave Management",
+    label: "Leave Administration",
     icon: CalendarRange,
     path: "/hrstaff/leave",
     children: [
@@ -463,7 +463,7 @@ const navigationItems = [
   },
   {
     key: "payroll",
-    label: "Payroll",
+    label: "Payroll Management",
     icon: FileText,
     path: "/hrstaff/payroll/generate",
     children: [
@@ -478,14 +478,14 @@ const navigationItems = [
   { type: "section", label: "Reports & Analytics" },
   {
     key: "reports",
-    label: "Reports",
+    label: "Reports & Analytics",
     icon: FileText,
     path: "/hrstaff/reports",
     children: buildReportNavChildren("/hrstaff/reports"),
   },
   { key: "leaveBalance", label: "Set Leave Balance", icon: ClipboardList, path: "/hrstaff/leave-balance", hidden: true },
-  { key: "legacyAttendance", label: "Attendance", icon: Clock3, path: "/hrstaff/attendance", hidden: true },
-  ...buildSelfServiceNavItems("/hrstaff"),
+  { key: "legacyAttendance", label: "Time & Attendance", icon: Clock3, path: "/hrstaff/attendance", hidden: true },
+  ...buildSelfServiceNavItems("/hrstaff", { includeNomination: false }),
 ];
 
 const modules = {
@@ -646,7 +646,7 @@ export default function HrstaffDashboard(props) {
       portalLabel="HR Staff Workspace"
       navigationItems={navigationItems}
       modules={modules}
-      contentClassName="space-y-4 p-6"
+      contentClassName="space-y-4 p-4"
     />
   );
 }

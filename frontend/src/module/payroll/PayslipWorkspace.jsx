@@ -1,15 +1,17 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
   Download,
-  Eye,
   FileText,
   Printer,
   Search,
 } from "lucide-react";
+import { faDownload, faEye } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
+import ActionIconButton from "../../components/UI/ActionIconButton";
 import Button from "../../components/UI/button";
+import Pagination from "../../components/UI/Pagination";
 import Card, {
   CardContent,
   CardDescription,
@@ -138,10 +140,6 @@ function escapeHtml(value) {
 
 function normalizeEmploymentType(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
-
-  if (normalized === "jo" || normalized === "job order") {
-    return "JO";
-  }
 
   if (normalized === "contractual") {
     return "Contractual";
@@ -747,6 +745,8 @@ export default function PayslipWorkspace({ employees = [], mode = "admin" }) {
   });
   const [expandedRows, setExpandedRows] = useState(() => new Set());
   const [viewedEmployee, setViewedEmployee] = useState(null);
+  const [rowsPerPage, setRowsPerPage] = useState("10");
+  const [currentPage, setCurrentPage] = useState(1);
 
   const loadPayslipData = useCallback(async ({ background = false } = {}) => {
     setLoading(!background);
@@ -815,6 +815,18 @@ export default function PayslipWorkspace({ employees = [], mode = "admin" }) {
     });
   }, [filters, payslipRows]);
 
+  const pageSize = Number(rowsPerPage) || 10;
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginatedRows = useMemo(
+    () => filteredRows.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filteredRows, pageSize, safePage]
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters, rowsPerPage]);
+
   const handleFilterChange = (name, value) => {
     setFilters((current) => ({ ...current, [name]: value }));
   };
@@ -856,126 +868,136 @@ export default function PayslipWorkspace({ employees = [], mode = "admin" }) {
   };
 
   const renderFilters = () => (
-    <div className="grid gap-4 lg:grid-cols-[minmax(220px,1fr)_minmax(180px,0.8fr)_minmax(180px,0.8fr)_minmax(180px,0.8fr)]">
-      <div>
-        <label htmlFor="payslipSearch" className="mb-2 block text-sm font-semibold text-slate-700">
-          Search
-        </label>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input
-            id="payslipSearch"
-            value={filters.search}
-            onChange={(event) => handleFilterChange("search", event.target.value)}
-            placeholder="Search employee, ID, division"
-            className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white py-3 pl-10 pr-3.5 text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
-          />
-        </div>
-      </div>
+    <div
+      className={
+        isEmployeeMode
+          ? "mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_120px]"
+          : "mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_160px_160px_120px]"
+      }
+    >
+      <label className="relative">
+        <span className="sr-only">Search payslip records</span>
+        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+        <input
+          value={filters.search}
+          onChange={(event) => handleFilterChange("search", event.target.value)}
+          placeholder={isEmployeeMode ? "Search payroll period, designation" : "Search employee, ID, division"}
+          className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+        />
+      </label>
 
-      {[
-        ["department", "Division", "All divisions", filterOptions.departments],
-        ["employmentType", "Employment Type", "All types", filterOptions.employmentTypes],
-        ["payPeriod", "Pay Period", "All periods", filterOptions.payPeriods],
-      ].map(([name, label, placeholder, options]) => (
-        <div key={name}>
-          <label htmlFor={`payslip-${name}`} className="mb-2 block text-sm font-semibold text-slate-700">
-            {label}
-          </label>
-          <select
-            id={`payslip-${name}`}
-            value={filters[name]}
-            onChange={(event) => handleFilterChange(name, event.target.value)}
-            className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
-          >
-            <option value="">{placeholder}</option>
-            {options.map((option) => (
-              <option key={option} value={option}>{option}</option>
-            ))}
-          </select>
-        </div>
+      {(isEmployeeMode
+        ? [["payPeriod", "All periods", filterOptions.payPeriods]]
+        : [
+          ["department", "All divisions", filterOptions.departments],
+          ["employmentType", "All types", filterOptions.employmentTypes],
+          ["payPeriod", "All periods", filterOptions.payPeriods],
+        ]
+      ).map(([name, placeholder, options]) => (
+        <select
+          key={name}
+          value={filters[name]}
+          onChange={(event) => handleFilterChange(name, event.target.value)}
+          className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+        >
+          <option value="">{placeholder}</option>
+          {options.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
       ))}
+
+      <select
+        value={rowsPerPage}
+        onChange={(event) => setRowsPerPage(event.target.value)}
+        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+      >
+        <option value="5">5 rows</option>
+        <option value="10">10 rows</option>
+        <option value="20">20 rows</option>
+      </select>
     </div>
   );
 
   const renderRows = () => {
     if (loading) {
       return Array.from({ length: 4 }).map((_, index) => (
-        <tr key={index} className="border-b border-slate-100">
-          <td colSpan={14} className="px-4 py-4">
-            <div className="h-5 animate-pulse rounded bg-slate-200" />
+        <tr key={index} className="animate-pulse border-b border-slate-100">
+          <td colSpan={14} className="px-3 py-3">
+            <div className="h-5 rounded bg-slate-200" />
           </td>
         </tr>
       ));
     }
 
-    if (filteredRows.length === 0) {
+    if (paginatedRows.length === 0) {
       return (
         <tr>
           <td colSpan={14} className="px-4 py-12 text-center">
-            <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-slate-100 text-slate-500">
-              <FileText size={22} />
+            <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
+              <FileText size={20} />
             </div>
-            <p className="m-0 mt-3 text-sm font-semibold text-slate-800">No paid payslip records found</p>
+            <p className="m-0 mt-3 text-sm font-semibold text-slate-700">No paid payslip records found</p>
             <p className="m-0 mt-1 text-sm text-slate-500">Payslips will appear after payroll is marked as paid.</p>
           </td>
         </tr>
       );
     }
 
-    return filteredRows.flatMap((employee, index) => {
+    return paginatedRows.flatMap((employee, index) => {
       const key = getEmployeeKey(employee);
       const expanded = expandedRows.has(key);
 
       return [
         <tr key={key} className="border-b border-slate-100 transition hover:bg-slate-50">
-          <td className="px-4 py-3 font-semibold text-slate-600">{index + 1}</td>
-          <td className="px-4 py-3 text-slate-700">{employee.employeeId || "N/A"}</td>
-          <td className="px-4 py-3 font-semibold text-slate-900">{employee.fullName || "Employee"}</td>
-          <td className="px-4 py-3 text-slate-700">{employee.department || "Unassigned"}</td>
-          <td className="px-4 py-3 text-slate-700">{employee.position || "N/A"}</td>
-          <td className="px-4 py-3 text-slate-700">{employee.employmentType || "N/A"}</td>
-          <td className="px-4 py-3 text-slate-700">{employee.periodLabel || formatDate(employee.paidPayrollDate)}</td>
-          <td className="px-4 py-3 text-slate-700">{formatCurrency(employee.paidBasicSalary || employee.basicSalary)}</td>
-          <td className="px-4 py-3 text-slate-700">{formatCurrency(employee.paidTotalAllowance)}</td>
-          <td className="px-4 py-3 text-slate-700">
+          <td className="px-3 py-3 text-sm font-semibold text-slate-600">
+            {(safePage - 1) * pageSize + index + 1}
+          </td>
+          <td className="px-3 py-3 text-sm text-slate-600">{employee.employeeId || "N/A"}</td>
+          <td className="px-3 py-3 text-sm text-slate-800">
+            <div className="font-semibold text-slate-900">{employee.fullName || "Employee"}</div>
+          </td>
+          <td className="px-3 py-3 text-sm text-slate-600">{employee.department || "Unassigned"}</td>
+          <td className="px-3 py-3 text-sm text-slate-600">{employee.position || "N/A"}</td>
+          <td className="px-3 py-3 text-sm text-slate-600">{employee.employmentType || "N/A"}</td>
+          <td className="px-3 py-3 text-sm text-slate-600">{employee.periodLabel || formatDate(employee.paidPayrollDate)}</td>
+          <td className="px-3 py-3 text-sm text-slate-600">{formatCurrency(employee.paidBasicSalary || employee.basicSalary)}</td>
+          <td className="px-3 py-3 text-sm text-slate-600">{formatCurrency(employee.paidTotalAllowance)}</td>
+          <td className="px-3 py-3 text-sm text-slate-600">
             <PayslipDeductionCell
               employee={employee}
               expanded={expanded}
               onToggle={() => handleToggleExpandedRow(employee)}
             />
           </td>
-          <td className="px-4 py-3 text-slate-700">{formatCurrency(employee.paidGrossPay)}</td>
-          <td className="px-4 py-3 font-semibold text-emerald-700">{formatCurrency(employee.paidNetPay)}</td>
-          <td className="px-4 py-3">
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+          <td className="px-3 py-3 text-sm text-slate-600">{formatCurrency(employee.paidGrossPay)}</td>
+          <td className="px-3 py-3 text-sm font-semibold text-emerald-700">{formatCurrency(employee.paidNetPay)}</td>
+          <td className="px-3 py-3">
+            <span className="inline-flex min-h-7 items-center rounded-full bg-emerald-50 px-2.5 text-xs font-semibold text-emerald-700">
               {employee.paidPayrollStatus || "Paid"}
             </span>
           </td>
-          <td className="px-4 py-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                icon={Eye}
+          <td className="px-3 py-3">
+            <div className="flex flex-wrap gap-2">
+              <ActionIconButton
+                label="View payslip"
+                icon={faEye}
+                tone="view"
                 onClick={() => setViewedEmployee(employee)}
-              >
-                View
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                icon={Download}
+              />
+              <ActionIconButton
+                label="Download payslip"
+                icon={faDownload}
+                tone="print"
+                text="Download"
                 onClick={() => handleDownloadPayslip(employee)}
-              >
-                Download
-              </Button>
+              />
             </div>
           </td>
         </tr>,
         expanded ? (
           <tr key={`${key}-deductions`} className="border-b border-slate-100">
-            <td colSpan={14} className="bg-white px-4 py-4">
+            <td colSpan={14} className="bg-white px-3 py-3">
               <PayslipDeductionBreakdown employee={employee} />
             </td>
           </tr>
@@ -985,23 +1007,28 @@ export default function PayslipWorkspace({ employees = [], mode = "admin" }) {
   };
 
   return (
-    <div className="space-y-6">
-      <Card className="overflow-hidden border-slate-200/80 bg-white/95 shadow-sm">
-        <CardHeader>
-          <CardTitle>{isEmployeeMode ? "My Payslip Records" : "Generate Payslip"}</CardTitle>
-          <CardDescription>
-            {isEmployeeMode
-              ? "Available payslips from paid payroll records."
-              : "Review paid employee deductions, then view or download payslips."}
-          </CardDescription>
-          {error ? <p className="m-0 mt-2 text-sm font-semibold text-rose-700">{error}</p> : null}
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {!isEmployeeMode ? renderFilters() : null}
+    <div className="space-y-4">
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h3 className="m-0 text-base font-semibold text-slate-950">
+              {isEmployeeMode ? "My Payslip Records" : "Generate Payslip"}
+            </h3>
+            <p className="m-0 mt-1 text-sm text-slate-500">
+              {isEmployeeMode
+                ? "Available payslips from paid payroll records."
+                : "Review paid employee deductions, then view or download payslips."}
+            </p>
+            {error ? <p className="m-0 mt-2 text-sm font-semibold text-rose-700">{error}</p> : null}
+          </div>
+        </div>
 
-          <div className="overflow-x-auto rounded-xl border border-slate-200">
-            <table className="w-full min-w-[1760px] border-collapse text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+        {renderFilters()}
+
+        <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
+          <div className="overflow-x-auto">
+            <table className="min-w-[1760px] w-full border-collapse">
+              <thead className="bg-slate-50">
                 <tr>
                   {[
                     "#",
@@ -1019,7 +1046,7 @@ export default function PayslipWorkspace({ employees = [], mode = "admin" }) {
                     "Status",
                     "Actions",
                   ].map((header) => (
-                    <th key={header} className="border-b border-slate-200 px-4 py-3 text-left font-bold">
+                    <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
                       {header}
                     </th>
                   ))}
@@ -1028,8 +1055,15 @@ export default function PayslipWorkspace({ employees = [], mode = "admin" }) {
               <tbody>{renderRows()}</tbody>
             </table>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="m-0 text-sm text-slate-500">
+            Showing {filteredRows.length === 0 ? 0 : (safePage - 1) * pageSize + 1} to {Math.min(safePage * pageSize, filteredRows.length)} of {filteredRows.length} payslip records
+          </p>
+          <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setCurrentPage} />
+        </div>
+      </section>
 
       <PayslipViewModal
         employee={viewedEmployee}

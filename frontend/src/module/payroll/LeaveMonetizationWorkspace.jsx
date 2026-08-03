@@ -443,15 +443,15 @@ export default function LeaveMonetizationWorkspace({ employees = [], user }) {
           </Button>
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1.3fr_180px_180px_140px]">
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,240px)_160px_160px_120px]">
           <label className="relative">
             <span className="sr-only">Search leave monetization requests</span>
-            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <input
               value={filters.search}
               onChange={(event) => handleFilterChange("search", event.target.value)}
               placeholder="Search employee, leave credit, purpose"
-              className="min-h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
           </label>
 
@@ -460,7 +460,7 @@ export default function LeaveMonetizationWorkspace({ employees = [], user }) {
             <select
               value={filters.status}
               onChange={(event) => handleFilterChange("status", event.target.value)}
-              className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="">All statuses</option>
               {LEAVE_STATUSES.map((status) => (
@@ -475,7 +475,7 @@ export default function LeaveMonetizationWorkspace({ employees = [], user }) {
               type="date"
               value={filters.date}
               onChange={(event) => handleFilterChange("date", event.target.value)}
-              className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
           </label>
 
@@ -484,7 +484,7 @@ export default function LeaveMonetizationWorkspace({ employees = [], user }) {
             <select
               value={filters.rowsPerPage}
               onChange={(event) => handleFilterChange("rowsPerPage", event.target.value)}
-              className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="5">5 rows</option>
               <option value="10">10 rows</option>
@@ -643,7 +643,7 @@ export default function LeaveMonetizationWorkspace({ employees = [], user }) {
         <form id="leaveMonetizationForm" className="grid gap-4" onSubmit={handleSubmit}>
           {canSelectEmployee ? (
             <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">Employee *</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Employee *</label>
               <EmployeeSearchSelect
                 employeeOptions={employeeOptions}
                 selectedEmployee={selectedEmployee}
@@ -662,7 +662,7 @@ export default function LeaveMonetizationWorkspace({ employees = [], user }) {
           )}
 
           <div>
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Leave credit to monetize *</span>
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Leave credit to monetize *</span>
             {creditsLoading ? (
               <div className="h-20 animate-pulse rounded-xl bg-slate-100" />
             ) : creditOptions.length === 0 ? (

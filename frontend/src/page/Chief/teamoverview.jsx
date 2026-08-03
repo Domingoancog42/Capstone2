@@ -197,7 +197,7 @@ export default function TeamOverview({ user }) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search employee, position, email, or status"
-            className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           />
         </label>
 

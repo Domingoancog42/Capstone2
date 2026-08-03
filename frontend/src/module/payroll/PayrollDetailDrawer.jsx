@@ -244,7 +244,7 @@ function SummaryTile({ label, value, tone = "blue", strong = false }) {
   return (
     <div className={`rounded-lg border bg-white px-4 py-3 ${toneClasses[tone] || toneClasses.blue}`}>
       <p className="m-0 text-xs font-bold uppercase tracking-normal text-slate-500">{label}</p>
-      <p className={`m-0 mt-2 tabular-nums ${strong ? "text-2xl font-extrabold" : "text-xl font-bold"}`}>
+      <p className={`m-0 mt-2 tabular-nums ${strong ? "text-lg font-extrabold" : "text-xl font-bold"}`}>
         {value}
       </p>
     </div>
@@ -339,7 +339,7 @@ export default function PayrollDetailDrawer({
       />
 
       <aside className="absolute right-0 top-0 flex h-full w-full max-w-[1400px] animate-[slideInRight_180ms_ease-out] flex-col bg-white shadow-[0_28px_80px_rgba(15,23,42,0.25)]">
-        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div className="flex min-w-0 items-center gap-4">
             <div className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-slate-500">
               {profileImageUrl ? (
@@ -371,7 +371,7 @@ export default function PayrollDetailDrawer({
           </button>
         </div>
 
-        <div ref={contentRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+        <div ref={contentRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-4">
           <div className="grid gap-3 md:grid-cols-3">
             <SummaryTile label="Gross Pay" value={formatCurrency(record.grossPay)} tone="blue" />
             <SummaryTile label="Total Deductions" value={formatCurrency(record.totalDeduction)} tone="red" />
@@ -413,7 +413,7 @@ export default function PayrollDetailDrawer({
                     </tr>
                   )) : (
                     <tr>
-                      <td colSpan={2} className="px-4 py-6 text-center text-slate-500">No allowances recorded.</td>
+                      <td colSpan={2} className="px-4 py-4 text-center text-slate-500">No allowances recorded.</td>
                     </tr>
                   )}
                 </tbody>
@@ -447,7 +447,7 @@ export default function PayrollDetailDrawer({
                     </tr>
                   )) : (
                     <tr>
-                      <td colSpan={3} className="px-4 py-6 text-center text-slate-500">No deductions recorded.</td>
+                      <td colSpan={3} className="px-4 py-4 text-center text-slate-500">No deductions recorded.</td>
                     </tr>
                   )}
                 </tbody>
@@ -554,7 +554,7 @@ export default function PayrollDetailDrawer({
           </section>
         </div>
 
-        <div className="flex shrink-0 flex-col gap-3 border-t border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div className="flex shrink-0 flex-col gap-3 border-t border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-4">
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" icon={Download} onClick={handleExportPdf} loading={exporting}>
               Export PDF

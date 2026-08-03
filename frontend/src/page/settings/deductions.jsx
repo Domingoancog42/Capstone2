@@ -272,7 +272,7 @@ export default function DeductionSettings({
       <SettingsNotice tone={messageTone}>{message}</SettingsNotice>
 
       {!loading && groups.length === 0 ? (
-        <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-500">
           No deduction categories found.
         </p>
       ) : null}
@@ -416,7 +416,7 @@ export function DeductionModal({
         />
 
         <div>
-          <label htmlFor="deductionDescription" className="mb-2 block text-sm font-semibold text-slate-700">
+          <label htmlFor="deductionDescription" className="mb-1.5 block text-sm font-semibold text-slate-700">
             description
           </label>
           <textarea
@@ -449,14 +449,14 @@ export function DeductionModal({
             onChange={onFieldChange?.("threshold_amount")}
           />
           <div>
-            <label htmlFor="thresholdMode" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="thresholdMode" className="mb-1.5 block text-sm font-semibold text-slate-700">
               threshold_mode
             </label>
             <select
               id="thresholdMode"
               value={form.threshold_mode}
               onChange={onFieldChange?.("threshold_mode")}
-              className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
             >
               {deductionThresholdModeOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>

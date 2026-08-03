@@ -1,7 +1,8 @@
 import React from "react";
+import { UserRound } from "lucide-react";
 import ProfileField from "../ProfileField";
 import ProfileSectionCard from "../ProfileSectionCard";
-import { civilStatusOptions, genderOptions } from "../profileUtils";
+import { civilStatusOptions, genderOptions, profileSectionAnchorId } from "../profileUtils";
 
 export default function PersonalDetailsSection({
   values,
@@ -13,6 +14,8 @@ export default function PersonalDetailsSection({
 }) {
   return (
     <ProfileSectionCard
+      id={profileSectionAnchorId("personal")}
+      icon={UserRound}
       title="Personal Details"
       description="Keep your legal identity, contact channels, and civil information accurate for HR workflows."
       readOnly={readOnly}

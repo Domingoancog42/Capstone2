@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { FileText, Plus, Printer, ScrollText } from "lucide-react";
+import { FileText, Plus, Printer } from "lucide-react";
 import Swal from "sweetalert2";
 import { toast } from "react-hot-toast";
 import Button from "../../components/UI/button";
@@ -385,54 +385,56 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
     <div className="w-full space-y-4">
       {error ? <SettingsNotice tone="error">{error}</SettingsNotice> : null}
 
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <header className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-600">
-              <ScrollText size={18} aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <h2 className="m-0 text-base font-semibold text-slate-900">
-                {employee?.fullName || (isManageMode ? "Service Record" : "My Service Record")}
-              </h2>
-              <p className="m-0 mt-1 text-sm leading-6 text-slate-500">
-                {employee
-                  ? `${employee.employeeCode || "No employee number"} · ${employee.designationTitle || "No designation"} · ${employee.station || "No division"}`
-                  : "Chronological record of appointments, salaries, and separations (CS Form No. 1)."}
-              </p>
-            </div>
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <h3 className="m-0 text-base font-semibold text-slate-950">
+              {employee?.fullName || (isManageMode ? "Service Record" : "My Service Record")}
+            </h3>
+            <p className="m-0 mt-1 text-sm text-slate-500">
+              {employee
+                ? `${employee.employeeCode || "No employee number"} · ${employee.designationTitle || "No designation"} · ${employee.station || "No division"}`
+                : "Chronological record of appointments, salaries, and separations (CS Form No. 1)."}
+            </p>
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {isManageMode ? (
-              <div className="w-full sm:w-[280px]">
-                <EmployeeSearchSelect
-                  employeeOptions={employeeOptions}
-                  selectedEmployee={selectedOption}
-                  onSelect={(option) => setSelectedEmployeeId(option?.employeeRecordId ?? null)}
-                  placeholder="Search employee..."
-                />
-              </div>
-            ) : null}
-            <Button
-              variant="secondary"
-              icon={Printer}
+            <button
+              type="button"
               disabled={!employee || !records.length}
               onClick={handlePrint}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
+              <Printer size={16} />
               Print
-            </Button>
+            </button>
             {editable ? (
-              <Button icon={Plus} onClick={openAddModal}>
+              <button
+                type="button"
+                onClick={openAddModal}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+              >
+                <Plus size={16} />
                 Add Entry
-              </Button>
+              </button>
             ) : null}
           </div>
-        </header>
+        </div>
 
-        <div className="px-5 py-5">
+        {isManageMode ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,280px)]">
+            <EmployeeSearchSelect
+              employeeOptions={employeeOptions}
+              selectedEmployee={selectedOption}
+              onSelect={(option) => setSelectedEmployeeId(option?.employeeRecordId ?? null)}
+              placeholder="Search employee..."
+            />
+          </div>
+        ) : null}
+
+        <div className="mt-4">
           {isManageMode && !selectedEmployeeId && !employee ? (
-            <div className="grid place-items-center rounded-lg border border-dashed border-slate-200 px-4 py-14 text-center">
+            <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 px-4 py-14 text-center">
               <div className="max-w-md">
                 <FileText size={24} className="mx-auto text-slate-300" aria-hidden="true" />
                 <p className="m-0 mt-3 text-sm font-semibold text-slate-700">Choose an employee</p>

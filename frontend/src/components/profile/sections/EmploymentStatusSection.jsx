@@ -1,7 +1,8 @@
 import React from "react";
+import { Briefcase } from "lucide-react";
 import ProfileField from "../ProfileField";
 import ProfileSectionCard from "../ProfileSectionCard";
-import { employmentStatusOptions, employmentTypeOptions } from "../profileUtils";
+import { employmentStatusOptions, employmentTypeOptions, profileSectionAnchorId } from "../profileUtils";
 
 export default function EmploymentStatusSection({
   values,
@@ -16,6 +17,9 @@ export default function EmploymentStatusSection({
 }) {
   return (
     <ProfileSectionCard
+      id={profileSectionAnchorId("employment")}
+      icon={Briefcase}
+      badge={canEditEmploymentSection ? "" : "HR & Admin only"}
       title="Employment Status"
       description={canEditEmploymentSection
         ? "Review your employment assignment, reporting line, and the official organization placement used in HR actions."

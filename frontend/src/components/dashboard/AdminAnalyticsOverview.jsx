@@ -1297,7 +1297,7 @@ export default function AdminAnalyticsOverview({
           </AnalyticsCard>
         </div>
 
-        <DashboardAnalytics embedded showHeader={false}>
+        <DashboardAnalytics embedded showHeader={false}>    
 
           <AnalyticsCard
             title="Recent Activity"

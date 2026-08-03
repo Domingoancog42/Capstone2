@@ -1,24 +1,20 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   FileText,
   Image as ImageIcon,
   Paperclip,
-  PenLine,
   RefreshCw,
   Search,
   UploadCloud,
 } from "lucide-react";
+import { faPenToSquare } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
+import ActionIconButton from "../../components/UI/ActionIconButton";
 import Button from "../../components/UI/button";
-import Card, {
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/UI/card";
 import InputField from "../../components/UI/InputField";
 import Modal from "../../components/UI/modal";
+import Pagination from "../../components/UI/Pagination";
 import Table from "../../components/UI/table";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
@@ -125,6 +121,8 @@ export default function EmployeeIpcrWorkspace() {
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [form, setForm] = useState(defaultForm);
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [rowsPerPage, setRowsPerPage] = useState("10");
+  const [currentPage, setCurrentPage] = useState(1);
 
   const loadRecords = useCallback(async ({ background = false } = {}) => {
     setLoading(!background);
@@ -155,6 +153,18 @@ export default function EmployeeIpcrWorkspace() {
       record.status,
     ].some((value) => String(value || "").toLowerCase().includes(needle)));
   }, [query, records]);
+
+  const pageSize = Number(rowsPerPage) || 10;
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginatedRecords = useMemo(
+    () => filteredRecords.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filteredRecords, pageSize, safePage]
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [query, rowsPerPage]);
 
   const calculatedAverage = useMemo(() => {
     const scores = [form.q1Rating, form.e2Rating, form.t3Rating]
@@ -266,9 +276,13 @@ export default function EmployeeIpcrWorkspace() {
       key: "actions",
       header: "Actions",
       render: (record) => (
-        <Button variant="secondary" size="sm" icon={PenLine} onClick={() => openAccomplishment(record)}>
-          Accomplishment
-        </Button>
+        <ActionIconButton
+          label="Submit IPCR accomplishment"
+          icon={faPenToSquare}
+          tone="edit"
+          text="Accomplishment"
+          onClick={() => openAccomplishment(record)}
+        />
       ),
     },
   ];
@@ -277,48 +291,65 @@ export default function EmployeeIpcrWorkspace() {
 
   return (
     <section className="w-full space-y-4">
-      <Card>
-        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <CardTitle className="text-2xl">My IPCR</CardTitle>
-            <CardDescription>
+            <h3 className="m-0 text-base font-semibold text-slate-950">My IPCR</h3>
+            <p className="m-0 mt-1 text-sm text-slate-500">
               Review assigned IPCR KPIs, submit accomplishments, upload verification files, and add your self-rating.
-            </CardDescription>
-            <p className="m-0 mt-2 text-sm text-slate-500">
-              {records.length} IPCR record{records.length === 1 ? "" : "s"} {loading ? "loading..." : "loaded"}
             </p>
           </div>
-          <Button variant="secondary" icon={RefreshCw} onClick={loadRecords} loading={loading}>
+          <button
+            type="button"
+            onClick={() => loadRecords()}
+            disabled={loading}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={16} />
             Refresh
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <InputField
-              name="employeeIpcrSearch"
+          </button>
+        </div>
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_120px]">
+          <label className="relative">
+            <span className="sr-only">Search my IPCR</span>
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search KPI, indicator, status"
-              aria-label="Search my IPCR"
-              icon={Search}
-              className="w-full sm:max-w-[380px]"
-              inputClassName="text-sm transition focus:ring-2 focus:ring-[#D61E1E]/15"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
-            <p className="m-0 shrink-0 text-sm text-slate-500">
-              Showing <span className="font-semibold text-slate-700">{filteredRecords.length}</span> record{filteredRecords.length === 1 ? "" : "s"}
-            </p>
-          </div>
+          </label>
+          <select
+            value={rowsPerPage}
+            onChange={(event) => setRowsPerPage(event.target.value)}
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+          >
+            <option value="5">5 rows</option>
+            <option value="10">10 rows</option>
+            <option value="20">20 rows</option>
+          </select>
+        </div>
 
-          <div className="overflow-hidden rounded-xl border border-slate-200">
-            <Table
-              columns={columns}
-              data={filteredRecords}
-              emptyMessage="No IPCR KPIs assigned to you yet."
-              tableClassName="min-w-[1180px]"
-            />
-          </div>
-        </CardContent>
-      </Card>
+        <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
+          <Table
+            columns={columns}
+            data={paginatedRecords}
+            loading={loading}
+            loadingRows={4}
+            emptyMessage="No IPCR KPIs assigned to you yet."
+            tableClassName="min-w-[1180px]"
+          />
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="m-0 text-sm text-slate-500">
+            Showing {filteredRecords.length === 0 ? 0 : (safePage - 1) * pageSize + 1} to {Math.min(safePage * pageSize, filteredRecords.length)} of {filteredRecords.length} IPCR records
+          </p>
+          <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setCurrentPage} />
+        </div>
+      </section>
 
       <Modal
         open={Boolean(selectedRecord)}
@@ -344,7 +375,7 @@ export default function EmployeeIpcrWorkspace() {
           </div>
 
           <div>
-            <label htmlFor="actualAccomplishment" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="actualAccomplishment" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Actual Accomplishment
             </label>
             <textarea
@@ -394,17 +425,17 @@ export default function EmployeeIpcrWorkspace() {
             />
             <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
               <p className="m-0 text-xs font-bold uppercase text-slate-500">Average</p>
-              <p className="m-0 mt-2 text-2xl font-extrabold text-slate-900">{calculatedAverage}</p>
+              <p className="m-0 mt-2 text-lg font-extrabold text-slate-900">{calculatedAverage}</p>
             </div>
           </div>
 
           <div>
-            <label htmlFor="ipcrVerificationFiles" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="ipcrVerificationFiles" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Documents or Photos
             </label>
             <label
               htmlFor="ipcrVerificationFiles"
-              className="flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center transition hover:border-[#D61E1E] hover:bg-rose-50"
+              className="flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-center transition hover:border-[#D61E1E] hover:bg-rose-50"
             >
               <UploadCloud className="text-slate-400" size={34} />
               <span className="mt-2 text-sm font-semibold text-slate-800">Choose files to upload</span>

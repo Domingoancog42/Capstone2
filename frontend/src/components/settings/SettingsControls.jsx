@@ -156,7 +156,7 @@ export function SettingsToggle({ checked, disabled, label, onChange, id }) {
 export function SettingsRow({ icon: Icon, label, description, error, control, htmlFor, className = "" }) {
   return (
     <div
-      className={`grid gap-3 rounded-lg border bg-white px-4 py-3.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-6 ${
+      className={`grid gap-3 rounded-lg border bg-white px-4 py-3.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4 ${
         error ? "border-rose-300" : "border-slate-200"
       } ${className}`.trim()}
     >

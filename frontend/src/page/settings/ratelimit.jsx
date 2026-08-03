@@ -88,7 +88,7 @@ function StatTile({ icon: Icon, label, value, tone = "slate" }) {
         <Icon size={14} />
         {label}
       </p>
-      <p className="m-0 mt-2 text-2xl font-extrabold text-slate-950 tabular-nums">{value}</p>
+      <p className="m-0 mt-2 text-lg font-extrabold text-slate-950 tabular-nums">{value}</p>
     </div>
   );
 }

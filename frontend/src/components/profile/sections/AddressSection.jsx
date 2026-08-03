@@ -1,6 +1,8 @@
 import React from "react";
+import { MapPin } from "lucide-react";
 import ProfileField from "../ProfileField";
 import ProfileSectionCard from "../ProfileSectionCard";
+import { profileSectionAnchorId } from "../profileUtils";
 
 export default function AddressSection({
   values,
@@ -16,6 +18,8 @@ export default function AddressSection({
 }) {
   return (
     <ProfileSectionCard
+      id={profileSectionAnchorId("address")}
+      icon={MapPin}
       title="Address"
       description="Capture your official present address for contact tracing, payroll, and emergency coordination."
       readOnly={readOnly}

@@ -1,6 +1,17 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, LoaderCircle } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  BadgeCheck,
+  Briefcase,
+  IdCard,
+  LifeBuoy,
+  LoaderCircle,
+  MapPin,
+  PenLine,
+  ScrollText,
+  ShieldCheck,
+  UserRound,
+} from "lucide-react";
 import { toast } from "react-hot-toast";
 import {
   getEmployeeOptions,
@@ -14,9 +25,10 @@ import {
   updateEmployeeProfileImage,
   updateEmployeeSignature,
 } from "../../services/api";
+import ProfileFloatingCard from "./ProfileFloatingCard";
 import ProfileHeaderCard from "./ProfileHeaderCard";
 import ProfileImageModal from "./ProfileImageModal";
-import ProfileTabNav from "./ProfileTabNav";
+import ProfileSectionNav from "./ProfileSectionNav";
 import {
   buildEmployeePayload,
   buildUpdatedSessionUserFromProfile,
@@ -25,10 +37,12 @@ import {
   extractProfileExtras,
   findEmployeeForUser,
   getProfileStorageKey,
+  isProfileDialogId,
   isProfileTabId,
   mergeEmployeeWithExtras,
   normalizeProfileText,
-  profileTabItems,
+  profileSectionAnchorId,
+  profileSectionItems,
   PROFILE_TAB_REQUEST_EVENT,
   readProfileExtras,
   writeProfileExtras,
@@ -43,7 +57,6 @@ import EmergencyContactSection from "./sections/EmergencyContactSection";
 import SignatureSection from "./sections/SignatureSection";
 import SecuritySection from "./sections/SecuritySection";
 import PasswordChangeSection from "./sections/PasswordChangeSection";
-import EmailVerificationSection from "./sections/EmailVerificationSection";
 
 const addressBasePath = `${process.env.PUBLIC_URL || ""}/philippines-addresses`;
 
@@ -166,7 +179,17 @@ function resolveDivisionChiefSupervisor(profile, divisionChiefMap = {}) {
   return divisionChiefMap[divisionKey] || String(profile?.supervisor || "");
 }
 
-export default function ProfilePage({ user, onUserChange, initialTab = "personal" }) {
+const sectionIcons = {
+  personal: UserRound,
+  address: MapPin,
+  government: IdCard,
+  employment: Briefcase,
+  emergency: LifeBuoy,
+  signature: PenLine,
+  security: ShieldCheck,
+};
+
+export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [profile, setProfile] = useState(null);
@@ -177,7 +200,8 @@ export default function ProfilePage({ user, onUserChange, initialTab = "personal
   const [savingSection, setSavingSection] = useState("");
   const [twoFactorProfile, setTwoFactorProfile] = useState(null);
   const [passwordExpiry, setPasswordExpiry] = useState(null);
-  const [activeTab, setActiveTab] = useState(() => consumeRequestedProfileTab(initialTab));
+  const [activeSection, setActiveSection] = useState(profileSectionItems[0].id);
+  const [openDialog, setOpenDialog] = useState("");
   const [readOnly, setReadOnly] = useState(true);
   const [profileImageOpen, setProfileImageOpen] = useState(false);
   const [regions, setRegions] = useState([]);
@@ -187,13 +211,34 @@ export default function ProfilePage({ user, onUserChange, initialTab = "personal
   const normalizedRole = normalizeRole(user?.roleKey || user?.role);
   const canEditEmploymentSection = ["admin", "hrhead", "hrstaff"].includes(normalizedRole);
 
+  // A deep link that arrives before the profile finishes loading is replayed once the sections mount.
+  const [requestedTarget] = useState(() => consumeRequestedProfileTab(initialTab));
+  const pendingTargetRef = useRef(requestedTarget);
+
+  const goToProfileTarget = useCallback((targetId, { smooth = true } = {}) => {
+    if (!isProfileTabId(targetId)) {
+      return;
+    }
+
+    if (isProfileDialogId(targetId)) {
+      setOpenDialog(targetId);
+      return;
+    }
+
+    const anchor = document.getElementById(profileSectionAnchorId(targetId));
+
+    if (!anchor) {
+      pendingTargetRef.current = targetId;
+      return;
+    }
+
+    setActiveSection(targetId);
+    anchor.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+  }, []);
+
   useEffect(() => {
     const handleProfileTabRequest = (event) => {
-      const requestedTab = event?.detail?.tabId;
-
-      if (isProfileTabId(requestedTab)) {
-        setActiveTab(requestedTab);
-      }
+      goToProfileTarget(event?.detail?.tabId);
     };
 
     window.addEventListener(PROFILE_TAB_REQUEST_EVENT, handleProfileTabRequest);
@@ -201,7 +246,7 @@ export default function ProfilePage({ user, onUserChange, initialTab = "personal
     return () => {
       window.removeEventListener(PROFILE_TAB_REQUEST_EVENT, handleProfileTabRequest);
     };
-  }, []);
+  }, [goToProfileTarget]);
 
   const storageKey = useMemo(
     () => getProfileStorageKey(user, employeeRecord),
@@ -382,6 +427,58 @@ export default function ProfilePage({ user, onUserChange, initialTab = "personal
       }));
     }
   }, [allCities, profile]);
+
+  const sectionsReady = !loading && !loadError && Boolean(profile);
+
+  useEffect(() => {
+    if (!sectionsReady || !pendingTargetRef.current) {
+      return;
+    }
+
+    const target = pendingTargetRef.current;
+    pendingTargetRef.current = "";
+    // Jump rather than glide: the reader asked for this section before the page even existed.
+    goToProfileTarget(target, { smooth: false });
+  }, [goToProfileTarget, sectionsReady]);
+
+  useEffect(() => {
+    if (!sectionsReady || typeof IntersectionObserver === "undefined") {
+      return undefined;
+    }
+
+    const anchors = profileSectionItems
+      .map((section) => document.getElementById(profileSectionAnchorId(section.id)))
+      .filter(Boolean);
+
+    if (anchors.length === 0) {
+      return undefined;
+    }
+
+    const intersecting = new Set();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            intersecting.add(entry.target.id);
+          } else {
+            intersecting.delete(entry.target.id);
+          }
+        });
+
+        // Topmost section touching the band under the sticky nav wins, so the highlight tracks reading order.
+        const current = profileSectionItems.find((section) => intersecting.has(profileSectionAnchorId(section.id)));
+
+        if (current) {
+          setActiveSection(current.id);
+        }
+      },
+      { rootMargin: "-190px 0px -68% 0px", threshold: 0 }
+    );
+
+    anchors.forEach((anchor) => observer.observe(anchor));
+
+    return () => observer.disconnect();
+  }, [sectionsReady]);
 
   const updateProfile = (updates) => {
     setProfile((current) => ({ ...current, ...updates }));
@@ -648,121 +745,22 @@ export default function ProfilePage({ user, onUserChange, initialTab = "personal
     saveProfileImage();
   };
 
-  const handleEmailChanged = (nextEmail) => {
-    const normalizedEmail = String(nextEmail || "").trim();
+  const navSections = useMemo(
+    () => profileSectionItems.map((section) => ({ ...section, icon: sectionIcons[section.id] })),
+    []
+  );
 
-    if (!normalizedEmail) {
-      return;
-    }
-
-    setProfile((current) => (current ? { ...current, email: normalizedEmail } : current));
-    setEmployeeRecord((current) => (current ? { ...current, email: normalizedEmail } : current));
-  };
-
-  const renderActiveSection = () => {
-    if (!resolvedProfile) {
-      return null;
-    }
-
-    switch (activeTab) {
-      case "personal":
-        return (
-          <PersonalDetailsSection
-            values={resolvedProfile}
-            errors={errors}
-            readOnly={readOnly}
-            saving={savingSection === "personal"}
-            onChange={handleFieldChange}
-            onSave={() => handleSaveSection("personal")}
-          />
-        );
-      case "address":
-        return (
-          <AddressSection
-            values={resolvedProfile}
-            errors={errors}
-            readOnly={readOnly}
-            saving={savingSection === "address"}
-            onChange={handleFieldChange}
-            onSave={() => handleSaveSection("address")}
-            regionOptions={regions}
-            provinceOptions={filteredProvinces}
-            cityOptions={filteredCities}
-            barangayOptions={filteredBarangays}
-          />
-        );
-      case "government":
-        return (
-          <GovernmentIdsSection
-            values={resolvedProfile}
-            errors={errors}
-            readOnly={readOnly}
-            saving={savingSection === "government"}
-            onChange={handleFieldChange}
-            onSave={() => handleSaveSection("government")}
-          />
-        );
-      case "employment":
-        return (
-          <EmploymentStatusSection
-            values={resolvedProfile}
-            errors={errors}
-            readOnly={readOnly || !canEditEmploymentSection}
-            canEditEmploymentSection={canEditEmploymentSection}
-            saving={savingSection === "employment"}
-            onChange={handleFieldChange}
-            onSave={() => handleSaveSection("employment")}
-            divisionOptions={divisionOptions}
-            designationOptions={filteredDesignations}
-          />
-        );
-      case "serviceRecord":
-        return <ServiceRecordSection values={resolvedProfile} />;
-      case "emergency":
-        return (
-          <EmergencyContactSection
-            values={resolvedProfile}
-            errors={errors}
-            readOnly={readOnly}
-            saving={savingSection === "emergency"}
-            onChange={handleFieldChange}
-            onSave={() => handleSaveSection("emergency")}
-          />
-        );
-      case "signature":
-        return (
-          <SignatureSection
-            values={resolvedProfile}
-            readOnly={readOnly}
-            saving={savingSection === "signature"}
-            error={errors.signatureDataUrl}
-            onSave={handleSaveSignature}
-          />
-        );
-      case "security":
-        return (
-          <div className="space-y-5">
-            <SecuritySection
-              twoFactor={twoFactorProfile}
-              passwordExpiry={passwordExpiry}
-              saving={savingSection === "security"}
-              onTogglePersonalTwoFactor={handleTogglePersonalTwoFactor}
-            />
-            <PasswordChangeSection />
-          </div>
-        );
-      case "emailVerification":
-        return (
-          <EmailVerificationSection
-            user={user}
-            onUserChange={onUserChange}
-            onEmailChanged={handleEmailChanged}
-          />
-        );
-      default:
-        return null;
-    }
-  };
+  const navActions = useMemo(
+    () => [
+      {
+        id: "serviceRecord",
+        label: "Service Record",
+        icon: ScrollText,
+        onClick: () => setOpenDialog("serviceRecord"),
+      },
+    ],
+    []
+  );
 
   if (loading) {
     return (
@@ -777,7 +775,7 @@ export default function ProfilePage({ user, onUserChange, initialTab = "personal
 
   if (loadError) {
     return (
-      <div className="profile-error-card rounded-[28px] border border-[#F8BFBF] bg-[#FEF1F1] p-6 text-[#B41818] shadow-sm">
+      <div className="profile-error-card rounded-[28px] border border-[#F8BFBF] bg-[#FEF1F1] p-4 text-[#B41818] shadow-sm">
         <div className="flex items-start gap-3">
           <AlertTriangle className="profile-error-icon mt-0.5 text-[#D61E1E]" size={20} />
           <div>
@@ -794,31 +792,106 @@ export default function ProfilePage({ user, onUserChange, initialTab = "personal
   }
 
   return (
-    <div className="profile-page space-y-6">
-
+    <div className="profile-page space-y-4">
       <ProfileHeaderCard
         profile={profile}
         readOnly={readOnly}
         user={user}
         onToggleMode={() => setReadOnly((current) => !current)}
         onChangePhoto={() => !readOnly && setProfileImageOpen(true)}
+        onOpenServiceRecord={() => setOpenDialog("serviceRecord")}
       />
 
+      <ProfileSectionNav
+        sections={navSections}
+        activeSection={activeSection}
+        onSelect={goToProfileTarget}
+        actions={navActions}
+      />
 
+      <div className="profile-sections space-y-4">
+        <PersonalDetailsSection
+          values={resolvedProfile}
+          errors={errors}
+          readOnly={readOnly}
+          saving={savingSection === "personal"}
+          onChange={handleFieldChange}
+          onSave={() => handleSaveSection("personal")}
+        />
 
-      <ProfileTabNav tabs={profileTabItems} activeTab={activeTab} onChange={setActiveTab} />
+        <AddressSection
+          values={resolvedProfile}
+          errors={errors}
+          readOnly={readOnly}
+          saving={savingSection === "address"}
+          onChange={handleFieldChange}
+          onSave={() => handleSaveSection("address")}
+          regionOptions={regions}
+          provinceOptions={filteredProvinces}
+          cityOptions={filteredCities}
+          barangayOptions={filteredBarangays}
+        />
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -12 }}
-          transition={{ duration: 0.22, ease: "easeOut" }}
-        >
-          {renderActiveSection()}
-        </motion.div>
-      </AnimatePresence>
+        <GovernmentIdsSection
+          values={resolvedProfile}
+          errors={errors}
+          readOnly={readOnly}
+          saving={savingSection === "government"}
+          onChange={handleFieldChange}
+          onSave={() => handleSaveSection("government")}
+        />
+
+        <EmploymentStatusSection
+          values={resolvedProfile}
+          errors={errors}
+          readOnly={readOnly || !canEditEmploymentSection}
+          canEditEmploymentSection={canEditEmploymentSection}
+          saving={savingSection === "employment"}
+          onChange={handleFieldChange}
+          onSave={() => handleSaveSection("employment")}
+          divisionOptions={divisionOptions}
+          designationOptions={filteredDesignations}
+        />
+
+        <EmergencyContactSection
+          values={resolvedProfile}
+          errors={errors}
+          readOnly={readOnly}
+          saving={savingSection === "emergency"}
+          onChange={handleFieldChange}
+          onSave={() => handleSaveSection("emergency")}
+        />
+
+        <SignatureSection
+          values={resolvedProfile}
+          readOnly={readOnly}
+          saving={savingSection === "signature"}
+          error={errors.signatureDataUrl}
+          onSave={handleSaveSignature}
+        />
+
+        <SecuritySection
+          twoFactor={twoFactorProfile}
+          passwordExpiry={passwordExpiry}
+          saving={savingSection === "security"}
+          onTogglePersonalTwoFactor={handleTogglePersonalTwoFactor}
+        />
+
+        <PasswordChangeSection />
+      </div>
+
+      <ProfileFloatingCard
+        open={openDialog === "serviceRecord"}
+        onClose={() => setOpenDialog("")}
+        icon={ScrollText}
+        badge={BadgeCheck}
+        title="Service Record"
+        subtitle="Chronological record of appointments, salaries, and separations (CS Form No. 1)."
+        maxWidth="max-w-5xl"
+        bodyClassName="px-4 pb-4 sm:px-4"
+      >
+        <ServiceRecordSection values={resolvedProfile} variant="dialog" />
+      </ProfileFloatingCard>
 
       <ProfileImageModal
         open={profileImageOpen}

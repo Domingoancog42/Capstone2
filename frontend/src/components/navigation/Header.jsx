@@ -28,18 +28,18 @@ function AccountMenuAction({
       type="button"
       role="menuitem"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-medium transition ${
+      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${
         tone === "danger"
           ? "text-rose-600 hover:bg-rose-50"
           : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
       }`}
     >
       <span
-        className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${
+        className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${
           tone === "danger" ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-600"
         }`}
       >
-        <Icon size={17} />
+        <Icon size={15} />
       </span>
       <span className="min-w-0">
         <span className="block truncate">{label}</span>
@@ -385,17 +385,17 @@ export default function Header({
 
   return (
     <>
-      <header className="fixed inset-x-0 top-0 z-40 h-16 border-b border-slate-200 bg-white transition-colors duration-300">
-        <div ref={headerActionsRef} className="flex h-full items-center justify-between gap-3 px-4 sm:px-6">
-          <div className={`flex min-w-0 flex-1 items-center transition-all duration-300 ${sidebarCollapsed ? "lg:ml-[8rem]" : "lg:ml-[21rem]"}`}>
+      <header className="fixed inset-x-0 top-0 z-40 h-14 border-b border-slate-200 bg-white transition-colors duration-300">
+        <div ref={headerActionsRef} className="flex h-full items-center justify-between gap-3 px-3 sm:px-5">
+          <div className={`flex min-w-0 flex-1 items-center transition-all duration-300 ${sidebarCollapsed ? "lg:ml-[6rem]" : "lg:ml-[17.5rem]"}`}>
             {onToggleSidebar ? (
               <button
                 type="button"
                 aria-label="Open navigation menu"
                 onClick={onToggleSidebar}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:border-slate-300 hover:bg-white lg:hidden"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:border-slate-300 hover:bg-white lg:hidden"
               >
-                <Menu size={18} />
+                <Menu size={16} />
               </button>
             ) : null}
           </div>
@@ -417,9 +417,9 @@ export default function Header({
                 onClick={() => {
                   setProfileOpen((open) => !open);
                 }}
-                className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 pr-3 text-left text-slate-700 transition hover:border-slate-300 hover:bg-white"
+                className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 pr-2.5 text-left text-slate-700 transition hover:border-slate-300 hover:bg-white"
               >
-                <span className="grid h-7 w-7 place-items-center overflow-hidden rounded-full bg-[#D61E1E] text-xs font-bold text-white">
+                <span className="grid h-6 w-6 place-items-center overflow-hidden rounded-full bg-[#D61E1E] text-[11px] font-bold text-white">
                   {profileImageUrl ? (
                     <img src={profileImageUrl} alt={userName} className="h-full w-full object-cover" />
                   ) : (
@@ -427,13 +427,13 @@ export default function Header({
                   )}
                 </span>
                 <span className="hidden min-w-0 sm:block">
-                  <strong className="block max-w-28 truncate text-sm font-semibold text-slate-900">
+                  <strong className="block max-w-28 truncate text-xs font-semibold text-slate-900">
                     {user?.username || "Admin"}
                   </strong>
-                  <span className="block max-w-28 truncate text-[11px] text-slate-500">{userRole}</span>
+                  <span className="block max-w-28 truncate text-[10.5px] text-slate-500">{userRole}</span>
                 </span>
                 <ChevronDown
-                  size={14}
+                  size={13}
                   className={`transition-transform duration-200 ${profileOpen ? "rotate-180" : ""}`}
                 />
               </button>
@@ -446,22 +446,22 @@ export default function Header({
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -6, scale: 0.98 }}
                     transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                    className="absolute right-0 top-[calc(100%+12px)] z-50 w-[300px] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-[0_24px_64px_rgba(15,23,42,0.18)]"
+                    className="absolute right-0 top-[calc(100%+10px)] z-50 w-[270px] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_64px_rgba(15,23,42,0.18)]"
                   >
-                    <div className="h-14 bg-[linear-gradient(135deg,#D61E1E_0%,#B41818_52%,#6f1313_100%)]" />
-                    <div className="relative px-5 pb-3">
-                      <div className="-mt-9 flex flex-col items-center text-center">
-                        <span className="grid h-20 w-20 place-items-center overflow-hidden rounded-full border-4 border-white bg-white text-xl font-bold text-[#D61E1E] shadow-lg">
+                    <div className="h-11 bg-[linear-gradient(135deg,#D61E1E_0%,#B41818_52%,#6f1313_100%)]" />
+                    <div className="relative px-4 pb-3">
+                      <div className="-mt-7 flex flex-col items-center text-center">
+                        <span className="grid h-16 w-16 place-items-center overflow-hidden rounded-full border-4 border-white bg-white text-base font-bold text-[#D61E1E] shadow-lg">
                           {profileImageUrl ? (
                             <img src={profileImageUrl} alt={userName} className="h-full w-full object-cover" />
                           ) : (
                             initials
                           )}
                         </span>
-                        <p className="mt-4 max-w-[220px] text-lg font-semibold leading-7 text-slate-900">
+                        <p className="mt-3 max-w-[220px] text-sm font-semibold leading-6 text-slate-900">
                           Welcome {userName}
                         </p>
-                        <p className="mt-2 text-sm text-slate-500">Designation: {designation}</p>
+                        <p className="mt-1.5 text-xs text-slate-500">Designation: {designation}</p>
                         {user?.must_change_password ? (
                           <span className="mt-3 inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
                             Password update required

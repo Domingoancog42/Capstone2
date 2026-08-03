@@ -228,14 +228,14 @@ export default function RoleSettings() {
   const baseRoleLabel = baseRoles.find((role) => role.key === form.baseRole)?.label || "base role";
 
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-slate-900 to-slate-700 text-white shadow-sm">
             <Layers size={22} />
           </div>
           <div className="min-w-0">
-            <h2 className="m-0 text-2xl font-bold leading-tight text-slate-950">Roles</h2>
+            <h2 className="m-0 text-lg font-bold leading-tight text-slate-950">Roles</h2>
             <p className="m-0 mt-1 text-sm leading-5 text-slate-500">
               Built-in roles ship with the system. Add your own role, base it on one of them, and
               tick the modules it may open.
@@ -258,7 +258,7 @@ export default function RoleSettings() {
       </div>
 
       {loading ? (
-        <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-16">
+        <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-16">
           <Loader2 size={26} className="animate-spin text-slate-400" />
           <p className="mt-3 text-sm font-semibold text-slate-600">Loading roles...</p>
         </div>
@@ -269,7 +269,7 @@ export default function RoleSettings() {
               Custom Roles
             </p>
             {customRoles.length === 0 ? (
-              <p className="m-0 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm font-medium text-slate-500">
+              <p className="m-0 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-center text-sm font-medium text-slate-500">
                 No custom roles yet. Use Add Role to create one.
               </p>
             ) : (
@@ -376,7 +376,7 @@ export default function RoleSettings() {
           <div
             role="dialog"
             aria-label={form.id ? "Edit role" : "Add role"}
-            className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[min(94vw,720px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl"
+            className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[min(94vw,720px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl"
           >
             <div className="mb-5 flex items-start justify-between gap-3">
               <div className="min-w-0">

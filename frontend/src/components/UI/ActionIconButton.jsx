@@ -13,17 +13,34 @@ const toneClasses = {
   delete: "border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100 focus:ring-red-100",
 };
 
-export default function ActionIconButton({ label, icon, tone = "view", className = "", ...props }) {
+// Default word shown next to the icon when a caller doesn't pass `text` — keyed on
+// `tone` since tone already encodes what the action does everywhere this is used.
+const toneWords = {
+  view: "View",
+  review: "Review",
+  edit: "Edit",
+  approve: "Approve",
+  reject: "Reject",
+  cancel: "Cancel",
+  archive: "Archive",
+  print: "Print",
+  delete: "Delete",
+};
+
+export default function ActionIconButton({ label, icon, tone = "view", text, className = "", ...props }) {
+  const word = text || toneWords[tone] || label;
+
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
       data-tone={tone}
-      className={`action-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg border transition focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${toneClasses[tone] || toneClasses.view} ${className}`.trim()}
+      className={`action-icon-button inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 text-xs font-semibold transition focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${toneClasses[tone] || toneClasses.view} ${className}`.trim()}
       {...props}
     >
-      <FontAwesomeIcon icon={icon} className="text-[14px]" aria-hidden="true" />
+      <FontAwesomeIcon icon={icon} className="text-[12px]" aria-hidden="true" />
+      <span>{word}</span>
     </button>
   );
 }

@@ -22,7 +22,7 @@ export default function AdminStatCard({ stat, index = 0 }) {
         <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${stat.accent}`} />
         <div className={`absolute -right-10 top-0 h-28 w-28 rounded-full opacity-30 blur-3xl transition duration-300 group-hover:opacity-45 ${stat.glow}`} />
 
-        <div className="relative space-y-4 p-6">
+        <div className="relative space-y-4 p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="m-0 text-sm font-semibold text-slate-500">{stat.label}</p>

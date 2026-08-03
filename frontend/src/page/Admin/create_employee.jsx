@@ -1,6 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "react-hot-toast";
-import { Trash2, Upload } from "lucide-react";
+import {
+  Banknote,
+  Briefcase,
+  Camera,
+  ChevronDown,
+  HeartPulse,
+  IdCard,
+  Mail,
+  MapPin,
+  Trash2,
+  Upload,
+  UserRound,
+} from "lucide-react";
 import Button from "../../components/UI/button";
 import InputField from "../../components/UI/InputField";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
@@ -43,7 +55,7 @@ const defaultValues = {
 
 const genderOptions = ["Male", "Female", "Prefer not to say"];
 const salaryRates = ["Semi-monthly", "Monthly"];
-const employmentStatuses = ["Regular", "Contractual", "Job Order"];
+const employmentStatuses = ["Regular", "Contractual"];
 const civilStatuses = ["Single", "Married", "Widowed", "Separated"];
 const bloodTypes = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 const addressBasePath = `${process.env.PUBLIC_URL || ""}/philippines-addresses`;
@@ -188,39 +200,91 @@ function resolveZipCode(zipEntries, cityName, barangayName, provinceName, region
   return fallbackEntry?.[0] || "";
 }
 
-function SelectField({ label, name, value, onChange, error, children, disabled = false }) {
+// Lifts the trailing "*" out of a label string so required fields read as a red
+// marker instead of plain text. Labels without one are passed through untouched.
+function decorateLabel(label) {
+  const text = String(label ?? "");
+
+  if (!text.endsWith(" *")) {
+    return label;
+  }
+
   return (
-    <div className="w-full">
-      <label htmlFor={name} className="mb-2 block text-sm font-semibold text-slate-700">
-        {label}
+    <>
+      {text.slice(0, -2)}
+      <span className="ml-0.5 font-bold text-[#D61E1E]" aria-hidden="true">*</span>
+    </>
+  );
+}
+
+// Focus treatment for the shared InputField, applied from the outside so the
+// control matches SelectField without altering the component other pages use.
+const FIELD_FOCUS_CLASS = "[&>div]:transition [&>div]:duration-150 [&>div:focus-within]:border-[#D61E1E] [&>div:focus-within]:ring-2 [&>div:focus-within]:ring-[#D61E1E]/10";
+
+function TextField({ label, className = "", ...props }) {
+  return (
+    <InputField
+      label={decorateLabel(label)}
+      className={`${FIELD_FOCUS_CLASS} ${className}`.trim()}
+      {...props}
+    />
+  );
+}
+
+function SelectField({ label, name, value, onChange, error, children, disabled = false, className = "" }) {
+  return (
+    <div className={`w-full ${className}`.trim()}>
+      <label htmlFor={name} className="mb-1.5 block text-sm font-semibold text-slate-700">
+        {decorateLabel(label)}
       </label>
-      <select
-        id={name}
-        name={name}
-        value={value}
-        onChange={onChange}
-        disabled={disabled}
-        className={`min-h-[46px] w-full rounded-lg border bg-white px-3.5 py-3 text-slate-900 outline-none disabled:bg-slate-50 disabled:text-slate-400 ${
-          error ? "border-rose-600" : "border-slate-200"
-        }`}
-        aria-invalid={Boolean(error)}
-      >
-        {children}
-      </select>
+      <div className="relative">
+        <select
+          id={name}
+          name={name}
+          value={value}
+          onChange={onChange}
+          disabled={disabled}
+          className={`min-h-[40px] w-full appearance-none rounded-lg border bg-white px-3 py-2.5 pr-9 text-slate-900 outline-none transition duration-150 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400 ${
+            error ? "border-rose-600" : "border-slate-200"
+          }`}
+          aria-invalid={Boolean(error)}
+        >
+          {children}
+        </select>
+        <ChevronDown
+          size={15}
+          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+          aria-hidden="true"
+        />
+      </div>
       {error ? <p className="mt-1.5 text-sm text-rose-700">{error}</p> : null}
     </div>
   );
 }
 
-function Section({ title, description, children }) {
+function Section({ icon: Icon, title, description, children }) {
   return (
-    <section className="grid gap-4 border-b border-slate-200 pb-5 last:border-b-0 last:pb-0">
-      <div>
-        <h3 className="m-0 text-base font-semibold text-slate-900">{title}</h3>
-        <p className="m-0 mt-1 text-sm text-slate-500">{description}</p>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">{children}</div>
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <header className="flex items-start gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[#F8BFBF] bg-[#FEF1F1] text-[#D61E1E]">
+          <Icon size={17} aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="m-0 text-sm font-semibold text-slate-900">{title}</h3>
+          <p className="m-0 mt-0.5 text-xs leading-5 text-slate-500">{description}</p>
+        </div>
+      </header>
+      <div className="grid gap-4 p-4 md:grid-cols-2">{children}</div>
     </section>
+  );
+}
+
+function SummaryRow({ label, value }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <dt className="m-0 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</dt>
+      <dd className="m-0 text-right text-xs font-semibold text-slate-700">{value || "Not set"}</dd>
+    </div>
   );
 }
 
@@ -242,48 +306,82 @@ function ProfileImageUpload({
   onRemove,
   onFileChange,
   fileInputRef,
+  isEditing = false,
+  divisionName = "",
+  designationName = "",
 }) {
-  return (
-    <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-0 lg:self-start">
-      <div className="grid gap-4">
-        <div>
-          <h3 className="m-0 text-base font-semibold text-slate-900">Profile Image</h3>
-          <p className="m-0 mt-1 text-sm leading-6 text-slate-500">
-            Upload an employee photo for the profile record.
-          </p>
-        </div>
+  const fullName = [form.firstName, form.middleName, form.lastName]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ");
 
-        <div className="grid place-items-center">
-          <div className="grid h-40 w-40 place-items-center overflow-hidden rounded-2xl border border-slate-200 bg-white text-3xl font-bold text-slate-400 shadow-inner">
-            {previewUrl ? (
-              <img src={previewUrl} alt="Employee profile preview" className="h-full w-full object-cover" />
-            ) : (
-              <span>{resolveDraftInitials(form)}</span>
-            )}
+  return (
+    <aside className="lg:sticky lg:top-0 lg:self-start">
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-100 bg-gradient-to-b from-slate-50 to-white px-4 pb-4 pt-5">
+          <div className="grid place-items-center gap-3">
+            <div className="relative">
+              <div className="grid h-32 w-32 place-items-center overflow-hidden rounded-full border border-slate-200 bg-white text-2xl font-bold text-slate-400 shadow-sm ring-4 ring-white">
+                {previewUrl ? (
+                  <img src={previewUrl} alt="Employee profile preview" className="h-full w-full object-cover" />
+                ) : (
+                  <span>{resolveDraftInitials(form)}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={onUploadClick}
+                aria-label="Upload profile image"
+                className="absolute bottom-0.5 right-0.5 grid h-9 w-9 place-items-center rounded-full border border-[#F8BFBF] bg-white text-[#D61E1E] shadow-sm transition hover:border-[#F18E8E] hover:bg-[#FEF1F1]"
+              >
+                <Camera size={16} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="min-w-0 text-center">
+              <p className="m-0 truncate text-sm font-semibold text-slate-900">
+                {fullName || "New Employee"}
+              </p>
+              <p className="m-0 mt-0.5 truncate text-xs text-slate-500">
+                {form.employeeId || "Employee ID pending"}
+              </p>
+              <span className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                {isEditing ? "Editing record" : "New record"}
+              </span>
+            </div>
           </div>
         </div>
 
-        <div className="grid gap-2">
+        <div className="grid gap-2 px-4 py-3.5">
           <Button type="button" variant="secondary" icon={Upload} fullWidth onClick={onUploadClick}>
             Upload Image
           </Button>
           <Button type="button" variant="ghost" icon={Trash2} fullWidth disabled={!previewUrl} onClick={onRemove}>
             Remove
           </Button>
+          <p className="m-0 text-center text-[11px] leading-4 text-slate-400">
+            JPG, PNG, GIF, WEBP, or BMP. Max 5 MB.
+          </p>
         </div>
 
-        <p className="m-0 text-xs leading-5 text-slate-500">
-          JPG, PNG, GIF, WEBP, or BMP. Max 5 MB.
-        </p>
+        <dl className="grid gap-2.5 border-t border-slate-100 px-4 py-3.5">
+          <SummaryRow label="Division" value={divisionName} />
+          <SummaryRow label="Designation" value={designationName} />
+          <SummaryRow label="Employment" value={form.employmentStatus} />
+        </dl>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={onFileChange}
-        />
+        <p className="m-0 border-t border-slate-100 px-4 py-3 text-[11px] leading-4 text-slate-500">
+          <span className="font-bold text-[#D61E1E]">*</span> Required fields
+        </p>
       </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={onFileChange}
+      />
     </aside>
   );
 }
@@ -336,6 +434,14 @@ export default function CreateEmployee({
   const barangayOptions = useMemo(
     () => allBarangayOptions.filter((item) => item.city_code === form.cityCode),
     [allBarangayOptions, form.cityCode]
+  );
+  const selectedDivisionName = useMemo(
+    () => divisions.find((item) => String(item.id) === String(form.divisionId))?.name || "",
+    [divisions, form.divisionId]
+  );
+  const selectedDesignationName = useMemo(
+    () => designations.find((item) => String(item.id) === String(form.designationId))?.name || "",
+    [designations, form.designationId]
   );
 
   useEffect(() => {
@@ -670,158 +776,255 @@ export default function CreateEmployee({
   };
 
   return (
-    <>
-      <form id={formId} className="grid gap-5 lg:grid-cols-[230px_minmax(0,1fr)]" onSubmit={handleSubmit}>
-        <ProfileImageUpload
-          form={form}
-          previewUrl={profileImagePreview}
-          fileInputRef={profileImageInputRef}
-          onUploadClick={() => profileImageInputRef.current?.click()}
-          onRemove={handleRemoveProfileImage}
-          onFileChange={handleProfileImageChange}
-        />
+    <form
+      id={formId}
+      className="grid items-start gap-4 lg:grid-cols-[260px_minmax(0,1fr)]"
+      onSubmit={handleSubmit}
+    >
+      <ProfileImageUpload
+        form={form}
+        previewUrl={profileImagePreview}
+        fileInputRef={profileImageInputRef}
+        isEditing={isEditing}
+        divisionName={selectedDivisionName}
+        designationName={selectedDesignationName}
+        onUploadClick={() => profileImageInputRef.current?.click()}
+        onRemove={handleRemoveProfileImage}
+        onFileChange={handleProfileImageChange}
+      />
 
-        <div className="grid min-w-0 gap-5">
-      <Section title="Personal Information" description="Core employee identity and profile details.">
-        <InputField
-          label="Employee ID *"
-          name="employeeId"
-          value={form.employeeId}
-          readOnly
-          placeholder="EMP2026-0001"
-          error={errors.employeeId}
-          inputClassName="cursor-not-allowed bg-slate-50 font-semibold text-slate-600"
-        />
-        <InputField label="First Name *" name="firstName" value={form.firstName} onChange={updateField("firstName")} placeholder="Enter first name" error={errors.firstName} />
-        <InputField label="Middle Name" name="middleName" value={form.middleName} onChange={updateField("middleName")} placeholder="Enter middle name" />
-        <InputField label="Last Name *" name="lastName" value={form.lastName} onChange={updateField("lastName")} placeholder="Enter last name" error={errors.lastName} />
-        <InputField
-          label="Date of Birth *"
-          name="dateOfBirth"
-          type="date"
-          value={form.dateOfBirth || ""}
-          onChange={updateField("dateOfBirth")}
-          error={errors.dateOfBirth}
-        />
-      </Section>
+      <div className="grid min-w-0 gap-4">
+        <Section
+          icon={UserRound}
+          title="Personal Information"
+          description="Core employee identity and profile details."
+        >
+          <TextField
+            label="Employee ID *"
+            name="employeeId"
+            value={form.employeeId}
+            readOnly
+            placeholder="EMP2026-0001"
+            error={errors.employeeId}
+            className="md:col-span-2"
+            inputClassName="cursor-not-allowed bg-slate-50 font-semibold text-slate-600"
+          />
+          <TextField
+            label="First Name *"
+            name="firstName"
+            value={form.firstName}
+            onChange={updateField("firstName")}
+            placeholder="Enter first name"
+            error={errors.firstName}
+          />
+          <TextField
+            label="Middle Name"
+            name="middleName"
+            value={form.middleName}
+            onChange={updateField("middleName")}
+            placeholder="Enter middle name"
+          />
+          <TextField
+            label="Last Name *"
+            name="lastName"
+            value={form.lastName}
+            onChange={updateField("lastName")}
+            placeholder="Enter last name"
+            error={errors.lastName}
+          />
+          <TextField
+            label="Date of Birth *"
+            name="dateOfBirth"
+            type="date"
+            value={form.dateOfBirth || ""}
+            onChange={updateField("dateOfBirth")}
+            error={errors.dateOfBirth}
+          />
+        </Section>
 
-      <Section title="Address Information" description="Region, province, city, and barangay details.">
-        {addressError ? (
-          <p className="m-0 text-sm font-semibold text-rose-700 md:col-span-2">{addressError}</p>
-        ) : null}
-        <SelectField label="Region" name="region" value={form.regionCode} onChange={updateRegion} disabled={addressLoading}>
-          <option value="">{addressLoading ? "Loading regions..." : "Select region"}</option>
-          {regionOptions.map((item) => <option key={item.region_code} value={item.region_code}>{item.region_name}</option>)}
-        </SelectField>
-        <SelectField label="Province" name="province" value={form.provinceCode} onChange={updateProvince} disabled={!form.regionCode}>
-          <option value="">{form.regionCode ? "Select province" : "Select region first"}</option>
-          {provinceOptions.map((item) => <option key={item.province_code} value={item.province_code}>{item.province_name}</option>)}
-        </SelectField>
-        <SelectField label="City / Municipality" name="city" value={form.cityCode} onChange={updateCity} disabled={!form.provinceCode}>
-          <option value="">{form.provinceCode ? "Select city / municipality" : "Select province first"}</option>
-          {cityOptions.map((item) => <option key={item.city_code} value={item.city_code}>{item.city_name}</option>)}
-        </SelectField>
-        <SelectField label="Address" name="address" value={form.address} onChange={updateBarangay} disabled={!form.cityCode}>
-          <option value="">{form.cityCode ? "Select barangay" : "Select city first"}</option>
-          {barangayOptions.map((item) => <option key={item.brgy_code} value={item.brgy_name}>{item.brgy_name}</option>)}
-        </SelectField>
-        <InputField
-          label="Zip Code"
-          name="zipCode"
-          value={form.zipCode}
-          onChange={updateZipCode}
-          placeholder="Auto-filled from selected location"
-          inputMode="numeric"
-          maxLength={10}
-        />
-      </Section>
-
-      <Section title="Contact Information" description="Communication details and quick profile fields.">
-        <SelectField label="Gender" name="gender" value={form.gender} onChange={updateField("gender")}>
-          <option value="">Select gender</option>
-          {genderOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-        </SelectField>
-        <InputField label="Email *" name="email" type="email" value={form.email} onChange={updateField("email")} placeholder="Enter email address" error={errors.email} />
-        <InputField
-          label="Phone *"
-          name="phone"
-          value={form.phone}
-          onChange={updatePhone}
-          placeholder="Enter 11-digit phone number"
-          inputMode="numeric"
-          maxLength={11}
-          error={errors.phone}
-        />
-      </Section>
-
-      <Section title="Employment Information" description="Division and role assignment details.">
-        {roles.length > 0 ? (
-          <SelectField label={`Role${roleRequired ? " *" : ""}`} name="roleId" value={form.roleId} onChange={updateField("roleId")} error={errors.roleId}>
-            <option value="">Select role</option>
-            {roles.map((role) => (
-              <option key={role.id} value={role.id}>
-                {role.label || role.name}
-              </option>
-            ))}
+        <Section
+          icon={MapPin}
+          title="Address Information"
+          description="Region, province, city, and barangay details."
+        >
+          {addressError ? (
+            <p className="m-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 md:col-span-2">
+              {addressError}
+            </p>
+          ) : null}
+          <SelectField label="Region" name="region" value={form.regionCode} onChange={updateRegion} disabled={addressLoading}>
+            <option value="">{addressLoading ? "Loading regions..." : "Select region"}</option>
+            {regionOptions.map((item) => <option key={item.region_code} value={item.region_code}>{item.region_name}</option>)}
           </SelectField>
+          <SelectField label="Province" name="province" value={form.provinceCode} onChange={updateProvince} disabled={!form.regionCode}>
+            <option value="">{form.regionCode ? "Select province" : "Select region first"}</option>
+            {provinceOptions.map((item) => <option key={item.province_code} value={item.province_code}>{item.province_name}</option>)}
+          </SelectField>
+          <SelectField label="City / Municipality" name="city" value={form.cityCode} onChange={updateCity} disabled={!form.provinceCode}>
+            <option value="">{form.provinceCode ? "Select city / municipality" : "Select province first"}</option>
+            {cityOptions.map((item) => <option key={item.city_code} value={item.city_code}>{item.city_name}</option>)}
+          </SelectField>
+          <SelectField label="Address" name="address" value={form.address} onChange={updateBarangay} disabled={!form.cityCode}>
+            <option value="">{form.cityCode ? "Select barangay" : "Select city first"}</option>
+            {barangayOptions.map((item) => <option key={item.brgy_code} value={item.brgy_name}>{item.brgy_name}</option>)}
+          </SelectField>
+          <TextField
+            label="Zip Code"
+            name="zipCode"
+            value={form.zipCode}
+            onChange={updateZipCode}
+            placeholder="Auto-filled from selected location"
+            inputMode="numeric"
+            maxLength={10}
+          />
+        </Section>
+
+        <Section
+          icon={Mail}
+          title="Contact Information"
+          description="Communication details and quick profile fields."
+        >
+          <SelectField label="Gender" name="gender" value={form.gender} onChange={updateField("gender")}>
+            <option value="">Select gender</option>
+            {genderOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </SelectField>
+          <TextField
+            label="Email *"
+            name="email"
+            type="email"
+            value={form.email}
+            onChange={updateField("email")}
+            placeholder="Enter email address"
+            error={errors.email}
+          />
+          <TextField
+            label="Phone *"
+            name="phone"
+            value={form.phone}
+            onChange={updatePhone}
+            placeholder="Enter 11-digit phone number"
+            inputMode="numeric"
+            maxLength={11}
+            error={errors.phone}
+          />
+        </Section>
+
+        <Section
+          icon={Briefcase}
+          title="Employment Information"
+          description="Division and role assignment details."
+        >
+          {roles.length > 0 ? (
+            <SelectField label={`Role${roleRequired ? " *" : ""}`} name="roleId" value={form.roleId} onChange={updateField("roleId")} error={errors.roleId}>
+              <option value="">Select role</option>
+              {roles.map((role) => (
+                <option key={role.id} value={role.id}>
+                  {role.label || role.name}
+                </option>
+              ))}
+            </SelectField>
+          ) : null}
+          <SelectField label="Division *" name="divisionId" value={form.divisionId} onChange={updateDivision} error={errors.divisionId}>
+            <option value="">Select division</option>
+            {divisions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </SelectField>
+          <SelectField label="Designation *" name="designationId" value={form.designationId} onChange={updateField("designationId")} error={errors.designationId} disabled={!form.divisionId}>
+            <option value="">{form.divisionId ? "Select designation" : "Select division first"}</option>
+            {filteredDesignations.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </SelectField>
+        </Section>
+
+        <Section
+          icon={Banknote}
+          title="Payroll Information"
+          description="Salary and work status details used for payroll processing."
+        >
+          <TextField
+            label="Basic Salary"
+            name="basicSalary"
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.basicSalary ?? ""}
+            onChange={updateField("basicSalary")}
+            placeholder="Enter basic salary"
+          />
+          <SelectField label="Salary Rate" name="salaryRate" value={form.salaryRate} onChange={updateField("salaryRate")} error={errors.salaryRate}>
+            <option value="">Select salary rate</option>
+            {salaryRates.map((item) => <option key={item} value={item}>{item}</option>)}
+          </SelectField>
+          <TextField
+            label="Date Hired"
+            name="dateHired"
+            type="date"
+            value={form.dateHired || ""}
+            onChange={updateField("dateHired")}
+          />
+          <SelectField label="Employment Status" name="employmentStatus" value={form.employmentStatus} onChange={updateField("employmentStatus")}>
+            <option value="">Select employment status</option>
+            {employmentStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
+          </SelectField>
+        </Section>
+
+        <Section
+          icon={HeartPulse}
+          title="Additional Personal Details"
+          description="Supplemental employee profile information."
+        >
+          <SelectField label="PWD" name="pwd" value={form.pwd} onChange={updateField("pwd")}>
+            <option value="0">No</option>
+            <option value="1">Yes</option>
+          </SelectField>
+          <SelectField label="Civil Status" name="civilStatus" value={form.civilStatus} onChange={updateField("civilStatus")}>
+            <option value="">Select civil status</option>
+            {civilStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
+          </SelectField>
+          <TextField
+            label="Height"
+            name="height"
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.height ?? ""}
+            onChange={updateField("height")}
+            placeholder="Select height"
+          />
+          <TextField
+            label="Weight"
+            name="weight"
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.weight ?? ""}
+            onChange={updateField("weight")}
+            placeholder="Select weight"
+          />
+          <SelectField label="Blood Type" name="bloodType" value={form.bloodType} onChange={updateField("bloodType")}>
+            <option value="">Select blood type</option>
+            {bloodTypes.map((item) => <option key={item} value={item}>{item}</option>)}
+          </SelectField>
+        </Section>
+
+        <Section
+          icon={IdCard}
+          title="Government IDs"
+          description="Contribution and tax identification numbers."
+        >
+          <TextField label="GSIS ID No." name="gsisIdNo" value={form.gsisIdNo} onChange={updateField("gsisIdNo")} placeholder="Enter GSIS ID no." />
+          <TextField label="Pag-IBIG ID No." name="pagibigIdNo" value={form.pagibigIdNo} onChange={updateField("pagibigIdNo")} placeholder="Enter Pag-IBIG ID no." />
+          <TextField label="PhilHealth ID No." name="philhealthIdNo" value={form.philhealthIdNo} onChange={updateField("philhealthIdNo")} placeholder="Enter PhilHealth ID no." />
+          <TextField label="TIN No." name="tinNo" value={form.tinNo} onChange={updateField("tinNo")} placeholder="Enter TIN no." />
+        </Section>
+
+        {showActions ? (
+          <div className="flex flex-col-reverse gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:justify-end">
+            <Button type="button" variant="ghost" onClick={onCancel} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={submitting}>{submitLabel}</Button>
+          </div>
         ) : null}
-        <SelectField label="Division *" name="divisionId" value={form.divisionId} onChange={updateDivision} error={errors.divisionId}>
-          <option value="">Select division</option>
-          {divisions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </SelectField>
-        <SelectField label="Designation *" name="designationId" value={form.designationId} onChange={updateField("designationId")} error={errors.designationId} disabled={!form.divisionId}>
-          <option value="">{form.divisionId ? "Select designation" : "Select division first"}</option>
-          {filteredDesignations.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </SelectField>
-      </Section>
-
-      <Section title="Payroll Information" description="Salary and work status details used for payroll processing.">
-        <InputField label="Basic Salary" name="basicSalary" type="number" min="0" step="0.01" value={form.basicSalary ?? ""} onChange={updateField("basicSalary")} placeholder="Enter basic salary" />
-        <SelectField label="Salary Rate" name="salaryRate" value={form.salaryRate} onChange={updateField("salaryRate")} error={errors.salaryRate}>
-          <option value="">Select salary rate</option>
-          {salaryRates.map((item) => <option key={item} value={item}>{item}</option>)}
-        </SelectField>
-        <InputField label="Date Hired" name="dateHired" type="date" value={form.dateHired || ""} onChange={updateField("dateHired")} />
-        <SelectField label="Employment Status" name="employmentStatus" value={form.employmentStatus} onChange={updateField("employmentStatus")}>
-          <option value="">Select employment status</option>
-          {employmentStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
-        </SelectField>
-      </Section>
-
-      <Section title="Additional Personal Details" description="Supplemental employee profile information.">
-        <SelectField label="PWD" name="pwd" value={form.pwd} onChange={updateField("pwd")}>
-          <option value="0">No</option>
-          <option value="1">Yes</option>
-        </SelectField>
-        <SelectField label="Civil Status" name="civilStatus" value={form.civilStatus} onChange={updateField("civilStatus")}>
-          <option value="">Select civil status</option>
-          {civilStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
-        </SelectField>
-        <InputField label="Height" name="height" type="number" min="0" step="0.01" value={form.height ?? ""} onChange={updateField("height")} placeholder="Select height" />
-        <InputField label="Weight" name="weight" type="number" min="0" step="0.01" value={form.weight ?? ""} onChange={updateField("weight")} placeholder="Select weight" />
-        <SelectField label="Blood Type" name="bloodType" value={form.bloodType} onChange={updateField("bloodType")}>
-          <option value="">Select blood type</option>
-          {bloodTypes.map((item) => <option key={item} value={item}>{item}</option>)}
-        </SelectField>
-      </Section>
-
-      <Section title="Government IDs" description="Contribution and tax identification numbers.">
-        <InputField label="GSIS ID No." name="gsisIdNo" value={form.gsisIdNo} onChange={updateField("gsisIdNo")} placeholder="Enter GSIS ID no." />
-        <InputField label="Pag-IBIG ID No." name="pagibigIdNo" value={form.pagibigIdNo} onChange={updateField("pagibigIdNo")} placeholder="Enter Pag-IBIG ID no." />
-        <InputField label="PhilHealth ID No." name="philhealthIdNo" value={form.philhealthIdNo} onChange={updateField("philhealthIdNo")} placeholder="Enter PhilHealth ID no." />
-        <InputField label="TIN No." name="tinNo" value={form.tinNo} onChange={updateField("tinNo")} placeholder="Enter TIN no." />
-      </Section>
-
-      {showActions ? (
-        <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:justify-end">
-          <Button type="button" variant="ghost" onClick={onCancel} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={submitting}>{submitLabel}</Button>
-        </div>
-      ) : null}
-        </div>
-      </form>
-    </>
+      </div>
+    </form>
   );
 }

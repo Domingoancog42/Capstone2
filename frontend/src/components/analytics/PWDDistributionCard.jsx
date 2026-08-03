@@ -17,7 +17,7 @@ const PWDDistributionCard = ({ data = [], summary = {}, loading = false }) => {
 
   if (loading) {
     return (
-      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-6 shadow-md">
+      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-4 shadow-md">
         <div className="mb-4 h-6 w-1/2 rounded bg-gray-200" />
         <div className="mb-4 h-20 rounded bg-gray-100" />
         <div className="space-y-2">
@@ -30,7 +30,7 @@ const PWDDistributionCard = ({ data = [], summary = {}, loading = false }) => {
   }
 
   return (
-    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-6 shadow-md transition-shadow duration-300 hover:shadow-lg">
+    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-4 shadow-md transition-shadow duration-300 hover:shadow-lg">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="rounded-lg bg-teal-100 p-3">
@@ -46,11 +46,11 @@ const PWDDistributionCard = ({ data = [], summary = {}, loading = false }) => {
       <div className="mb-6 rounded-lg bg-gradient-to-r from-teal-50 to-cyan-50 p-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="m-0 text-3xl font-bold text-teal-700">{pwdCount}</p>
+            <p className="m-0 text-xl font-bold text-teal-700">{pwdCount}</p>
             <p className="m-0 text-sm text-gray-600">PWD Employees</p>
           </div>
           <div className="text-right">
-            <p className="m-0 text-2xl font-semibold text-teal-600">{pwdPercentage.toFixed(1)}%</p>
+            <p className="m-0 text-lg font-semibold text-teal-600">{pwdPercentage.toFixed(1)}%</p>
             <p className="m-0 text-xs text-gray-500">of {totalEmployees} total</p>
           </div>
         </div>

@@ -14,7 +14,6 @@ import {
   ScrollText,
   ShieldCheck,
   Trophy,
-  UserRound,
   Users,
 } from "lucide-react";
 import NotificationBadge from "../UI/NotificationBadge";
@@ -41,18 +40,26 @@ import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 const defaultNavigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/admin/dashboard" },
-  { key: "profile", label: "Profile", icon: UserRound, path: "/admin/profile" },
-  { key: "employees", label: "Employees", icon: Users, path: "/admin/employees" },
-  { key: "calendar", label: "Calendar", icon: CalendarDays, path: "/admin/calendar" },
+  { key: "employees", label: "Employee Directory", icon: Users, path: "/admin/employees" },
+  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/admin/calendar" },
   { type: "section", label: "Communication" },
-  { key: "messages", label: "Messages", icon: MessageCircle, path: "/admin/messages" },
+  { key: "messages", label: "Communications", icon: MessageCircle, path: "/admin/messages" },
   { key: "notifications", label: "Notifications", path: "/admin/notifications", hidden: true },
-  { type: "section", label: "Masterfiles" },
-  { key: "serviceRecord", label: "Service Record", icon: ScrollText, path: "/admin/service-record" },
-  { key: "rewardsRecognition", label: "Rewards & Recognition", icon: Trophy, path: "/admin/rewards-recognition" },
+  { type: "section", label: "HR Operations" },
+  { key: "serviceRecord", label: "Employee Records", icon: ScrollText, path: "/admin/service-record" },
+  {
+    key: "rewardsRecognition",
+    label: "Recognition & Rewards",
+    icon: Trophy,
+    path: "/admin/rewards-recognition/nomination",
+    children: [
+      { key: "rewardsNomination", label: "Nomination", path: "/admin/rewards-recognition/nomination" },
+      { key: "rewardsLoyalty", label: "Loyalty", path: "/admin/rewards-recognition/loyalty" },
+    ],
+  },
   {
     key: "performanceManagement",
-    label: "Performance Management",
+    label: "Performance Reviews",
     icon: BarChart3,
     path: "/admin/masterfiles/performance-management/opcr",
     children: [
@@ -62,13 +69,13 @@ const defaultNavigationItems = [
   },
   {
     key: "leaveBalances",
-    label: "Set Balances",
+    label: "Leave Balances",
     icon: ClipboardList,
     path: "/admin/masterfiles/leave-balances",
   },
   {
     key: "attendance",
-    label: "Attendance",
+    label: "Time & Attendance",
     icon: ClipboardCheck,
     path: "/admin/attendance",
     children: [
@@ -78,7 +85,7 @@ const defaultNavigationItems = [
   },
   {
     key: "leave",
-    label: "Leave Management",
+    label: "Leave Administration",
     icon: CalendarRange,
     path: "/admin/leave",
     children: [
@@ -90,7 +97,7 @@ const defaultNavigationItems = [
   },
   {
     key: "payroll",
-    label: "Payroll",
+    label: "Payroll Management",
     icon: FileText,
     path: "/admin/payroll",
     children: [
@@ -104,7 +111,7 @@ const defaultNavigationItems = [
   { type: "section", label: "Reports & Analytics" },
   {
     key: "reports",
-    label: "Reports",
+    label: "Reports & Analytics",
     icon: FileText,
     path: "/admin/reports",
     children: buildReportNavChildren("/admin/reports"),
@@ -527,7 +534,7 @@ export default function Sidebar({
           ? "border-[#911212] bg-gradient-to-b from-[#D61E1E] to-[#911212]"
           : "border-slate-200 bg-white"
       } ${
-        displayCollapsed ? "w-72 lg:w-20" : "w-72"
+        displayCollapsed ? "w-64 lg:w-16" : "w-64"
       } ${
         mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
       }`}
@@ -545,7 +552,7 @@ export default function Sidebar({
             whileHover={prefersReducedMotion ? undefined : { scale: 1.15 }}
             whileTap={prefersReducedMotion ? undefined : { scale: 0.9 }}
           >
-            <Menu size={18} />
+            <Menu size={16} />
           </motion.span>
         </button>
       ) : null}
@@ -553,19 +560,19 @@ export default function Sidebar({
       <div
         className={`admin-sidebar-brand flex shrink-0 flex-col items-center justify-center border-b px-3 ${
           isCrimson ? "border-white/20" : "border-slate-200"
-        } ${displayCollapsed ? "py-4" : "py-5"}`}
+        } ${displayCollapsed ? "py-3" : "py-4"}`}
       >
         <motion.div
           className={`admin-sidebar-brand-logo grid shrink-0 place-items-center overflow-hidden rounded-full bg-white shadow-md transition-[height,width] duration-300 ${
             isCrimson ? "" : "border border-slate-200"
-          } ${displayCollapsed ? "h-14 w-14" : "h-20 w-20"}`}
+          } ${displayCollapsed ? "h-11 w-11" : "h-14 w-14"}`}
           transition={{ type: "spring", stiffness: 320, damping: 20 }}
           whileHover={prefersReducedMotion ? undefined : { scale: 1.06 }}
         >
           <img
             src="/mgb.png"
             alt="MGB logo"
-            className={`object-contain ${displayCollapsed ? "h-11 w-11" : "h-16 w-16"}`}
+            className={`object-contain ${displayCollapsed ? "h-8 w-8" : "h-11 w-11"}`}
           />
         </motion.div>
         {!displayCollapsed && (
@@ -605,10 +612,11 @@ export default function Sidebar({
                 variants={NAV_ITEM_VARIANTS}
               />
             ) : (
+              // Space above the label is what separates the groups; there is no rule to lean on.
               <motion.p
                 key={`section-${item.label}`}
-                className={`admin-sidebar-section m-0 px-3 pb-1 pt-5 text-[10px] font-bold uppercase tracking-[0.16em] first:pt-0 ${
-                  isCrimson ? "text-white/60" : "text-slate-400"
+                className={`admin-sidebar-section m-0 px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.14em] first:pt-1 ${
+                  isCrimson ? "text-white/75" : "text-slate-500"
                 }`}
                 variants={NAV_ITEM_VARIANTS}
               >
@@ -657,7 +665,7 @@ export default function Sidebar({
                     }
                     toggleExpandedItem(item.key);
                   }}
-                  className={`admin-sidebar-item group relative flex min-h-[42px] w-full items-center gap-3 rounded-lg text-sm transition-colors duration-150 ${
+                  className={`admin-sidebar-item group relative flex min-h-9 w-full items-center gap-3 rounded-lg text-sm transition-colors duration-150 ${
                     displayCollapsed ? "justify-center px-0" : "justify-between px-3"
                   } ${
                     branchOnly
@@ -678,7 +686,7 @@ export default function Sidebar({
                   )}
                   <span className={`relative z-[1] flex min-w-0 items-center gap-3 ${HOVER_SHIFT_CLASS}`}>
                     <Icon
-                      size={18}
+                      size={16}
                       className="shrink-0 transition-transform duration-200 motion-safe:group-hover:scale-110"
                     />
                     {displayCollapsed ? null : (
@@ -738,7 +746,7 @@ export default function Sidebar({
                                 event.preventDefault();
                                 handleNavigate(child.path, child.key);
                               }}
-                              className={`admin-sidebar-child group relative flex min-h-9 items-center justify-between gap-2 rounded-md px-3 text-[13px] transition-colors duration-150 ${
+                              className={`admin-sidebar-child group relative flex min-h-8 items-center justify-between gap-2 rounded-md px-3 text-[12.5px] transition-colors duration-150 ${
                                 childIsActive
                                   ? resolvedNavigationStyle.activeText
                                   : resolvedNavigationStyle.inactiveChild
@@ -783,7 +791,7 @@ export default function Sidebar({
               }}
               title={item.label}
               variants={NAV_ITEM_VARIANTS}
-              className={`admin-sidebar-item group relative flex min-h-[42px] items-center gap-3 rounded-lg text-sm transition-colors duration-150 ${
+              className={`admin-sidebar-item group relative flex min-h-9 items-center gap-3 rounded-lg text-sm transition-colors duration-150 ${
                 displayCollapsed ? "justify-center px-0" : "justify-between px-3"
               } ${
                 isActive
@@ -802,7 +810,7 @@ export default function Sidebar({
               )}
               <span className={`relative z-[1] flex min-w-0 items-center gap-3 ${HOVER_SHIFT_CLASS}`}>
                 <Icon
-                  size={18}
+                  size={16}
                   className="shrink-0 transition-transform duration-200 motion-safe:group-hover:scale-110"
                 />
                 {displayCollapsed ? null : (
@@ -836,11 +844,11 @@ export default function Sidebar({
             displayCollapsed ? "justify-center" : isCrimson ? "bg-white/10" : "bg-slate-50"
           }`}
         >
-          <div className={`admin-sidebar-avatar grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-lg ${isCrimson ? "bg-white/20 text-white" : "bg-slate-200 text-slate-600"}`}>
+          <div className={`admin-sidebar-avatar grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-lg ${isCrimson ? "bg-white/20 text-white" : "bg-slate-200 text-slate-600"}`}>
             {profileImageUrl ? (
               <img src={profileImageUrl} alt={userName} className="h-full w-full object-cover" />
             ) : (
-              <ShieldCheck size={18} />
+              <ShieldCheck size={16} />
             )}
           </div>
           <div className={`min-w-0 ${displayCollapsed ? "hidden" : ""}`}>

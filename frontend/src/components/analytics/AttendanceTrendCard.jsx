@@ -69,7 +69,7 @@ export default function AttendanceTrendCard({ data = [], loading = false }) {
 
   if (loading) {
     return (
-      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-6 shadow-md">
+      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-4 shadow-md">
         <div className="mb-4 h-6 w-1/2 rounded bg-gray-200" />
         <div className="h-24 rounded bg-gray-100" />
       </div>
@@ -94,7 +94,7 @@ export default function AttendanceTrendCard({ data = [], loading = false }) {
   ];
 
   return (
-    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-6 shadow-md transition-shadow duration-300 hover:shadow-lg">
+    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-4 shadow-md transition-shadow duration-300 hover:shadow-lg">
       <header className="mb-3">
         <h3 className="m-0 text-sm font-semibold leading-tight text-slate-900">Attendance Trend</h3>
         <p className="m-0 mt-1 text-xs leading-relaxed text-slate-500">

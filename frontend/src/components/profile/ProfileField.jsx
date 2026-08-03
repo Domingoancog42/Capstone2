@@ -25,7 +25,7 @@ export default function ProfileField({
   } ${className}`.trim();
 
   const labelNode = (
-    <label htmlFor={name} className="profile-field-label mb-2 block text-sm font-semibold text-slate-700">
+    <label htmlFor={name} className="profile-field-label mb-1.5 block text-sm font-semibold text-slate-700">
       {label}
       {required ? <span className="profile-field-required ml-1 text-[#D61E1E]">*</span> : null}
     </label>

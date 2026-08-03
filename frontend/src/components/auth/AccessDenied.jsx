@@ -28,7 +28,7 @@ export default function AccessDenied({
   return (
     <div className="flex min-h-screen items-center justify-center bg-transparent dark:bg-slate-900 px-4">
       <div className="w-full max-w-md">
-        <div className="rounded-lg bg-white dark:bg-slate-800 p-8 shadow-lg border border-slate-200 dark:border-slate-700">
+        <div className="rounded-lg bg-white dark:bg-slate-800 p-5 shadow-lg border border-slate-200 dark:border-slate-700">
           {/* Icon */}
           <div className="mb-6 flex justify-center">
             <div className="rounded-full bg-red-100 dark:bg-red-900/20 p-4">
@@ -37,7 +37,7 @@ export default function AccessDenied({
           </div>
 
           {/* Title */}
-          <h1 className="mb-3 text-center text-2xl font-bold text-slate-800 dark:text-slate-100">
+          <h1 className="mb-3 text-center text-lg font-bold text-slate-800 dark:text-slate-100">
             {title}
           </h1>
 
@@ -146,7 +146,7 @@ export function AccessDeniedInline({
   };
 
   return (
-    <div className="flex items-center justify-center p-8">
+    <div className="flex items-center justify-center p-5">
       <div className="max-w-md text-center">
         <div className="mb-4 inline-flex rounded-full bg-red-100 dark:bg-red-900/20 p-3">
           <Lock className="h-8 w-8 text-red-600 dark:text-red-400" />

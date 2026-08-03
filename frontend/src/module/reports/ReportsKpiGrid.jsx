@@ -130,7 +130,7 @@ const KpiCard = memo(function KpiCard({ kpi }) {
 
       <div>
         <p className="m-0 text-[13px] font-medium leading-snug text-slate-500">{kpi.label}</p>
-        <p className="m-0 mt-1 text-2xl font-semibold leading-tight text-slate-900">
+        <p className="m-0 mt-1 text-lg font-semibold leading-tight text-slate-900">
           {formatKpiValue(animatedValue, kpi.format)}
           {kpi.hint ? <span className="ml-1.5 text-xs font-medium text-slate-500">{kpi.hint}</span> : null}
         </p>

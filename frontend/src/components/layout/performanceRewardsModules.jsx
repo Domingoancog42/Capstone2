@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 import { BarChart3, ScrollText, Trophy } from "lucide-react";
 import IpcrManagementWorkspace from "../../module/performance/IpcrManagementWorkspace";
 import OpcrManagementWorkspace from "../../module/performance/OpcrManagementWorkspace";
-import RewardsRecognitionWorkspace from "../../module/rewards/RewardsRecognitionWorkspace";
+import AwardCyclesWorkspace from "../../module/rewards/AwardCyclesWorkspace";
+import LoyaltyWorkspace from "../../module/rewards/LoyaltyWorkspace";
 import ServiceRecordWorkspace from "../../module/serviceRecord/ServiceRecordWorkspace";
 import { getEmployees } from "../../services/api";
 
@@ -70,14 +71,21 @@ function EmployeeDirectoryScreen({ render }) {
 }
 
 export const PERFORMANCE_REWARDS_MODULES = {
-  rewardsRecognition: {
-    title: "Rewards & Recognition",
-    description: "Nominate employees, track recognition programs, and review awarded records.",
+  rewardsNomination: {
+    title: "Nomination",
+    description: "Run award cycles, collect nominations, and crown the best employee.",
+    // The workspace carries its own "Award Cycles" heading and New-cycle button.
     hidePageIntro: true,
     render: ({ user }) => (
-      <EmployeeDirectoryScreen
-        render={(employees) => <RewardsRecognitionWorkspace employees={employees} user={user} />}
-      />
+      <EmployeeDirectoryScreen render={(employees) => <AwardCyclesWorkspace user={user} employees={employees} />} />
+    ),
+  },
+  rewardsLoyalty: {
+    title: "Loyalty",
+    description: "Track tenure-based loyalty tiers and see who is eligible for retirement.",
+    hidePageIntro: true,
+    render: () => (
+      <EmployeeDirectoryScreen render={(employees) => <LoyaltyWorkspace employees={employees} />} />
     ),
   },
   performanceOpcr: {
@@ -117,19 +125,25 @@ export function buildPerformanceRewardsNavItems(basePath) {
   return [
     {
       key: "serviceRecord",
-      label: "Service Record",
+      label: "Employee Records",
       icon: ScrollText,
       path: `${basePath}/service-record`,
     },
     {
       key: "rewardsRecognition",
-      label: "Rewards & Recognition",
+      label: "Recognition & Rewards",
       icon: Trophy,
-      path: `${basePath}/rewards-recognition`,
+      // Points at the first child, the way Performance Management points at OPCR. Children are
+      // matched before parents, so this key never needs a module of its own.
+      path: `${basePath}/rewards-recognition/nomination`,
+      children: [
+        { key: "rewardsNomination", label: "Nomination", path: `${basePath}/rewards-recognition/nomination` },
+        { key: "rewardsLoyalty", label: "Loyalty", path: `${basePath}/rewards-recognition/loyalty` },
+      ],
     },
     {
       key: "performanceManagement",
-      label: "Performance Management",
+      label: "Performance Reviews",
       icon: BarChart3,
       path: `${basePath}/masterfiles/performance-management/opcr`,
       children: [

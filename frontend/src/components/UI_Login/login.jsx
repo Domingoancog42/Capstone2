@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
-import { toast } from "react-hot-toast";
 import { forceChangePassword, getPublicSettings, login, logout } from "../../services/api";
 import {
   evaluatePasswordPolicy,
@@ -203,7 +202,7 @@ function LoginCard({
   return (
     <motion.section
       aria-labelledby="signin-heading"
-      className="w-full max-w-[420px] rounded-xl border border-slate-200/70 bg-white px-6 py-7 shadow-[0_18px_50px_rgba(15,23,42,0.10)] sm:px-8"
+      className="w-full max-w-[420px] rounded-xl border border-slate-200/70 bg-white px-4 py-5 shadow-[0_18px_50px_rgba(15,23,42,0.10)] sm:px-5"
       initial="hidden"
       animate="visible"
       variants={fadeIn}
@@ -218,7 +217,7 @@ function LoginCard({
       <header className="mt-6">
         <div className="flex items-center gap-2.5">
           <span aria-hidden="true" className="h-6 w-[3px] rounded-full bg-[#D61E1E]" />
-          <h1 id="signin-heading" className="m-0 text-2xl font-bold tracking-tight text-slate-900">
+          <h1 id="signin-heading" className="m-0 text-lg font-bold tracking-tight text-slate-900">
             Sign In
           </h1>
         </div>
@@ -490,7 +489,7 @@ function ForcePasswordChangeCard({
       transition={{ duration: 0.45, ease: "easeOut" }}
     >
       <div className="h-1 bg-[#D61E1E]" />
-      <div className="px-5 pb-6 pt-6 sm:px-7 sm:pb-7 sm:pt-7">
+      <div className="px-5 pb-4 pt-4 sm:px-5 sm:pb-7 sm:pt-7">
         <div className="text-center">
           <div className="mx-auto grid h-[68px] w-[68px] place-items-center rounded-2xl border border-slate-200 bg-slate-50 text-[#D61E1E] shadow-inner">
             <KeyRound aria-hidden="true" size={30} />
@@ -910,12 +909,6 @@ export default function Login({ onLogin }) {
         },
       });
 
-      if (error.response?.status === 403 && message.toLowerCase().includes("inactive")) {
-        toast.error("This user is inactive.", {
-          id: "login-inactive-user",
-        });
-      }
-
       refreshCaptcha();
     } finally {
       setLoading(false);
@@ -1052,10 +1045,10 @@ export default function Login({ onLogin }) {
 
         {/* The photo panel is hidden on small screens, so the title rides above the card instead. */}
         <div
-          className="relative overflow-hidden bg-slate-900 bg-cover bg-center px-6 py-8 sm:px-8 lg:hidden"
+          className="relative overflow-hidden bg-slate-900 bg-cover bg-center px-4 py-5 sm:px-5 lg:hidden"
           style={{ backgroundImage: `${PHOTO_SCRIM}, url("${backgroundImage}")` }}
         >
-          <h2 className="m-0 text-2xl font-extrabold leading-tight tracking-tight text-white">
+          <h2 className="m-0 text-lg font-extrabold leading-tight tracking-tight text-white">
             Human Resources Information System
           </h2>
           <span aria-hidden="true" className="mt-3.5 block h-1 w-24 rounded-full bg-[#D61E1E]" />
@@ -1066,7 +1059,7 @@ export default function Login({ onLogin }) {
 
         <section
           aria-label="MGB HRIS login"
-          className="relative flex flex-1 items-center justify-center px-4 py-10 sm:px-8"
+          className="relative flex flex-1 items-center justify-center px-4 py-10 sm:px-5"
         >
           {forcePasswordUser ? (
             <ForcePasswordChangeCard
@@ -1123,7 +1116,7 @@ export default function Login({ onLogin }) {
           )}
         </section>
 
-        <footer className="relative px-4 pb-6">
+        <footer className="relative px-4 pb-4">
           <p className="m-0 text-center text-xs leading-5 text-slate-400">
             &copy; {new Date().getFullYear()} Mines and Geosciences Bureau &ndash; Human Resources Information System.
             All Rights Reserved.

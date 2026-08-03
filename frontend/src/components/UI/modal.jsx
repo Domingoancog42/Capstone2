@@ -53,16 +53,16 @@ export default function Modal({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 14, scale: 0.98 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
-            className={`relative z-10 flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 sm:rounded-2xl ${maxWidth} ${panelClassName}`.trim()}
+            className={`relative z-10 flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 ${maxWidth} ${panelClassName}`.trim()}
           >
-            <div className={`flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700 sm:px-5 sm:py-4 ${headerClassName}`.trim()}>
-              <h2 id="modal-title" className="m-0 text-base font-semibold text-slate-900 dark:text-slate-100 sm:text-lg">
+            <div className={`flex items-center justify-between gap-3 border-b border-slate-200 px-3.5 py-2.5 dark:border-slate-700 sm:px-4 sm:py-3 ${headerClassName}`.trim()}>
+              <h2 id="modal-title" className="m-0 text-sm font-semibold text-slate-900 dark:text-slate-100 sm:text-base">
                 {title}
               </h2>
               <Button variant="icon" size="sm" icon={X} onClick={onClose} aria-label={closeLabel} />
             </div>
-            <div className={`overflow-y-auto px-4 py-4 text-slate-600 dark:text-slate-300 sm:px-5 sm:py-5 ${contentClassName}`.trim()}>{children}</div>
-            {footer ? <div className={`flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 px-4 py-3 dark:border-slate-700 sm:px-5 sm:py-4 ${footerClassName}`.trim()}>{footer}</div> : null}
+            <div className={`overflow-y-auto px-3.5 py-3.5 text-sm text-slate-600 dark:text-slate-300 sm:px-4 sm:py-4 ${contentClassName}`.trim()}>{children}</div>
+            {footer ? <div className={`flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-200 px-3.5 py-2.5 dark:border-slate-700 sm:px-4 sm:py-3 ${footerClassName}`.trim()}>{footer}</div> : null}
           </motion.div>
         </div>
       ) : null}

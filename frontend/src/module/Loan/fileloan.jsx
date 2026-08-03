@@ -614,22 +614,22 @@ export default function FileLoan({
           </div>
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-3 xl:grid-cols-[1fr_190px_280px]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,260px)_170px_190px]">
             <label className="relative">
               <span className="sr-only">Search loan requests</span>
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <input
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search loan ID, employee, type, status"
-                className="min-h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               />
             </label>
             <select
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="">All statuses</option>
               {LOAN_STATUSES.map((status) => (
@@ -639,7 +639,7 @@ export default function FileLoan({
             <select
               value={loanTypeFilter}
               onChange={(event) => setLoanTypeFilter(event.target.value)}
-              className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="">All loan types</option>
               {LOAN_TYPES.map((type) => (
@@ -697,7 +697,7 @@ export default function FileLoan({
         <form id="loanRequestForm" className="grid gap-4" onSubmit={handleSubmit}>
           {canFileForOthers ? (
             <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">Employee *</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Employee *</label>
               <EmployeeSearchSelect
                 employeeOptions={employeeOptions}
                 selectedEmployee={selectedEmployee}
@@ -731,13 +731,13 @@ export default function FileLoan({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="loanType" className="mb-2 block text-sm font-semibold text-slate-700">Loan Type *</label>
+              <label htmlFor="loanType" className="mb-1.5 block text-sm font-semibold text-slate-700">Loan Type *</label>
               <select
                 id="loanType"
                 value={form.loanType}
                 onChange={updateForm("loanType")}
                 required
-                className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               >
                 <option value="">Select loan type</option>
                 {LOAN_TYPES.map((type) => (
@@ -778,7 +778,7 @@ export default function FileLoan({
           </div>
 
           <div>
-            <label htmlFor="loanPurpose" className="mb-2 block text-sm font-semibold text-slate-700">Purpose of Loan *</label>
+            <label htmlFor="loanPurpose" className="mb-1.5 block text-sm font-semibold text-slate-700">Purpose of Loan *</label>
             <textarea
               id="loanPurpose"
               value={form.purpose}
@@ -791,7 +791,7 @@ export default function FileLoan({
           </div>
 
           <div>
-            <label htmlFor="supportingDocument" className="mb-2 block text-sm font-semibold text-slate-700">Supporting Documents</label>
+            <label htmlFor="supportingDocument" className="mb-1.5 block text-sm font-semibold text-slate-700">Supporting Documents</label>
             <div className="rounded-lg border border-slate-200 bg-white px-3.5 py-3">
               <input
                 key={`${editingRecord?.id || "new"}-${formOpen}`}
@@ -819,7 +819,7 @@ export default function FileLoan({
         footer={<Button variant="secondary" onClick={() => setViewingRecord(null)}>Close</Button>}
       >
         {viewingRecord ? (
-          <div className="space-y-6">
+          <div className="space-y-4">
             {viewLoading ? (
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-500">
                 Loading loan request details...
@@ -931,7 +931,7 @@ export default function FileLoan({
                     </div>
                   ))
                 ) : (
-                  <div className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-500">
+                  <div className="rounded-xl border border-dashed border-slate-300 px-4 py-4 text-center text-sm text-slate-500">
                     No audit trail entries available.
                   </div>
                 )}

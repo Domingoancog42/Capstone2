@@ -864,7 +864,7 @@ function PerformancePanel({ charts, theme, loading, refreshing, available }) {
 
 function ModuleUnavailable({ label }) {
   return (
-    <div className="grid place-items-center rounded-xl border border-dashed border-slate-200 bg-white px-6 py-16 text-center">
+    <div className="grid place-items-center rounded-xl border border-dashed border-slate-200 bg-white px-4 py-16 text-center">
       <div className="max-w-md">
         <p className="m-0 text-sm font-semibold text-slate-700">{`${label} analytics are not available yet`}</p>
         <p className="m-0 mt-2 text-sm text-slate-500">

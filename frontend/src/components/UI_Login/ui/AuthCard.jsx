@@ -44,7 +44,7 @@ export default function AuthCard({
     >
       <div className="h-1.5 bg-gradient-to-r from-[#D61E1E] via-[#d13a3a] to-[#D61E1E]" />
 
-      <div className="px-6 pb-7 pt-6 sm:px-8 sm:pb-8">
+      <div className="px-4 pb-7 pt-4 sm:px-5 sm:pb-5">
         {onBack ? (
           <button
             aria-label={backLabel}

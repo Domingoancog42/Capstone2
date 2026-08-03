@@ -125,7 +125,7 @@ function ReportPicker({ catalog, value, onChange }) {
 
           <div className="max-h-[340px] overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <p className="m-0 px-3 py-6 text-center text-sm text-slate-500">No reports match that search.</p>
+              <p className="m-0 px-3 py-4 text-center text-sm text-slate-500">No reports match that search.</p>
             ) : (
               filtered.map((category) => (
                 <div key={category.key}>
@@ -555,7 +555,7 @@ export default function AdminReports({ showSummary = true, user, category = "" }
       {/* ---------------- Header ---------------- */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="m-0 text-2xl font-semibold text-slate-900">{categoryTitle}</h1>
+          <h1 className="m-0 text-lg font-semibold text-slate-900">{categoryTitle}</h1>
           <p className="m-0 mt-1.5 max-w-2xl text-sm text-slate-500">
             Analytics and searchable, exportable record-level reports for this category.
           </p>

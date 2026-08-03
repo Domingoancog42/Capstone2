@@ -807,7 +807,7 @@ export default function IpcrManagementWorkspace({ employees = [] }) {
       <Card className="w-full overflow-hidden">
         <CardHeader className="flex flex-col gap-4 border-b-0 pb-4 sm:pb-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
-            <CardTitle className="text-2xl">IPCR</CardTitle>
+            <CardTitle className="text-lg">IPCR</CardTitle>
             <CardDescription className="max-w-2xl">
               Assign KPI targets, review verification uploads, rate accomplishments, and preview IPCR forms.
             </CardDescription>
@@ -820,7 +820,7 @@ export default function IpcrManagementWorkspace({ employees = [] }) {
           </Button>
         </CardHeader>
 
-        <div className="border-b border-slate-200 px-4 sm:px-6">
+        <div className="border-b border-slate-200 px-4 sm:px-4">
           <PerformanceTabNav
             tabs={tabs}
             activeTab={activeTab}
@@ -893,7 +893,7 @@ export default function IpcrManagementWorkspace({ employees = [] }) {
             required
           />
           <div>
-            <label htmlFor="successIndicator" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="successIndicator" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Success Indicator
             </label>
             <textarea
@@ -908,14 +908,14 @@ export default function IpcrManagementWorkspace({ employees = [] }) {
           </div>
           <div className="grid gap-4 md:grid-cols-3">
             <div>
-              <label htmlFor="kpiCategory" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="kpiCategory" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Category
               </label>
               <select
                 id="kpiCategory"
                 value={bulkForm.category}
                 onChange={(event) => setBulkForm((form) => ({ ...form, category: event.target.value }))}
-                className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none focus:border-[#D61E1E]"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#D61E1E]"
               >
                 <option value="Program">Program</option>
                 <option value="Operations">Operations</option>
@@ -1025,7 +1025,7 @@ export default function IpcrManagementWorkspace({ employees = [] }) {
                 </div>
                 <div className="rounded-lg border border-[#F8BFBF] bg-[#FEF1F1] px-3 py-2 text-right">
                   <p className="m-0 text-[11px] font-extrabold uppercase tracking-wide text-[#D61E1E]">Average</p>
-                  <p className="m-0 text-2xl font-extrabold leading-none text-slate-950">
+                  <p className="m-0 text-lg font-extrabold leading-none text-slate-950">
                     {(() => {
                       const scores = [ratingForm.q1Rating, ratingForm.e2Rating, ratingForm.t3Rating].map(ratingNumber).filter((score) => score > 0);
                       return scores.length === 3 ? (scores.reduce((sum, score) => sum + score, 0) / 3).toFixed(2) : "N/A";
@@ -1036,7 +1036,7 @@ export default function IpcrManagementWorkspace({ employees = [] }) {
 
               <div className="space-y-4">
                 <div>
-                  <label htmlFor="ipcrRemarks" className="mb-2 block text-sm font-semibold text-slate-700">
+                  <label htmlFor="ipcrRemarks" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Remarks
                   </label>
                   <textarea

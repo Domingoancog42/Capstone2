@@ -17,7 +17,7 @@ export default function WorkspaceShell({
   pageDescription,
   hidePageIntro = false,
   breadcrumbs = [],
-  contentClassName = "mx-auto max-w-7xl p-4 sm:p-6",
+  contentClassName = "mx-auto max-w-7xl p-3 sm:p-4",
   children,
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -67,20 +67,20 @@ export default function WorkspaceShell({
         variant="crimson"
       />
 
-      <main className={`flex min-h-screen flex-col pt-16 transition-all duration-300 ${sidebarCollapsed ? "lg:ml-20" : "lg:ml-72"}`}>
+      <main className={`flex min-h-screen flex-col pt-14 transition-all duration-300 ${sidebarCollapsed ? "lg:ml-16" : "lg:ml-64"}`}>
         <div className={`flex-1 ${contentClassName}`}>
-          <Breadcrumbs items={breadcrumbs} onNavigate={onNavigate} className="mb-4 w-full" />
+          <Breadcrumbs items={breadcrumbs} onNavigate={onNavigate} className="mb-3 w-full" />
 
           {!hidePageIntro ? (
-            <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6 lg:flex-row lg:items-end lg:justify-between">
+            <div className="mb-4 flex flex-col gap-2.5 rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm sm:p-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 {portalLabel ? (
-                  <p className="m-0 text-xs font-semibold uppercase tracking-[0.16em] text-[#D61E1E]">
+                  <p className="m-0 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#D61E1E]">
                     {portalLabel}
                   </p>
                 ) : null}
-                <h1 className={`${portalLabel ? "mt-2" : "mt-0"} text-2xl font-semibold text-slate-900 sm:text-3xl`}>{pageTitle}</h1>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">{pageDescription}</p>
+                <h1 className={`${portalLabel ? "mt-1.5" : "mt-0"} text-lg font-semibold text-slate-900 sm:text-xl`}>{pageTitle}</h1>
+                <p className="mt-1.5 max-w-3xl text-sm leading-6 text-slate-500">{pageDescription}</p>
               </div>
             </div>
           ) : null}

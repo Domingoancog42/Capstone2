@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Clock3, Filter, Plus, Search } from "lucide-react";
+import { Clock3, FilePenLine, Filter, Search } from "lucide-react";
 import { faBan, faCheck, faEye, faXmark } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
@@ -7,15 +7,10 @@ import "sweetalert2/dist/sweetalert2.min.css";
 import ActionIconButton from "../../components/UI/ActionIconButton";
 import Pagination from "../../components/UI/Pagination";
 import Button from "../../components/UI/button";
-import Card, {
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/UI/card";
 import InputField from "../../components/UI/InputField";
 import Modal from "../../components/UI/modal";
 import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
+import LeaveStatusBadge from "../../components/leave/LeaveStatusBadge";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   fetchOvertimeRequests,
@@ -25,7 +20,6 @@ import {
 import { countPendingRecords, resolveRoleKey } from "../../utils/leaveHelpers";
 
 const overtimeStatuses = ["Pending", "Approved", "Rejected", "Cancelled"];
-const DEFAULT_OVERTIME_ROWS_PER_PAGE = 10;
 
 const initialForm = {
   employeeRecordId: "",
@@ -84,19 +78,6 @@ function formatRequestDate(record) {
   return record?.requestDateDisplay || record?.requestDate || record?.dateFiled || "No date";
 }
 
-function statusBadgeClass(status) {
-  switch (String(status || "").toLowerCase()) {
-    case "approved":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700";
-    case "rejected":
-      return "border-rose-200 bg-rose-50 text-rose-700";
-    case "cancelled":
-      return "border-slate-200 bg-slate-100 text-slate-700";
-    default:
-      return "border-amber-200 bg-amber-50 text-amber-700";
-  }
-}
-
 export default function OvertimeWorkspace({
   user,
   employees = [],
@@ -115,6 +96,7 @@ export default function OvertimeWorkspace({
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [date, setDate] = useState("");
+  const [rowsPerPage, setRowsPerPage] = useState("10");
   const [currentPage, setCurrentPage] = useState(1);
   const roleKey = resolveRoleKey(user);
   const canManage = ["admin", "hrhead", "hrstaff", "regionaldirector", "chief"].includes(roleKey);
@@ -167,16 +149,17 @@ export default function OvertimeWorkspace({
       return matchesSearch && matchesStatus && matchesDate;
     });
   }, [date, query, records, status]);
-  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / DEFAULT_OVERTIME_ROWS_PER_PAGE));
+  const pageSize = Number(rowsPerPage) || 10;
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const paginatedRecords = useMemo(() => {
-    const startIndex = (safePage - 1) * DEFAULT_OVERTIME_ROWS_PER_PAGE;
-    return filteredRecords.slice(startIndex, startIndex + DEFAULT_OVERTIME_ROWS_PER_PAGE);
-  }, [filteredRecords, safePage]);
+    const startIndex = (safePage - 1) * pageSize;
+    return filteredRecords.slice(startIndex, startIndex + pageSize);
+  }, [filteredRecords, pageSize, safePage]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [date, query, status]);
+  }, [date, query, rowsPerPage, status]);
 
   const openForm = () => {
     setForm({
@@ -295,18 +278,24 @@ export default function OvertimeWorkspace({
 
   return (
     <section className="w-full space-y-5">
-      <Card>
-        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <CardTitle>{title}</CardTitle>
-            <CardDescription>{description}</CardDescription>
+            <h3 className="m-0 text-base font-semibold text-slate-950">{title}</h3>
+            <p className="m-0 mt-1 text-sm text-slate-500">{description}</p>
           </div>
-          <Button icon={Plus} onClick={openForm}>
+          <button
+            type="button"
+            onClick={openForm}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+          >
+            <FilePenLine size={16} />
             {submitLabel}
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 lg:grid-cols-[1fr_180px_180px]">
+          </button>
+        </div>
+
+        <div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_160px_120px]">
             <label className="relative">
               <span className="sr-only">Search overtime requests</span>
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -314,13 +303,13 @@ export default function OvertimeWorkspace({
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search employee, division, reason"
-                className="min-h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               />
             </label>
             <select
               value={status}
               onChange={(event) => setStatus(event.target.value)}
-              className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="">All statuses</option>
               {overtimeStatuses.map((item) => (
@@ -331,11 +320,20 @@ export default function OvertimeWorkspace({
               type="date"
               value={date}
               onChange={(event) => setDate(event.target.value)}
-              className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
+            <select
+              value={rowsPerPage}
+              onChange={(event) => setRowsPerPage(event.target.value)}
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            >
+              <option value="5">5 rows</option>
+              <option value="10">10 rows</option>
+              <option value="20">20 rows</option>
+            </select>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-slate-200">
+          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
             <div className="overflow-x-auto">
               <table className="min-w-[1120px] w-full border-collapse">
                 <thead className="bg-slate-50">
@@ -370,7 +368,7 @@ export default function OvertimeWorkspace({
                     paginatedRecords.map((record, index) => (
                       <tr key={record.id} className="border-b border-slate-100 transition hover:bg-slate-50">
                         <td className="px-3 py-3 text-sm font-semibold text-slate-600">
-                          {(safePage - 1) * DEFAULT_OVERTIME_ROWS_PER_PAGE + index + 1}
+                          {(safePage - 1) * pageSize + index + 1}
                         </td>
                         <td className="px-3 py-3 text-sm">
                           <div className="font-semibold text-slate-900">{record.employeeName}</div>
@@ -380,11 +378,7 @@ export default function OvertimeWorkspace({
                         <td className="px-3 py-3 text-sm text-slate-600">{formatAmount(record.hourRequested ?? record.hoursWorked)}</td>
                         <td className="px-3 py-3 text-sm text-slate-600">{record.reason || "No reason provided"}</td>
                         <td className="px-3 py-3 text-sm text-slate-600">{formatRequestDate(record)}</td>
-                        <td className="px-3 py-3">
-                          <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusBadgeClass(record.status)}`}>
-                            {record.status || "Pending"}
-                          </span>
-                        </td>
+                        <td className="px-3 py-3"><LeaveStatusBadge status={record.status || "Pending"} /></td>
                         <td className="px-3 py-3">
                           <div className="flex flex-wrap gap-2">
                             <ActionIconButton
@@ -424,15 +418,15 @@ export default function OvertimeWorkspace({
               </table>
             </div>
           </div>
-          <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="m-0 text-sm text-slate-500">
-              Showing {filteredRecords.length === 0 ? 0 : (safePage - 1) * DEFAULT_OVERTIME_ROWS_PER_PAGE + 1}
-              {" "}to {Math.min(safePage * DEFAULT_OVERTIME_ROWS_PER_PAGE, filteredRecords.length)} of {filteredRecords.length} overtime requests
+              Showing {filteredRecords.length === 0 ? 0 : (safePage - 1) * pageSize + 1}
+              {" "}to {Math.min(safePage * pageSize, filteredRecords.length)} of {filteredRecords.length} overtime requests
             </p>
             <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setCurrentPage} />
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       <Modal
         open={modalOpen}
@@ -449,7 +443,7 @@ export default function OvertimeWorkspace({
         <form id="overtimeForm" className="grid gap-4" onSubmit={submitOvertime}>
           {canSelectEmployee ? (
             <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Employee
               </label>
               <EmployeeSearchSelect
@@ -534,9 +528,7 @@ export default function OvertimeWorkspace({
             <div>
               <p className="m-0 text-sm font-semibold text-slate-500">Status</p>
               <p className="m-0 mt-1">
-                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusBadgeClass(viewingRecord.status)}`}>
-                  {viewingRecord.status || "Pending"}
-                </span>
+                <LeaveStatusBadge status={viewingRecord.status || "Pending"} />
               </p>
             </div>
             <div className="sm:col-span-2">

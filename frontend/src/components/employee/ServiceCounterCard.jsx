@@ -109,7 +109,7 @@ export default function ServiceCounterCard({ dateHired, service }) {
         </div>
         <div className="min-w-0">
           <p className="m-0 text-[11px] font-bold uppercase tracking-[0.16em] text-sky-800">Live Service</p>
-          <p className="m-0 mt-2 break-words text-2xl font-semibold leading-tight text-slate-950" aria-live="polite">
+          <p className="m-0 mt-2 break-words text-lg font-semibold leading-tight text-slate-950" aria-live="polite">
             {hasDateHired ? display.label : "Date hired missing"}
           </p>
           <p className="m-0 mt-2 text-sm text-slate-600">

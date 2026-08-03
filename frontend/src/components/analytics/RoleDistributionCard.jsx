@@ -59,7 +59,7 @@ const RoleDistributionCard = ({ data = [], loading = false }) => {
 
   if (loading) {
     return (
-      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-6 shadow-md">
+      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-4 shadow-md">
         <div className="h-6 bg-gray-200 rounded w-1/2 mb-4"></div>
         <div className="space-y-3">
           {[1, 2, 3, 4].map((i) => (
@@ -71,7 +71,7 @@ const RoleDistributionCard = ({ data = [], loading = false }) => {
   }
 
   return (
-    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-6 shadow-md transition-shadow duration-300 hover:shadow-lg">
+    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-4 shadow-md transition-shadow duration-300 hover:shadow-lg">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center space-x-3">
@@ -89,7 +89,7 @@ const RoleDistributionCard = ({ data = [], loading = false }) => {
       {/* Role Pie Chart */}
       <div className="flex-1">
         {data.length === 0 ? (
-          <div className="text-center text-gray-500 py-8">
+          <div className="text-center text-gray-500 py-5">
             <Users className="w-12 h-12 mx-auto mb-2 text-gray-300" />
             <p>No role data available</p>
           </div>

@@ -5,7 +5,7 @@ import SettingsNotice from "./SettingsNotice";
  * The standard chrome for a settings section: optional icon, title, description, a header actions
  * slot, a status notice, the body, and an optional footer for the save button.
  *
- * Every settings screen was hand-rolling this, which is how the page ended up with `rounded-3xl`,
+ * Every settings screen was hand-rolling this, which is how the page ended up with `rounded-2xl`,
  * `rounded-2xl`, and `rounded-lg` panels side by side, headings at three different sizes, and save
  * buttons in three different positions. Rendering them all through one component is what makes the
  * page look designed rather than assembled.
@@ -36,7 +36,7 @@ export default function SettingsPanel({
     >
       <Wrapper {...wrapperProps}>
         {title || description || actions ? (
-          <header className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+          <header className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
             <div className="flex min-w-0 items-start gap-3">
               {Icon ? (
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-600">

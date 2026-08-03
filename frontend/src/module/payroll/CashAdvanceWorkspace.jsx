@@ -420,22 +420,22 @@ export default function CashAdvanceWorkspace({ employees = [], user }) {
           </Button>
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-3 lg:grid-cols-[1fr_200px]">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,260px)_170px]">
             <label className="relative">
               <span className="sr-only">Search cash advance requests</span>
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <input
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search employee, division, status"
-                className="min-h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               />
             </label>
             <select
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="">All statuses</option>
               {statusOptions.map((status) => (
@@ -492,7 +492,7 @@ export default function CashAdvanceWorkspace({ employees = [], user }) {
       >
         <form id="cashAdvanceForm" className="grid gap-4" onSubmit={handleSubmit}>
           <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">Employee *</label>
+            <label className="mb-1.5 block text-sm font-semibold text-slate-700">Employee *</label>
             <EmployeeSearchSelect
               employeeOptions={employeeOptions}
               selectedEmployee={selectedEmployee}

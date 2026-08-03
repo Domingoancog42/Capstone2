@@ -13,8 +13,8 @@ const variantClasses = {
 };
 
 const sizeClasses = {
-  md: "min-h-[42px] px-4 text-base",
-  sm: "min-h-9 px-3 text-sm",
+  md: "min-h-9 px-3.5 text-sm",
+  sm: "min-h-8 px-2.5 text-xs",
 };
 
 function isFontAwesomeIcon(icon) {
@@ -23,11 +23,11 @@ function isFontAwesomeIcon(icon) {
 
 function ButtonIcon({ icon }) {
   if (isFontAwesomeIcon(icon)) {
-    return <FontAwesomeIcon icon={icon} className="text-[18px]" aria-hidden="true" />;
+    return <FontAwesomeIcon icon={icon} className="text-[15px]" aria-hidden="true" />;
   }
 
   const Icon = icon;
-  return <Icon size={18} aria-hidden="true" />;
+  return <Icon size={15} aria-hidden="true" />;
 }
 
 export default function Button({
@@ -47,7 +47,7 @@ export default function Button({
     variantClasses[variant] || variantClasses.primary,
     sizeClasses[size] || sizeClasses.md,
     fullWidth ? "w-full" : "",
-    variant === "icon" ? "w-[38px]" : "",
+    variant === "icon" ? "w-9" : "",
     className,
   ]
     .filter(Boolean)

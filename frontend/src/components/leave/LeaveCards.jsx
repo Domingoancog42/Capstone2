@@ -25,7 +25,7 @@ function SummaryCard({ title, value, helper, icon: Icon, gradient }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="m-0 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</p>
-          <p className="m-0 mt-2 text-2xl font-bold text-slate-900">{value}</p>
+          <p className="m-0 mt-2 text-lg font-bold text-slate-900">{value}</p>
           <p className="m-0 mt-1 text-xs text-slate-500">{helper}</p>
         </div>
         <div className={`grid h-11 w-11 place-items-center rounded-xl text-white shadow ${gradient}`}>
@@ -287,7 +287,7 @@ export default function LeaveCards({
               ))}
             </div>
           ) : onLeaveEmployees.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center">
               <p className="m-0 text-sm font-semibold text-slate-700">No employees are currently on leave.</p>
               <p className="m-0 mt-1 text-sm text-slate-500">Once leave dates become active, they will appear here.</p>
             </div>
@@ -319,7 +319,7 @@ export default function LeaveCards({
       </section>
 
       {viewAllOpen ? (
-        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
           <button
             type="button"
             aria-label="Close currently on leave modal"
@@ -328,7 +328,7 @@ export default function LeaveCards({
           />
 
           <div className="relative z-10 flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-[28px] border border-white/25 bg-white shadow-2xl">
-            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
               <div>
                 <h3 className="m-0 text-lg font-semibold text-slate-950">Employees Currently On Leave</h3>
                 <p className="m-0 mt-1 text-sm text-slate-500">
@@ -344,9 +344,9 @@ export default function LeaveCards({
               </button>
             </div>
 
-            <div className="bg-slate-50 p-5 sm:p-6">
+            <div className="bg-slate-50 p-5 sm:p-4">
               {viewAllLoading ? (
-                <div className="grid min-h-[320px] place-items-center rounded-3xl border border-slate-200 bg-white">
+                <div className="grid min-h-[320px] place-items-center rounded-2xl border border-slate-200 bg-white">
                   <div className="text-center">
                     <LoaderCircle className="mx-auto animate-spin text-teal-600" size={32} />
                     <p className="m-0 mt-3 text-sm font-semibold text-slate-800">Loading employees on leave...</p>

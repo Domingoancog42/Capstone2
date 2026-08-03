@@ -17,7 +17,7 @@ const SeniorCitizenCard = ({ data = {}, loading = false }) => {
 
   if (loading) {
     return (
-      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-6 shadow-md">
+      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-4 shadow-md">
         <div className="h-6 bg-gray-200 rounded w-1/2 mb-4"></div>
         <div className="h-24 bg-gray-100 rounded"></div>
       </div>
@@ -25,7 +25,7 @@ const SeniorCitizenCard = ({ data = {}, loading = false }) => {
   }
 
   return (
-    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-6 shadow-md transition-shadow duration-300 hover:shadow-lg">
+    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-4 shadow-md transition-shadow duration-300 hover:shadow-lg">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center space-x-3">
@@ -46,7 +46,7 @@ const SeniorCitizenCard = ({ data = {}, loading = false }) => {
             <Users className="w-5 h-5 text-orange-500" />
             <span className="text-xs font-medium text-gray-500">TOTAL</span>
           </div>
-          <p className="text-3xl font-bold text-orange-700">{seniorCount}</p>
+          <p className="text-xl font-bold text-orange-700">{seniorCount}</p>
           <p className="text-sm text-gray-600 mt-1">
             {seniorPercentage.toFixed(1)}% of workforce
           </p>
@@ -57,7 +57,7 @@ const SeniorCitizenCard = ({ data = {}, loading = false }) => {
             <Clock className="w-5 h-5 text-amber-500" />
             <span className="text-xs font-medium text-gray-500">UPCOMING</span>
           </div>
-          <p className="text-3xl font-bold text-amber-700">{upcomingRetirement}</p>
+          <p className="text-xl font-bold text-amber-700">{upcomingRetirement}</p>
           <p className="text-sm text-gray-600 mt-1">Within 1 year</p>
         </div>
       </div>

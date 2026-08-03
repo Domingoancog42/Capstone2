@@ -314,7 +314,7 @@ function GlassModal({ open, title, description, children, onClose, variant = "gl
   return (
     <AnimatePresence>
       {open ? (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4">
           <motion.button
             type="button"
             aria-label="Close modal overlay"
@@ -332,12 +332,12 @@ function GlassModal({ open, title, description, children, onClose, variant = "gl
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             className={`relative z-10 w-full max-w-2xl overflow-hidden shadow-2xl ${
               isPlain
-                ? "rounded-3xl border border-white/60 bg-white"
+                ? "rounded-2xl border border-white/60 bg-white"
                 : "rounded-[1.9rem] border border-white/55 bg-white/70 shadow-[0_30px_90px_rgba(15,23,42,0.25)] backdrop-blur-2xl"
             }`}
           >
             <div
-              className={`px-5 py-4 sm:px-6 ${
+              className={`px-5 py-4 sm:px-4 ${
                 isPlain
                   ? "border-b border-slate-200 bg-white"
                   : "bg-[linear-gradient(135deg,rgba(16,185,129,0.16)_0%,rgba(245,158,11,0.12)_50%,rgba(14,165,233,0.10)_100%)]"
@@ -364,7 +364,7 @@ function GlassModal({ open, title, description, children, onClose, variant = "gl
               </div>
             </div>
 
-            <div className={`overflow-y-auto px-5 py-5 sm:px-6 ${isPlain ? "max-h-[72vh]" : "max-h-[78vh] sm:py-6"}`}>
+            <div className={`overflow-y-auto px-5 py-5 sm:px-4 ${isPlain ? "max-h-[72vh]" : "max-h-[78vh] sm:py-4"}`}>
               {children}
             </div>
           </motion.div>
@@ -460,7 +460,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
       <form className="grid gap-5" onSubmit={handleSubmit}>
         <div className="grid gap-5 sm:grid-cols-2">
           <div className="sm:col-span-2">
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
+            <label className="mb-1.5 block text-sm font-semibold text-slate-700">
               {mode === "holiday" ? "Holiday Title" : "Announcement Title"}
             </label>
             <input
@@ -473,7 +473,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
+            <label className="mb-1.5 block text-sm font-semibold text-slate-700">
               {mode === "holiday" ? "Holiday Date" : "Start Date"}
             </label>
             <input
@@ -487,7 +487,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
 
           {mode === "announcement" ? (
             <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">End Date</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">End Date</label>
               <input
                 type="date"
                 value={form.endDate}
@@ -498,7 +498,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
             </div>
           ) : (
             <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">Holiday Type</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Holiday Type</label>
               <select
                 value={form.holidayType}
                 onChange={(event) => {
@@ -522,7 +522,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
 
           {mode === "announcement" ? (
             <div className="sm:col-span-2">
-              <label className="mb-2 block text-sm font-semibold text-slate-700">Priority</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Priority</label>
               <select
                 value={form.priority}
                 onChange={(event) => {
@@ -545,7 +545,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
           ) : null}
 
           <div className="sm:col-span-2">
-            <label className="mb-2 block text-sm font-semibold text-slate-700">Description</label>
+            <label className="mb-1.5 block text-sm font-semibold text-slate-700">Description</label>
             <textarea
               value={form.description}
               onChange={updateField("description")}
@@ -737,13 +737,13 @@ export default function CalendarManagementBoard() {
   };
 
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-4">
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_380px]">
-        <div className="grid gap-6">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_380px]">
+        <div className="grid gap-4">
           <Card className="relative overflow-visible border-slate-200 shadow-[0_24px_60px_rgba(15,23,42,0.10)]">
             <div className="rounded-t-2xl border-b border-slate-200 bg-white/92 backdrop-blur-xl">
-              <div className="relative px-5 py-5 sm:px-6">
+              <div className="relative px-5 py-5 sm:px-4">
                 <div className="flex flex-wrap justify-end gap-3">
                   <Button
                     icon={Plus}
@@ -886,7 +886,7 @@ export default function CalendarManagementBoard() {
 
         </div>
 
-        <div className="grid gap-6">
+        <div className="grid gap-4">
           <Card className="border-slate-200 shadow-[0_20px_50px_rgba(15,23,42,0.08)]">
             <CardHeader>
               <CardTitle>Event List</CardTitle>

@@ -14,6 +14,11 @@ export const MODULE_PERMISSION_MAP = {
   // Awards have their own resource: being able to edit employee records is not the same right as
   // issuing a certificate that carries the Regional Executive Director's name.
   rewardsRecognition: "rewardsRecognition",
+  // Each award is the same screen scoped to one category, so both follow the `rewardsRecognition`
+  // resource. Leaving them unmapped would fall through to "allowed", which in turn keeps the parent
+  // Rewards & Recognition item visible to roles that cannot see awards at all.
+  rewardsNomination: "rewardsRecognition",
+  rewardsLoyalty: "rewardsRecognition",
   attendance: "attendance",
   legacyAttendance: "attendance",
   overtime: "attendance",
@@ -55,6 +60,10 @@ export const MODULE_PERMISSION_MAP = {
  * user by the workspace itself, so they must not be gated behind the management permissions that
  * govern seeing *other* people's records — an HR Staff member with no payroll permission still has
  * their own payslip.
+ *
+ * `myNomination` follows the same rule for the same reason: casting one vote is not the same right
+ * as running the award. The `rewardsRecognition` resource still gates the HR screen that creates and
+ * closes cycles, which is the only place those actions exist.
  */
 const ALWAYS_ALLOWED_MODULES = new Set([
   "messages",
@@ -63,6 +72,7 @@ const ALWAYS_ALLOWED_MODULES = new Set([
   "myPayslip",
   "myIpcr",
   "myServiceRecord",
+  "myNomination",
 ]);
 
 function permissionListHasAction(permissionList, action) {

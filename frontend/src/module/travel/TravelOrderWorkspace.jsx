@@ -589,7 +589,7 @@ function TravelOrderPreviewModal({ request, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close travel order form preview"
@@ -604,7 +604,7 @@ function TravelOrderPreviewModal({ request, onClose }) {
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">Travel Order Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted travel order.</p>
@@ -627,7 +627,7 @@ function TravelOrderPreviewModal({ request, onClose }) {
           </div>
         </div>
 
-        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-6">
+        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <div ref={printRef} className="travel-order-form-paper" style={travelFormStyles.wrap}>
             <div style={travelFormStyles.header}>
               <img src="/mgb.png" alt="MGB Logo" style={travelFormStyles.logoImage} />
@@ -881,7 +881,7 @@ function TravelOrderFormModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close travel order form"
@@ -893,11 +893,11 @@ function TravelOrderFormModal({
 
       <form
         onSubmit={handleSubmit}
-        className={`relative z-10 w-full max-w-3xl overflow-hidden rounded-3xl border border-white/60 bg-white shadow-2xl transition-all duration-300 ${
+        className={`relative z-10 w-full max-w-3xl overflow-hidden rounded-2xl border border-white/60 bg-white shadow-2xl transition-all duration-300 ${
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">Request Travel Order</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Complete the form to submit an official travel request.</p>
@@ -920,7 +920,7 @@ function TravelOrderFormModal({
           </div>
         </div>
 
-        <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-6">
+        <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="sm:col-span-2">
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">Employee</span>
@@ -1025,7 +1025,7 @@ function TravelOrderFormModal({
           </div>
         </div>
 
-        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-4">
           <button
             type="button"
             onClick={onClose}
@@ -1334,20 +1334,20 @@ export default function TravelOrderWorkspace({
           ) : null}
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1.3fr_180px_180px_140px]">
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_160px_120px]">
           <label className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={viewAllPermission ? "Search employee, destination, purpose" : "Search destination, purpose, remarks"}
-              className="min-h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
           </label>
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="">All statuses</option>
             <option value="Pending">Pending</option>
@@ -1359,12 +1359,12 @@ export default function TravelOrderWorkspace({
             type="date"
             value={dateFilter}
             onChange={(event) => setDateFilter(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           />
           <select
             value={rowsPerPage}
             onChange={(event) => setRowsPerPage(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="5">5 rows</option>
             <option value="10">10 rows</option>

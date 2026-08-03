@@ -66,14 +66,14 @@ function BeatCheckIcon() {
 function SelectField({ id, label, value, onChange, children }) {
   return (
     <div className="min-w-0">
-      <label htmlFor={id} className="mb-2 block text-sm font-semibold text-slate-700">
+      <label htmlFor={id} className="mb-1.5 block text-sm font-semibold text-slate-700">
         {label}
       </label>
       <select
         id={id}
         value={value}
         onChange={onChange}
-        className="h-[42px] w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+        className="h-9 w-full appearance-none rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
       >
         {children}
       </select>
@@ -382,7 +382,7 @@ export default function NotificationCenter({ user, onNavigate }) {
       <Card className="overflow-hidden border-slate-200 shadow-sm">
         <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <CardTitle className="text-2xl">Notifications</CardTitle>
+            <CardTitle className="text-lg">Notifications</CardTitle>
             <CardDescription>
               Search, filter, and review alerts from across your workspace.
             </CardDescription>
@@ -429,9 +429,9 @@ export default function NotificationCenter({ user, onNavigate }) {
         </CardHeader>
 
         <CardContent className="space-y-5">
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_170px_170px_150px]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,260px)_160px_150px_120px]">
             <div className="min-w-0">
-              <label htmlFor="notificationSearch" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="notificationSearch" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Search Notifications
               </label>
               <div className="relative">
@@ -445,7 +445,7 @@ export default function NotificationCenter({ user, onNavigate }) {
                   value={search}
                   onChange={handleSearchChange}
                   placeholder="Search title, message, or type"
-                  className="h-[42px] w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
                 />
               </div>
             </div>
@@ -505,7 +505,7 @@ export default function NotificationCenter({ user, onNavigate }) {
           ) : null}
 
           {loading && notifications.length === 0 ? (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center">
+            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
               <Loader2 size={26} className="animate-spin text-[#D61E1E]" />
               <p className="m-0 text-base font-semibold text-slate-900">Loading notifications...</p>
               <p className="m-0 max-w-md text-sm leading-6 text-slate-500">
@@ -515,7 +515,7 @@ export default function NotificationCenter({ user, onNavigate }) {
           ) : null}
 
           {!loading && notifications.length === 0 ? (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center">
+            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
               <span className="grid h-14 w-14 place-items-center rounded-full bg-white text-slate-400 shadow-sm">
                 <Inbox size={24} />
               </span>

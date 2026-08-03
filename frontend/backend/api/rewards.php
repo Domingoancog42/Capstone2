@@ -2,727 +2,509 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
-require_once __DIR__ . '/audit_logs_helper.php';
 
 $sessionUser = require_session_user();
 
-/*
- * Rewards & Recognition.
- *
- * Nominations used to live in browser local storage, which meant an award existed only on the
- * machine that issued it. This endpoint makes them shared records with a real approval step, a
- * gapless certificate sequence, and an audit trail.
- */
-
 /**
- * Award categories.
+ * Rewards & Recognition — award cycles and the nominations filed against them.
  *
- * `singleWinnerPerPeriod` is the rule that matters: there is one Employee of the Month per month
- * across the whole bureau, whereas any number of people can receive a Loyalty Award in the same
- * year. MySQL cannot express "unique among approved rows only", so the constraint is enforced in
- * the approval transaction below — driven by this flag rather than a hardcoded category check, so
- * adding a category does not mean rediscovering the rule.
- *
- * The certificate designs are keyed off these same slugs in the frontend, so a new category needs a
- * design there as well as an entry here.
+ * Voting is open to every signed-in account; creating, editing, closing, and deleting a cycle is
+ * not. That split is the whole point of the module, so it is enforced here rather than left to the
+ * UI that hides the buttons.
  */
-const REWARD_CATEGORIES = [
-    'best_employee_month' => [
-        'label' => 'Best Employee of the Month',
-        'requiresPeriod' => true,
-        'singleWinnerPerPeriod' => true,
-        'usesYearsOfService' => false,
-    ],
-    'loyalty' => [
-        'label' => 'Loyalty Award',
-        'requiresPeriod' => false,
-        'singleWinnerPerPeriod' => false,
-        'usesYearsOfService' => true,
-    ],
-];
 
 function rewards_text(mixed $value): string
 {
     return trim((string)($value ?? ''));
 }
 
-function rewards_role_key(array $user): string
+function rewards_can_manage(array $user): bool
 {
-    return hris_user_role_key($user);
+    return in_array(hris_user_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
 }
 
-/** Anyone who can see the module may nominate. */
-function rewards_can_nominate(array $user): bool
+function rewards_request_body(): array
 {
-    return in_array(
-        rewards_role_key($user),
-        ['admin', 'hrhead', 'hrstaff', 'chief', 'regionaldirector'],
-        true
+    if (!empty($_POST)) {
+        return $_POST;
+    }
+
+    return read_json_body();
+}
+
+function rewards_date_or_null(mixed $value): ?string
+{
+    $text = rewards_text($value);
+    if ($text === '') {
+        return null;
+    }
+
+    $date = DateTimeImmutable::createFromFormat('Y-m-d', $text);
+
+    return $date && $date->format('Y-m-d') === $text ? $text : null;
+}
+
+function ensure_rewards_tables(PDO $pdo): void
+{
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS reward_cycles (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            category VARCHAR(120) NOT NULL,
+            description TEXT NULL,
+            opens_on DATE NULL,
+            closes_on DATE NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'ongoing',
+            created_by_user_id INT UNSIGNED NULL,
+            created_by_name VARCHAR(180) NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_reward_cycles_status (status),
+            CONSTRAINT fk_reward_cycles_user
+                FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+                ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    /*
+     * The unique key is what makes "one vote per person" true. Leaving it to the UI would let a
+     * double-submit or a second tab stuff the ballot, and the tally would have no way to tell.
+     *
+     * Named `reward_cycle_votes`, not `reward_nominations`: a `reward_nominations` table already
+     * exists from the retired certificate module and holds an unrelated shape. `CREATE TABLE IF NOT
+     * EXISTS` would have quietly left it alone and every query here would have run against it.
+     */
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS reward_cycle_votes (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            cycle_id INT UNSIGNED NOT NULL,
+            voter_user_id INT UNSIGNED NOT NULL,
+            voter_name VARCHAR(180) NULL,
+            nominee_employee_id INT UNSIGNED NOT NULL,
+            nominee_name VARCHAR(180) NOT NULL,
+            reason TEXT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uniq_reward_cycle_vote_voter (cycle_id, voter_user_id),
+            KEY idx_reward_cycle_votes_nominee (nominee_employee_id),
+            CONSTRAINT fk_reward_cycle_votes_cycle
+                FOREIGN KEY (cycle_id) REFERENCES reward_cycles(id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_reward_cycle_votes_voter
+                FOREIGN KEY (voter_user_id) REFERENCES users(id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_reward_cycle_votes_employee
+                FOREIGN KEY (nominee_employee_id) REFERENCES employees(id)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
     );
 }
 
-/**
- * Issuing a certificate is a narrower right than recording a nomination — the document carries the
- * Regional Executive Director's name, so it is limited to the offices that answer for it.
- */
-function rewards_can_decide(array $user): bool
+function rewards_nominations_by_cycle(PDO $pdo): array
 {
-    return in_array(rewards_role_key($user), ['admin', 'hrhead', 'regionaldirector'], true);
-}
+    $statement = $pdo->query(
+        'SELECT
+            n.id,
+            n.cycle_id AS cycleId,
+            n.voter_user_id AS voterUserId,
+            n.voter_name AS voterName,
+            n.nominee_employee_id AS nomineeEmployeeId,
+            n.nominee_name AS nomineeName,
+            n.reason,
+            n.created_at AS createdAt
+         FROM reward_cycle_votes n
+         ORDER BY n.created_at ASC, n.id ASC'
+    );
 
-function rewards_require_table(PDO $pdo): void
-{
-    if (!hris_database_table_exists($pdo, 'reward_nominations')) {
-        json_response([
-            'success' => false,
-            'message' => 'The rewards tables have not been created in this installation. Run backend/sql/reward_nominations.sql.',
-        ], 503);
+    $grouped = [];
+    foreach ($statement->fetchAll() as $row) {
+        $grouped[(int)$row['cycleId']][] = [
+            'id' => (string)$row['id'],
+            // Strings on both sides so the client can compare against `viewerKey` without coercing.
+            'voterKey' => (string)$row['voterUserId'],
+            'voterName' => $row['voterName'] ?? '',
+            'nomineeKey' => (string)$row['nomineeEmployeeId'],
+            'nomineeName' => $row['nomineeName'] ?? '',
+            'reason' => $row['reason'] ?? '',
+            'createdAt' => $row['createdAt'] ?? null,
+        ];
     }
+
+    return $grouped;
 }
 
-function rewards_actor_name(array $user): string
-{
-    return hris_trimmed_text($user['full_name'] ?? '') ?: hris_trimmed_text($user['username'] ?? '');
-}
-
-function rewards_period_or_null(mixed $value): ?string
-{
-    $value = rewards_text($value);
-
-    return preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $value) === 1 ? $value : null;
-}
-
-function rewards_format_row(array $row): array
+function rewards_format_cycle(array $row, array $nominations): array
 {
     return [
-        'id' => (int)$row['id'],
-        'employeeRecordId' => (int)$row['employee_record_id'],
-        'employeeId' => (string)$row['employee_record_id'],
-        'employeeCode' => rewards_text($row['employee_code']),
-        'employeeName' => rewards_text($row['employee_name']),
-        'division' => rewards_text($row['division_name']),
-        'position' => rewards_text($row['designation_title']),
-        'employmentType' => rewards_text($row['employment_type']),
-        'category' => rewards_text($row['category']),
-        'period' => rewards_text($row['award_period']),
-        'yearsOfService' => $row['years_of_service'] === null ? '' : (string)$row['years_of_service'],
-        'reason' => rewards_text($row['reason']),
-        'nominatedBy' => rewards_text($row['nominated_by_name']),
-        'nominatedByEmployeeRecordId' => $row['nominated_by_employee_id'] === null
-            ? null
-            : (int)$row['nominated_by_employee_id'],
-        // The workspace renders these capitalised; keep the wire format matching what it expects.
-        'status' => ucfirst(rewards_text($row['status']) ?: 'pending'),
-        'decisionNote' => rewards_text($row['decision_note']),
-        'createdAt' => $row['created_at'],
-        'reviewedAt' => $row['reviewed_at'] ?? '',
-        'reviewedBy' => rewards_text($row['reviewed_by_name']),
-        'certificate' => $row['certificate_number']
-            ? [
-                'number' => rewards_text($row['certificate_number']),
-                'issuedAt' => $row['certificate_issued_at'],
-                'issuedBy' => rewards_text($row['reviewed_by_name']),
-                'signatoryName' => rewards_text($row['signatory_name']),
-                'signatoryTitle' => rewards_text($row['signatory_title']),
-            ]
-            : null,
+        'id' => (string)$row['id'],
+        'category' => $row['category'] ?? '',
+        'description' => $row['description'] ?? '',
+        'opensOn' => $row['opensOn'] ?? '',
+        'closesOn' => $row['closesOn'] ?? '',
+        'status' => ($row['status'] ?? 'ongoing') === 'closed' ? 'closed' : 'ongoing',
+        'createdByName' => $row['createdByName'] ?? '',
+        'createdAt' => $row['createdAt'] ?? null,
+        'nominations' => $nominations,
     ];
 }
 
-function rewards_list(PDO $pdo): array
+function rewards_cycle_select(): string
 {
-    $rows = $pdo->query(
-        'SELECT * FROM reward_nominations WHERE is_archived = 0 ORDER BY created_at DESC, id DESC'
-    )->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-    return array_map('rewards_format_row', $rows);
+    return 'SELECT
+            c.id,
+            c.category,
+            c.description,
+            c.opens_on AS opensOn,
+            c.closes_on AS closesOn,
+            c.status,
+            c.created_by_name AS createdByName,
+            c.created_at AS createdAt
+        FROM reward_cycles c';
 }
 
-function rewards_fetch_employee(PDO $pdo, int $employeeRecordId): ?array
+function rewards_list_cycles(PDO $pdo, array $user): void
 {
-    $statement = $pdo->prepare(
-        'SELECT
-            e.id,
-            e.employee_id AS employeeCode,
-            TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS fullName,
-            e.date_hired AS dateHired,
-            e.employment_status AS employmentStatus,
-            e.status,
-            d.name AS divisionName,
-            des.name AS designationTitle
-         FROM employees e
-         LEFT JOIN divisions d ON d.id = e.division_id
-         LEFT JOIN designations des ON des.id = e.designation_id
-         WHERE e.id = :employee_record_id
-           AND e.is_archived = 0
-         LIMIT 1'
+    $statement = $pdo->query(rewards_cycle_select() . ' ORDER BY c.created_at DESC, c.id DESC');
+    $nominations = rewards_nominations_by_cycle($pdo);
+
+    $cycles = array_map(
+        static fn (array $row): array => rewards_format_cycle($row, $nominations[(int)$row['id']] ?? []),
+        $statement->fetchAll()
     );
-    $statement->execute([':employee_record_id' => $employeeRecordId]);
-    $row = $statement->fetch(PDO::FETCH_ASSOC);
 
-    return $row ?: null;
+    json_response([
+        'success' => true,
+        'cycles' => $cycles,
+        // The client compares this against each nomination's `voterKey` to find its own vote,
+        // rather than guessing which id field on the session user is the right one.
+        'viewerKey' => (string)($user['id'] ?? ''),
+        'canManage' => rewards_can_manage($user),
+    ]);
 }
 
-/** Completed years since the hire date, used when a loyalty nomination does not state them. */
-function rewards_years_of_service(?string $dateHired): ?int
+function rewards_require_cycle(PDO $pdo, int $cycleId): array
 {
-    $dateHired = rewards_text($dateHired);
-
-    if ($dateHired === '') {
-        return null;
+    if ($cycleId <= 0) {
+        json_response(['success' => false, 'message' => 'Award cycle is required.'], 422);
     }
 
-    try {
-        $hired = new DateTimeImmutable($dateHired);
-    } catch (Throwable) {
-        return null;
+    $statement = $pdo->prepare(rewards_cycle_select() . ' WHERE c.id = :id LIMIT 1');
+    $statement->execute([':id' => $cycleId]);
+    $row = $statement->fetch();
+
+    if (!$row) {
+        json_response(['success' => false, 'message' => 'Award cycle not found.'], 404);
     }
 
-    $years = (int)$hired->diff(new DateTimeImmutable('today'))->y;
+    return $row;
+}
 
-    return $years > 0 ? $years : null;
+function rewards_require_manager(array $user): void
+{
+    if (!rewards_can_manage($user)) {
+        json_response(['success' => false, 'message' => 'You are not allowed to manage award cycles.'], 403);
+    }
+}
+
+function rewards_create_cycle(PDO $pdo, array $user): void
+{
+    rewards_require_manager($user);
+
+    $body = rewards_request_body();
+    $category = rewards_text($body['category'] ?? '');
+    $description = rewards_text($body['description'] ?? '');
+    $opensOn = rewards_date_or_null($body['opensOn'] ?? $body['opens_on'] ?? null);
+    $closesOn = rewards_date_or_null($body['closesOn'] ?? $body['closes_on'] ?? null);
+
+    if ($category === '') {
+        json_response(['success' => false, 'message' => 'Award category is required.'], 422);
+    }
+
+    if ($opensOn === null || $closesOn === null) {
+        json_response(['success' => false, 'message' => 'Set both the opening and closing dates before saving.'], 422);
+    }
+
+    if ($closesOn < $opensOn) {
+        json_response(['success' => false, 'message' => 'The closing date cannot come before the opening date.'], 422);
+    }
+
+    $statement = $pdo->prepare(
+        'INSERT INTO reward_cycles
+            (category, description, opens_on, closes_on, status, created_by_user_id, created_by_name)
+         VALUES
+            (:category, :description, :opens_on, :closes_on, :status, :created_by_user_id, :created_by_name)'
+    );
+    $statement->execute([
+        ':category' => $category,
+        ':description' => $description !== '' ? $description : null,
+        ':opens_on' => $opensOn,
+        ':closes_on' => $closesOn,
+        ':status' => 'ongoing',
+        ':created_by_user_id' => (int)($user['id'] ?? 0) ?: null,
+        ':created_by_name' => hris_full_name_from_row($user) ?: rewards_text($user['username'] ?? ''),
+    ]);
+
+    write_auth_audit($pdo, $user, 'rewards.cycle_created', 'An award cycle was created.', [
+        'cycleId' => (int)$pdo->lastInsertId(),
+        'category' => $category,
+    ]);
+
+    json_response(['success' => true, 'message' => 'Award cycle created.'], 201);
+}
+
+function rewards_update_cycle(PDO $pdo, array $user): void
+{
+    rewards_require_manager($user);
+
+    $body = rewards_request_body();
+    $cycleId = (int)($body['cycleId'] ?? $body['cycle_id'] ?? 0);
+    rewards_require_cycle($pdo, $cycleId);
+
+    $category = rewards_text($body['category'] ?? '');
+    $description = rewards_text($body['description'] ?? '');
+    $opensOn = rewards_date_or_null($body['opensOn'] ?? $body['opens_on'] ?? null);
+    $closesOn = rewards_date_or_null($body['closesOn'] ?? $body['closes_on'] ?? null);
+
+    if ($category === '') {
+        json_response(['success' => false, 'message' => 'Award category is required.'], 422);
+    }
+
+    if ($opensOn === null || $closesOn === null) {
+        json_response(['success' => false, 'message' => 'Set both the opening and closing dates before saving.'], 422);
+    }
+
+    if ($closesOn < $opensOn) {
+        json_response(['success' => false, 'message' => 'The closing date cannot come before the opening date.'], 422);
+    }
+
+    $statement = $pdo->prepare(
+        'UPDATE reward_cycles
+         SET category = :category,
+             description = :description,
+             opens_on = :opens_on,
+             closes_on = :closes_on
+         WHERE id = :id'
+    );
+    $statement->execute([
+        ':category' => $category,
+        ':description' => $description !== '' ? $description : null,
+        ':opens_on' => $opensOn,
+        ':closes_on' => $closesOn,
+        ':id' => $cycleId,
+    ]);
+
+    json_response(['success' => true, 'message' => 'Award cycle updated.']);
 }
 
 /**
- * Next certificate number for the year, as `RR-2026-000042`.
+ * The nominees sharing the top vote count, but only when more than one does.
  *
- * Must be called inside a transaction: the upsert takes a row lock on the year, so two approvals
- * racing cannot receive the same number.
+ * A cycle closed on a tie has no Best Employee to name — the podium would have to pick one of them
+ * arbitrarily and the result would be a lie. So a tie blocks the close until a vote breaks it.
  */
-function rewards_next_certificate_number(PDO $pdo, int $year): string
+function rewards_leading_tie(PDO $pdo, int $cycleId): array
 {
-    $upsert = $pdo->prepare(
-        'INSERT INTO reward_certificate_sequence (award_year, last_number)
-         VALUES (:award_year, 1)
-         ON DUPLICATE KEY UPDATE last_number = last_number + 1'
+    $statement = $pdo->prepare(
+        'SELECT nominee_name AS name, COUNT(*) AS votes
+         FROM reward_cycle_votes
+         WHERE cycle_id = :cycle_id
+         GROUP BY nominee_employee_id, nominee_name
+         ORDER BY votes DESC'
     );
-    $upsert->execute([':award_year' => $year]);
+    $statement->execute([':cycle_id' => $cycleId]);
+    $rows = $statement->fetchAll();
 
-    $read = $pdo->prepare('SELECT last_number FROM reward_certificate_sequence WHERE award_year = :award_year');
-    $read->execute([':award_year' => $year]);
-    $next = (int)$read->fetchColumn();
+    if (count($rows) < 2) {
+        return [];
+    }
 
-    return sprintf('RR-%d-%06d', $year, $next);
+    $topVotes = (int)$rows[0]['votes'];
+    $tied = array_values(array_filter($rows, static fn (array $row): bool => (int)$row['votes'] === $topVotes));
+
+    return count($tied) > 1 ? $tied : [];
 }
 
-function rewards_write_audit(PDO $pdo, array $sessionUser, string $action, int $nominationId, string $summary, array $details = []): void
+function rewards_set_status(PDO $pdo, array $user): void
 {
-    // `hris_ensure_audit_logs_table()` lives in app_settings.php, which is an endpoint and cannot be
-    // included here without running it, so this checks for the table instead of creating it.
-    if (!hris_database_table_exists($pdo, 'audit_logs')) {
-        return;
-    }
+    rewards_require_manager($user);
 
-    try {
-        $context = hris_audit_request_context();
-        $userId = isset($sessionUser['id']) ? (int)$sessionUser['id'] : null;
+    $body = rewards_request_body();
+    $cycleId = (int)($body['cycleId'] ?? $body['cycle_id'] ?? 0);
+    rewards_require_cycle($pdo, $cycleId);
 
-        $statement = $pdo->prepare(
-            'INSERT INTO audit_logs
-                (user_id, action, ip_address, location, device, browser, os, actor_id, actor_name,
-                 actor_role, category, entity_type, entity_id, summary, details_json, user_agent)
-             VALUES
-                (:user_id, :action, :ip_address, :location, :device, :browser, :os, :actor_id, :actor_name,
-                 :actor_role, :category, :entity_type, :entity_id, :summary, :details_json, :user_agent)'
-        );
-        $statement->execute([
-            ':user_id' => $userId,
-            ':action' => $action,
-            ':ip_address' => $context['ipAddress'],
-            ':location' => $context['location'],
-            ':device' => $context['device'],
-            ':browser' => $context['browser'],
-            ':os' => $context['os'],
-            ':actor_id' => $userId,
-            ':actor_name' => rewards_actor_name($sessionUser),
-            ':actor_role' => $sessionUser['role'] ?? null,
-            ':category' => 'rewards',
-            ':entity_type' => 'reward_nomination',
-            ':entity_id' => $nominationId,
-            ':summary' => $summary,
-            ':details_json' => hris_audit_details_json($details, $context),
-            ':user_agent' => $context['userAgent'],
-        ]);
-    } catch (Throwable) {
-        // An award must not fail to record only because optional audit logging is unavailable.
-    }
-}
+    $status = rewards_text($body['status'] ?? '') === 'closed' ? 'closed' : 'ongoing';
 
-$method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
-$action = strtolower(rewards_text($_GET['action'] ?? ''));
-$body = [];
+    if ($status === 'closed') {
+        $tied = rewards_leading_tie($pdo, $cycleId);
 
-if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
-    $raw = file_get_contents('php://input') ?: '';
-    $decoded = json_decode($raw, true);
-    $body = is_array($decoded) ? $decoded : [];
-}
+        if ($tied !== []) {
+            $names = array_column($tied, 'name');
+            $votes = (int)$tied[0]['votes'];
+            $last = array_pop($names);
+            $joined = $names === [] ? $last : implode(', ', $names) . ' and ' . $last;
 
-rewards_require_table($pdo);
-
-if (!rewards_can_nominate($sessionUser)) {
-    json_response([
-        'success' => false,
-        'message' => 'You do not have access to rewards and recognition.',
-    ], 403);
-}
-
-$sessionEmployeeRecordId = hris_session_employee_record_id($pdo, $sessionUser);
-
-if ($method === 'GET') {
-    json_response([
-        'success' => true,
-        'nominations' => rewards_list($pdo),
-        'canDecide' => rewards_can_decide($sessionUser),
-        'categories' => array_map(
-            static fn (array $category, string $key): array => $category + ['key' => $key],
-            REWARD_CATEGORIES,
-            array_keys(REWARD_CATEGORIES)
-        ),
-    ]);
-}
-
-if ($method === 'POST' && $action === 'nominate') {
-    $employeeRecordId = (int)($body['employeeRecordId'] ?? 0);
-    $category = rewards_text($body['category'] ?? '');
-    $reason = rewards_text($body['reason'] ?? '');
-    $errors = [];
-
-    if (!isset(REWARD_CATEGORIES[$category])) {
-        $errors['category'] = 'Select a valid award category.';
-    }
-
-    if ($employeeRecordId <= 0) {
-        $errors['employeeId'] = 'Select the employee being nominated.';
-    }
-
-    if ($reason === '') {
-        $errors['reason'] = 'A justification is required.';
-    }
-
-    $definition = REWARD_CATEGORIES[$category] ?? null;
-    $period = rewards_period_or_null($body['period'] ?? null);
-
-    if ($definition && $definition['requiresPeriod'] && $period === null) {
-        $errors['period'] = 'Select the award month.';
-    }
-
-    if ($errors) {
-        json_response([
-            'success' => false,
-            'message' => 'Please correct the highlighted fields.',
-            'errors' => $errors,
-        ], 422);
-    }
-
-    // An award loses its meaning if you can put yourself up for it.
-    if ($sessionEmployeeRecordId !== null && $sessionEmployeeRecordId === $employeeRecordId) {
-        json_response([
-            'success' => false,
-            'message' => 'You cannot nominate yourself.',
-        ], 422);
-    }
-
-    $employee = rewards_fetch_employee($pdo, $employeeRecordId);
-
-    if ($employee === null) {
-        json_response([
-            'success' => false,
-            'message' => 'Employee record not found.',
-        ], 404);
-    }
-
-    // One open nomination per person per category per period — re-nominating after a rejection is
-    // still allowed, which a UNIQUE index could not have expressed.
-    $duplicate = $pdo->prepare(
-        'SELECT COUNT(*)
-         FROM reward_nominations
-         WHERE employee_record_id = :employee_record_id
-           AND category = :category
-           AND is_archived = 0
-           AND status IN ("pending", "approved")
-           AND (award_period <=> :award_period)'
-    );
-    $duplicate->execute([
-        ':employee_record_id' => $employeeRecordId,
-        ':category' => $category,
-        ':award_period' => $period,
-    ]);
-
-    if ((int)$duplicate->fetchColumn() > 0) {
-        json_response([
-            'success' => false,
-            'message' => 'This employee already has a pending or approved nomination for that award.',
-        ], 409);
-    }
-
-    $yearsOfService = null;
-
-    if ($definition['usesYearsOfService']) {
-        $stated = (int)($body['yearsOfService'] ?? 0);
-        $yearsOfService = $stated > 0 ? $stated : rewards_years_of_service($employee['dateHired'] ?? null);
-    }
-
-    $insert = $pdo->prepare(
-        'INSERT INTO reward_nominations
-            (employee_record_id, category, award_period, years_of_service, reason, employee_name,
-             employee_code, division_name, designation_title, employment_type,
-             nominated_by_employee_id, nominated_by_name)
-         VALUES
-            (:employee_record_id, :category, :award_period, :years_of_service, :reason, :employee_name,
-             :employee_code, :division_name, :designation_title, :employment_type,
-             :nominated_by_employee_id, :nominated_by_name)'
-    );
-    $insert->execute([
-        ':employee_record_id' => $employeeRecordId,
-        ':category' => $category,
-        ':award_period' => $period,
-        ':years_of_service' => $yearsOfService,
-        ':reason' => $reason,
-        // Snapshotted server-side rather than trusted from the client: the certificate must show the
-        // post held at the time of the award.
-        ':employee_name' => rewards_text($employee['fullName']),
-        ':employee_code' => rewards_text($employee['employeeCode']),
-        ':division_name' => rewards_text($employee['divisionName']),
-        ':designation_title' => rewards_text($employee['designationTitle']),
-        ':employment_type' => rewards_text($employee['employmentStatus']) ?: rewards_text($employee['status']),
-        ':nominated_by_employee_id' => $sessionEmployeeRecordId,
-        ':nominated_by_name' => rewards_text($body['nominatedBy'] ?? '') ?: rewards_actor_name($sessionUser),
-    ]);
-
-    $nominationId = (int)$pdo->lastInsertId();
-
-    rewards_write_audit(
-        $pdo,
-        $sessionUser,
-        'reward_nominated',
-        $nominationId,
-        sprintf('%s nominated for %s.', rewards_text($employee['fullName']), $definition['label'])
-    );
-
-    try {
-        hris_notify_roles(
-            $pdo,
-            ['admin', 'hrhead'],
-            'New award nomination',
-            sprintf('%s was nominated for the %s.', rewards_text($employee['fullName']), $definition['label']),
-            'reward_nomination',
-            (string)$nominationId
-        );
-    } catch (Throwable $notificationError) {
-        error_log('Reward nomination notification error: ' . $notificationError->getMessage());
-    }
-
-    json_response([
-        'success' => true,
-        'message' => 'Nomination submitted.',
-        'nominations' => rewards_list($pdo),
-    ]);
-}
-
-if (in_array($method, ['PUT', 'PATCH'], true) && $action === 'decide') {
-    if (!rewards_can_decide($sessionUser)) {
-        json_response([
-            'success' => false,
-            'message' => 'You do not have permission to approve or reject nominations.',
-        ], 403);
-    }
-
-    $nominationId = (int)($body['id'] ?? 0);
-    $decision = strtolower(rewards_text($body['decision'] ?? ''));
-    $note = rewards_text($body['note'] ?? '');
-
-    if ($nominationId <= 0 || !in_array($decision, ['approved', 'rejected'], true)) {
-        json_response([
-            'success' => false,
-            'message' => 'A nomination and a decision are required.',
-        ], 422);
-    }
-
-    // Declared out here because the audit and notification steps below run after the transaction
-    // block and would otherwise depend on assignments made inside it.
-    $nomination = [];
-    $definition = null;
-    $certificateNumber = null;
-
-    try {
-        $pdo->beginTransaction();
-
-        $lookup = $pdo->prepare('SELECT * FROM reward_nominations WHERE id = :id AND is_archived = 0 FOR UPDATE');
-        $lookup->execute([':id' => $nominationId]);
-        $nomination = $lookup->fetch(PDO::FETCH_ASSOC);
-
-        if (!$nomination) {
-            $pdo->rollBack();
             json_response([
                 'success' => false,
-                'message' => 'Nomination not found.',
-            ], 404);
-        }
-
-        if ($nomination['status'] !== 'pending') {
-            $pdo->rollBack();
-            json_response([
-                'success' => false,
-                'message' => 'This nomination has already been decided.',
+                'message' => sprintf(
+                    'Voting is tied — %s each have %d %s. One nominee must be ahead before voting can close.',
+                    $joined,
+                    $votes,
+                    $votes === 1 ? 'vote' : 'votes'
+                ),
+                'tiedNominees' => array_column($tied, 'name'),
             ], 409);
         }
-
-        // Deciding your own nomination defeats the point of having a review step.
-        if (
-            $sessionEmployeeRecordId !== null
-            && (int)($nomination['nominated_by_employee_id'] ?? 0) === $sessionEmployeeRecordId
-        ) {
-            $pdo->rollBack();
-            json_response([
-                'success' => false,
-                'message' => 'You cannot decide a nomination you submitted yourself.',
-            ], 403);
-        }
-
-        $category = rewards_text($nomination['category']);
-        $definition = REWARD_CATEGORIES[$category] ?? null;
-        $issuedAt = null;
-        $signatoryName = null;
-
-        if ($decision === 'approved') {
-            // There is one Employee of the Month per month. The FOR UPDATE above plus this check
-            // inside the transaction is what a UNIQUE index cannot express.
-            if ($definition && $definition['singleWinnerPerPeriod']) {
-                $existing = $pdo->prepare(
-                    'SELECT employee_name
-                     FROM reward_nominations
-                     WHERE category = :category
-                       AND (award_period <=> :award_period)
-                       AND status = "approved"
-                       AND is_archived = 0
-                     LIMIT 1
-                     FOR UPDATE'
-                );
-                $existing->execute([
-                    ':category' => $category,
-                    ':award_period' => $nomination['award_period'],
-                ]);
-                $winner = $existing->fetchColumn();
-
-                if ($winner !== false) {
-                    $pdo->rollBack();
-                    json_response([
-                        'success' => false,
-                        'message' => sprintf(
-                            '%s has already been awarded the %s for that period.',
-                            (string)$winner,
-                            $definition['label']
-                        ),
-                    ], 409);
-                }
-            }
-
-            $issuedAt = (new DateTimeImmutable('now'))->format('Y-m-d H:i:s');
-            $certificateNumber = rewards_next_certificate_number($pdo, (int)date('Y'));
-            $signatoryName = rewards_text($body['signatoryName'] ?? '');
-        }
-
-        $update = $pdo->prepare(
-            'UPDATE reward_nominations
-             SET status = :status,
-                 reviewed_by_user_id = :reviewed_by_user_id,
-                 reviewed_by_name = :reviewed_by_name,
-                 reviewed_at = NOW(),
-                 decision_note = :decision_note,
-                 certificate_number = :certificate_number,
-                 certificate_issued_at = :certificate_issued_at,
-                 signatory_name = :signatory_name
-             WHERE id = :id'
-        );
-        $update->execute([
-            ':status' => $decision,
-            ':reviewed_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
-            ':reviewed_by_name' => rewards_actor_name($sessionUser),
-            ':decision_note' => $note ?: null,
-            ':certificate_number' => $certificateNumber,
-            ':certificate_issued_at' => $issuedAt,
-            ':signatory_name' => $signatoryName ?: null,
-            ':id' => $nominationId,
-        ]);
-
-        $pdo->commit();
-    } catch (Throwable $error) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-
-        error_log('Reward decision failed: ' . $error->getMessage());
-        json_response([
-            'success' => false,
-            'message' => 'Unable to record the decision.',
-        ], 500);
     }
 
-    rewards_write_audit(
-        $pdo,
-        $sessionUser,
-        $decision === 'approved' ? 'reward_approved' : 'reward_rejected',
-        $nominationId,
-        $decision === 'approved'
-            ? sprintf('Certificate %s issued to %s.', (string)$certificateNumber, rewards_text($nomination['employee_name']))
-            : sprintf('Nomination for %s rejected.', rewards_text($nomination['employee_name'])),
-        ['certificateNumber' => $certificateNumber, 'note' => $note]
+    $statement = $pdo->prepare('UPDATE reward_cycles SET status = :status WHERE id = :id');
+    $statement->execute([':status' => $status, ':id' => $cycleId]);
+
+    write_auth_audit($pdo, $user, 'rewards.cycle_status_changed', 'An award cycle status was changed.', [
+        'cycleId' => $cycleId,
+        'status' => $status,
+    ]);
+
+    json_response([
+        'success' => true,
+        'message' => $status === 'closed' ? 'Voting is now closed.' : 'Voting has been reopened.',
+    ]);
+}
+
+function rewards_delete_cycle(PDO $pdo, array $user): void
+{
+    rewards_require_manager($user);
+
+    $body = rewards_request_body();
+    $cycleId = (int)($body['cycleId'] ?? $body['cycle_id'] ?? $_GET['cycle_id'] ?? 0);
+    $cycle = rewards_require_cycle($pdo, $cycleId);
+
+    // Nominations go with it through ON DELETE CASCADE.
+    $statement = $pdo->prepare('DELETE FROM reward_cycles WHERE id = :id');
+    $statement->execute([':id' => $cycleId]);
+
+    write_auth_audit($pdo, $user, 'rewards.cycle_deleted', 'An award cycle was deleted.', [
+        'cycleId' => $cycleId,
+        'category' => $cycle['category'] ?? null,
+    ]);
+
+    json_response(['success' => true, 'message' => 'Award cycle deleted.']);
+}
+
+function rewards_cast_vote(PDO $pdo, array $user): void
+{
+    $body = rewards_request_body();
+    $cycleId = (int)($body['cycleId'] ?? $body['cycle_id'] ?? 0);
+    $cycle = rewards_require_cycle($pdo, $cycleId);
+
+    if (($cycle['status'] ?? 'ongoing') === 'closed') {
+        json_response(['success' => false, 'message' => 'Voting is closed for this cycle.'], 409);
+    }
+
+    $voterUserId = (int)($user['id'] ?? 0);
+    if ($voterUserId <= 0) {
+        json_response(['success' => false, 'message' => 'Your account could not be identified.'], 403);
+    }
+
+    $nomineeId = (int)($body['nomineeKey'] ?? $body['nominee_employee_id'] ?? 0);
+    if ($nomineeId <= 0) {
+        json_response(['success' => false, 'message' => 'Pick who you are nominating.'], 422);
+    }
+
+    $employee = $pdo->prepare('SELECT id, first_name, middle_name, last_name FROM employees WHERE id = :id LIMIT 1');
+    $employee->execute([':id' => $nomineeId]);
+    $nominee = $employee->fetch();
+
+    if (!$nominee) {
+        json_response(['success' => false, 'message' => 'That employee is no longer in the directory.'], 422);
+    }
+
+    $reason = rewards_text($body['reason'] ?? '');
+
+    /*
+     * Upsert against the unique (cycle_id, voter_user_id) key: recasting a vote replaces it rather
+     * than stacking a second one, and two racing submissions collapse to one row instead of erroring.
+     */
+    $statement = $pdo->prepare(
+        'INSERT INTO reward_cycle_votes
+            (cycle_id, voter_user_id, voter_name, nominee_employee_id, nominee_name, reason)
+         VALUES
+            (:cycle_id, :voter_user_id, :voter_name, :nominee_employee_id, :nominee_name, :reason)
+         ON DUPLICATE KEY UPDATE
+            nominee_employee_id = VALUES(nominee_employee_id),
+            nominee_name = VALUES(nominee_name),
+            reason = VALUES(reason)'
     );
-
-    try {
-        if ($decision === 'approved') {
-            hris_notify_employee(
-                $pdo,
-                (int)$nomination['employee_record_id'],
-                'Congratulations!',
-                sprintf(
-                    'You have been awarded the %s. Certificate %s is ready at the HR office.',
-                    $definition['label'] ?? 'award',
-                    (string)$certificateNumber
-                ),
-                'reward_approved',
-                (string)$nominationId
-            );
-        }
-    } catch (Throwable $notificationError) {
-        error_log('Reward decision notification error: ' . $notificationError->getMessage());
-    }
-
-    json_response([
-        'success' => true,
-        'message' => $decision === 'approved' ? 'Certificate issued.' : 'Nomination rejected.',
-        'nominations' => rewards_list($pdo),
+    $statement->execute([
+        ':cycle_id' => $cycleId,
+        ':voter_user_id' => $voterUserId,
+        ':voter_name' => hris_full_name_from_row($user) ?: rewards_text($user['username'] ?? ''),
+        ':nominee_employee_id' => $nomineeId,
+        ':nominee_name' => hris_full_name_from_row($nominee),
+        ':reason' => $reason !== '' ? $reason : null,
     ]);
+
+    json_response(['success' => true, 'message' => 'Your vote has been recorded.']);
 }
 
-if ($method === 'DELETE' && $action === 'archive') {
-    if (!rewards_can_decide($sessionUser)) {
-        json_response([
-            'success' => false,
-            'message' => 'You do not have permission to remove nominations.',
-        ], 403);
+function rewards_withdraw_vote(PDO $pdo, array $user): void
+{
+    $body = rewards_request_body();
+    $cycleId = (int)($body['cycleId'] ?? $body['cycle_id'] ?? $_GET['cycle_id'] ?? 0);
+    $cycle = rewards_require_cycle($pdo, $cycleId);
+
+    if (($cycle['status'] ?? 'ongoing') === 'closed') {
+        json_response(['success' => false, 'message' => 'Voting is closed for this cycle.'], 409);
     }
 
-    $nominationId = (int)($body['id'] ?? $_GET['id'] ?? 0);
-
-    if ($nominationId <= 0) {
-        json_response([
-            'success' => false,
-            'message' => 'A nomination is required.',
-        ], 422);
-    }
-
-    $statement = $pdo->prepare('UPDATE reward_nominations SET is_archived = 1 WHERE id = :id');
-    $statement->execute([':id' => $nominationId]);
-
-    rewards_write_audit($pdo, $sessionUser, 'reward_archived', $nominationId, 'Nomination removed.');
-
-    json_response([
-        'success' => true,
-        'message' => 'Nomination removed.',
-        'nominations' => rewards_list($pdo),
+    $statement = $pdo->prepare('DELETE FROM reward_cycle_votes WHERE cycle_id = :cycle_id AND voter_user_id = :voter_user_id');
+    $statement->execute([
+        ':cycle_id' => $cycleId,
+        ':voter_user_id' => (int)($user['id'] ?? 0),
     ]);
+
+    json_response(['success' => true, 'message' => 'Your vote has been withdrawn.']);
 }
 
-/*
- * One-time migration of nominations stranded in a browser's local storage.
- *
- * Records made before this endpoint existed live only in the browser that created them. This lets
- * the workspace hand them over once; already-issued certificate numbers are preserved rather than
- * reassigned, so a printed certificate still matches its record.
- */
-if ($method === 'POST' && $action === 'import') {
-    if (!rewards_can_decide($sessionUser)) {
-        json_response([
-            'success' => false,
-            'message' => 'You do not have permission to import nominations.',
-        ], 403);
+try {
+    ensure_rewards_tables($pdo);
+
+    $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+    $action = rewards_text($_GET['action'] ?? $_POST['action'] ?? 'list');
+
+    if ($method === 'GET' && $action === 'list') {
+        rewards_list_cycles($pdo, $sessionUser);
     }
 
-    $incoming = is_array($body['nominations'] ?? null) ? $body['nominations'] : [];
-    $imported = 0;
-    $skipped = 0;
-
-    foreach ($incoming as $record) {
-        if (!is_array($record)) {
-            $skipped++;
-            continue;
-        }
-
-        $employeeRecordId = (int)($record['employeeRecordId'] ?? $record['employeeId'] ?? 0);
-        $category = rewards_text($record['category'] ?? '');
-        $employee = $employeeRecordId > 0 ? rewards_fetch_employee($pdo, $employeeRecordId) : null;
-
-        if ($employee === null || !isset(REWARD_CATEGORIES[$category])) {
-            $skipped++;
-            continue;
-        }
-
-        $status = strtolower(rewards_text($record['status'] ?? 'pending'));
-        $status = in_array($status, ['pending', 'approved', 'rejected'], true) ? $status : 'pending';
-        $certificateNumber = rewards_text($record['certificate']['number'] ?? '') ?: null;
-
-        if ($certificateNumber !== null) {
-            $exists = $pdo->prepare('SELECT COUNT(*) FROM reward_nominations WHERE certificate_number = :certificate_number');
-            $exists->execute([':certificate_number' => $certificateNumber]);
-
-            if ((int)$exists->fetchColumn() > 0) {
-                $skipped++;
-                continue;
-            }
-        }
-
-        $insert = $pdo->prepare(
-            'INSERT INTO reward_nominations
-                (employee_record_id, category, award_period, years_of_service, reason, employee_name,
-                 employee_code, division_name, designation_title, employment_type, nominated_by_name,
-                 status, reviewed_by_name, reviewed_at, certificate_number, certificate_issued_at)
-             VALUES
-                (:employee_record_id, :category, :award_period, :years_of_service, :reason, :employee_name,
-                 :employee_code, :division_name, :designation_title, :employment_type, :nominated_by_name,
-                 :status, :reviewed_by_name, :reviewed_at, :certificate_number, :certificate_issued_at)'
-        );
-        $insert->execute([
-            ':employee_record_id' => $employeeRecordId,
-            ':category' => $category,
-            ':award_period' => rewards_period_or_null($record['period'] ?? null),
-            ':years_of_service' => (int)($record['yearsOfService'] ?? 0) ?: null,
-            ':reason' => rewards_text($record['reason'] ?? '') ?: 'Imported from local records.',
-            ':employee_name' => rewards_text($record['employeeName'] ?? '') ?: rewards_text($employee['fullName']),
-            ':employee_code' => rewards_text($record['employeeCode'] ?? '') ?: rewards_text($employee['employeeCode']),
-            ':division_name' => rewards_text($record['division'] ?? '') ?: rewards_text($employee['divisionName']),
-            ':designation_title' => rewards_text($record['position'] ?? '') ?: rewards_text($employee['designationTitle']),
-            ':employment_type' => rewards_text($record['employmentType'] ?? ''),
-            ':nominated_by_name' => rewards_text($record['nominatedBy'] ?? ''),
-            ':status' => $status,
-            ':reviewed_by_name' => rewards_text($record['reviewedBy'] ?? '') ?: null,
-            ':reviewed_at' => rewards_text($record['reviewedAt'] ?? '') ?: null,
-            ':certificate_number' => $certificateNumber,
-            ':certificate_issued_at' => rewards_text($record['certificate']['issuedAt'] ?? '') ?: null,
-        ]);
-
-        $imported++;
+    if ($method === 'POST' && $action === 'create') {
+        rewards_create_cycle($pdo, $sessionUser);
     }
 
-    rewards_write_audit(
-        $pdo,
-        $sessionUser,
-        'reward_imported',
-        0,
-        sprintf('Imported %d nomination(s) from local browser storage; %d skipped.', $imported, $skipped)
-    );
+    if ($method === 'POST' && $action === 'vote') {
+        rewards_cast_vote($pdo, $sessionUser);
+    }
 
+    if (in_array($method, ['PUT', 'PATCH'], true) && $action === 'update') {
+        rewards_update_cycle($pdo, $sessionUser);
+    }
+
+    if (in_array($method, ['PUT', 'PATCH'], true) && $action === 'status') {
+        rewards_set_status($pdo, $sessionUser);
+    }
+
+    if ($method === 'DELETE' && $action === 'delete') {
+        rewards_delete_cycle($pdo, $sessionUser);
+    }
+
+    if ($method === 'DELETE' && $action === 'withdraw') {
+        rewards_withdraw_vote($pdo, $sessionUser);
+    }
+
+    json_response(['success' => false, 'message' => 'Unsupported rewards action.'], 405);
+} catch (Throwable $exception) {
+    error_log('Rewards API error: ' . $exception->getMessage());
     json_response([
-        'success' => true,
-        'message' => sprintf('Imported %d nomination(s). %d skipped.', $imported, $skipped),
-        'imported' => $imported,
-        'skipped' => $skipped,
-        'nominations' => rewards_list($pdo),
-    ]);
+        'success' => false,
+        'message' => 'Unable to process rewards request.',
+    ], 500);
 }
-
-json_response([
-    'success' => false,
-    'message' => 'Unsupported rewards action.',
-], 400);

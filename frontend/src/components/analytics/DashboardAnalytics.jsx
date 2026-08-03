@@ -105,7 +105,7 @@ const DashboardAnalytics = ({ embedded = false, showHeader = true, children = nu
   };
 
   return (
-    <section className={embedded ? "space-y-4" : "space-y-6"}>
+    <section className={embedded ? "space-y-4" : "space-y-4"}>
       {showHeader ? (
         <div className="rounded-lg bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -155,21 +155,21 @@ const DashboardAnalytics = ({ embedded = false, showHeader = true, children = nu
       {/* Summary Stats Row */}
       {!loading && analyticsData && !embedded && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <div className="rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 p-6 text-white">
+          <div className="rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 p-4 text-white">
             <p className="text-sm opacity-90 mb-2">Total Employees</p>
-            <p className="text-4xl font-bold">{analyticsData.total_employees || 0}</p>
+            <p className="text-lg font-bold">{analyticsData.total_employees || 0}</p>
           </div>
-          <div className="rounded-lg bg-gradient-to-br from-green-500 to-green-600 p-6 text-white">
+          <div className="rounded-lg bg-gradient-to-br from-green-500 to-green-600 p-4 text-white">
             <p className="text-sm opacity-90 mb-2">Active Users</p>
-            <p className="text-4xl font-bold">{analyticsData.total_active_users || 0}</p>
+            <p className="text-lg font-bold">{analyticsData.total_active_users || 0}</p>
           </div>
-          <div className="rounded-lg bg-gradient-to-br from-indigo-500 to-indigo-600 p-6 text-white">
+          <div className="rounded-lg bg-gradient-to-br from-indigo-500 to-indigo-600 p-4 text-white">
             <p className="text-sm opacity-90 mb-2">Average Age</p>
-            <p className="text-4xl font-bold">{analyticsData.average_age || 0} yrs</p>
+            <p className="text-lg font-bold">{analyticsData.average_age || 0} yrs</p>
           </div>
-          <div className="rounded-lg bg-gradient-to-br from-teal-500 to-teal-600 p-6 text-white">
+          <div className="rounded-lg bg-gradient-to-br from-teal-500 to-teal-600 p-4 text-white">
             <p className="text-sm opacity-90 mb-2">PWD Employees</p>
-            <p className="text-4xl font-bold">{analyticsData.pwd_summary?.pwd_count || 0}</p>
+            <p className="text-lg font-bold">{analyticsData.pwd_summary?.pwd_count || 0}</p>
           </div>
         </div>
       )}

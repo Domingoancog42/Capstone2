@@ -91,7 +91,7 @@ const DEFAULT_PERA_AMOUNT = 2000;
 const WORKING_DAYS_PER_MONTH = 22;
 const WORKING_HOURS_PER_DAY = 8;
 const REGULAR_OVERTIME_MULTIPLIER = 1.25;
-const GENERATED_EMPLOYMENT_TYPE_OPTIONS = ["JO", "Contractual", "Regular"];
+const GENERATED_EMPLOYMENT_TYPE_OPTIONS = ["Contractual", "Regular"];
 const ACTION_STATUS_VERIFY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 10000];
 
 function wait(ms) {
@@ -194,10 +194,6 @@ function normalizeEmploymentTypeLabel(value) {
 
   if (!normalized) {
     return "";
-  }
-
-  if (normalized === "jo" || normalized === "job order") {
-    return "JO";
   }
 
   if (normalized === "contractual") {
@@ -772,7 +768,7 @@ function buildRegistryEntries(records = []) {
 }
 
 // A registry row groups records only by division/period/date, so it can mix employment types
-// (e.g. Regular and JO paid together). Returns every distinct type present, most common first.
+// (e.g. Regular and Contractual paid together). Returns every distinct type present, most common first.
 function getRegistryEmploymentTypes(records = []) {
   const counts = new Map();
 
@@ -824,9 +820,9 @@ function regularColumnCount(deductionColumnCount) {
 const REGULAR_HEADER_CELL_CLASS =
   "border border-slate-200 bg-slate-50 px-4 py-3 text-center align-middle whitespace-nowrap";
 
-const JO_CONTRACTUAL_EMPLOYMENT_TYPES = new Set(["JO", "Contractual"]);
-const JO_PREMIUM_ALLOWANCE_NAMES = ["Premium", "Premium Pay", "JO Premium", "Premium Percentage"];
-const JO_CONTRACTUAL_COLUMN_COUNT = 22;
+const CONTRACTUAL_EMPLOYMENT_TYPES = new Set(["Contractual"]);
+const PREMIUM_ALLOWANCE_NAMES = ["Premium", "Premium Pay", "Premium Percentage"];
+const CONTRACTUAL_COLUMN_COUNT = 22;
 
 function getAllowanceAmount(record = {}, names = []) {
   const keys = new Set(names.map((name) => String(name).toLowerCase().replace(/[^a-z0-9]/g, "")));
@@ -838,8 +834,8 @@ function getAllowanceAmount(record = {}, names = []) {
   }, 0);
 }
 
-function isJoOrContractualRecord(record = {}) {
-  return JO_CONTRACTUAL_EMPLOYMENT_TYPES.has(normalizeEmploymentTypeLabel(record.employmentType));
+function isContractualRecord(record = {}) {
+  return CONTRACTUAL_EMPLOYMENT_TYPES.has(normalizeEmploymentTypeLabel(record.employmentType));
 }
 
 function buildSalaryPeriodColumnLabel(startDate, endDate) {
@@ -887,7 +883,7 @@ function buildPayoutHalfColumnLabels(startDate, endDate) {
   ];
 }
 
-function getJoDaysRendered(record = {}) {
+function getContractualDaysRendered(record = {}) {
   const renderedMinutes = parseAmount(record.attendanceRenderedMinutes);
 
   if (renderedMinutes > 0) {
@@ -903,7 +899,7 @@ function getJoDaysRendered(record = {}) {
   return 0;
 }
 
-function getJoDailyRate(record = {}) {
+function getContractualDailyRate(record = {}) {
   const hourlyRate = parseAmount(record.hourlyRate);
 
   if (hourlyRate > 0) {
@@ -914,10 +910,10 @@ function getJoDailyRate(record = {}) {
   return basicSalary > 0 ? roundAmount(basicSalary / WORKING_DAYS_PER_MONTH) : 0;
 }
 
-function buildJoContractualRow(record = {}) {
+function buildContractualRow(record = {}) {
   const basicSalary = parseAmount(record.basicSalary);
-  const dailyRate = getJoDailyRate(record);
-  const premiumTotal = getAllowanceAmount(record, JO_PREMIUM_ALLOWANCE_NAMES);
+  const dailyRate = getContractualDailyRate(record);
+  const premiumTotal = getAllowanceAmount(record, PREMIUM_ALLOWANCE_NAMES);
   const calculatedPremiumRate = basicSalary > 0 ? roundAmount((premiumTotal / basicSalary) * 100) : 0;
   const premiumRate = calculatedPremiumRate > 0 ? calculatedPremiumRate : 0.20;
   const additionalSalary = parseAmount(record.totalAllowance);
@@ -938,7 +934,7 @@ function buildJoContractualRow(record = {}) {
   const salaryLessTotal = roundAmount(previousPayrollDeduction + tardyUndertimeDeduction + passSlipDeduction);
 
   return {
-    daysRendered: getJoDaysRendered(record),
+    daysRendered: getContractualDaysRendered(record),
     dailyRate,
     premiumRate,
     premiumTotal,
@@ -962,7 +958,7 @@ function buildJoContractualRow(record = {}) {
   };
 }
 
-function JoContractualRegistryTable({ records, salaryPeriodLabel, totalDeductions, totalNetPay }) {
+function ContractualRegistryTable({ records, salaryPeriodLabel, totalDeductions, totalNetPay }) {
   const groupHeaderClass =
     "border border-slate-300 bg-slate-100 px-3 py-2 text-center align-middle text-[11px] font-extrabold uppercase text-slate-700";
   const subHeaderClass =
@@ -1006,7 +1002,7 @@ function JoContractualRegistryTable({ records, salaryPeriodLabel, totalDeduction
       </thead>
       <tbody>
         {records.length > 0 ? records.map((record) => {
-          const row = buildJoContractualRow(record);
+          const row = buildContractualRow(record);
 
           return (
             <tr key={record.id}>
@@ -1038,7 +1034,7 @@ function JoContractualRegistryTable({ records, salaryPeriodLabel, totalDeduction
           );
         }) : (
           <tr>
-            <td colSpan={JO_CONTRACTUAL_COLUMN_COUNT} className="border border-slate-200 px-4 py-10 text-center text-sm font-medium text-slate-500">
+            <td colSpan={CONTRACTUAL_COLUMN_COUNT} className="border border-slate-200 px-4 py-10 text-center text-sm font-medium text-slate-500">
               No employees match your search.
             </td>
           </tr>
@@ -1047,7 +1043,7 @@ function JoContractualRegistryTable({ records, salaryPeriodLabel, totalDeduction
       <tfoot className="sticky bottom-0 z-20">
         <tr className="text-slate-900">
           <td className="border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-extrabold uppercase" colSpan={20}>
-            Total Net Payroll Amount (JO &amp; Contractual)
+            Total Net Payroll Amount (Contractual)
           </td>
           <td className="border border-slate-300 bg-slate-50 px-3 py-2 text-right tabular-nums text-slate-950 whitespace-nowrap">
             {formatCurrency(totalDeductions)}
@@ -1145,13 +1141,13 @@ function PayrollRegistryDetailsModal({
       .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
   }, [records]);
 
-  const pagedJoContractualRecords = useMemo(
-    () => pagedRecords.filter((record) => isJoOrContractualRecord(record)),
+  const pagedContractualRecords = useMemo(
+    () => pagedRecords.filter((record) => isContractualRecord(record)),
     [pagedRecords]
   );
 
   const pagedStandardRecords = useMemo(
-    () => pagedRecords.filter((record) => !isJoOrContractualRecord(record)),
+    () => pagedRecords.filter((record) => !isContractualRecord(record)),
     [pagedRecords]
   );
 
@@ -1160,26 +1156,26 @@ function PayrollRegistryDetailsModal({
     const series = new Map();
 
     filteredRecords
-      .filter((record) => !isJoOrContractualRecord(record))
+      .filter((record) => !isContractualRecord(record))
       .forEach((record, index) => series.set(record.id, index + 1));
 
     return series;
   }, [filteredRecords]);
 
-  const hasJoContractualRecords = useMemo(
-    () => records.some((record) => isJoOrContractualRecord(record)),
+  const hasContractualRecords = useMemo(
+    () => records.some((record) => isContractualRecord(record)),
     [records]
   );
 
   const hasStandardRecords = useMemo(
-    () => records.some((record) => !isJoOrContractualRecord(record)),
+    () => records.some((record) => !isContractualRecord(record)),
     [records]
   );
 
-  const joContractualTotals = useMemo(
-    () => records.filter((record) => isJoOrContractualRecord(record)).reduce(
+  const contractualTotals = useMemo(
+    () => records.filter((record) => isContractualRecord(record)).reduce(
       (totals, record) => {
-        const row = buildJoContractualRow(record);
+        const row = buildContractualRow(record);
         return {
           totalDeductions: totals.totalDeductions + row.totalDeductions,
           netPay: totals.netPay + row.netPay,
@@ -1200,7 +1196,7 @@ function PayrollRegistryDetailsModal({
     [entry?.endDate, entry?.startDate]
   );
 
-  const showsBothTables = hasJoContractualRecords && hasStandardRecords;
+  const showsBothTables = hasContractualRecords && hasStandardRecords;
 
   return (
     <Modal
@@ -1307,19 +1303,19 @@ function PayrollRegistryDetailsModal({
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-            {pagedJoContractualRecords.length > 0 ? (
+            {pagedContractualRecords.length > 0 ? (
               <div className="rounded-lg border border-slate-200">
                 {showsBothTables ? (
                   <p className="m-0 border-b border-slate-200 bg-white px-4 py-2 text-xs font-extrabold uppercase text-slate-600">
-                    JO &amp; Contractual
+                    Contractual
                   </p>
                 ) : null}
                 <div className="overflow-x-auto">
-                  <JoContractualRegistryTable
-                    records={pagedJoContractualRecords}
+                  <ContractualRegistryTable
+                    records={pagedContractualRecords}
                     salaryPeriodLabel={salaryPeriodLabel}
-                    totalDeductions={joContractualTotals.totalDeductions}
-                    totalNetPay={joContractualTotals.netPay}
+                    totalDeductions={contractualTotals.totalDeductions}
+                    totalNetPay={contractualTotals.netPay}
                   />
                 </div>
               </div>
@@ -1457,11 +1453,11 @@ function GeneratedPayrollEmployeeRow({ employee, selected = false, onToggle }) {
 
 function LoadingState() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {Array.from({ length: 4 }).map((_, index) => (
           <Card key={index} className="overflow-hidden border-slate-200/80 bg-white/90 shadow-sm">
-            <CardContent className="space-y-4 p-6">
+            <CardContent className="space-y-4 p-4">
               <div className="h-11 w-11 animate-pulse rounded-2xl bg-slate-100" />
               <div className="h-4 w-24 animate-pulse rounded-full bg-slate-100" />
               <div className="h-8 w-28 animate-pulse rounded-full bg-slate-200" />
@@ -3538,7 +3534,7 @@ export default function PayrollManagementWorkspace({
   };
 
   return (
-    <div className="w-full space-y-6">
+    <div className="w-full space-y-4">
       {loading ? <LoadingState /> : (
         <>
           <Card className="overflow-hidden border-slate-200/80 bg-white/95 shadow-sm">
@@ -3599,7 +3595,7 @@ export default function PayrollManagementWorkspace({
                 />
 
                 <div>
-                  <label htmlFor="payrollStatusFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+                  <label htmlFor="payrollStatusFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Payroll Status
                   </label>
                   <select
@@ -3609,7 +3605,7 @@ export default function PayrollManagementWorkspace({
                       setStatusFilter(event.target.value);
                       setCurrentPage(1);
                     }}
-                    className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
                   >
                     <option value="">All statuses</option>
                     {(view === "archived" ? ["Archived"] : ACTIVE_STATUS_OPTIONS).map((status) => (
@@ -3621,7 +3617,7 @@ export default function PayrollManagementWorkspace({
                 </div>
 
                 <div>
-                  <label htmlFor="payrollDivisionFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+                  <label htmlFor="payrollDivisionFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Division
                   </label>
                   <select
@@ -3631,7 +3627,7 @@ export default function PayrollManagementWorkspace({
                       setDivisionFilter(event.target.value);
                       setCurrentPage(1);
                     }}
-                    className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
                   >
                     <option value="">All divisions</option>
                     {divisions.map((division) => (
@@ -3641,7 +3637,7 @@ export default function PayrollManagementWorkspace({
                 </div>
 
                 <div>
-                  <label htmlFor="payrollPeriodFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+                  <label htmlFor="payrollPeriodFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Payroll Period
                   </label>
                   <select
@@ -3651,7 +3647,7 @@ export default function PayrollManagementWorkspace({
                       setPeriodFilter(event.target.value);
                       setCurrentPage(1);
                     }}
-                    className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
                   >
                     <option value="">All periods</option>
                     {periodOptions.map((period) => (
@@ -3661,7 +3657,7 @@ export default function PayrollManagementWorkspace({
                 </div>
 
                 <div>
-                  <label htmlFor="payrollRowsPerPage" className="mb-2 block text-sm font-semibold text-slate-700">
+                  <label htmlFor="payrollRowsPerPage" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Rows Per Page
                   </label>
                   <select
@@ -3671,7 +3667,7 @@ export default function PayrollManagementWorkspace({
                       setRowsPerPage(Number(event.target.value) || DEFAULT_ROWS_PER_PAGE);
                       setCurrentPage(1);
                     }}
-                    className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
                   >
                     {[5, 8, 10, 15, 20].map((value) => (
                       <option key={value} value={value}>{value}</option>
@@ -3859,14 +3855,14 @@ export default function PayrollManagementWorkspace({
 
           <div className="grid gap-3 md:grid-cols-2">
             <div>
-              <label htmlFor="generatedPayrollEmploymentType" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="generatedPayrollEmploymentType" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Employment Type
               </label>
               <select
                 id="generatedPayrollEmploymentType"
                 value={generatedPayroll.employmentType}
                 onChange={(event) => setGeneratedPayroll((current) => ({ ...current, employmentType: event.target.value }))}
-                className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
                 <option value="">All Types</option>
                 {GENERATED_EMPLOYMENT_TYPE_OPTIONS.map((type) => (
@@ -3875,14 +3871,14 @@ export default function PayrollManagementWorkspace({
               </select>
             </div>
             <div>
-              <label htmlFor="generatedPayrollDivision" className="mb-2 block text-sm font-semibold text-slate-700">
+              <label htmlFor="generatedPayrollDivision" className="mb-1.5 block text-sm font-semibold text-slate-700">
                 Division
               </label>
               <select
                 id="generatedPayrollDivision"
                 value={generatedPayroll.division}
                 onChange={(event) => setGeneratedPayroll((current) => ({ ...current, division: event.target.value }))}
-                className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
                 <option value="">All Division</option>
                 {employeeDivisionOptions.map((division) => (
@@ -3922,7 +3918,7 @@ export default function PayrollManagementWorkspace({
             </div>
             <div className="max-h-[360px] overflow-y-auto">
               {filteredGeneratedEmployees.length === 0 ? (
-                <div className="px-4 py-8 text-center text-sm text-slate-500">
+                <div className="px-4 py-5 text-center text-sm text-slate-500">
                   <p className="m-0 font-semibold text-slate-600">
                     {generatedPayroll.employmentType
                       ? `No ${generatedPayroll.employmentType} employees found.`
@@ -4032,7 +4028,7 @@ export default function PayrollManagementWorkspace({
         onClose={closeFormModal}
         maxWidth="max-w-4xl"
         panelClassName="rounded-[28px] border border-slate-200 bg-white shadow-[0_28px_72px_rgba(15,23,42,0.18)]"
-        contentClassName="bg-white px-5 py-5 md:px-6 md:py-6"
+        contentClassName="bg-white px-5 py-5 md:px-4 md:py-4"
         footerClassName="bg-white"
         footer={(
           <>
@@ -4048,7 +4044,7 @@ export default function PayrollManagementWorkspace({
         <div className="space-y-5">
           <div className="grid gap-4 md:grid-cols-2">
             <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">Employee *</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Employee *</label>
               <EmployeeSearchSelect
                 employeeOptions={employeeOptions}
                 selectedEmployee={
@@ -4078,7 +4074,7 @@ export default function PayrollManagementWorkspace({
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,0.8fr)]">
             <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">Pay Period *</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Pay Period *</label>
               <div className="flex flex-wrap gap-2">
                 {PAY_PERIOD_OPTIONS.map((period) => {
                   const isSelected = form.payPeriod === period;

@@ -1,15 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Baby,
+  CalendarDays,
   ChevronDown,
   Download,
   FileClock,
   FolderSync,
   History,
+  Minus,
   MoreHorizontal,
+  Plus,
   PlusCircle,
   RotateCcw,
   Search,
   ShieldCheck,
+  StickyNote,
+  Trash2,
+  Undo2,
   UserRound,
   Users,
   X,
@@ -21,6 +28,7 @@ import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
 import Pagination from "../../components/UI/Pagination";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
+  adjustLeaveBalances,
   bulkAddLeaveCredits,
   fetchLeaveBalanceHistory,
   fetchLeaveBalanceRows,
@@ -35,7 +43,8 @@ const TABLE_BALANCE_COLUMNS = [
   { key: "FL", label: "Force Leave Balance" },
   { key: "SOPL", label: "Solo Parent Leave" },
   { key: "STL", label: "Study Leave" },
-  { key: "MLPL", label: "Maternity/Paternity Leave" },
+  { key: "ML", label: "Maternity Leave" },
+  { key: "PL", label: "Paternity Leave" },
 ];
 
 const LEAVE_TYPE_OPTIONS = [
@@ -48,6 +57,15 @@ const LEAVE_TYPE_OPTIONS = [
   { code: "ML", label: "Maternity Leave" },
   { code: "PL", label: "Paternity Leave" },
 ];
+
+// Parental leave credits only apply to one gender, so the adjustment sheet hides
+// the leave that the employee can never file for.
+const GENDER_RESTRICTED_LEAVE_CODES = {
+  ML: "female",
+  PL: "male",
+};
+
+const QUICK_ADJUSTMENT_AMOUNTS = [0.5, 1, 5];
 
 
 function formatBalanceValue(value) {
@@ -109,17 +127,80 @@ function getBalanceRecord(row, code) {
   return normalizeBalanceRecord(row.balanceMap?.[code]);
 }
 
-function getCombinedParentalBalance(row) {
-  const maternity = getBalanceRecord(row, "ML");
-  const paternity = getBalanceRecord(row, "PL");
+function resolveGenderKey(row) {
+  const gender = String(row?.gender || "").trim().toLowerCase();
+
+  if (gender === "male" || gender === "m") {
+    return "male";
+  }
+  if (gender === "female" || gender === "f") {
+    return "female";
+  }
+
+  return "";
+}
+
+function getGenderLabel(row) {
+  const genderKey = resolveGenderKey(row);
+
+  if (genderKey === "male") {
+    return "Male";
+  }
+  if (genderKey === "female") {
+    return "Female";
+  }
+
+  return String(row?.gender || "").trim() || "Not recorded";
+}
+
+function isLeaveTypeApplicable(row, code) {
+  const restrictedTo = GENDER_RESTRICTED_LEAVE_CODES[code];
+
+  if (!restrictedTo) {
+    return true;
+  }
+
+  // With no recorded gender both parental leaves stay available so HR can still act.
+  const genderKey = resolveGenderKey(row);
+  return !genderKey || restrictedTo === genderKey;
+}
+
+function getApplicableLeaveTypes(row) {
+  return LEAVE_TYPE_OPTIONS.filter((type) => isLeaveTypeApplicable(row, type.code));
+}
+
+/**
+ * Balance as the registry should present it: parental leave that the employee's
+ * gender can never file for always reads as 0 day, regardless of stored credits.
+ */
+function getDisplayBalanceRecord(row, code) {
+  const balance = getBalanceRecord(row, code);
+
+  if (isLeaveTypeApplicable(row, code)) {
+    return { ...balance, applicable: true };
+  }
 
   return {
-    maternity,
-    paternity,
-    total: maternity.total + paternity.total,
-    used: maternity.used + paternity.used,
-    remaining: maternity.remaining + paternity.remaining,
+    code: balance.code,
+    type: balance.type,
+    total: 0,
+    used: 0,
+    remaining: 0,
+    applicable: false,
   };
+}
+
+function getParentalLeaveSummary(row) {
+  const genderKey = resolveGenderKey(row);
+
+  if (genderKey === "male") {
+    return "Paternity Leave";
+  }
+  if (genderKey === "female") {
+    return "Maternity Leave";
+  }
+
+  return "Maternity & Paternity Leave (gender not recorded)";
 }
 
 function getBalanceHealth(balance) {
@@ -158,11 +239,7 @@ function getRowFocusBalance(row, leaveTypeCode = "") {
     return null;
   }
 
-  if (leaveTypeCode === "MLPL") {
-    return getCombinedParentalBalance(row);
-  }
-
-  return getBalanceRecord(row, leaveTypeCode);
+  return getDisplayBalanceRecord(row, leaveTypeCode);
 }
 
 function getSortValue(row, sortKey) {
@@ -174,15 +251,15 @@ function getSortValue(row, sortKey) {
       return String(row?.[sortKey] || "").toLowerCase();
     case "lastUpdated":
       return new Date(row?.lastUpdated || 0).getTime();
-    case "MLPL":
-      return getCombinedParentalBalance(row).remaining;
     case "VL":
     case "SL":
     case "SPL":
     case "FL":
     case "SOPL":
     case "STL":
-      return getBalanceRecord(row, sortKey).remaining;
+    case "ML":
+    case "PL":
+      return getDisplayBalanceRecord(row, sortKey).remaining;
     default:
       return String(row?.employeeName || "").toLowerCase();
   }
@@ -245,7 +322,7 @@ function FloatingCardModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close modal"
@@ -260,7 +337,7 @@ function FloatingCardModal({
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="border-b border-slate-200 bg-gradient-to-r from-emerald-50 via-white to-teal-50 px-5 py-4 sm:px-6">
+        <div className="border-b border-slate-200 bg-gradient-to-r from-emerald-50 via-white to-teal-50 px-5 py-4 sm:px-4">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="m-0 text-lg font-semibold text-slate-950">{title}</h2>
@@ -297,6 +374,19 @@ function BalanceStatusBadge({ balance }) {
 }
 
 function BalanceCell({ balance }) {
+  // A leave the employee's gender cannot file for reads as a plain 0 day rather
+  // than a red "Depleted" balance, which would be misleading.
+  if (balance.applicable === false) {
+    return (
+      <div className="space-y-1">
+        <div className="inline-flex min-h-8 items-center rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-400">
+          0 days
+        </div>
+        <div className="text-[11px] text-slate-400">Not applicable</div>
+      </div>
+    );
+  }
+
   const health = getBalanceHealth(balance);
 
   return (
@@ -308,23 +398,6 @@ function BalanceCell({ balance }) {
         Used {formatBalanceValue(balance.used)} / Total {formatBalanceValue(balance.total)}
       </div>
       <BalanceStatusBadge balance={balance} />
-    </div>
-  );
-}
-
-function CombinedParentalBalanceCell({ row }) {
-  const combined = getCombinedParentalBalance(row);
-  const health = getBalanceHealth(combined);
-
-  return (
-    <div className="space-y-1">
-      <div className={`inline-flex min-h-8 items-center rounded-xl border px-2.5 text-xs font-semibold ${health.amountClass}`}>
-        M {formatBalanceValue(combined.maternity.remaining)} / P {formatBalanceValue(combined.paternity.remaining)}
-      </div>
-      <div className="text-[11px] text-slate-500">
-        Total {formatBalanceValue(combined.remaining)} day{Number(combined.remaining) === 1 ? "" : "s"}
-      </div>
-      <BalanceStatusBadge balance={combined} />
     </div>
   );
 }
@@ -476,9 +549,9 @@ function LeaveBalanceEditorModal({
       maxWidthClassName="max-w-4xl"
     >
       <form onSubmit={handleSubmit}>
-        <div className="max-h-[78vh] overflow-y-auto px-5 py-5 sm:px-6">
+        <div className="max-h-[78vh] overflow-y-auto px-5 py-5 sm:px-4">
           <div className="grid gap-5 lg:grid-cols-2">
-            <div className="rounded-3xl border border-emerald-100 bg-emerald-50/70 p-4">
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
                 <UserRound size={16} />
                 <span>Employee</span>
@@ -529,7 +602,7 @@ function LeaveBalanceEditorModal({
               </div>
             </div>
 
-            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                 <ShieldCheck size={16} />
                 <span>Balance Details</span>
@@ -587,7 +660,7 @@ function LeaveBalanceEditorModal({
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6">
+        <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-4">
           <button
             type="button"
             onClick={onClose}
@@ -602,6 +675,521 @@ function LeaveBalanceEditorModal({
           >
             {saving ? "Saving..." : mode === "set" ? "Set Balance" : "Update Balance"}
           </button>
+        </div>
+      </form>
+    </FloatingCardModal>
+  );
+}
+
+function escapeHtml(value = "") {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[character]));
+}
+
+function getEmployeeInitials(name = "") {
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+
+  if (parts.length === 0) {
+    return "NA";
+  }
+
+  const first = parts[0]?.[0] || "";
+  const last = parts.length > 1 ? parts[parts.length - 1]?.[0] || "" : "";
+
+  return `${first}${last}`.toUpperCase();
+}
+
+function LeaveAdjustmentCard({
+  type,
+  balance,
+  draft,
+  removable = false,
+  onChange,
+  onClear,
+  onRemove,
+}) {
+  const operation = draft?.operation === "deduct" ? "deduct" : "add";
+  const rawAmount = draft?.amount ?? "";
+  const amount = Number(rawAmount);
+  const hasAmount = rawAmount !== "" && !Number.isNaN(amount) && amount > 0;
+  const nextRemaining = hasAmount
+    ? (operation === "add" ? balance.remaining + amount : balance.remaining - amount)
+    : balance.remaining;
+  const exceedsBalance = hasAmount && operation === "deduct" && nextRemaining < 0;
+
+  const cardToneClass = !hasAmount
+    ? "border-slate-200 bg-white hover:border-slate-300"
+    : exceedsBalance
+      ? "border-rose-400 bg-rose-50/70 shadow-sm"
+      : operation === "add"
+        ? "border-emerald-300 bg-emerald-50/60 shadow-sm"
+        : "border-amber-300 bg-amber-50/60 shadow-sm";
+
+  return (
+    <article className={`rounded-3xl border p-4 transition ${cardToneClass}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-slate-900 text-[11px] font-bold tracking-wide text-white">
+            {type.code}
+          </span>
+          <div className="min-w-0">
+            <p className="m-0 truncate text-sm font-semibold text-slate-900">{type.label}</p>
+            <p className="m-0 mt-0.5 text-xs text-slate-500">
+              Remaining <strong className="font-semibold text-slate-700">{formatBalanceValue(balance.remaining)}</strong>
+              {" · "}Used {formatBalanceValue(balance.used)}
+              {" · "}Total {formatBalanceValue(balance.total)}
+            </p>
+          </div>
+        </div>
+
+        {removable ? (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove ${type.label}`}
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+          >
+            <Trash2 size={14} />
+          </button>
+        ) : null}
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1">
+          <button
+            type="button"
+            onClick={() => onChange({ operation: "add" })}
+            className={`inline-flex min-h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-bold transition ${
+              operation === "add" ? "bg-emerald-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <Plus size={14} />
+            Add
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange({ operation: "deduct" })}
+            className={`inline-flex min-h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-bold transition ${
+              operation === "deduct" ? "bg-rose-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <Minus size={14} />
+            Deduct
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <input
+            type="number"
+            min="0"
+            step="0.25"
+            inputMode="decimal"
+            value={rawAmount}
+            onChange={(event) => onChange({ amount: event.target.value })}
+            placeholder="0"
+            aria-label={`${type.label} adjustment amount`}
+            className="h-10 w-24 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+          />
+          <span className="text-xs font-medium text-slate-500">day(s)</span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {QUICK_ADJUSTMENT_AMOUNTS.map((quickAmount) => (
+            <button
+              key={quickAmount}
+              type="button"
+              onClick={() => onChange({ amount: String(quickAmount) })}
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700"
+            >
+              {quickAmount}
+            </button>
+          ))}
+        </div>
+
+        {hasAmount ? (
+          <button
+            type="button"
+            onClick={onClear}
+            className="ml-auto inline-flex items-center gap-1 rounded-xl px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
+          >
+            <Undo2 size={12} />
+            Clear
+          </button>
+        ) : null}
+      </div>
+
+      {hasAmount ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-white/80 px-3 py-2">
+          <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">New balance</span>
+          <span className="inline-flex items-center gap-2 text-sm font-semibold">
+            <span className="text-slate-400">{formatBalanceValue(balance.remaining)}</span>
+            <span className="text-slate-400">&rarr;</span>
+            <span className={exceedsBalance ? "text-rose-600" : operation === "add" ? "text-emerald-700" : "text-amber-700"}>
+              {formatBalanceValue(nextRemaining)} day{Number(nextRemaining) === 1 ? "" : "s"}
+            </span>
+          </span>
+        </div>
+      ) : null}
+
+      {exceedsBalance ? (
+        <p className="m-0 mt-2 text-xs font-semibold text-rose-600">
+          Deduction exceeds the remaining balance of {formatBalanceValue(balance.remaining)} day(s).
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function LeaveBalanceAdjustmentModal({
+  open = false,
+  row = null,
+  updatedBy = "",
+  saving = false,
+  onClose,
+  onApply,
+}) {
+  const [drafts, setDrafts] = useState({});
+  const [extraCodes, setExtraCodes] = useState([]);
+  const [effectiveDate, setEffectiveDate] = useState("");
+  const [note, setNote] = useState("");
+  const [formError, setFormError] = useState("");
+
+  const employeeRecordId = row?.employeeRecordId ?? null;
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    setDrafts({});
+    setExtraCodes([]);
+    setEffectiveDate(new Date().toISOString().slice(0, 10));
+    setNote("");
+    setFormError("");
+  }, [employeeRecordId, open]);
+
+  const applicableTypes = useMemo(() => getApplicableLeaveTypes(row), [row]);
+  const applicableCodes = useMemo(() => applicableTypes.map((type) => type.code), [applicableTypes]);
+
+  const visibleTypes = useMemo(
+    () => [
+      ...applicableTypes,
+      ...LEAVE_TYPE_OPTIONS.filter((type) => extraCodes.includes(type.code)),
+    ],
+    [applicableTypes, extraCodes]
+  );
+
+  const availableExtraTypes = useMemo(
+    () => LEAVE_TYPE_OPTIONS.filter(
+      (type) => !applicableCodes.includes(type.code) && !extraCodes.includes(type.code)
+    ),
+    [applicableCodes, extraCodes]
+  );
+
+  const pendingChanges = useMemo(
+    () =>
+      visibleTypes
+        .map((type) => {
+          const draft = drafts[type.code];
+          const amount = Number(draft?.amount);
+
+          if (!draft || draft.amount === "" || Number.isNaN(amount) || amount <= 0) {
+            return null;
+          }
+
+          const balance = getBalanceRecord(row, type.code);
+          const operation = draft.operation === "deduct" ? "deduct" : "add";
+          const nextRemaining = operation === "add"
+            ? balance.remaining + amount
+            : balance.remaining - amount;
+
+          return { type, balance, operation, amount, nextRemaining };
+        })
+        .filter(Boolean),
+    [drafts, row, visibleTypes]
+  );
+
+  const invalidChanges = pendingChanges.filter((change) => change.nextRemaining < 0);
+
+  const updateDraft = useCallback((code, patch) => {
+    setDrafts((current) => ({
+      ...current,
+      [code]: { operation: "add", amount: "", ...(current[code] || {}), ...patch },
+    }));
+    setFormError("");
+  }, []);
+
+  const clearDraft = useCallback((code) => {
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[code];
+      return next;
+    });
+  }, []);
+
+  const removeExtraType = useCallback((code) => {
+    setExtraCodes((current) => current.filter((item) => item !== code));
+    clearDraft(code);
+  }, [clearDraft]);
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+
+    if (!row?.employeeRecordId) {
+      setFormError("Select an employee record first.");
+      return;
+    }
+    if (!effectiveDate) {
+      setFormError("Effective date is required.");
+      return;
+    }
+    if (pendingChanges.length === 0) {
+      setFormError("Enter an amount on at least one leave type before saving.");
+      return;
+    }
+    if (invalidChanges.length > 0) {
+      setFormError("Fix the highlighted deductions that exceed the remaining balance.");
+      return;
+    }
+
+    const summaryHtml = pendingChanges
+      .map((change) => `<li style="text-align:left">${change.operation === "add" ? "+" : "-"}${formatBalanceValue(change.amount)} ${escapeHtml(change.type.label)} <em>(${formatBalanceValue(change.balance.remaining)} &rarr; ${formatBalanceValue(change.nextRemaining)})</em></li>`)
+      .join("");
+
+    const confirmation = await Swal.fire({
+      title: "Apply Balance Changes?",
+      html: `<p style="margin:0 0 8px">Update leave credits for <strong>${escapeHtml(row.employeeName)}</strong>:</p><ul style="margin:0;padding-left:20px">${summaryHtml}</ul>`,
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Save changes",
+      cancelButtonText: "Review first",
+      confirmButtonColor: "#D61E1E",
+      cancelButtonColor: "#64748b",
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (!confirmation.isConfirmed) {
+      return;
+    }
+
+    await onApply?.({
+      employeeRecordId: Number(row.employeeRecordId),
+      effectiveDate,
+      remarks: note.trim(),
+      adjustments: pendingChanges.map((change) => ({
+        leaveTypeCode: change.type.code,
+        operation: change.operation,
+        amount: change.amount,
+      })),
+    });
+  };
+
+  const inputClassName = "min-h-[46px] w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100";
+
+  return (
+    <FloatingCardModal
+      open={open}
+      onClose={onClose}
+      title="Add New Balance"
+      description="Add or deduct leave credits per leave type, then record the reason for the change."
+      maxWidthClassName="max-w-5xl"
+    >
+      <form onSubmit={handleSubmit}>
+        <div className="max-h-[74vh] overflow-y-auto bg-slate-50/60 px-5 py-5 sm:px-4">
+          <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
+            <div className="space-y-4">
+              <div className="rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-4 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-emerald-600 text-sm font-bold text-white">
+                    {getEmployeeInitials(row?.employeeName)}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="m-0 truncate text-sm font-semibold text-slate-950">{row?.employeeName || "Unavailable"}</p>
+                    <p className="m-0 truncate text-xs text-slate-500">{row?.employeeId || "N/A"}</p>
+                  </div>
+                </div>
+
+                <dl className="mt-4 space-y-2.5">
+                  <div>
+                    <dt className="m-0 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Division</dt>
+                    <dd className="m-0 mt-0.5 text-sm font-semibold text-slate-900">{row?.division || "Unassigned"}</dd>
+                  </div>
+                  <div>
+                    <dt className="m-0 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Position</dt>
+                    <dd className="m-0 mt-0.5 text-sm font-semibold text-slate-900">{row?.position || "Not set"}</dd>
+                  </div>
+                  <div>
+                    <dt className="m-0 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Gender</dt>
+                    <dd className="m-0 mt-1">
+                      <span className="inline-flex rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-sm">
+                        {getGenderLabel(row)}
+                      </span>
+                    </dd>
+                  </div>
+                </dl>
+
+                <div className="mt-4 flex items-start gap-2 rounded-2xl bg-white/80 px-3 py-2.5">
+                  <Baby size={15} className="mt-0.5 shrink-0 text-emerald-700" />
+                  <p className="m-0 text-xs text-slate-600">
+                    Parental leave shown: <strong className="font-semibold text-slate-900">{getParentalLeaveSummary(row)}</strong>
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                <label>
+                  <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                    <CalendarDays size={15} />
+                    Effective Date
+                  </span>
+                  <input
+                    type="date"
+                    value={effectiveDate}
+                    onChange={(event) => {
+                      setEffectiveDate(event.target.value);
+                      setFormError("");
+                    }}
+                    className={`${inputClassName} mt-2`}
+                  />
+                </label>
+
+                <label className="mt-4 block">
+                  <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                    <StickyNote size={15} />
+                    Note
+                  </span>
+                  <textarea
+                    rows={4}
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                    placeholder="Why is this balance being changed? (e.g. Monthly accrual, correction of overposted credits)"
+                    className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                  />
+                  <span className="mt-1.5 block text-xs text-slate-500">
+                    Saved with every adjustment in the audit trail.
+                  </span>
+                </label>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="m-0 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Updated By</p>
+                  <p className="m-0 mt-1.5 text-sm font-semibold text-slate-900">{updatedBy || "HR Head"}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                <div>
+                  <p className="m-0 text-sm font-semibold text-slate-900">Leave Credits</p>
+                  <p className="m-0 mt-0.5 text-xs text-slate-500">
+                    Adjust any number of leave types &mdash; blank rows are left untouched.
+                  </p>
+                </div>
+                <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${
+                  pendingChanges.length > 0 ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"
+                }`}>
+                  {pendingChanges.length} pending change{pendingChanges.length === 1 ? "" : "s"}
+                </span>
+              </div>
+
+              <div className="grid gap-3 xl:grid-cols-2">
+                {visibleTypes.map((type) => (
+                  <LeaveAdjustmentCard
+                    key={type.code}
+                    type={type}
+                    balance={getBalanceRecord(row, type.code)}
+                    draft={drafts[type.code]}
+                    removable={extraCodes.includes(type.code)}
+                    onChange={(patch) => updateDraft(type.code, patch)}
+                    onClear={() => clearDraft(type.code)}
+                    onRemove={() => removeExtraType(type.code)}
+                  />
+                ))}
+              </div>
+
+              {availableExtraTypes.length > 0 ? (
+                <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-4 py-3">
+                  <label className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="text-sm font-semibold text-slate-700">
+                      Need another leave type?
+                    </span>
+                    <select
+                      value=""
+                      onChange={(event) => {
+                        if (event.target.value) {
+                          setExtraCodes((current) => [...current, event.target.value]);
+                        }
+                      }}
+                      className="h-10 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 sm:w-64"
+                    >
+                      <option value="">Include leave type...</option>
+                      {availableExtraTypes.map((type) => (
+                        <option key={type.code} value={type.code}>{type.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+
+              {pendingChanges.length > 0 ? (
+                <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <p className="m-0 text-sm font-semibold text-slate-900">Change Summary</p>
+                  <ul className="m-0 mt-3 list-none space-y-2 p-0">
+                    {pendingChanges.map((change) => (
+                      <li
+                        key={change.type.code}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2"
+                      >
+                        <span className="text-sm font-semibold text-slate-800">{change.type.label}</span>
+                        <span className="inline-flex items-center gap-2 text-sm">
+                          <span className={`font-bold ${change.operation === "add" ? "text-emerald-700" : "text-rose-600"}`}>
+                            {change.operation === "add" ? "+" : "-"}{formatBalanceValue(change.amount)}
+                          </span>
+                          <span className="text-slate-400">|</span>
+                          <span className="font-semibold text-slate-700">
+                            {formatBalanceValue(change.balance.remaining)} &rarr; {formatBalanceValue(change.nextRemaining)}
+                          </span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+          <p className={`m-0 text-sm ${formError ? "font-semibold text-rose-600" : "text-slate-500"}`}>
+            {formError || `${pendingChanges.length} leave type${pendingChanges.length === 1 ? "" : "s"} will be updated.`}
+          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving || pendingChanges.length === 0 || invalidChanges.length > 0}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-[#D61E1E] px-4 text-sm font-semibold text-white transition hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <PlusCircle size={16} />
+              {saving
+                ? "Saving..."
+                : pendingChanges.length > 0
+                  ? `Save ${pendingChanges.length} change${pendingChanges.length === 1 ? "" : "s"}`
+                  : "Save Changes"}
+            </button>
+          </div>
         </div>
       </form>
     </FloatingCardModal>
@@ -626,9 +1214,9 @@ function LeaveBalanceHistoryModal({
       description="Review current leave credit records and recent update activity for the selected employee."
       maxWidthClassName="max-w-5xl"
     >
-      <div className="max-h-[78vh] overflow-y-auto px-5 py-5 sm:px-6">
+      <div className="max-h-[78vh] overflow-y-auto px-5 py-5 sm:px-4">
         <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-          <div className="rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4 shadow-sm">
+          <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4 shadow-sm">
             <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
               <History size={16} />
               <span>Employee Summary</span>
@@ -656,7 +1244,7 @@ function LeaveBalanceHistoryModal({
           </div>
 
           <div className="space-y-4">
-            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                 <FolderSync size={16} />
                 <span>Current Leave Credit Snapshot</span>
@@ -695,7 +1283,7 @@ function LeaveBalanceHistoryModal({
               </div>
             </div>
 
-            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                 <FileClock size={16} />
                 <span>Audit Trail</span>
@@ -710,7 +1298,7 @@ function LeaveBalanceHistoryModal({
                     </div>
                   ))
                 ) : logs.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center">
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center">
                     <p className="m-0 text-sm font-semibold text-slate-700">No audit log entries available</p>
                     <p className="m-0 mt-2 text-sm text-slate-500">
                       This database setup does not currently have stored leave balance history entries for this employee.
@@ -791,7 +1379,7 @@ function BulkLeaveCreditModal({
 
     const today = new Date().toISOString().slice(0, 10);
     setForm({
-      leaveTypeCode: defaultLeaveTypeCode && defaultLeaveTypeCode !== "MLPL" ? defaultLeaveTypeCode : "VL",
+      leaveTypeCode: defaultLeaveTypeCode || "VL",
       amount: "",
       effectiveDate: today,
       remarks: "",
@@ -864,9 +1452,9 @@ function BulkLeaveCreditModal({
       maxWidthClassName="max-w-4xl"
     >
       <form onSubmit={handleSubmit}>
-        <div className="max-h-[78vh] overflow-y-auto px-5 py-5 sm:px-6">
+        <div className="max-h-[78vh] overflow-y-auto px-5 py-5 sm:px-4">
           <div className="grid gap-5 lg:grid-cols-2">
-            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                 <ShieldCheck size={16} />
                 <span>Credit Details</span>
@@ -940,7 +1528,7 @@ function BulkLeaveCreditModal({
               </div>
             </div>
 
-            <div className="rounded-3xl border border-emerald-100 bg-emerald-50/70 p-4">
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
                   <Users size={16} />
@@ -961,7 +1549,7 @@ function BulkLeaveCreditModal({
 
               <div className="mt-3 max-h-[46vh] space-y-2 overflow-y-auto pr-1">
                 {selectedRows.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-emerald-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                  <div className="rounded-2xl border border-dashed border-emerald-200 bg-white px-4 py-5 text-center text-sm text-slate-500">
                     No employees selected.
                   </div>
                 ) : selectedRows.map((row) => {
@@ -994,7 +1582,7 @@ function BulkLeaveCreditModal({
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6">
+        <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-4">
           <button
             type="button"
             onClick={onClose}
@@ -1045,6 +1633,8 @@ export default function LeaveBalanceManagementWorkspace({
     employeeRecordId: null,
     leaveTypeCode: "",
   });
+  const [adjustState, setAdjustState] = useState({ open: false, employeeRecordId: null });
+  const [adjustSaving, setAdjustSaving] = useState(false);
   const [historyState, setHistoryState] = useState({
     open: false,
     row: null,
@@ -1197,7 +1787,13 @@ export default function LeaveBalanceManagementWorkspace({
 
     rows.forEach((row) => {
       TABLE_BALANCE_COLUMNS.forEach((column) => {
-        const balance = column.key === "MLPL" ? getCombinedParentalBalance(row) : getBalanceRecord(row, column.key);
+        const balance = getDisplayBalanceRecord(row, column.key);
+
+        // Leave the employee can never file for is not a depleted balance.
+        if (balance.applicable === false) {
+          return;
+        }
+
         const health = getBalanceHealth(balance);
 
         if (health.tone === "low") {
@@ -1217,6 +1813,11 @@ export default function LeaveBalanceManagementWorkspace({
   }, [rows]);
 
   const selectedHistoryRow = historyState.row;
+  // Derived from the live rows so background refreshes keep the sheet in sync.
+  const adjustRow = useMemo(
+    () => rows.find((row) => row.employeeRecordId === adjustState.employeeRecordId) || null,
+    [adjustState.employeeRecordId, rows]
+  );
   const showSelectionColumn = allowActions;
   const visibleLeadColumns = 1 + (showEmployeeIdColumn ? 1 : 0) + (showRowNumberColumn ? 1 : 0) + 2;
   const tableColumnCount = (showSelectionColumn ? 1 : 0) + visibleLeadColumns + TABLE_BALANCE_COLUMNS.length + 1 + (allowActions ? 1 : 0);
@@ -1230,6 +1831,44 @@ export default function LeaveBalanceManagementWorkspace({
       employeeRecordId: row?.employeeRecordId || null,
       leaveTypeCode: filters.leaveType || "VL",
     });
+  };
+
+  const openAdjustments = (row) => {
+    setOpenActionMenuId(null);
+    setAdjustState({ open: true, employeeRecordId: row?.employeeRecordId || null });
+  };
+
+  const handleApplyAdjustments = async (payload) => {
+    setAdjustSaving(true);
+
+    try {
+      const result = await adjustLeaveBalances({
+        employeeRecordId: payload.employeeRecordId,
+        adjustments: payload.adjustments,
+        effectiveDate: payload.effectiveDate,
+        remarks: payload.remarks,
+        year: currentYear,
+      });
+
+      setRows(result.rows || []);
+      setAdjustState({ open: false, employeeRecordId: null });
+
+      if (historyState.open && historyState.row?.employeeRecordId === payload.employeeRecordId) {
+        const updatedRow = (result.rows || []).find((row) => row.employeeRecordId === payload.employeeRecordId) || historyState.row;
+        setHistoryState({
+          open: true,
+          row: updatedRow,
+          loading: false,
+          history: result.history || historyState.history,
+        });
+      }
+
+      toast.success(result.message || "Leave balance updated successfully.");
+    } catch (error) {
+      toast.error(error?.response?.data?.message || error?.message || "Unable to update the leave balance.");
+    } finally {
+      setAdjustSaving(false);
+    }
   };
 
   const handleBulkApply = async (payload) => {
@@ -1286,7 +1925,7 @@ export default function LeaveBalanceManagementWorkspace({
         row.division || "",
         row.position || "",
         row.employmentStatus || row.status || "",
-        ...balanceColumns.map((type) => formatBalanceValue(getBalanceRecord(row, type.code).remaining)),
+        ...balanceColumns.map((type) => formatBalanceValue(getDisplayBalanceRecord(row, type.code).remaining)),
         row.lastUpdated ? formatDateTime(row.lastUpdated) : "Never",
       ];
       return cells.map(escapeCell).join(",");
@@ -1421,10 +2060,10 @@ export default function LeaveBalanceManagementWorkspace({
   };
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-4">
 
       <section className="rounded-[30px] border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-200 px-5 py-5 sm:px-6">
+        <div className="border-b border-slate-200 px-5 py-5 sm:px-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h3 className="m-0 text-lg font-semibold text-slate-950">Employee Leave Credit Registry</h3>
@@ -1454,21 +2093,21 @@ export default function LeaveBalanceManagementWorkspace({
             </div>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-[1.25fr_repeat(3,minmax(0,1fr))_140px]">
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,200px)_150px_150px_150px_120px]">
             <label className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <input
                 value={filters.search}
                 onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
                 placeholder="Search employee name or ID"
-                className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                className="h-9 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
               />
             </label>
 
             <select
               value={filters.division}
               onChange={(event) => setFilters((current) => ({ ...current, division: event.target.value }))}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              className="h-9 rounded-2xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
             >
               <option value="">All divisions</option>
               {divisionOptions.map((division) => (
@@ -1479,7 +2118,7 @@ export default function LeaveBalanceManagementWorkspace({
             <select
               value={filters.employmentStatus}
               onChange={(event) => setFilters((current) => ({ ...current, employmentStatus: event.target.value }))}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              className="h-9 rounded-2xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
             >
               <option value="">All employment statuses</option>
               {employmentStatusOptions.map((status) => (
@@ -1490,7 +2129,7 @@ export default function LeaveBalanceManagementWorkspace({
             <select
               value={filters.leaveType}
               onChange={(event) => setFilters((current) => ({ ...current, leaveType: event.target.value }))}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              className="h-9 rounded-2xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
             >
               <option value="">All leave types</option>
               {LEAVE_TYPE_OPTIONS.map((type) => (
@@ -1501,7 +2140,7 @@ export default function LeaveBalanceManagementWorkspace({
             <select
               value={filters.rowsPerPage}
               onChange={(event) => setFilters((current) => ({ ...current, rowsPerPage: event.target.value }))}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              className="h-9 rounded-2xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
             >
               <option value="5">5 rows</option>
               <option value="10">10 rows</option>
@@ -1513,7 +2152,7 @@ export default function LeaveBalanceManagementWorkspace({
         </div>
 
         {allowActions && selectedIds.size > 0 ? (
-          <div className="flex flex-col gap-3 border-b border-emerald-100 bg-emerald-50/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="flex flex-col gap-3 border-b border-emerald-100 bg-emerald-50/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-4">
             <div className="flex items-center gap-3">
               <span className="inline-flex h-9 min-w-9 items-center justify-center rounded-2xl bg-emerald-600 px-2.5 text-sm font-bold text-white">
                 {selectedIds.size}
@@ -1547,10 +2186,10 @@ export default function LeaveBalanceManagementWorkspace({
           </div>
         ) : null}
 
-        <div className="px-5 py-5 sm:px-6">
+        <div className="px-5 py-5 sm:px-4">
           <div className="rounded-[26px] border border-slate-200 bg-white">
             <div className="overflow-x-auto">
-              <table className="min-w-[1900px] w-full border-collapse">
+              <table className="min-w-[2050px] w-full border-collapse">
                 <thead className="sticky top-0 z-10 bg-slate-50">
                   <tr>
                     {showSelectionColumn ? (
@@ -1605,7 +2244,7 @@ export default function LeaveBalanceManagementWorkspace({
                   ) : paginatedRows.length === 0 ? (
                     <tr>
                       <td colSpan={tableColumnCount} className="px-4 py-14 text-center">
-                        <div className="mx-auto grid h-14 w-14 place-items-center rounded-3xl bg-emerald-50 text-emerald-700">
+                        <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-emerald-50 text-emerald-700">
                           <FolderSync size={24} />
                         </div>
                         <p className="m-0 mt-4 text-base font-semibold text-slate-800">No leave balance records found</p>
@@ -1651,13 +2290,11 @@ export default function LeaveBalanceManagementWorkspace({
                       ) : null}
                       <td className="px-3 py-4 text-sm text-slate-700">{row.division || "Unassigned"}</td>
                       <td className="px-3 py-4 text-sm text-slate-700">{row.position || "Not set"}</td>
-                      <td className="px-3 py-4"><BalanceCell balance={getBalanceRecord(row, "VL")} /></td>
-                      <td className="px-3 py-4"><BalanceCell balance={getBalanceRecord(row, "SL")} /></td>
-                      <td className="px-3 py-4"><BalanceCell balance={getBalanceRecord(row, "SPL")} /></td>
-                      <td className="px-3 py-4"><BalanceCell balance={getBalanceRecord(row, "FL")} /></td>
-                      <td className="px-3 py-4"><BalanceCell balance={getBalanceRecord(row, "SOPL")} /></td>
-                      <td className="px-3 py-4"><BalanceCell balance={getBalanceRecord(row, "STL")} /></td>
-                      <td className="px-3 py-4"><CombinedParentalBalanceCell row={row} /></td>
+                      {TABLE_BALANCE_COLUMNS.map((column) => (
+                        <td key={column.key} className="px-3 py-4">
+                          <BalanceCell balance={getDisplayBalanceRecord(row, column.key)} />
+                        </td>
+                      ))}
                       <td className="px-3 py-4 text-sm text-slate-600">{formatDateTime(row.lastUpdated)}</td>
                       {allowActions ? (
                         <td className="px-3 py-4">
@@ -1676,11 +2313,11 @@ export default function LeaveBalanceManagementWorkspace({
                               <div className="absolute right-0 top-[calc(100%+0.5rem)] z-30 w-60 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
                                 <button
                                   type="button"
-                                  onClick={() => openEditor("update", row)}
+                                  onClick={() => openAdjustments(row)}
                                   className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-emerald-50 hover:text-emerald-800"
                                 >
-                                  <FolderSync size={16} />
-                                  Update Balance
+                                  <PlusCircle size={16} />
+                                  Add Balance
                                 </button>
                                 <button
                                   type="button"
@@ -1730,6 +2367,15 @@ export default function LeaveBalanceManagementWorkspace({
         saving={saving}
         onClose={() => setEditorState({ open: false, mode: "update", employeeRecordId: null, leaveTypeCode: "" })}
         onSave={handleSaveBalance}
+      />
+
+      <LeaveBalanceAdjustmentModal
+        open={adjustState.open}
+        row={adjustRow}
+        updatedBy={updaterName}
+        saving={adjustSaving}
+        onClose={() => setAdjustState({ open: false, employeeRecordId: null })}
+        onApply={handleApplyAdjustments}
       />
 
       <LeaveBalanceHistoryModal

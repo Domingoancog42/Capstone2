@@ -81,11 +81,11 @@ function Avatar({ contact, size = "md" }) {
 
 function EmptyConversation({ contacts, onStart }) {
   return (
-    <div className="flex min-h-full flex-col items-center justify-center bg-slate-50/50 px-6 py-12 text-center">
-      <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-red-50 text-[#D61E1E] shadow-sm mb-6">
+    <div className="flex min-h-full flex-col items-center justify-center bg-slate-50/50 px-4 py-12 text-center">
+      <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-red-50 text-[#D61E1E] shadow-sm mb-6">
         <MessageCircle size={36} />
       </div>
-      <h2 className="m-0 max-w-[360px] text-2xl font-bold leading-tight text-slate-900">
+      <h2 className="m-0 max-w-[360px] text-lg font-bold leading-tight text-slate-900">
         Professional Messages
       </h2>
       <p className="mt-2 max-w-[320px] text-sm text-slate-500 leading-relaxed">
@@ -94,7 +94,7 @@ function EmptyConversation({ contacts, onStart }) {
       <button 
         disabled={!contacts.length}
         onClick={onStart}
-        className="mt-6 inline-flex min-h-11 items-center justify-center rounded-2xl bg-[#D61E1E] px-6 text-sm font-semibold text-white transition hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 shadow-sm"
+        className="mt-6 inline-flex min-h-11 items-center justify-center rounded-2xl bg-[#D61E1E] px-4 text-sm font-semibold text-white transition hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 shadow-sm"
       >
         Start Messaging
       </button>
@@ -322,7 +322,7 @@ export default function BubbleChat({ user }) {
                 })}
               </div>
             ) : (
-              <p className="m-0 px-5 py-6 text-xs text-slate-500 font-medium text-center">No messages found.</p>
+              <p className="m-0 px-5 py-4 text-xs text-slate-500 font-medium text-center">No messages found.</p>
             )}
           </div>
         </aside>

@@ -14,7 +14,7 @@ import { numberFormatter } from "../../utils/format";
 
 function LineChartSkeleton() {
   return (
-    <div className="grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-6">
+    <div className="grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-4">
       <div className="h-full w-full animate-pulse rounded-[24px] bg-[linear-gradient(180deg,rgba(15,118,110,0.12)_0%,rgba(14,165,233,0.04)_48%,rgba(248,250,252,0.8)_100%)]" />
     </div>
   );
@@ -22,7 +22,7 @@ function LineChartSkeleton() {
 
 function ChartEmptyState({ message }) {
   return (
-    <div className="grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-6 text-center">
+    <div className="grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-4 text-center">
       <div className="max-w-sm">
         <p className="m-0 text-base font-semibold text-slate-900">Trend lines unavailable</p>
         <p className="mt-2 text-sm leading-6 text-slate-500">{message}</p>

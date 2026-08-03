@@ -1126,6 +1126,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
             label="View attendance logs"
             icon={faClockRotateLeft}
             tone="review"
+            text="Logs"
             onClick={() => openLogs(row)}
           />
           <ActionIconButton
@@ -1147,6 +1148,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
               label="Request attendance adjustment"
               icon={faFilePen}
               tone="edit"
+              text="Request"
               onClick={() => openAdjustmentRequest(row)}
             />
           ) : null}
@@ -1219,70 +1221,78 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     },
   ];
 
-  const renderAttendanceFilters = (
-    containerClassName = isEmployeeView
-      ? "grid gap-3 md:grid-cols-3"
-      : "grid gap-3 md:grid-cols-2 xl:grid-cols-5"
-  ) => (
-    <div className={containerClassName}>
+  /**
+   * One filter bar in the shared record-table format: h-9 pill controls on a single grid row, the
+   * same shape the leave, travel order, and pass slip screens use.
+   */
+  const renderAttendanceFilters = () => (
+    <div
+      className={
+        isEmployeeView
+          ? "mt-4 grid gap-3 lg:grid-cols-[160px_160px_160px_120px]"
+          : "mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_150px_150px_160px_160px_120px]"
+      }
+    >
       {!isEmployeeView ? (
-        <InputField
-          label="Search Employee"
-          name="attendanceSearch"
-          value={filters.search}
-          onChange={(event) => setFilter("search", event.target.value)}
-          placeholder="Name or employee ID"
-          icon={Search}
-        />
+        <label className="relative">
+          <span className="sr-only">Search employee</span>
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <input
+            value={filters.search}
+            onChange={(event) => setFilter("search", event.target.value)}
+            placeholder="Search name or employee ID"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+          />
+        </label>
       ) : null}
-      <InputField
-        label="Date From"
-        name="attendanceDateFrom"
+      <input
         type="date"
+        aria-label="Filter from date"
         value={filters.dateFrom}
         onChange={(event) => setFilter("dateFrom", event.target.value)}
+        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
       />
-      <InputField
-        label="Date To"
-        name="attendanceDateTo"
+      <input
         type="date"
+        aria-label="Filter to date"
         value={filters.dateTo}
         onChange={(event) => setFilter("dateTo", event.target.value)}
+        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
       />
       {!isEmployeeView ? (
-        <div>
-          <label htmlFor="attendanceDepartment" className="mb-2 block text-sm font-semibold text-slate-700">
-            Division
-          </label>
-          <select
-            id="attendanceDepartment"
-            value={filters.department}
-            onChange={(event) => setFilter("department", event.target.value)}
-            className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
-          >
-            <option value="">All divisions</option>
-            {departments.map((department) => (
-              <option key={department} value={department}>{department}</option>
-            ))}
-          </select>
-        </div>
-      ) : null}
-      <div>
-        <label htmlFor="attendanceStatus" className="mb-2 block text-sm font-semibold text-slate-700">
-          Status
-        </label>
         <select
-          id="attendanceStatus"
-          value={filters.status}
-          onChange={(event) => setFilter("status", event.target.value)}
-          className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+          aria-label="Filter by division"
+          value={filters.department}
+          onChange={(event) => setFilter("department", event.target.value)}
+          className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
         >
-          <option value="">All statuses</option>
-          {statusOptions.map((status) => (
-            <option key={status} value={status}>{status}</option>
+          <option value="">All divisions</option>
+          {departments.map((department) => (
+            <option key={department} value={department}>{department}</option>
           ))}
         </select>
-      </div>
+      ) : null}
+      <select
+        aria-label="Filter by status"
+        value={filters.status}
+        onChange={(event) => setFilter("status", event.target.value)}
+        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+      >
+        <option value="">All statuses</option>
+        {statusOptions.map((status) => (
+          <option key={status} value={status}>{status}</option>
+        ))}
+      </select>
+      <select
+        aria-label="Rows per page"
+        value={rowsPerPage}
+        onChange={(event) => setRowsPerPage(Number(event.target.value) || DEFAULT_ROWS_PER_PAGE)}
+        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+      >
+        {[5, 10, 15, 25, 50].map((value) => (
+          <option key={value} value={value}>{value} rows</option>
+        ))}
+      </select>
     </div>
   );
 
@@ -1290,29 +1300,37 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     <div className="space-y-5">
 
       {!isAdminView ? (
-        <section className="flex flex-col gap-4 rounded-lg border border-emerald-100 bg-white p-5 shadow-sm lg:flex-row lg:items-end lg:justify-between">
+        <section className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">
+            <h3 className="m-0 text-base font-semibold text-slate-950">
               {isEmployeeView ? "My Attendance" : "Attendance Management"}
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
+            </h3>
+            <p className="m-0 mt-1 max-w-3xl text-sm text-slate-500">
               {isEmployeeView
                 ? "View personal attendance logs, DTR records, calendar history, and adjustment requests."
                 : "Import DAT logs, monitor daily attendance, generate DTR forms, and manage attendance adjustments."}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {isEmployeeView ? (
-              <>
-                <Button variant="secondary" icon={Eye} onClick={() => openDtr()}>
-                  View DTR
-                </Button>
-                <Button variant="secondary" icon={Printer} onClick={() => printRecordDtr(null)}>
-                  Print DTR
-                </Button>
-              </>
-            ) : null}
-          </div>
+          {isEmployeeView ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openDtr()}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <Eye size={16} />
+                View DTR
+              </button>
+              <button
+                type="button"
+                onClick={() => printRecordDtr(null)}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+              >
+                <Printer size={16} />
+                Print DTR
+              </button>
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -1333,7 +1351,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                       </div>
                       <div>
                         <p className="m-0 text-sm font-semibold text-slate-500">{metric.label}</p>
-                        <strong className="mt-2 block text-2xl font-semibold text-slate-900">{metric.value}</strong>
+                        <strong className="mt-2 block text-lg font-semibold text-slate-900">{metric.value}</strong>
                         <p className="mt-2 text-sm leading-6 text-slate-500">{metric.helper}</p>
                       </div>
                     </CardContent>
@@ -1344,75 +1362,61 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
           ) : null}
 
           {!isAdminView && !isEmployeeView ? (
-            <Card className="shadow-sm">
-              <CardHeader>
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <SlidersHorizontal size={20} />
-                    Attendance Filters
-                  </CardTitle>
-                  <CardDescription>
-                    Search employees, narrow by date range, division, and attendance status.
-                  </CardDescription>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {renderAttendanceFilters()}
-              </CardContent>
-            </Card>
+            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <div>
+                <h3 className="m-0 flex items-center gap-2 text-base font-semibold text-slate-950">
+                  <SlidersHorizontal size={18} />
+                  Attendance Filters
+                </h3>
+                <p className="m-0 mt-1 text-sm text-slate-500">
+                  Search employees, narrow by date range, division, and attendance status.
+                </p>
+              </div>
+              {renderAttendanceFilters()}
+            </section>
           ) : null}
 
-          <Card className="shadow-sm">
-            <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <CardTitle>Attendance Records</CardTitle>
-                <CardDescription>
+                <h3 className="m-0 text-base font-semibold text-slate-950">Attendance Records</h3>
+                <p className="m-0 mt-1 text-sm text-slate-500">
                   Imported logs grouped by employee and date with computed hours, late minutes, undertime, and status.
-                </CardDescription>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {canImport ? (
-                  <Button icon={UploadCloud} onClick={() => setImportOpen(true)}>
-                    Import Attendance
-                  </Button>
-                ) : null}
-                <label htmlFor="attendanceRowsPerPage" className="text-sm font-semibold text-slate-600">
-                  Rows
-                </label>
-                <select
-                  id="attendanceRowsPerPage"
-                  value={rowsPerPage}
-                  onChange={(event) => setRowsPerPage(Number(event.target.value) || DEFAULT_ROWS_PER_PAGE)}
-                  className="min-h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
-                >
-                  {[5, 10, 15, 25, 50].map((value) => (
-                    <option key={value} value={value}>{value}</option>
-                  ))}
-                </select>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {isAdminView || isEmployeeView ? renderAttendanceFilters() : null}
-              <div className="overflow-hidden rounded-lg border border-slate-200">
-                <Table
-                  columns={attendanceColumns}
-                  data={paginatedRecords}
-                  rowKey="id"
-                  emptyMessage="No attendance records found."
-                  stickyHeader
-                  className="max-h-[560px] overflow-y-auto"
-                  tableClassName="min-w-[1540px]"
-                />
-              </div>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="m-0 text-sm text-slate-600">
-                  Showing {sortedRecords.length === 0 ? 0 : (safePage - 1) * rowsPerPage + 1}
-                  -{Math.min(safePage * rowsPerPage, sortedRecords.length)} of {sortedRecords.length}
                 </p>
-                <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setPage} />
               </div>
-            </CardContent>
-          </Card>
+              {canImport ? (
+                <button
+                  type="button"
+                  onClick={() => setImportOpen(true)}
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+                >
+                  <UploadCloud size={16} />
+                  Import Attendance
+                </button>
+              ) : null}
+            </div>
+
+            {isAdminView || isEmployeeView ? renderAttendanceFilters() : null}
+
+            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
+              <Table
+                columns={attendanceColumns}
+                data={paginatedRecords}
+                rowKey="id"
+                emptyMessage="No attendance records found."
+                stickyHeader
+                className="max-h-[560px] overflow-y-auto"
+                tableClassName="min-w-[1540px]"
+              />
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="m-0 text-sm text-slate-500">
+                Showing {sortedRecords.length === 0 ? 0 : (safePage - 1) * rowsPerPage + 1} to {Math.min(safePage * rowsPerPage, sortedRecords.length)} of {sortedRecords.length} attendance records
+              </p>
+              <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setPage} />
+            </div>
+          </section>
 
           <section className="grid gap-4 xl:grid-cols-2">
             {isEmployeeView ? (
@@ -1489,40 +1493,41 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
               </Card>
             )}
 
-            <Card className="shadow-sm">
-              <CardHeader>
-                <CardTitle>{canApproveAdjustments ? "Attendance Adjustment Queue" : "Attendance Adjustment History"}</CardTitle>
-                <CardDescription>
+            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <div>
+                <h3 className="m-0 text-base font-semibold text-slate-950">
+                  {canApproveAdjustments ? "Attendance Adjustment Queue" : "Attendance Adjustment History"}
+                </h3>
+                <p className="m-0 mt-1 text-sm text-slate-500">
                   {canApproveAdjustments
                     ? "Review employee requests for corrected time in and time out values."
                     : "Track submitted attendance adjustment requests and review decisions."}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {adjustments.length > 0 ? (
-                  <>
-                    {canApproveAdjustments ? (
-                      <p className="mb-3 text-sm font-semibold text-amber-700">
-                        {pendingAdjustments.length} pending adjustment{pendingAdjustments.length === 1 ? "" : "s"}
-                      </p>
-                    ) : null}
-                    <div className="overflow-hidden rounded-lg border border-slate-200">
-                      <Table
-                        columns={adjustmentColumns}
-                        data={adjustments.slice(0, 8)}
-                        rowKey="id"
-                        emptyMessage="No attendance adjustments found."
-                        tableClassName="min-w-[920px]"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-600">
-                    No adjustment requests found.
+                </p>
+              </div>
+
+              {adjustments.length > 0 ? (
+                <>
+                  {canApproveAdjustments ? (
+                    <p className="m-0 mt-4 text-sm font-semibold text-amber-700">
+                      {pendingAdjustments.length} pending adjustment{pendingAdjustments.length === 1 ? "" : "s"}
+                    </p>
+                  ) : null}
+                  <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
+                    <Table
+                      columns={adjustmentColumns}
+                      data={adjustments.slice(0, 8)}
+                      rowKey="id"
+                      emptyMessage="No attendance adjustments found."
+                      tableClassName="min-w-[920px]"
+                    />
                   </div>
-                )}
-              </CardContent>
-            </Card>
+                </>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-600">
+                  No adjustment requests found.
+                </div>
+              )}
+            </section>
           </section>
         </>
       )}
@@ -1543,7 +1548,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
           </>
         }
       >
-        <div className="space-y-6">
+        <div className="space-y-4">
           <style>{ATTENDANCE_PROGRESS_STRIPE_KEYFRAMES}</style>
 
           <div className="flex justify-center">
@@ -1553,7 +1558,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
               onDragLeave={handleDatDragLeave}
               onDrop={handleDatDrop}
               className={[
-                "group flex w-full max-w-[330px] flex-col items-center rounded-[28px] border-2 border-dashed border-slate-300 bg-white px-6 py-8 text-center shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition duration-200",
+                "group flex w-full max-w-[330px] flex-col items-center rounded-[28px] border-2 border-dashed border-slate-300 bg-white px-4 py-5 text-center shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition duration-200",
                 datDragActive
                   ? "border-slate-900 bg-slate-50 shadow-lg shadow-slate-200/60"
                   : "hover:border-slate-400 hover:bg-slate-50",
@@ -1646,7 +1651,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
                   <p className="m-0 text-xs font-semibold uppercase text-slate-500">{label}</p>
-                  <strong className="mt-2 block text-2xl text-slate-900">{value || 0}</strong>
+                  <strong className="mt-2 block text-lg text-slate-900">{value || 0}</strong>
                 </div>
               ))}
             </div>
@@ -1683,7 +1688,14 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
         {dtrLoading ? (
           <div className="h-[520px] animate-pulse rounded-lg bg-slate-100" />
         ) : dtrData ? (
-          <div className="grid gap-5 xl:grid-cols-[1fr_280px]">
+          /*
+           * The form column has to be `1fr`, not a fixed cap: `DailyTimeRecord` renders the printed
+           * CS Form No. 48 at a fixed 510px (450px sheet + 30px padding a side), so any column
+           * narrower than that clips the sheet through the middle of the AM/PM columns. `minmax(0,…)`
+           * lets the column still shrink below that on small screens and hand the overflow to the
+           * scroller instead of pushing the modal wide.
+           */
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_260px]">
             <div className="overflow-x-auto rounded-lg bg-slate-100 px-4 py-5">
               <DailyTimeRecord dtr={dtrData} signatureDataUrl={dtrSignature} />
             </div>
@@ -1748,7 +1760,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
           <InputField label="Time In" name="editTimeIn" type="datetime-local" value={editForm.timeIn} onChange={(event) => setEditForm((current) => ({ ...current, timeIn: event.target.value }))} />
           <InputField label="Time Out" name="editTimeOut" type="datetime-local" value={editForm.timeOut} onChange={(event) => setEditForm((current) => ({ ...current, timeOut: event.target.value }))} />
           <div>
-            <label htmlFor="editStatus" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="editStatus" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Attendance
             </label>
             <select
@@ -1763,7 +1775,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
             </select>
           </div>
           <div>
-            <label htmlFor="editReason" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="editReason" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Reason
             </label>
             <textarea
@@ -1795,7 +1807,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
           <InputField label="Requested Time In" name="adjustTimeIn" type="datetime-local" value={adjustmentForm.timeIn} onChange={(event) => setAdjustmentForm((current) => ({ ...current, timeIn: event.target.value }))} />
           <InputField label="Requested Time Out" name="adjustTimeOut" type="datetime-local" value={adjustmentForm.timeOut} onChange={(event) => setAdjustmentForm((current) => ({ ...current, timeOut: event.target.value }))} />
           <div>
-            <label htmlFor="adjustmentReason" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="adjustmentReason" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Reason
             </label>
             <textarea

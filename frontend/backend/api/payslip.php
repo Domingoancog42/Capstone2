@@ -196,10 +196,6 @@ function payslip_normalize_employment_type(mixed $value): string
 {
     $normalized = strtolower(payslip_text($value));
 
-    if ($normalized === 'jo' || $normalized === 'job order') {
-        return 'JO';
-    }
-
     if ($normalized === 'contractual') {
         return 'Contractual';
     }

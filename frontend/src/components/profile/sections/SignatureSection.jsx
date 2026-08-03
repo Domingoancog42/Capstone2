@@ -1,8 +1,9 @@
 import React, { useRef, useState } from "react";
 import SignatureCanvas from "react-signature-canvas";
-import { Eraser, ImagePlus, PenSquare } from "lucide-react";
+import { Eraser, ImagePlus, PenLine, PenSquare } from "lucide-react";
 import Button from "../../UI/button";
 import ProfileSectionCard from "../ProfileSectionCard";
+import { profileSectionAnchorId } from "../profileUtils";
 
 export default function SignatureSection({
   values,
@@ -64,6 +65,8 @@ export default function SignatureSection({
 
   return (
     <ProfileSectionCard
+      id={profileSectionAnchorId("signature")}
+      icon={PenLine}
       title="E-Signature"
       description="Upload or draw a reusable electronic signature for forms that require your authorized approval mark."
       readOnly={readOnly}

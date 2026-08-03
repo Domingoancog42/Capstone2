@@ -23,7 +23,6 @@ const SERVICE_RECORD_EMPLOYMENT_STATUSES = [
     'Contractual',
     'Co-terminous',
     'Substitute',
-    'Job Order',
     'Regular',
     'Probationary',
 ];

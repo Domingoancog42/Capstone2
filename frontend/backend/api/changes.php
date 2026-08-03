@@ -90,9 +90,6 @@ const CHANGE_FEED_TOPICS = [
         ['table' => 'opcr_templates', 'pk' => 'template_id', 'stamp' => 'updated_at', 'status' => 'template_status'],
         ['table' => 'division_opcr_assignments', 'pk' => 'assignment_id', 'stamp' => 'updated_at', 'status' => 'assignment_status'],
     ],
-    'rewards' => [
-        ['table' => 'reward_nominations', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
-    ],
     'service_record' => [
         ['table' => 'service_records', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'employment_status'],
     ],
@@ -107,6 +104,14 @@ const CHANGE_FEED_TOPICS = [
     ],
     'notifications' => [
         ['table' => 'notifications', 'pk' => 'id', 'stamp' => 'created_at', 'status' => 'is_read'],
+    ],
+    /*
+     * Award cycles and the votes cast in them. Nominations are the reason this topic exists: a
+     * leaderboard that only moved when you reloaded would show a stale tally to everyone watching.
+     */
+    'rewards' => [
+        ['table' => 'reward_cycles', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
+        ['table' => 'reward_cycle_votes', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
     ],
     /*
      * Both permission sources are rows in the key/value `settings` table, so this topic is filtered

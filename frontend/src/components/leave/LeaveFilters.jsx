@@ -37,18 +37,18 @@ export default function LeaveFilters({
         </button>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,220px)_150px_150px_120px_180px]">
         <label className="relative block">
           <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
             Search Employee
           </span>
-          <Search size={16} className="pointer-events-none absolute left-3 top-[35px] text-slate-400" />
+          <Search size={16} className="pointer-events-none absolute left-2.5 top-[31px] text-slate-400" />
           <input
             type="text"
             value={values.search}
             onChange={handleChange("search")}
             placeholder="Name, type, reason, or rejected note"
-            className="min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-9 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-8 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
           />
         </label>
 
@@ -59,7 +59,7 @@ export default function LeaveFilters({
           <select
             value={values.division}
             onChange={handleChange("division")}
-            className="min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
           >
             <option value="">All divisions</option>
             {divisions.map((division) => (
@@ -77,7 +77,7 @@ export default function LeaveFilters({
           <select
             value={values.status}
             onChange={handleChange("status")}
-            className="min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
           >
             <option value="">All statuses</option>
             {statuses.map((status) => (
@@ -95,7 +95,7 @@ export default function LeaveFilters({
           <select
             value={values.rowsPerPage}
             onChange={handleChange("rowsPerPage")}
-            className="min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
           >
             {[5, 10, 15, 25].map((size) => (
               <option key={size} value={size}>
@@ -113,7 +113,7 @@ export default function LeaveFilters({
             <select
               value={values.sortBy}
               onChange={handleChange("sortBy")}
-              className="min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
             >
               <option value="dateFiled">Date Filed</option>
               <option value="employeeName">Employee Name</option>
@@ -130,7 +130,7 @@ export default function LeaveFilters({
                   values.sortDirection === "asc" ? "desc" : "asc"
                 )
               }
-              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              className="inline-flex h-9 min-w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
               aria-label="Toggle sort direction"
               title={values.sortDirection === "asc" ? "Ascending" : "Descending"}
             >

@@ -1,6 +1,6 @@
 import React from "react";
 
-const buttonClasses = "inline-flex min-h-9 items-center rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50";
+const buttonClasses = "inline-flex min-h-8 items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50";
 
 export default function Pagination({
   currentPage = 1,
@@ -23,7 +23,7 @@ export default function Pagination({
         Previous
       </button>
 
-      <span className="text-sm font-semibold text-slate-700">
+      <span className="text-xs font-semibold text-slate-700">
         Page {safeCurrentPage} of {safeTotalPages}
       </span>
 

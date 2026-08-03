@@ -140,7 +140,7 @@ function AttachmentViewerCard({ attachmentName, previewUrl, previewKey, onClose 
   const pdfPreview = isPdfAttachment(previewKey);
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close attachment preview"
@@ -149,7 +149,7 @@ function AttachmentViewerCard({ attachmentName, previewUrl, previewKey, onClose 
       />
 
       <div className="relative z-10 w-full max-w-5xl overflow-hidden rounded-[28px] border border-white/20 bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h3 className="m-0 text-lg font-semibold text-slate-950">Attachment Preview</h3>
             <p className="m-0 mt-1 break-all text-sm text-slate-500">{attachmentName}</p>
@@ -176,7 +176,7 @@ function AttachmentViewerCard({ attachmentName, previewUrl, previewKey, onClose 
 
         <div className="max-h-[78vh] overflow-auto bg-slate-100 p-4 sm:p-5">
           {imagePreview ? (
-            <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white p-3">
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3">
               <img
                 src={previewUrl}
                 alt={attachmentName}
@@ -184,7 +184,7 @@ function AttachmentViewerCard({ attachmentName, previewUrl, previewKey, onClose 
               />
             </div>
           ) : pdfPreview ? (
-            <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white">
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
               <iframe
                 src={previewUrl}
                 title={attachmentName}
@@ -192,7 +192,7 @@ function AttachmentViewerCard({ attachmentName, previewUrl, previewKey, onClose 
               />
             </div>
           ) : (
-            <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 text-center">
               <p className="m-0 text-sm font-semibold text-slate-800">Preview is not available for this file type.</p>
               <p className="m-0 mt-2 text-sm text-slate-500">Open the file in a new tab to review it.</p>
             </div>
@@ -320,7 +320,7 @@ export default function LeaveReviewModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[96] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[96] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label={isHrHead ? "Close leave request approval" : "Close leave request review"}
@@ -335,7 +335,7 @@ export default function LeaveReviewModal({
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">
               {isHrHead ? "Approve Leave Request" : "Review Leave Request"}
@@ -355,7 +355,7 @@ export default function LeaveReviewModal({
           </button>
         </div>
 
-        <div className="max-h-[calc(92vh-74px)] overflow-y-auto p-5 sm:p-6">
+        <div className="max-h-[calc(92vh-74px)] overflow-y-auto p-5 sm:p-4">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <DetailCard icon={UserRound} label="Employee Name" value={request.employeeName} />
             <DetailCard icon={FileText} label="Leave Type" value={request.leaveType} />

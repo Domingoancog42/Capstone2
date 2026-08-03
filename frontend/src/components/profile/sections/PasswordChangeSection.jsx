@@ -69,7 +69,11 @@ function PasswordInput({ id, label, value, onChange, autoComplete, invalid = fal
   );
 }
 
-export default function PasswordChangeSection() {
+/**
+ * `variant="dialog"` strips the standalone card chrome (icon badge, own title, border) because the
+ * floating card that hosts it already provides all three.
+ */
+export default function PasswordChangeSection({ variant = "card" }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [status, setStatus] = useState(null);
@@ -244,11 +248,8 @@ export default function PasswordChangeSection() {
     }
   }, [applyResponse]);
 
-  return (
-    <ProfileSectionCard
-      title="Change Password"
-      description="Confirm your current password, then enter the one-time code we email you to set a new password."
-    >
+  const body = (
+    <>
       {loading ? (
         <div className="grid min-h-[200px] place-items-center rounded-xl border border-slate-200 bg-slate-50">
           <div className="text-center">
@@ -336,7 +337,7 @@ export default function PasswordChangeSection() {
                   maxLength={6}
                   value={form.code}
                   onChange={(event) => setField("code", event.target.value.replace(/\D+/g, "").slice(0, 6))}
-                  className="h-14 w-full rounded-lg border border-slate-200 bg-white px-4 text-center text-2xl font-extrabold text-slate-950 outline-none transition placeholder:text-slate-300 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+                  className="h-14 w-full rounded-lg border border-slate-200 bg-white px-4 text-center text-lg font-extrabold text-slate-950 outline-none transition placeholder:text-slate-300 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
                   autoComplete="one-time-code"
                   placeholder="000000"
                 />
@@ -460,6 +461,20 @@ export default function PasswordChangeSection() {
           </div>
         </>
       )}
+    </>
+  );
+
+  if (variant === "dialog") {
+    return <div className="space-y-5">{body}</div>;
+  }
+
+  return (
+    <ProfileSectionCard
+      icon={KeyRound}
+      title="Change Password"
+      description="Confirm your current password, then enter the one-time code we email you to set a new password."
+    >
+      {body}
     </ProfileSectionCard>
   );
 }

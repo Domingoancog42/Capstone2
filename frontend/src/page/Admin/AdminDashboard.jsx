@@ -36,8 +36,8 @@ import Table from "../../components/UI/table";
 import Breadcrumbs from "../../components/breadcrumbs/breadcrumbs";
 import Header from "../../components/navigation/Header";
 import Sidebar from "../../components/navigation/Sidebar";
+import AdminAccountCard from "../../components/profile/AdminAccountCard";
 import ProfilePage from "../../components/profile/ProfilePage";
-import { requestProfileTab } from "../../components/profile/profileUtils";
 import {
   archiveUser,
   createEmployee,
@@ -71,6 +71,8 @@ import PayslipWorkspace from "../../module/payroll/PayslipWorkspace";
 import CashAdvanceWorkspace from "../../module/payroll/CashAdvanceWorkspace";
 import LeaveMonetizationWorkspace from "../../module/payroll/LeaveMonetizationWorkspace";
 import FileLoan from "../../module/Loan/fileloan";
+import AwardCyclesWorkspace from "../../module/rewards/AwardCyclesWorkspace";
+import LoyaltyWorkspace from "../../module/rewards/LoyaltyWorkspace";
 import ServiceRecordWorkspace from "../../module/serviceRecord/ServiceRecordWorkspace";
 
 import AdminReports from "../../module/reports/AdminReports";
@@ -78,7 +80,6 @@ import { reportCategoryFromPath } from "../../module/reports/reportCategories";
 import IpcrManagementWorkspace from "../../module/performance/IpcrManagementWorkspace";
 import OpcrManagementWorkspace from "../../module/performance/OpcrManagementWorkspace";
 import LeaveTravelCalendarWorkspace from "../../module/calendar/LeaveTravelCalendarWorkspace";
-import RewardsRecognitionWorkspace from "../../module/rewards/RewardsRecognitionWorkspace";
 import NotificationCenter from "../../components/notification/NotificationCenter";
 import CreateEmployee from "./create_employee";
 import AdminAnalyticsOverview from "../../components/dashboard/AdminAnalyticsOverview";
@@ -122,6 +123,8 @@ const modulePaths = {
   employees: "/admin/employees",
   serviceRecord: "/admin/service-record",
   rewardsRecognition: "/admin/rewards-recognition",
+  rewardsNomination: "/admin/rewards-recognition/nomination",
+  rewardsLoyalty: "/admin/rewards-recognition/loyalty",
   performanceManagement: "/admin/masterfiles/performance-management/opcr",
   performanceOpcr: "/admin/masterfiles/performance-management/opcr",
   performanceIpcr: "/admin/masterfiles/performance-management/ipcr",
@@ -206,40 +209,49 @@ const salaryManagementViews = [
 
 const adminModuleBreadcrumbs = {
   dashboard: [{ label: "Dashboard", path: modulePaths.dashboard }],
-  messages: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Messages", path: modulePaths.messages }],
+  messages: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Communications", path: modulePaths.messages }],
   notifications: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Notifications", path: modulePaths.notifications }],
   users: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Users", path: modulePaths.users }],
-  employees: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Employees", path: modulePaths.employees }],
-  serviceRecord: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Service Record", path: modulePaths.serviceRecord }],
-  rewardsRecognition: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Rewards & Recognition", path: modulePaths.rewardsRecognition }],
-  calendar: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Calendar", path: modulePaths.calendar }],
+  employees: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Employee Directory", path: modulePaths.employees }],
+  serviceRecord: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Employee Records", path: modulePaths.serviceRecord }],
+  rewardsNomination: [
+    { label: "Dashboard", path: modulePaths.dashboard },
+    { label: "Recognition & Rewards", path: modulePaths.rewardsNomination },
+    { label: "Nomination", path: modulePaths.rewardsNomination },
+  ],
+  rewardsLoyalty: [
+    { label: "Dashboard", path: modulePaths.dashboard },
+    { label: "Recognition & Rewards", path: modulePaths.rewardsNomination },
+    { label: "Loyalty", path: modulePaths.rewardsLoyalty },
+  ],
+  calendar: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Work Calendar", path: modulePaths.calendar }],
   leaveBalances: [
     { label: "Dashboard", path: modulePaths.dashboard },
-    { label: "Masterfiles" },
-    { label: "Set Balances", path: modulePaths.leaveBalances },
+    { label: "HR Operations" },
+    { label: "Leave Balances", path: modulePaths.leaveBalances },
   ],
   performanceOpcr: [
     { label: "Dashboard", path: modulePaths.dashboard },
-    { label: "Performance Management", path: modulePaths.performanceManagement },
+    { label: "Performance Reviews", path: modulePaths.performanceManagement },
     { label: "OPCR", path: modulePaths.performanceOpcr },
   ],
   performanceIpcr: [
     { label: "Dashboard", path: modulePaths.dashboard },
-    { label: "Performance Management", path: modulePaths.performanceManagement },
+    { label: "Performance Reviews", path: modulePaths.performanceManagement },
     { label: "IPCR", path: modulePaths.performanceIpcr },
   ],
   salaryManagement: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Salary Management", path: modulePaths.salaryManagement }],
-  attendance: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Attendance", path: modulePaths.attendance }],
-  overtime: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Attendance", path: modulePaths.attendance }, { label: "Overtime", path: modulePaths.overtime }],
-  leave: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Leave", path: modulePaths.leave }],
-  payrollGenerate: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll", path: modulePaths.payroll }, { label: "Create Payroll" }],
-  payrollRecords: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll", path: modulePaths.payroll }, { label: "Payslip" }],
-  payrollLoan: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll", path: modulePaths.payroll }, { label: "Loan" }],
-  payrollCashAdvance: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll", path: modulePaths.payroll }, { label: "Cash Advance" }],
-  payrollLeaveMonetization: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll", path: modulePaths.payroll }, { label: "Leave Monetization" }],
-  archivedPayroll: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll", path: modulePaths.payroll }, { label: "Archived Payroll" }],
+  attendance: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Time & Attendance", path: modulePaths.attendance }],
+  overtime: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Time & Attendance", path: modulePaths.attendance }, { label: "Overtime", path: modulePaths.overtime }],
+  leave: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Leave Administration", path: modulePaths.leave }],
+  payrollGenerate: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll Management", path: modulePaths.payroll }, { label: "Create Payroll" }],
+  payrollRecords: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll Management", path: modulePaths.payroll }, { label: "Payslip" }],
+  payrollLoan: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll Management", path: modulePaths.payroll }, { label: "Loan" }],
+  payrollCashAdvance: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll Management", path: modulePaths.payroll }, { label: "Cash Advance" }],
+  payrollLeaveMonetization: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll Management", path: modulePaths.payroll }, { label: "Leave Monetization" }],
+  archivedPayroll: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Payroll Management", path: modulePaths.payroll }, { label: "Archived Payroll" }],
 
-  reports: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Reports", path: modulePaths.reports }],
+  reports: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Reports & Analytics", path: modulePaths.reports }],
   settings: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Settings", path: modulePaths.settings }],
 };
 
@@ -268,8 +280,13 @@ function moduleFromPath(pathname) {
     return "serviceRecord";
   }
 
-  if (pathname === modulePaths.rewardsRecognition) {
-    return "rewardsRecognition";
+  if (pathname === modulePaths.rewardsLoyalty) {
+    return "rewardsLoyalty";
+  }
+
+  // The bare route is what older links point at; send it to the first award rather than nowhere.
+  if (pathname === modulePaths.rewardsRecognition || pathname === modulePaths.rewardsNomination) {
+    return "rewardsNomination";
   }
 
   if (pathname === modulePaths.calendar) {
@@ -382,7 +399,7 @@ const defaultUserFormValues = {
 function UserSelectField({ label, name, value, onChange, error, children, helper }) {
   return (
     <div className="w-full">
-      <label htmlFor={name} className="mb-2 block text-sm font-semibold text-slate-700">
+      <label htmlFor={name} className="mb-1.5 block text-sm font-semibold text-slate-700">
         {label}
       </label>
       <select
@@ -906,7 +923,7 @@ function AdminEmployeeCard({
   const canToggleStatus = !isArchived && Boolean(linkedUser) && ["active", "inactive"].includes(normalizedStatus);
 
   return (
-    <article className={`group relative flex h-full flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl ${isArchived ? "bg-slate-50/70" : ""}`.trim()}>
+    <article className={`group relative flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl ${isArchived ? "bg-slate-50/70" : ""}`.trim()}>
       <div className={`absolute inset-x-0 bottom-0 h-1.5 bg-gradient-to-r ${accentClass}`} />
 
       <div className="flex items-start justify-between gap-3 px-4 pt-4">
@@ -936,7 +953,7 @@ function AdminEmployeeCard({
       </div>
 
       <div className="flex flex-1 flex-col px-5 pb-5 pt-3">
-        <div className="mx-auto grid h-20 w-20 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-2xl font-bold text-slate-500 ring-4 ring-white">
+        <div className="mx-auto grid h-20 w-20 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-lg font-bold text-slate-500 ring-4 ring-white">
           {avatarUrl ? (
             <img
               src={avatarUrl}
@@ -993,6 +1010,7 @@ function AdminEmployeeCard({
               label={`Restore ${employee.fullName || employee.employeeId || "employee"}`}
               icon={faClockRotateLeft}
               tone="approve"
+              text="Restore"
               onClick={() => onRestore(employee)}
             />
           ) : (
@@ -1013,6 +1031,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
   const [activeModule, setActiveModule] = useState(() => moduleFromPath(currentPath));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [accountCardOpen, setAccountCardOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [employeeQuery, setEmployeeQuery] = useState("");
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
@@ -1060,7 +1079,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
   const activeSalaryManagementView = salaryManagementViewFromPath(currentPath) || selectedSalaryManagementView;
   const activeSalaryManagementItem = salaryManagementViews.find((item) => item.key === activeSalaryManagementView) || salaryManagementViews[0];
   const breadcrumbs = isProfileView
-    ? [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Profile" }]
+    ? [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "My Profile" }]
     : activeModule === "leave"
       ? [
           { label: "Dashboard", path: modulePaths.dashboard },
@@ -1342,7 +1361,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
       }).length,
     [employees, userByEmail]
   );
-  const inactiveEmployeeCount = Math.max(0, employees.length - activeEmployeeCount);
+  const inactiveEmployeeCount = Math.max(0, employees.length - activeEmployeeCount) + archivedEmployees.length;
 
   const nextEmployeeId = useMemo(() => buildNextEmployeeId(employees), [employees]);
   const sortedFilteredEmployees = useMemo(
@@ -1753,6 +1772,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                 label={`Restore ${row.fullName || row.employeeId || "employee"}`}
                 icon={faClockRotateLeft}
                 tone="approve"
+                text="Restore"
                 onClick={() => handleRestoreEmployee(row)}
               />
             ) : (
@@ -2068,7 +2088,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
             className="w-full sm:w-[300px]"
           />
           <div className="w-full sm:w-[240px]">
-            <label htmlFor="userStatusFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="userStatusFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Status
             </label>
             <select
@@ -2078,7 +2098,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                 setUserStatusFilter(event.target.value);
                 setUserPage(1);
               }}
-              className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
             >
               <option value="">All</option>
               {userStatusOptions.map((status) => (
@@ -2087,7 +2107,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
             </select>
           </div>
           <div className="w-full sm:w-[180px]">
-            <label htmlFor="userRowsPerPage" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="userRowsPerPage" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Rows Per Page
             </label>
             <select
@@ -2097,7 +2117,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                 setUserRowsPerPage(Number(event.target.value) || DEFAULT_USER_ROWS_PER_PAGE);
                 setUserPage(1);
               }}
-              className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
             >
               {[5, 8, 10, 15, 20].map((value) => (
                 <option key={value} value={value}>{value}</option>
@@ -2185,7 +2205,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
           <section className="grid gap-4 md:grid-cols-3">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="m-0 text-sm font-semibold text-slate-500">Active Employees</p>
-              <strong className="mt-2 block text-2xl font-semibold text-slate-900">
+              <strong className="mt-2 block text-lg font-semibold text-slate-900">
                 {numberFormat.format(employees.length)}
               </strong>
             </div>
@@ -2431,10 +2451,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
     <div className="min-h-screen bg-transparent">
       <Header
         user={user}
-        onOpenProfile={profilePath && onNavigate ? (tabId) => {
-          requestProfileTab(tabId);
-          onNavigate(profilePath);
-        } : undefined}
+        onOpenProfile={() => setAccountCardOpen(true)}
         onOpenSettings={() => selectModule("settings")}
         onLogout={onLogout}
         onNavigate={onNavigate}
@@ -2463,10 +2480,10 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
         variant="crimson"
       />
 
-      <main className={`${sidebarCollapsed ? "lg:ml-20" : "lg:ml-72"} pt-16 transition-all duration-300 ${isTableWorkspaceView ? "lg:overflow-hidden" : ""}`.trim()}>
+      <main className={`${sidebarCollapsed ? "lg:ml-16" : "lg:ml-64"} pt-14 transition-all duration-300 ${isTableWorkspaceView ? "lg:overflow-hidden" : ""}`.trim()}>
         <div
           className={`${
-            isTableWorkspaceView ? "flex min-h-[calc(100vh-4rem)] flex-col gap-4 p-4 sm:p-6 lg:h-[calc(100vh-4rem)] lg:min-h-0 lg:overflow-hidden" : "space-y-4 p-4 sm:p-6"
+            isTableWorkspaceView ? "flex min-h-[calc(100vh-4rem)] flex-col gap-4 p-4 sm:p-4 lg:h-[calc(100vh-4rem)] lg:min-h-0 lg:overflow-hidden" : "space-y-4 p-4 sm:p-4"
           }`.trim()}
         >
           <Breadcrumbs
@@ -2519,7 +2536,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                   <CardHeader className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                     <div className="space-y-2">
                       <div>
-                        <CardTitle className="text-2xl">
+                        <CardTitle className="text-lg">
                           {employeeArchiveView === "archive" ? "Archived Employees" : "Employees"}
                         </CardTitle>
                         <CardDescription>
@@ -2577,7 +2594,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                   </CardHeader>
 
                   <CardContent className="space-y-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,220px)_150px_130px_110px] sm:items-end">
                       <InputField
                         label="Search Employees"
                         name="employeeSearch"
@@ -2586,13 +2603,12 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                           setEmployeeQuery(event.target.value);
                           setEmployeePage(DEFAULT_EMPLOYEE_PAGE);
                         }}
-                        placeholder="Search by name, ID, email, or position"
+                        placeholder="Search by name, ID, or email"
                         icon={Search}
                         aria-label="Search employees"
-                        className="w-full sm:w-[320px]"
                       />
-                      <div className="w-full sm:w-[200px]">
-                        <label htmlFor="employeeDivisionFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+                      <div>
+                        <label htmlFor="employeeDivisionFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                           Division
                         </label>
                         <select
@@ -2602,7 +2618,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                             setEmployeeDivisionFilter(event.target.value);
                             setEmployeePage(DEFAULT_EMPLOYEE_PAGE);
                           }}
-                          className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+                          className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none"
                         >
                           <option value="">All divisions</option>
                           {employeeDivisionOptions.map((division) => (
@@ -2610,8 +2626,8 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                           ))}
                         </select>
                       </div>
-                      <div className="w-full sm:w-[180px]">
-                        <label htmlFor="employeeStatusFilter" className="mb-2 block text-sm font-semibold text-slate-700">
+                      <div>
+                        <label htmlFor="employeeStatusFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                           Status
                         </label>
                         <select
@@ -2621,7 +2637,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                             setEmployeeStatusFilter(event.target.value);
                             setEmployeePage(DEFAULT_EMPLOYEE_PAGE);
                           }}
-                          className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+                          className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none"
                         >
                           <option value="">All statuses</option>
                           {employeeStatusOptions.map((status) => (
@@ -2629,8 +2645,8 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                           ))}
                         </select>
                       </div>
-                      <div className="w-full sm:w-[180px]">
-                        <label htmlFor="employeeRowsPerPage" className="mb-2 block text-sm font-semibold text-slate-700">
+                      <div>
+                        <label htmlFor="employeeRowsPerPage" className="mb-1.5 block text-sm font-semibold text-slate-700">
                           Rows Per Page
                         </label>
                         <select
@@ -2640,7 +2656,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                             setEmployeeRowsPerPage(Number(event.target.value) || DEFAULT_EMPLOYEE_ROWS_PER_PAGE);
                             setEmployeePage(DEFAULT_EMPLOYEE_PAGE);
                           }}
-                          className="min-h-[46px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-slate-900 outline-none"
+                          className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none"
                         >
                           {[5, 10, 15, 20, 25, 50].map((value) => (
                             <option key={value} value={value}>{value}</option>
@@ -2687,8 +2703,12 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
                 <ServiceRecordWorkspace user={user} mode="manage" />
               ) : null}
 
-              {activeModule === "rewardsRecognition" ? (
-                <RewardsRecognitionWorkspace employees={employees} user={user} />
+              {activeModule === "rewardsNomination" ? (
+                <AwardCyclesWorkspace user={user} employees={employees} />
+              ) : null}
+
+              {activeModule === "rewardsLoyalty" ? (
+                <LoyaltyWorkspace employees={employees} />
               ) : null}
 
               {activeModule === "salaryManagement" ? renderSalaryManagementCard() : null}
@@ -2764,6 +2784,14 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
           </AnimatePresence>
         </div>
       </main>
+
+      <AdminAccountCard
+        open={accountCardOpen}
+        onClose={() => setAccountCardOpen(false)}
+        user={user}
+        onUserChange={onUserChange}
+        employees={employees}
+      />
 
       <Modal
         open={employeeModalOpen}
@@ -2858,7 +2886,7 @@ export default function AdminDashboard({ user, onLogout, currentPath = "/admin/d
         {viewingEmployee ? (
           <div className="space-y-5">
             <div className="flex justify-center">
-              <div className="grid h-28 w-28 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-2xl font-bold text-slate-500 shadow-sm">
+              <div className="grid h-28 w-28 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-lg font-bold text-slate-500 shadow-sm">
                 {resolveBackendAssetUrl(viewingEmployee.profileImage) ? (
                   <img
                     src={resolveBackendAssetUrl(viewingEmployee.profileImage)}

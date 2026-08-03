@@ -36,6 +36,15 @@ export async function saveLeaveBalance(payload) {
   return response.data;
 }
 
+export async function adjustLeaveBalances(payload) {
+  const response = await api.put("/leave_credit.php", {
+    action: "adjust",
+    ...payload,
+  });
+  notifyLeaveRequestsChanged();
+  return response.data;
+}
+
 export async function bulkAddLeaveCredits(payload) {
   const response = await api.put("/leave_credit.php", {
     action: "bulk_add",

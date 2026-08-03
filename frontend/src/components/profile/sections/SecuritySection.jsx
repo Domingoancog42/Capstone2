@@ -1,6 +1,7 @@
 import React from "react";
 import { Clock3, LoaderCircle, LockKeyhole, ShieldCheck, ShieldOff } from "lucide-react";
 import ProfileSectionCard from "../ProfileSectionCard";
+import { profileSectionAnchorId } from "../profileUtils";
 
 function formatActivityAction(action = "") {
   return String(action || "")
@@ -154,6 +155,8 @@ export default function SecuritySection({
 
   return (
     <ProfileSectionCard
+      id={profileSectionAnchorId("security")}
+      icon={ShieldCheck}
       title="Security"
       description="Review password expiry, manage personal two-factor authentication, and check recent verification activity."
       readOnly={false}
@@ -205,7 +208,7 @@ export default function SecuritySection({
 
             <div className="rounded-xl border border-slate-200 bg-white p-4">
               <p className="m-0 text-sm font-bold text-slate-950">Current Login Rule</p>
-              <p className={`m-0 mt-3 text-2xl font-extrabold ${requiredForCurrentUser ? "text-[#D61E1E]" : "text-slate-700"}`}>
+              <p className={`m-0 mt-3 text-lg font-extrabold ${requiredForCurrentUser ? "text-[#D61E1E]" : "text-slate-700"}`}>
                 {requiredForCurrentUser ? "OTP Required" : "OTP Optional"}
               </p>
               <p className="m-0 mt-2 text-sm leading-6 text-slate-500">

@@ -15,6 +15,7 @@ import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 import ActionIconButton from "../../components/UI/ActionIconButton";
 import SharedEmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
+import LeaveStatusBadge from "../../components/leave/LeaveStatusBadge";
 import Pagination from "../../components/UI/Pagination";
 import {
   canManageLeave,
@@ -432,7 +433,7 @@ function PassSlipPreviewModal({ record, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close pass slip form preview"
@@ -447,7 +448,7 @@ function PassSlipPreviewModal({ record, onClose }) {
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">Pass Slip Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted pass slip.</p>
@@ -463,7 +464,7 @@ function PassSlipPreviewModal({ record, onClose }) {
           </div>
         </div>
 
-        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-6">
+        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <PassSlipFormSheet record={record} />
         </div>
       </div>
@@ -549,7 +550,7 @@ function PassSlipModal({
   ) || selectedEmployee;
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close pass slip form"
@@ -561,11 +562,11 @@ function PassSlipModal({
 
       <form
         onSubmit={handleSubmit}
-        className={`relative z-10 w-full max-w-3xl overflow-hidden rounded-3xl border border-white/60 bg-white shadow-2xl transition-all duration-300 ${
+        className={`relative z-10 w-full max-w-3xl overflow-hidden rounded-2xl border border-white/60 bg-white shadow-2xl transition-all duration-300 ${
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">Create Pass Slip</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Complete the form to submit a pass slip request.</p>
@@ -588,7 +589,7 @@ function PassSlipModal({
           </div>
         </div>
 
-        <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-6">
+        <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="sm:col-span-2">
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">Employee</span>
@@ -672,7 +673,7 @@ function PassSlipModal({
           </div>
         </div>
 
-        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-4">
           <button
             type="button"
             onClick={onClose}
@@ -952,8 +953,8 @@ export default function PassSlipWorkspace({
   };
 
   const filterGridClass = showDivisionFilter
-    ? "mt-4 grid gap-3 lg:grid-cols-[1.1fr_220px_180px_180px_140px]"
-    : "mt-4 grid gap-3 lg:grid-cols-[1.1fr_180px_180px_140px]";
+    ? "mt-4 grid gap-3 lg:grid-cols-[minmax(0,200px)_170px_150px_150px_120px]"
+    : "mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_160px_120px]";
 
   return (
     <div className="pass-slip-workspace space-y-5">
@@ -981,14 +982,14 @@ export default function PassSlipWorkspace({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={viewAllPermission ? "Search employee, division, destination, purpose" : "Search destination, purpose, status"}
-              className="min-h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
           </label>
           {showDivisionFilter ? (
             <select
               value={divisionFilter}
               onChange={(event) => setDivisionFilter(event.target.value)}
-              className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="">All divisions</option>
               {divisionOptions.map((division) => (
@@ -1002,12 +1003,12 @@ export default function PassSlipWorkspace({
             type="date"
             value={dateFilter}
             onChange={(event) => setDateFilter(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           />
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="">All statuses</option>
             {PASS_SLIP_STATUSES.map((item) => (
@@ -1017,7 +1018,7 @@ export default function PassSlipWorkspace({
           <select
             value={rowsPerPage}
             onChange={(event) => setRowsPerPage(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="5">5 rows</option>
             <option value="10">10 rows</option>
@@ -1030,7 +1031,7 @@ export default function PassSlipWorkspace({
             <table className="min-w-[1240px] w-full border-collapse">
               <thead className="bg-slate-50">
                 <tr>
-                  {["#", "Employee", "Division", "Pass Date", "Departure", "Returned", "Destination", "Actions"].map((header) => (
+                  {["#", "Employee", "Division", "Pass Date", "Departure", "Returned", "Destination", "Status", "Actions"].map((header) => (
                     <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
                       {header}
                     </th>
@@ -1041,14 +1042,14 @@ export default function PassSlipWorkspace({
                 {loading ? (
                   Array.from({ length: 4 }).map((_, index) => (
                     <tr key={index} className="animate-pulse border-b border-slate-100">
-                      <td colSpan={8} className="px-3 py-3">
+                      <td colSpan={9} className="px-3 py-3">
                         <div className="h-5 rounded bg-slate-200" />
                       </td>
                     </tr>
                   ))
                 ) : paginatedRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center">
+                    <td colSpan={9} className="px-4 py-12 text-center">
                       <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
                         <ClipboardList size={20} />
                       </div>
@@ -1077,6 +1078,7 @@ export default function PassSlipWorkspace({
                         <td className="px-3 py-3 text-sm text-slate-600">{record.departureTimeDisplay}</td>
                         <td className="px-3 py-3 text-sm text-slate-600">{record.timeReturnedDisplay}</td>
                         <td className="max-w-[220px] truncate px-3 py-3 text-sm text-slate-700">{record.destination}</td>
+                        <td className="px-3 py-3"><LeaveStatusBadge status={record.status} /></td>
                         <td className="px-3 py-3">
                           <div className="flex flex-wrap gap-2">
                             <ActionIconButton

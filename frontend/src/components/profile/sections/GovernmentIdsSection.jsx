@@ -1,6 +1,8 @@
 import React from "react";
+import { IdCard } from "lucide-react";
 import ProfileField from "../ProfileField";
 import ProfileSectionCard from "../ProfileSectionCard";
+import { profileSectionAnchorId } from "../profileUtils";
 
 export default function GovernmentIdsSection({
   values,
@@ -12,6 +14,8 @@ export default function GovernmentIdsSection({
 }) {
   return (
     <ProfileSectionCard
+      id={profileSectionAnchorId("government")}
+      icon={IdCard}
       title="Government IDs"
       description="Maintain government identification numbers used for payroll, statutory filings, and agency compliance."
       readOnly={readOnly}

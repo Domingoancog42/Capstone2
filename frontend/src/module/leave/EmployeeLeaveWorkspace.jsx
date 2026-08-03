@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  CalendarClock,
+  CalendarDays,
   FilePenLine,
   Filter,
   Search,
+  Wallet,
 } from "lucide-react";
 import { faBan } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
@@ -12,6 +15,7 @@ import ActionIconButton from "../../components/UI/ActionIconButton";
 import LeaveRequestModal from "../../components/leave/LeaveRequestModal";
 import LeaveStatusBadge from "../../components/leave/LeaveStatusBadge";
 import Pagination from "../../components/UI/Pagination";
+import ProfileFloatingCard from "../../components/profile/ProfileFloatingCard";
 import { LEAVE_STATUSES, LEAVE_TYPES } from "../../data/leaveTypes";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
@@ -29,8 +33,8 @@ import {
 import { getLeaveReasonDisplay } from "../../utils/leaveRequestDetails";
 
 const leaveBalanceCards = [
-  { type: "Vacation Leave", tone: "from-teal-600 to-cyan-600" },
-  { type: "Sick Leave", tone: "from-sky-600 to-indigo-600" },
+  { type: "Vacation Leave", tone: "from-teal-600 to-cyan-600", icon: CalendarDays },
+  { type: "Sick Leave", tone: "from-sky-600 to-indigo-600", icon: CalendarClock },
 ];
 
 function formatCreditValue(value) {
@@ -50,6 +54,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
   const [leaveCredits, setLeaveCredits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [balanceOpen, setBalanceOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [query, setQuery] = useState("");
   const [leaveType, setLeaveType] = useState("");
@@ -201,54 +206,46 @@ export default function EmployeeLeaveWorkspace({ user }) {
   return (
     <div className="employee-leave-workspace space-y-5">
 
-      <section className="grid gap-4 md:grid-cols-2">
-        {balanceCards.map((card) => (
-          <article key={card.type} className="overflow-hidden rounded-2xl border border-white/60 bg-white shadow-sm">
-            <div className={`h-1.5 bg-gradient-to-r ${card.tone}`} />
-            <div className="p-4">
-              <p className="m-0 text-sm font-semibold text-slate-500">{card.type}</p>
-              <div className="mt-3 flex items-end justify-between gap-3">
-                <strong className="text-2xl font-semibold text-slate-950">{formatCreditValue(card.remaining)}</strong>
-                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                  {formatCreditValue(card.used)} used of {formatCreditValue(card.total)}
-                </span>
-              </div>
-              <p className="m-0 mt-2 text-xs text-slate-500">Remaining days</p>
-            </div>
-          </article>
-        ))}
-      </section>
-
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h3 className="m-0 text-base font-semibold text-slate-950">Leave History</h3>
             <p className="m-0 mt-1 text-sm text-slate-500">Search, filter, and monitor your submitted leave requests.</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
-          >
-            <FilePenLine size={16} />
-            File Leave Request
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setBalanceOpen(true)}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              <Wallet size={16} />
+              View Leave Balance
+            </button>
+            <button
+              type="button"
+              onClick={() => setModalOpen(true)}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+            >
+              <FilePenLine size={16} />
+              File Leave Request
+            </button>
+          </div>
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_180px_160px_140px]">
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_150px_130px]">
           <label className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search leave history"
-              className="min-h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
           </label>
           <select
             value={leaveType}
             onChange={(event) => setLeaveType(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="">All leave types</option>
             {LEAVE_TYPES.map((type) => (
@@ -258,7 +255,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="">All statuses</option>
             {LEAVE_STATUSES.map((item) => (
@@ -268,7 +265,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
           <select
             value={rowsPerPage}
             onChange={(event) => setRowsPerPage(event.target.value)}
-            className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="5">5 rows</option>
             <option value="10">10 rows</option>
@@ -351,6 +348,44 @@ export default function EmployeeLeaveWorkspace({ user }) {
           <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setCurrentPage} />
         </div>
       </section>
+
+      <ProfileFloatingCard
+        open={balanceOpen}
+        onClose={() => setBalanceOpen(false)}
+        title="Leave Balance"
+        subtitle="Available credits on your employee account for the current year."
+        icon={Wallet}
+        maxWidth="max-w-[460px]"
+      >
+        <div className="space-y-3">
+          {balanceCards.map((card) => {
+            const Icon = card.icon;
+
+            return (
+              <article key={card.type} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className={`h-1.5 bg-gradient-to-r ${card.tone}`} />
+                <div className="flex items-center gap-3 p-4">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600">
+                    <Icon size={17} aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="m-0 text-sm font-semibold text-slate-500">{card.type}</p>
+                    <div className="mt-1.5 flex items-end justify-between gap-3">
+                      <strong className="text-lg font-semibold leading-none text-slate-950">
+                        {formatCreditValue(card.remaining)}
+                      </strong>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                        {formatCreditValue(card.used)} used of {formatCreditValue(card.total)}
+                      </span>
+                    </div>
+                    <p className="m-0 mt-1.5 text-xs text-slate-500">Remaining days</p>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </ProfileFloatingCard>
 
       <LeaveRequestModal
         open={modalOpen}

@@ -65,7 +65,7 @@ const GenderDistributionCard = ({ data = [], divisionData = [], loading = false 
 
   if (loading) {
     return (
-      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-6 shadow-md">
+      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-4 shadow-md">
         <div className="mb-4 h-6 w-1/2 rounded bg-gray-200" />
         <div className="h-52 rounded bg-gray-100" />
       </div>
@@ -73,7 +73,7 @@ const GenderDistributionCard = ({ data = [], divisionData = [], loading = false 
   }
 
   return (
-    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-6 shadow-md transition-shadow duration-300 hover:shadow-lg">
+    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-4 shadow-md transition-shadow duration-300 hover:shadow-lg">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="rounded-lg bg-purple-100 p-3">

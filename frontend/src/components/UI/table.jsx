@@ -22,7 +22,7 @@ function SortIndicator({ active, direction }) {
 }
 
 function HeaderCell({ column, sortBy, sortDirection, onSort, stickyHeader }) {
-  const className = `border-b border-slate-200 bg-slate-50 px-4 py-3 text-left align-middle text-[0.82rem] font-extrabold uppercase text-slate-700 ${
+  const className = `border-b border-slate-200 bg-slate-50 px-3 py-3 text-left align-middle text-xs font-bold uppercase text-slate-600 ${
     stickyHeader ? "sticky top-0 z-10" : ""
   } ${column.headerClassName || ""}`.trim();
 
@@ -37,7 +37,7 @@ function HeaderCell({ column, sortBy, sortDirection, onSort, stickyHeader }) {
       <button
         type="button"
         onClick={() => onSort(column.key)}
-        className={`inline-flex items-center gap-1.5 text-left text-[0.82rem] font-extrabold uppercase transition ${
+        className={`inline-flex items-center gap-1.5 text-left text-xs font-bold uppercase transition ${
           active ? "text-slate-900" : "text-slate-600 hover:text-slate-900"
         }`}
       >
@@ -50,10 +50,10 @@ function HeaderCell({ column, sortBy, sortDirection, onSort, stickyHeader }) {
 
 function SkeletonRows({ columns, rows }) {
   return Array.from({ length: rows }).map((_, rowIndex) => (
-    <tr key={`skeleton-${rowIndex}`} className="animate-pulse">
+    <tr key={`skeleton-${rowIndex}`} className="animate-pulse border-b border-slate-100">
       {columns.map((column) => (
-        <td key={column.key} className="border-b border-slate-200 px-4 py-3.5">
-          <div className="h-4 w-full rounded bg-slate-200" />
+        <td key={column.key} className="px-3 py-3">
+          <div className="h-5 w-full rounded bg-slate-200" />
         </td>
       ))}
     </tr>
@@ -100,14 +100,14 @@ export default function Table({
             data.map((row, index) => (
               <tr
                 key={row[rowKey] ?? index}
-                className={`transition hover:bg-slate-50 ${
+                className={`border-b border-slate-100 transition hover:bg-slate-50 ${
                   typeof rowClassName === "function" ? rowClassName(row, index) || "" : rowClassName || ""
                 }`.trim()}
               >
                 {columns.map((column) => (
                   <td
                     key={column.key}
-                    className={`border-b border-slate-200 px-4 py-3.5 align-middle ${column.cellClassName || ""}`.trim()}
+                    className={`px-3 py-3 align-middle ${column.cellClassName || ""}`.trim()}
                   >
                     {column.render ? column.render(row, index) : row[column.key]}
                   </td>
@@ -118,7 +118,7 @@ export default function Table({
             <tr>
               <td
                 colSpan={columns.length || 1}
-                className="border-b border-slate-200 px-4 py-3.5 text-center text-slate-500"
+                className="px-4 py-12 text-center text-sm text-slate-500"
               >
                 {emptyState || emptyMessage}
               </td>

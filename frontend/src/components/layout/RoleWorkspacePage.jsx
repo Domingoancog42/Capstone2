@@ -30,7 +30,7 @@ function MetricCard({ metric }) {
         </div>
         <div>
           <p className="m-0 text-sm font-semibold text-slate-500">{metric.label}</p>
-          <strong className="mt-2 block text-2xl font-semibold text-slate-900">{metric.value}</strong>
+          <strong className="mt-2 block text-lg font-semibold text-slate-900">{metric.value}</strong>
           <p className="mt-2 text-sm leading-6 text-slate-500">{metric.helper}</p>
         </div>
       </CardContent>
@@ -177,7 +177,7 @@ export default function RoleWorkspacePage({
   const breadcrumbs = isProfileView
     ? [
         { label: "Dashboard", path: dashboardPath },
-        { label: "Profile" },
+        { label: "My Profile" },
       ]
     : activeItem?.key === "dashboard"
       ? [{ label: "Dashboard", path: dashboardPath }]

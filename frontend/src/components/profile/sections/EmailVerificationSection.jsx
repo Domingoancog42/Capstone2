@@ -138,6 +138,24 @@ function StatusBadge({ status, icon: Icon }) {
   );
 }
 
+/**
+ * Card chrome for the standalone layout; a transparent pass-through inside a floating card, whose
+ * own border and padding would otherwise double up on this one.
+ */
+function Shell({ isDialog, children }) {
+  if (isDialog) {
+    return <div className="flex flex-col">{children}</div>;
+  }
+
+  return (
+    <section className="rounded-[10px] border border-emerald-100 bg-emerald-50/35 p-3 shadow-sm sm:p-5">
+      <div className="mx-auto max-w-[560px] overflow-hidden rounded-[10px] border border-slate-200 bg-white shadow-sm">
+        {children}
+      </div>
+    </section>
+  );
+}
+
 function EmailHistoryDrawer({ open, rows, onClose }) {
   useEffect(() => {
     if (!open) {
@@ -157,7 +175,8 @@ function EmailHistoryDrawer({ open, rows, onClose }) {
   return (
     <AnimatePresence>
       {open ? (
-        <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true" aria-labelledby="email-history-title">
+        // z-80 keeps the drawer above the profile floating card (z-70) that can host this section.
+        <div className="fixed inset-0 z-[80]" role="dialog" aria-modal="true" aria-labelledby="email-history-title">
           <motion.button
             type="button"
             className="absolute inset-0 border-0 bg-slate-950/40"
@@ -185,7 +204,7 @@ function EmailHistoryDrawer({ open, rows, onClose }) {
 
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
               {rows.length === 0 ? (
-                <div className="grid min-h-[360px] place-items-center rounded-[10px] border border-dashed border-slate-300 bg-[#F8FAFC] p-8 text-center">
+                <div className="grid min-h-[360px] place-items-center rounded-[10px] border border-dashed border-slate-300 bg-[#F8FAFC] p-5 text-center">
                   <div>
                     <span className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400">
                       <Inbox size={28} aria-hidden="true" />
@@ -233,10 +252,15 @@ function EmailHistoryDrawer({ open, rows, onClose }) {
   );
 }
 
+/**
+ * `variant="dialog"` strips the standalone card chrome (tinted frame, fixed width, own title) because
+ * the floating card that hosts it already provides all three.
+ */
 export default function EmailVerificationSection({
   user = null,
   onUserChange,
   onEmailChanged,
+  variant = "card",
 }) {
   const historyStorageKey = useMemo(() => getEmailHistoryStorageKey(user), [user]);
   const changedBy = String(user?.full_name || user?.username || "Current user").trim();
@@ -630,18 +654,21 @@ export default function EmailVerificationSection({
     { number: 3, title: "Done", helper: "Email updated" },
   ];
 
+  const isDialog = variant === "dialog";
+
   return (
     <>
-      <section className="rounded-[10px] border border-emerald-100 bg-emerald-50/35 p-3 shadow-sm sm:p-5">
-        <div className="mx-auto max-w-[560px] overflow-hidden rounded-[10px] border border-slate-200 bg-white shadow-sm">
-          <div className="px-5 py-5 sm:px-6">
+      <Shell isDialog={isDialog}>
+          <div className={isDialog ? "px-5 pb-1 sm:px-4" : "px-5 py-5 sm:px-4"}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <Mail className="shrink-0 text-emerald-600" size={18} aria-hidden="true" />
-                  <h3 className="m-0 text-base font-bold text-slate-950">Email Configuration</h3>
-                </div>
-                <p className="m-0 mt-3 text-sm text-slate-600">
+                {isDialog ? null : (
+                  <div className="flex items-center gap-2">
+                    <Mail className="shrink-0 text-emerald-600" size={18} aria-hidden="true" />
+                    <h3 className="m-0 text-base font-bold text-slate-950">Email Configuration</h3>
+                  </div>
+                )}
+                <p className={`m-0 text-sm text-slate-600 ${isDialog ? "" : "mt-3"}`.trim()}>
                   Step {activeStep} of 3 - {stepCopy[activeStep]}
                 </p>
               </div>
@@ -730,7 +757,7 @@ export default function EmailVerificationSection({
           </div>
         ) : activeStep === 2 ? (
           <>
-            <div className="border-t border-slate-200 bg-white px-5 py-7 sm:px-6">
+            <div className="border-t border-slate-200 bg-white px-5 py-5 sm:px-4">
               <div className="rounded-[10px] border border-emerald-200 bg-emerald-50 px-4 py-3">
                 <div className="flex items-start gap-3">
                   <MailCheck className="mt-0.5 shrink-0 text-emerald-700" size={18} aria-hidden="true" />
@@ -758,7 +785,7 @@ export default function EmailVerificationSection({
                     setVerifyCode(event.target.value.replace(/\D+/g, "").slice(0, 6));
                     setVerifyError("");
                   }}
-                  className="h-14 w-full rounded-lg border border-slate-200 bg-white px-4 text-center text-2xl font-extrabold text-slate-950 outline-none transition placeholder:text-slate-300 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+                  className="h-14 w-full rounded-lg border border-slate-200 bg-white px-4 text-center text-lg font-extrabold text-slate-950 outline-none transition placeholder:text-slate-300 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
                   aria-invalid={Boolean(verifyError)}
                   autoComplete="one-time-code"
                   placeholder="000000"
@@ -791,7 +818,7 @@ export default function EmailVerificationSection({
               ) : null}
             </div>
 
-            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-4">
               <button
                 type="button"
                 className="inline-flex min-h-10 items-center justify-center rounded-lg border border-transparent px-4 text-sm font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
@@ -824,7 +851,7 @@ export default function EmailVerificationSection({
           </>
         ) : activeStep === 3 ? (
           <>
-            <div className="border-t border-slate-200 bg-white px-5 py-8 text-center sm:px-6">
+            <div className="border-t border-slate-200 bg-white px-5 py-5 text-center sm:px-4">
               <span className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700">
                 <CheckCircle2 size={28} aria-hidden="true" />
               </span>
@@ -839,7 +866,7 @@ export default function EmailVerificationSection({
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-4">
               <button
                 type="button"
                 className="inline-flex min-h-10 items-center justify-center rounded-lg border border-transparent px-4 text-sm font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
@@ -859,7 +886,7 @@ export default function EmailVerificationSection({
           </>
         ) : (
           <>
-            <div className="border-t border-slate-200 bg-white px-5 py-7 sm:px-6">
+            <div className="border-t border-slate-200 bg-white px-5 py-5 sm:px-4">
               <div className="space-y-4">
                 <div>
                   <label htmlFor="newEmail" className="mb-2 block text-sm font-bold text-slate-950">
@@ -931,7 +958,7 @@ export default function EmailVerificationSection({
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-4">
               <button
                 type="button"
                 className="inline-flex min-h-10 items-center justify-center rounded-lg border border-transparent px-4 text-sm font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
@@ -952,8 +979,7 @@ export default function EmailVerificationSection({
             </div>
           </>
         )}
-        </div>
-      </section>
+      </Shell>
 
       <EmailHistoryDrawer
         open={historyOpen}

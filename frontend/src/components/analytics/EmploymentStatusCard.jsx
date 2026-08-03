@@ -22,7 +22,6 @@ const EmploymentStatusCard = ({ data = [], loading = false }) => {
     Regular: '#16a34a',
     Permanent: '#16a34a',
     Contractual: '#3b82f6',
-    'Job Order': '#f97316',
     Casual: '#8b5cf6',
     'Not Specified': '#9ca3af',
   };
@@ -36,7 +35,7 @@ const EmploymentStatusCard = ({ data = [], loading = false }) => {
 
   if (loading) {
     return (
-      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-6 shadow-md">
+      <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-4 shadow-md">
         <div className="mb-4 h-6 w-1/2 rounded bg-gray-200" />
         <div className="h-52 rounded bg-gray-100" />
       </div>
@@ -44,7 +43,7 @@ const EmploymentStatusCard = ({ data = [], loading = false }) => {
   }
 
   return (
-    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-6 shadow-md transition-shadow duration-300 hover:shadow-lg">
+    <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-4 shadow-md transition-shadow duration-300 hover:shadow-lg">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="rounded-lg bg-green-100 p-3">

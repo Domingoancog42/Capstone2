@@ -459,7 +459,7 @@ export default function DashboardLeaveTravelCalendar({
             <div className="space-y-5">
             <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center">
-                <div className="mx-auto grid h-28 w-28 place-items-center overflow-hidden rounded-full bg-slate-200 text-2xl font-bold text-slate-500 shadow-sm">
+                <div className="mx-auto grid h-28 w-28 place-items-center overflow-hidden rounded-full bg-slate-200 text-lg font-bold text-slate-500 shadow-sm">
                   {avatarUrl ? (
                     <img
                       src={avatarUrl}

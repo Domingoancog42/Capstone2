@@ -93,7 +93,7 @@ export default function SettingsNav({ groups = [], activeKey, onSelect, query = 
             ))}
           </div>
         ) : (
-          <div className="mt-3 grid place-items-center gap-2 rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center">
+          <div className="mt-3 grid place-items-center gap-2 rounded-lg border border-dashed border-slate-200 px-4 py-5 text-center">
             <SlidersHorizontal size={20} className="text-slate-300" aria-hidden="true" />
             <p className="m-0 text-sm font-semibold text-slate-600">No settings match “{query}”</p>
             <p className="m-0 text-xs text-slate-400">Try a different word, such as “backup” or “password”.</p>

@@ -156,7 +156,7 @@ export default function TwoFactorVerification({
       transition={{ duration: 0.35, ease: "easeOut" }}
     >
       <div className="h-1 bg-[#D61E1E]" />
-      <div className="px-7 pb-7 pt-7">
+      <div className="px-5 pb-7 pt-7">
         <button
           type="button"
           onClick={onBack}
@@ -204,7 +204,7 @@ export default function TwoFactorVerification({
               onChange={handleCodeChange}
               placeholder="482731"
               disabled={verifying}
-              className={`h-16 w-full rounded-xl border px-5 text-center font-mono text-3xl font-extrabold outline-none transition placeholder:text-slate-300 focus:ring-4 ${inputToneClass}`}
+              className={`h-16 w-full rounded-xl border px-5 text-center font-mono text-xl font-extrabold outline-none transition placeholder:text-slate-300 focus:ring-4 ${inputToneClass}`}
             />
           </label>
 

@@ -14,7 +14,7 @@ import { numberFormatter } from "../../utils/format";
 
 function BarChartSkeleton() {
   return (
-    <div className="grid h-[320px] grid-cols-7 items-end gap-3 rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-6">
+    <div className="grid h-[320px] grid-cols-7 items-end gap-3 rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-4">
       {[46, 68, 82, 60, 94, 72, 88].map((height, index) => (
         <div
           key={height + index}
@@ -28,7 +28,7 @@ function BarChartSkeleton() {
 
 function ChartEmptyState({ message }) {
   return (
-    <div className="grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-6 text-center">
+    <div className="grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-4 text-center">
       <div className="max-w-sm">
         <p className="m-0 text-base font-semibold text-slate-900">No analytics data yet</p>
         <p className="mt-2 text-sm leading-6 text-slate-500">{message}</p>

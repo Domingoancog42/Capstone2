@@ -123,7 +123,7 @@ export default function AdminEmployeeCard({
     && ["active", "inactive"].includes(normalizedStatus);
 
   return (
-    <article className={`group relative flex h-full flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl ${isArchived ? "bg-slate-50/70" : ""}`.trim()}>
+    <article className={`group relative flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl ${isArchived ? "bg-slate-50/70" : ""}`.trim()}>
       <div className={`absolute inset-x-0 bottom-0 h-1.5 bg-gradient-to-r ${accentClass}`} />
 
       <div className="flex items-start justify-between gap-3 px-4 pt-4">
@@ -153,7 +153,7 @@ export default function AdminEmployeeCard({
       </div>
 
       <div className="flex flex-1 flex-col px-5 pb-5 pt-3">
-        <div className="mx-auto grid h-20 w-20 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-2xl font-bold text-slate-500 ring-4 ring-white">
+        <div className="mx-auto grid h-20 w-20 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-lg font-bold text-slate-500 ring-4 ring-white">
           {avatarUrl ? (
             <img
               src={avatarUrl}
@@ -210,6 +210,7 @@ export default function AdminEmployeeCard({
               label={`Restore ${employee.fullName || employee.employeeId || "employee"}`}
               icon={faClockRotateLeft}
               tone="approve"
+              text="Restore"
               onClick={() => onRestore?.(employee)}
             />
           ) : (

@@ -1,22 +1,47 @@
 import { SESSION_USER_KEY, normalizeUser } from "../../utils/roleRoutes";
 
-export const profileTabItems = [
+/**
+ * Sections rendered inline on the profile page, in scroll order.
+ *
+ * These used to be tabs. They are now one continuous scrollable document with a sticky jump nav, so
+ * the order here is also the order the reader sees.
+ */
+export const profileSectionItems = [
   { id: "personal", label: "Personal Details" },
   { id: "address", label: "Address" },
   { id: "government", label: "Government IDs" },
   { id: "employment", label: "Employment Status" },
-  { id: "serviceRecord", label: "Service Record" },
   { id: "emergency", label: "Emergency Contact" },
   { id: "signature", label: "E-Signature" },
   { id: "security", label: "Security" },
-  { id: "emailVerification", label: "Email & Verification" },
 ];
+
+/** Panels that open in a floating card instead of taking space in the scroll flow. */
+export const profileDialogItems = [
+  { id: "serviceRecord", label: "Service Record" },
+];
+
+/** Every addressable profile target — a deep link may point at either kind. */
+export const profileTabItems = [...profileSectionItems, ...profileDialogItems];
+
+/** DOM id of an inline section, shared by the section cards and the sticky nav's scroll spy. */
+export function profileSectionAnchorId(sectionId) {
+  return `profile-section-${sectionId}`;
+}
 
 export const PROFILE_TAB_REQUEST_EVENT = "hris:profile-tab-requested";
 const PROFILE_TAB_REQUEST_KEY = "hris_profile_requested_tab";
 
 export function isProfileTabId(tabId) {
   return profileTabItems.some((tab) => tab.id === tabId);
+}
+
+export function isProfileSectionId(tabId) {
+  return profileSectionItems.some((section) => section.id === tabId);
+}
+
+export function isProfileDialogId(tabId) {
+  return profileDialogItems.some((dialog) => dialog.id === tabId);
 }
 
 export function requestProfileTab(tabId) {
@@ -33,8 +58,14 @@ export function requestProfileTab(tabId) {
   window.dispatchEvent(new CustomEvent(PROFILE_TAB_REQUEST_EVENT, { detail: { tabId } }));
 }
 
-export function consumeRequestedProfileTab(fallback = "personal") {
-  const safeFallback = isProfileTabId(fallback) ? fallback : "personal";
+/**
+ * Reads the pending deep-link target, if any.
+ *
+ * Unlike the old tab version there is no fallback: with every section on one page, "no request" means
+ * "start at the top", not "select personal".
+ */
+export function consumeRequestedProfileTab(fallback = "") {
+  const safeFallback = isProfileTabId(fallback) ? fallback : "";
 
   if (typeof window === "undefined") {
     return safeFallback;
@@ -52,8 +83,8 @@ export function consumeRequestedProfileTab(fallback = "personal") {
 
 export const genderOptions = ["Male", "Female", "Prefer not to say"];
 export const civilStatusOptions = ["Single", "Married", "Widowed", "Separated"];
-export const employmentStatusOptions = ["Regular", "Contractual", "Job Order"];
-export const employmentTypeOptions = ["Permanent", "Probationary", "Contractual", "Job Order", "Casual"];
+export const employmentStatusOptions = ["Regular", "Contractual"];
+export const employmentTypeOptions = ["Permanent", "Probationary", "Contractual", "Casual"];
 
 const profileDefaults = {
   employeeRecordId: "",

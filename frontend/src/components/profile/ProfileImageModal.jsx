@@ -109,7 +109,7 @@ export default function ProfileImageModal({
       }
     >
       <div className="space-y-5">
-        <div className="grid h-80 place-items-center overflow-hidden rounded-[28px] border border-slate-200 bg-slate-100 p-6">
+        <div className="grid h-80 place-items-center overflow-hidden rounded-[28px] border border-slate-200 bg-slate-100 p-4">
           {imageDataUrl ? (
             <div className="grid h-64 w-64 place-items-center overflow-hidden rounded-[28px] border border-white bg-white shadow-inner">
               <img

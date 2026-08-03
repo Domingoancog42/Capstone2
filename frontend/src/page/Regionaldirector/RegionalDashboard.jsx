@@ -25,15 +25,15 @@ import { getEmployees, getUsers } from "../../services/api";
 const navigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/regionaldirector/dashboard" },
-  { key: "profile", label: "Profile", icon: UserRound, path: "/regionaldirector/profile" },
-  { key: "calendar", label: "Calendar", icon: CalendarDays, path: "/regionaldirector/calendar" },
+  { key: "profile", label: "My Profile", icon: UserRound, path: "/regionaldirector/profile" },
+  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/regionaldirector/calendar" },
   { type: "section", label: "Communication" },
-  { key: "messages", label: "Messages", icon: MessageCircle, path: "/regionaldirector/messages" },
+  { key: "messages", label: "Communications", icon: MessageCircle, path: "/regionaldirector/messages" },
   { key: "notifications", label: "Notifications", path: "/regionaldirector/notifications", hidden: true },
-  { type: "section", label: "Masterfiles" },
+  { type: "section", label: "HR Operations" },
   {
     key: "attendance",
-    label: "Attendance",
+    label: "Time & Attendance",
     icon: ClipboardCheck,
     path: "/regionaldirector/attendance/overtime",
     children: [
@@ -42,7 +42,7 @@ const navigationItems = [
   },
   {
     key: "leave",
-    label: "Leave Management",
+    label: "Leave Administration",
     icon: CalendarRange,
     path: "/regionaldirector/leave",
     children: [
@@ -54,7 +54,7 @@ const navigationItems = [
   },
   {
     key: "payroll",
-    label: "Payroll",
+    label: "Payroll Management",
     icon: FileText,
     path: "/regionaldirector/payroll/generate",
     children: [
@@ -64,7 +64,7 @@ const navigationItems = [
       { key: "payrollLeaveMonetization", label: "Leave Monetization", path: "/regionaldirector/payroll/leave-monetization" },
     ],
   },
-  { key: "legacyAttendance", label: "Attendance", icon: ClipboardCheck, path: "/regionaldirector/attendance", hidden: true },
+  { key: "legacyAttendance", label: "Time & Attendance", icon: ClipboardCheck, path: "/regionaldirector/attendance", hidden: true },
   ...buildSelfServiceNavItems("/regionaldirector"),
 ];
 
@@ -376,7 +376,7 @@ export default function RegionalDashboard(props) {
       portalLabel="Regional Director Workspace"
       navigationItems={navigationItems}
       modules={modules}
-      contentClassName="space-y-4 p-6"
+      contentClassName="space-y-4 p-4"
     />
   );
 }

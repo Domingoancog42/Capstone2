@@ -51,7 +51,8 @@ function fetch_leave_credit_employee_summary(PDO $pdo, int $employeeId): ?array
         'SELECT
             e.id AS employeeRecordId,
             e.employee_id AS employeeId,
-            TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName
+            TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
+            e.gender
          FROM employees e
          WHERE e.id = :id
            AND e.is_archived = 0
@@ -294,6 +295,219 @@ function update_leave_credit_balance(PDO $pdo, array $body, array $sessionUser):
     ]);
 }
 
+/**
+ * Applies a batch of per-leave-type add/deduct operations for one employee in a
+ * single transaction, so a partially applied adjustment can never be persisted.
+ */
+function adjust_leave_credit_balances(PDO $pdo, array $body, array $sessionUser): void
+{
+    if (!leave_credit_can_manage($sessionUser)) {
+        json_response([
+            'success' => false,
+            'message' => 'You are not allowed to manage leave balances.',
+        ], 403);
+    }
+
+    $employeeId = (int)($body['employeeRecordId'] ?? $body['employeeId'] ?? 0);
+    $year = leave_credit_resolve_year((int)($body['year'] ?? date('Y')));
+    $effectiveDate = leave_credit_date_or_null($body['effectiveDate'] ?? null);
+    $remarks = leave_credit_text($body['remarks'] ?? '');
+
+    $employee = require_leave_credit_employee_summary($pdo, $employeeId);
+
+    $rawAdjustments = $body['adjustments'] ?? [];
+    if (!is_array($rawAdjustments) || $rawAdjustments === []) {
+        json_response([
+            'success' => false,
+            'message' => 'Provide at least one leave balance adjustment.',
+        ], 422);
+    }
+
+    $snapshot = fetch_employee_leave_credit_snapshot($pdo, $employeeId, $year);
+    $remainingByCode = [];
+    foreach ($snapshot['balances'] ?? [] as $balance) {
+        $code = strtoupper(leave_credit_text($balance['code'] ?? ''));
+        if ($code !== '') {
+            $remainingByCode[$code] = leave_credit_round((float)($balance['remaining'] ?? 0));
+        }
+    }
+
+    $plans = [];
+
+    foreach ($rawAdjustments as $rawAdjustment) {
+        if (!is_array($rawAdjustment)) {
+            continue;
+        }
+
+        $leaveTypeCode = strtoupper(leave_credit_text($rawAdjustment['leaveTypeCode'] ?? ''));
+        $operation = strtolower(leave_credit_text($rawAdjustment['operation'] ?? 'add'));
+        $amount = leave_credit_decimal_or_null($rawAdjustment['amount'] ?? null);
+
+        if ($leaveTypeCode === '') {
+            json_response([
+                'success' => false,
+                'message' => 'Every adjustment must include a leave type.',
+            ], 422);
+        }
+
+        if (isset($plans[$leaveTypeCode])) {
+            json_response([
+                'success' => false,
+                'message' => sprintf('Leave type %s was submitted more than once.', $leaveTypeCode),
+            ], 422);
+        }
+
+        if (!in_array($operation, ['add', 'deduct'], true)) {
+            json_response([
+                'success' => false,
+                'message' => 'Adjustment operation must be either add or deduct.',
+            ], 422);
+        }
+
+        if ($amount === null || $amount <= 0) {
+            json_response([
+                'success' => false,
+                'message' => 'Every adjustment amount must be a positive number.',
+            ], 422);
+        }
+
+        $trackedType = leave_credit_tracked_type_by_code($pdo, $leaveTypeCode);
+        if ($trackedType === null) {
+            json_response([
+                'success' => false,
+                'message' => sprintf('Leave type %s is not configured for balance management.', $leaveTypeCode),
+            ], 422);
+        }
+
+        $currentRemaining = $remainingByCode[$leaveTypeCode] ?? 0.0;
+        $newRemaining = leave_credit_round(
+            $operation === 'add' ? $currentRemaining + $amount : $currentRemaining - $amount
+        );
+
+        if ($newRemaining < 0) {
+            json_response([
+                'success' => false,
+                'message' => sprintf(
+                    'Cannot deduct %s day(s) from %s. Only %s day(s) remain.',
+                    leave_credit_format_days($amount),
+                    leave_credit_text($trackedType['name'] ?? $leaveTypeCode),
+                    leave_credit_format_days($currentRemaining)
+                ),
+            ], 422);
+        }
+
+        $plans[$leaveTypeCode] = [
+            'code' => $leaveTypeCode,
+            'name' => leave_credit_text($trackedType['name'] ?? $leaveTypeCode),
+            'leaveTypeId' => (int)$trackedType['leave_type_id'],
+            'operation' => $operation,
+            'amount' => $amount,
+            'currentRemaining' => $currentRemaining,
+            'newRemaining' => $newRemaining,
+        ];
+    }
+
+    if ($plans === []) {
+        json_response([
+            'success' => false,
+            'message' => 'Provide at least one leave balance adjustment.',
+        ], 422);
+    }
+
+    $results = [];
+
+    $pdo->beginTransaction();
+
+    try {
+        foreach ($plans as $code => $plan) {
+            $results[$code] = upsert_employee_leave_credit_balance(
+                $pdo,
+                $employeeId,
+                $plan['leaveTypeId'],
+                $year,
+                $plan['newRemaining']
+            );
+        }
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    $employeeName = leave_credit_text($employee['employeeName'] ?? 'Employee');
+
+    foreach ($plans as $code => $plan) {
+        $result = $results[$code] ?? [];
+
+        write_leave_credit_audit_log(
+            $pdo,
+            $sessionUser,
+            $plan['operation'] === 'add' ? 'leave_credit.add' : 'leave_credit.deduct',
+            $employeeId,
+            sprintf(
+                '%s %s day(s) %s %s balance for %s.',
+                $plan['operation'] === 'add' ? 'Added' : 'Deducted',
+                leave_credit_format_days($plan['amount']),
+                $plan['operation'] === 'add' ? 'to' : 'from',
+                $plan['name'],
+                $employeeName
+            ),
+            [
+                'employeeId' => $employee['employeeId'] ?? '',
+                'employeeName' => $employee['employeeName'] ?? '',
+                'leaveTypeCode' => $plan['code'],
+                'leaveTypeName' => $plan['name'],
+                'operation' => $plan['operation'],
+                'adjustmentAmount' => $plan['amount'],
+                'year' => $year,
+                'effectiveDate' => $effectiveDate,
+                'remarks' => $remarks,
+                'previousRemaining' => $plan['currentRemaining'],
+                'newRemaining' => $result['remaining'] ?? $plan['newRemaining'],
+                'usedCredits' => $result['used'] ?? null,
+                'totalCredits' => $result['total'] ?? null,
+            ]
+        );
+    }
+
+    $summaryParts = array_map(
+        static fn (array $plan): string => sprintf(
+            '%s%s %s',
+            $plan['operation'] === 'add' ? '+' : '-',
+            leave_credit_format_days($plan['amount']),
+            $plan['name']
+        ),
+        array_values($plans)
+    );
+
+    try {
+        hris_notify_employee(
+            $pdo,
+            $employeeId,
+            'Leave balance updated',
+            sprintf('Your %d leave balance was adjusted: %s.', $year, implode(', ', $summaryParts)),
+            'leave_credit_adjusted',
+            'leave_credit:' . $employeeId
+        );
+    } catch (Throwable $exception) {
+        // Notifications are best-effort and must not fail the adjustment.
+    }
+
+    json_response([
+        'success' => true,
+        'message' => sprintf(
+            'Applied %d leave balance adjustment(s) for %s.',
+            count($plans),
+            $employeeName
+        ),
+        'appliedCount' => count($plans),
+        'rows' => fetch_leave_credit_management_rows($pdo, $year),
+        'history' => fetch_employee_leave_credit_history($pdo, $employeeId, $year),
+    ]);
+}
+
 function bulk_add_leave_credits(PDO $pdo, array $body, array $sessionUser): void
 {
     if (!leave_credit_can_manage($sessionUser)) {
@@ -492,8 +706,14 @@ try {
     if ($method === 'PUT') {
         $body = read_json_body();
 
-        if (strtolower(leave_credit_text($body['action'] ?? '')) === 'bulk_add') {
+        $requestedAction = strtolower(leave_credit_text($body['action'] ?? ''));
+
+        if ($requestedAction === 'bulk_add') {
             bulk_add_leave_credits($pdo, $body, $sessionUser);
+        }
+
+        if ($requestedAction === 'adjust') {
+            adjust_leave_credit_balances($pdo, $body, $sessionUser);
         }
 
         update_leave_credit_balance($pdo, $body, $sessionUser);

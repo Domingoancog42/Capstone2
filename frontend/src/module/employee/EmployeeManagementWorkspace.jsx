@@ -550,7 +550,7 @@ export default function EmployeeManagementWorkspace({
         <CardHeader className="flex flex-col gap-5 !border-b-0 bg-transparent lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-2">
             <div>
-              <CardTitle className="text-2xl">Employees</CardTitle>
+              <CardTitle className="text-lg">Employees</CardTitle>
             </div>
             <p className="m-0 text-sm text-slate-500">
               {`${numberFormatter.format(activeEmployeeCount)} active employee${activeEmployeeCount === 1 ? "" : "s"} • ${numberFormatter.format(inactiveEmployeeCount)} inactive`}
@@ -583,7 +583,7 @@ export default function EmployeeManagementWorkspace({
           </div>
         </CardHeader>
 
-        <CardContent className="space-y-6 bg-transparent p-6">
+        <CardContent className="space-y-4 bg-transparent p-4">
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-full max-w-[220px] shrink-0">
               <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
@@ -600,7 +600,7 @@ export default function EmployeeManagementWorkspace({
                 }}
                 placeholder="Search"
                 aria-label="Search employees"
-                className="h-[42px] w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               />
             </div>
             <div className="relative w-full min-w-[150px] max-w-[180px] shrink-0">
@@ -613,7 +613,7 @@ export default function EmployeeManagementWorkspace({
                 onChange={(event) => {
                   setEmployeeDivisionFilter(event.target.value);
                 }}
-                className="h-[42px] w-full appearance-none rounded-lg border border-slate-200 bg-white px-3 pr-8 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full appearance-none rounded-lg border border-slate-200 bg-white px-2.5 pr-5 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
                 <option value="">All divisions</option>
                 {employeeDivisionOptions.map((division) => (
@@ -632,7 +632,7 @@ export default function EmployeeManagementWorkspace({
                 onChange={(event) => {
                   setEmployeeStatusFilter(event.target.value);
                 }}
-                className="h-[42px] w-full appearance-none rounded-lg border border-slate-200 bg-white px-3 pr-8 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full appearance-none rounded-lg border border-slate-200 bg-white px-2.5 pr-5 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
                 <option value="">All statuses</option>
                 {employeeStatusOptions.map((status) => (
@@ -661,7 +661,7 @@ export default function EmployeeManagementWorkspace({
                 placeholder="10"
                 list="employeeRowsPerPagePresets"
                 aria-label="Rows per page"
-                className="h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               />
             </div>
           </div>
@@ -682,7 +682,7 @@ export default function EmployeeManagementWorkspace({
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {!employeeLoading && employeeCards.length === 0 ? (
               <div className="md:col-span-2 xl:col-span-3 2xl:col-span-4">
-                <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center">
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-12 text-center">
                   <p className="m-0 text-lg font-semibold text-slate-900">
                     No employee records found.
                   </p>
@@ -873,7 +873,7 @@ export default function EmployeeManagementWorkspace({
         {viewingEmployee ? (
           <div className="space-y-5">
             <div className="flex justify-center">
-              <div className="grid h-28 w-28 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-2xl font-bold text-slate-500 shadow-sm">
+              <div className="grid h-28 w-28 place-items-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-lg font-bold text-slate-500 shadow-sm">
                 {resolveBackendAssetUrl(viewingEmployee.profileImage) ? (
                   <img
                     src={resolveBackendAssetUrl(viewingEmployee.profileImage)}

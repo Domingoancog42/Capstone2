@@ -245,7 +245,7 @@ export default function LeaveRequestModal({
   const normalizedLeaveType = normalizeLeaveType(form.leaveType);
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close leave request form"
@@ -257,11 +257,11 @@ export default function LeaveRequestModal({
 
       <form
         onSubmit={submit}
-        className={`relative z-10 w-full max-w-2xl overflow-hidden rounded-3xl border border-white/40 bg-white/95 shadow-2xl transition-all duration-300 ${
+        className={`relative z-10 w-full max-w-2xl overflow-hidden rounded-2xl border border-white/40 bg-white/95 shadow-2xl transition-all duration-300 ${
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-4 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-900">File Leave Request</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Complete the form to submit a leave request.</p>
@@ -284,7 +284,7 @@ export default function LeaveRequestModal({
           </div>
         </div>
 
-        <div className="max-h-[72vh] overflow-y-auto p-5 sm:p-6">
+        <div className="max-h-[72vh] overflow-y-auto p-5 sm:p-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="sm:col-span-2">
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">Employee Name</span>
@@ -487,7 +487,7 @@ export default function LeaveRequestModal({
           </div>
         </div>
 
-        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-4">
           <button
             type="button"
             onClick={onClose}

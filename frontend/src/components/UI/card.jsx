@@ -12,7 +12,7 @@ export default function Card({ children, className = "", as: Component = "sectio
 
 export function CardHeader({ children, className = "" }) {
   return (
-    <div className={`border-b border-slate-200 p-4 transition-colors duration-300 sm:p-6 ${className}`.trim()}>
+    <div className={`border-b border-slate-200 p-3.5 transition-colors duration-300 sm:p-4 ${className}`.trim()}>
       {children}
     </div>
   );
@@ -25,20 +25,20 @@ export function CardHeader({ children, className = "" }) {
  */
 export function CardTitle({ children, className = "" }) {
   return (
-    <h2 className={`m-0 text-xl font-semibold leading-tight text-[#D61E1E] dark:text-slate-100 ${className}`.trim()}>
+    <h2 className={`m-0 text-base font-semibold leading-tight text-[#D61E1E] dark:text-slate-100 ${className}`.trim()}>
       {children}
     </h2>
   );
 }
 
 export function CardDescription({ children, className = "" }) {
-  return <p className={`mt-2 text-sm leading-6 text-slate-500 ${className}`.trim()}>{children}</p>;
+  return <p className={`mt-1.5 text-xs leading-5 text-slate-500 ${className}`.trim()}>{children}</p>;
 }
 
 export function CardContent({ children, className = "" }) {
-  return <div className={`p-4 transition-colors duration-300 sm:p-6 ${className}`.trim()}>{children}</div>;
+  return <div className={`p-3.5 transition-colors duration-300 sm:p-4 ${className}`.trim()}>{children}</div>;
 }
 
 export function CardFooter({ children, className = "" }) {
-  return <div className={`p-4 transition-colors duration-300 sm:p-6 ${className}`.trim()}>{children}</div>;
+  return <div className={`p-3.5 transition-colors duration-300 sm:p-4 ${className}`.trim()}>{children}</div>;
 }

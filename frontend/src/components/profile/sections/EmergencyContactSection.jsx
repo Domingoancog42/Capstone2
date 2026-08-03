@@ -1,6 +1,8 @@
 import React from "react";
+import { LifeBuoy } from "lucide-react";
 import ProfileField from "../ProfileField";
 import ProfileSectionCard from "../ProfileSectionCard";
+import { profileSectionAnchorId } from "../profileUtils";
 
 export default function EmergencyContactSection({
   values,
@@ -12,6 +14,8 @@ export default function EmergencyContactSection({
 }) {
   return (
     <ProfileSectionCard
+      id={profileSectionAnchorId("emergency")}
+      icon={LifeBuoy}
       title="Emergency Contact"
       description="Keep an updated emergency contact so HR and supervisors can coordinate quickly during urgent situations."
       readOnly={readOnly}

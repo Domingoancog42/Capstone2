@@ -3237,7 +3237,7 @@ export default function DivisionSettings({ onSettingsChange }) {
             error={errors.divisionName}
           />
           <div>
-            <label htmlFor="divisionDescription" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="divisionDescription" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Description
             </label>
             <textarea
@@ -3281,7 +3281,7 @@ export default function DivisionSettings({ onSettingsChange }) {
             error={errors.designationName}
           />
           <div>
-            <label htmlFor="designationDivisionId" className="mb-2 block text-sm font-semibold text-slate-700">
+            <label htmlFor="designationDivisionId" className="mb-1.5 block text-sm font-semibold text-slate-700">
               Division
             </label>
             <select

@@ -1,8 +1,9 @@
 import React from "react";
-import { ClipboardList, Clock3, FileText, ScrollText } from "lucide-react";
+import { ClipboardList, Clock3, FileText, ScrollText, Trophy } from "lucide-react";
 import AttendanceManagementWorkspace from "../../module/attendance/AttendanceManagementWorkspace";
 import PayslipWorkspace from "../../module/payroll/PayslipWorkspace";
 import EmployeeIpcrWorkspace from "../../module/performance/EmployeeIpcrWorkspace";
+import AwardCyclesWorkspace from "../../module/rewards/AwardCyclesWorkspace";
 import ServiceRecordWorkspace from "../../module/serviceRecord/ServiceRecordWorkspace";
 
 /**
@@ -42,15 +43,37 @@ export const SELF_SERVICE_MODULES = {
     hidePageIntro: true,
     render: ({ user }) => <ServiceRecordWorkspace user={user} mode="employee" />,
   },
+  /**
+   * Voting is everybody's, so this is the same workspace HR runs, minus `canManage` — no creating,
+   * editing, closing, or deleting a cycle, only casting a vote and watching the leaderboard.
+   */
+  myNomination: {
+    title: "Nominate",
+    description: "Vote in the open award cycles and follow the leaderboard.",
+    hidePageIntro: true,
+    render: ({ user }) => <AwardCyclesWorkspace user={user} canManage={false} />,
+  },
 };
 
-/** Sidebar entries for the modules above, e.g. `buildSelfServiceNavItems("/hrhead")`. */
-export function buildSelfServiceNavItems(basePath) {
+/**
+ * Sidebar entries for the modules above, e.g. `buildSelfServiceNavItems("/hrhead")`.
+ *
+ * `includeNomination: false` is for the roles that already carry the Rewards & Recognition
+ * management screen from `buildPerformanceRewardsNavItems` — that screen votes too, so adding this
+ * one would put a second Rewards & Recognition heading in the same sidebar.
+ */
+export function buildSelfServiceNavItems(basePath, { includeNomination = true } = {}) {
   return [
     { type: "section", label: "My Records" },
     { key: "myAttendance", label: "My Attendance", icon: Clock3, path: `${basePath}/my-attendance` },
     { key: "myPayslip", label: "My Payslip", icon: FileText, path: `${basePath}/my-payslip` },
     { key: "myIpcr", label: "My IPCR", icon: ClipboardList, path: `${basePath}/my-ipcr` },
     { key: "myServiceRecord", label: "My Service Record", icon: ScrollText, path: `${basePath}/my-service-record` },
+    ...(includeNomination
+      ? [
+          { type: "section", label: "Recognition & Rewards" },
+          { key: "myNomination", label: "Nominate", icon: Trophy, path: `${basePath}/nominate` },
+        ]
+      : []),
   ];
 }

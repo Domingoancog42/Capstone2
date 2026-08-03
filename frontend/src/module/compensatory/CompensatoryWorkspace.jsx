@@ -394,7 +394,7 @@ function EmployeeSearchSelect({
       </button>
 
       {open && !disabled ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+0.6rem)] z-30 overflow-hidden rounded-3xl border border-white/70 bg-white/95 shadow-2xl backdrop-blur-xl">
+        <div className="absolute left-0 right-0 top-[calc(100%+0.6rem)] z-30 overflow-hidden rounded-2xl border border-white/70 bg-white/95 shadow-2xl backdrop-blur-xl">
           <div className="border-b border-slate-200/80 p-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -402,7 +402,7 @@ function EmployeeSearchSelect({
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search employee..."
-                className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               />
             </label>
           </div>
@@ -691,7 +691,7 @@ function CompensatoryPreviewModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close compensatory time off form preview"
@@ -706,7 +706,7 @@ function CompensatoryPreviewModal({
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">Compensatory Time Off Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted CTO request.</p>
@@ -729,7 +729,7 @@ function CompensatoryPreviewModal({
           </div>
         </div>
 
-        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-6">
+        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <div ref={printRef} className="compensatory-form-paper" style={ctoPreviewStyles.page}>
             <div style={ctoPreviewStyles.header}>
               <img src="/mgb.png" alt="MGB Logo" style={ctoPreviewStyles.logoImage} />
@@ -981,7 +981,7 @@ function CompensatoryModal({
   ) || selectedEmployee;
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close compensatory time off form"
@@ -993,11 +993,11 @@ function CompensatoryModal({
 
       <form
         onSubmit={handleSubmit}
-        className={`relative z-10 w-full max-w-3xl overflow-hidden rounded-3xl border border-white/60 bg-white shadow-2xl transition-all duration-300 ${
+        className={`relative z-10 w-full max-w-3xl overflow-hidden rounded-2xl border border-white/60 bg-white shadow-2xl transition-all duration-300 ${
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">Create Compensatory Time Off</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Log a CTO request with strict hourly limits and inclusive dates.</p>
@@ -1020,7 +1020,7 @@ function CompensatoryModal({
           </div>
         </div>
 
-        <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-6">
+        <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="sm:col-span-2">
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">Employee *</span>
@@ -1106,7 +1106,7 @@ function CompensatoryModal({
           </div>
         </div>
 
-        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-4">
           <button
             type="button"
             onClick={onClose}
@@ -1426,14 +1426,14 @@ export default function CompensatoryWorkspace({
   };
 
   const filterGridClass = showEmployeeFilter
-    ? "mt-4 grid gap-3 xl:grid-cols-[1.15fr_220px_170px_170px_170px_140px]"
-    : "mt-4 grid gap-3 xl:grid-cols-[1.15fr_170px_170px_170px_140px]";
+    ? "mt-4 grid gap-3 xl:grid-cols-[minmax(0,190px)_170px_140px_140px_140px_110px]"
+    : "mt-4 grid gap-3 xl:grid-cols-[minmax(0,200px)_150px_150px_150px_120px]";
 
   return (
     <div className="compensatory-workspace space-y-5">
 
-      <section className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white shadow-sm">
-        <div className="border-b border-slate-200 bg-slate-50 p-4 sm:p-5">
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h3 className="m-0 text-base font-semibold text-slate-950">{title}</h3>
@@ -1456,14 +1456,14 @@ export default function CompensatoryWorkspace({
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={viewAllPermission ? "Search employee, remarks, hours, status" : "Search remarks, hours, status"}
-                className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               />
             </label>
             {showEmployeeFilter ? (
               <select
                 value={employeeFilter}
                 onChange={(event) => setEmployeeFilter(event.target.value)}
-                className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               >
                 <option value="">All employees</option>
                 {employeeOptions.map((employee) => (
@@ -1477,20 +1477,20 @@ export default function CompensatoryWorkspace({
               type="date"
               value={startDateFilter}
               onChange={(event) => setStartDateFilter(event.target.value)}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               aria-label="Filter by start date"
             />
             <input
               type="date"
               value={endDateFilter}
               onChange={(event) => setEndDateFilter(event.target.value)}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               aria-label="Filter by end date"
             />
             <select
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="">All statuses</option>
               {COMPENSATORY_STATUSES.map((item) => (
@@ -1500,7 +1500,7 @@ export default function CompensatoryWorkspace({
             <select
               value={rowsPerPage}
               onChange={(event) => setRowsPerPage(event.target.value)}
-              className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             >
               <option value="5">5 rows</option>
               <option value="10">10 rows</option>
@@ -1509,8 +1509,8 @@ export default function CompensatoryWorkspace({
           </div>
         </div>
 
-        <div className="p-4 sm:p-5">
-          <div className="overflow-hidden rounded-[24px] border border-slate-200">
+        <div>
+          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
             <div className="overflow-x-auto">
               <table className="min-w-[1180px] w-full border-collapse">
                 <thead className="bg-slate-50">
@@ -1566,7 +1566,7 @@ export default function CompensatoryWorkspace({
                       const canReviewRecord = managePermission;
 
                       return (
-                        <tr key={record.id} className="border-b border-slate-100 transition hover:bg-sky-50/40">
+                        <tr key={record.id} className="border-b border-slate-100 transition hover:bg-slate-50">
                           <td className="px-3 py-3 text-sm font-semibold text-slate-600">
                             {(safePage - 1) * pageSize + index + 1}
                           </td>

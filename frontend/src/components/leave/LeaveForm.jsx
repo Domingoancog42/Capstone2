@@ -948,7 +948,7 @@ export default function LeaveFormModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         aria-label="Close leave form preview"
@@ -963,7 +963,7 @@ export default function LeaveFormModal({
           visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-6 scale-95 opacity-0"
         }`}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
           <div>
             <h2 className="m-0 text-lg font-semibold text-slate-950">Leave Request Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted leave request.</p>
@@ -977,7 +977,7 @@ export default function LeaveFormModal({
           </button>
         </div>
 
-        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-6">
+        <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <div className="mx-auto w-full max-w-[900px]">
             <div ref={printRef} className="leave-form-paper" style={styles.wrap}>
           <div style={styles.topBar}>

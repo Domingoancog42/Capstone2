@@ -28,7 +28,7 @@ function PieChartSkeleton() {
 
 function ChartEmptyState({ message }) {
   return (
-    <div className="analytics-pie-chart-panel grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-6 text-center">
+    <div className="analytics-pie-chart-panel grid h-[320px] place-items-center rounded-[28px] border border-dashed border-slate-200 bg-slate-50/80 p-4 text-center">
       <div className="max-w-sm">
         <p className="m-0 text-base font-semibold text-slate-900">No breakdown available</p>
         <p className="mt-2 text-sm leading-6 text-slate-500">{message}</p>
@@ -66,7 +66,7 @@ export default function AnalyticsPieChart({
 
   return (
     <section className={`analytics-card-shell flex h-full min-h-[300px] flex-col overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-sm transition duration-300 hover:shadow-[0_20px_45px_rgba(15,23,42,0.08)] ${className}`.trim()}>
-      <div className="flex flex-col gap-4 border-b border-slate-200/80 p-6 lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex flex-col gap-4 border-b border-slate-200/80 p-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="max-w-2xl">
           <h2 className="m-0 text-xl font-semibold leading-tight text-slate-900">{title}</h2>
           <p className="mt-2 text-sm leading-6 text-slate-500">{activeDataset?.description || description}</p>
@@ -97,7 +97,7 @@ export default function AnalyticsPieChart({
         ) : null}
       </div>
 
-      <div className="flex flex-1 flex-col space-y-5 p-6">
+      <div className="flex flex-1 flex-col space-y-5 p-4">
         {loading ? (
           <PieChartSkeleton />
         ) : !canRenderChart ? (
@@ -109,7 +109,7 @@ export default function AnalyticsPieChart({
                 <p className="m-0 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                   {activeDataset.centerLabel || "Total"}
                 </p>
-                <strong className="mt-2 text-3xl font-semibold text-slate-900">
+                <strong className="mt-2 text-xl font-semibold text-slate-900">
                   {valueFormatter(totalValue)}
                 </strong>
               </div>

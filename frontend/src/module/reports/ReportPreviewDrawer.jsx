@@ -89,7 +89,7 @@ export default function ReportPreviewDrawer({
             transition={{ type: "tween", duration: 0.24, ease: "easeOut" }}
             className="reports-print-panel relative z-10 flex h-full w-full flex-col bg-white shadow-2xl xl:w-[min(1180px,92vw)]"
           >
-            <header className="reports-no-print flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-6">
+            <header className="reports-no-print flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-4">
               <div className="min-w-0">
                 <p className="m-0 text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   {report.categoryLabel || "Report"}
@@ -135,7 +135,7 @@ export default function ReportPreviewDrawer({
               </div>
             </header>
 
-            <div className="reports-print-area flex-1 overflow-y-auto bg-slate-50 px-4 py-5 sm:px-6">
+            <div className="reports-print-area flex-1 overflow-y-auto bg-slate-50 px-4 py-5 sm:px-4">
               <article className="mx-auto max-w-5xl space-y-5">
                 <section className="rounded-xl border border-slate-200 bg-white p-5">
                   <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">

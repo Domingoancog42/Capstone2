@@ -160,7 +160,7 @@ function LeaveRequestManagementPanel({
         </button>
       </div>
 
-      <div className="mt-4 grid gap-3 lg:grid-cols-[1.3fr_180px_180px_140px]">
+      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_160px_120px]">
         <label className="relative">
           <span className="sr-only">Search leave requests</span>
           <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -168,7 +168,7 @@ function LeaveRequestManagementPanel({
             value={filters.search}
             onChange={(event) => onFilterChange?.("search", event.target.value)}
             placeholder="Search employee, leave type, reason"
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           />
         </label>
 
@@ -177,7 +177,7 @@ function LeaveRequestManagementPanel({
           <select
             value={filters.status}
             onChange={(event) => onFilterChange?.("status", event.target.value)}
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="">All statuses</option>
             {statuses.map((status) => (
@@ -192,7 +192,7 @@ function LeaveRequestManagementPanel({
             type="date"
             value={filters.date}
             onChange={(event) => onFilterChange?.("date", event.target.value)}
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           />
         </label>
 
@@ -201,7 +201,7 @@ function LeaveRequestManagementPanel({
           <select
             value={filters.rowsPerPage}
             onChange={(event) => onFilterChange?.("rowsPerPage", event.target.value)}
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
             <option value="5">5 rows</option>
             <option value="10">10 rows</option>
@@ -991,7 +991,7 @@ export default function LeaveDashboard({
           onPendingCountChange={(count) => updateModulePendingCount("overtime", count)}
         />
       ) : (
-        <section className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 text-center shadow-sm">
           <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-slate-100 text-slate-500">
             {(() => {
               const ActiveIcon = requestTabs.find((tab) => tab.key === activeTab)?.icon || FilePenLine;

@@ -97,7 +97,7 @@ function MetricCard({ label, value, helper, icon: Icon, tone }) {
         </div>
         <div className="min-w-0">
           <p className="m-0 text-sm font-semibold text-slate-500">{label}</p>
-          <strong className="mt-1 block text-2xl font-semibold text-slate-950">{value}</strong>
+          <strong className="mt-1 block text-lg font-semibold text-slate-950">{value}</strong>
           <p className="m-0 mt-1 text-xs leading-5 text-slate-500">{helper}</p>
         </div>
       </CardContent>
@@ -117,9 +117,6 @@ function normalizeEmploymentType(value) {
   }
   if (normalized.includes("contract")) {
     return "Contractual";
-  }
-  if (normalized === "jo" || normalized.includes("job order")) {
-    return "JO";
   }
   return normalized ? normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unassigned";
 }
@@ -264,7 +261,7 @@ function HrHeadDashboardOverview({ user }) {
   const welcomeName = user?.full_name || user?.username || "HR Head";
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6">
+    <div className="mx-auto max-w-7xl space-y-4">
       <DashboardWelcomeBanner name={welcomeName} />
 
       {error ? (
@@ -349,7 +346,7 @@ function HrHeadDashboardOverview({ user }) {
                 </div>
               );
             }) : (
-              <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+              <div className="rounded-xl border border-dashed border-slate-300 px-4 py-5 text-center text-sm text-slate-500">
                 No recent leave activity yet.
               </div>
             )}
@@ -525,7 +522,7 @@ function HrHeadReportsAnalytics() {
   ];
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6">
+    <div className="mx-auto max-w-7xl space-y-4">
       {error ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
           {error}
@@ -582,7 +579,7 @@ function HrHeadReportsAnalytics() {
 
         <ReportChartCard
           title="Employment Type"
-          description="JO, Regular, Contractual, and other employment classifications."
+          description="Regular, Contractual, and other employment classifications."
           empty={!employmentTypes.length}
         >
           <ResponsiveContainer width="100%" height="100%">
@@ -744,23 +741,23 @@ function HrHeadOvertimeWorkspace({ user }) {
 const navigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/hrhead/dashboard" },
-  { key: "profile", label: "Profile", icon: UserRound, path: "/hrhead/profile" },
-  { key: "employees", label: "Employees", icon: Users, path: "/hrhead/employees" },
-  { key: "calendar", label: "Calendar", icon: CalendarDays, path: "/hrhead/calendar" },
+  { key: "profile", label: "My Profile", icon: UserRound, path: "/hrhead/profile" },
+  { key: "employees", label: "Employee Directory", icon: Users, path: "/hrhead/employees" },
+  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/hrhead/calendar" },
   { type: "section", label: "Communication" },
-  { key: "messages", label: "Messages", icon: MessageCircle, path: "/hrhead/messages" },
+  { key: "messages", label: "Communications", icon: MessageCircle, path: "/hrhead/messages" },
   { key: "notifications", label: "Notifications", path: "/hrhead/notifications", hidden: true },
-  { type: "section", label: "Masterfiles" },
+  { type: "section", label: "HR Operations" },
   ...buildPerformanceRewardsNavItems("/hrhead"),
   {
     key: "leaveBalances",
-    label: "Set Balances",
+    label: "Leave Balances",
     icon: ClipboardList,
     path: "/hrhead/masterfiles/leave-balances",
   },
   {
     key: "attendance",
-    label: "Attendance",
+    label: "Time & Attendance",
     icon: ClipboardCheck,
     path: "/hrhead/attendance/overtime",
     children: [
@@ -769,7 +766,7 @@ const navigationItems = [
   },
   {
     key: "leave",
-    label: "Leave Management",
+    label: "Leave Administration",
     icon: CalendarRange,
     path: "/hrhead/leave",
     children: [
@@ -781,7 +778,7 @@ const navigationItems = [
   },
   {
     key: "payroll",
-    label: "Payroll",
+    label: "Payroll Management",
     icon: FileText,
     path: "/hrhead/payroll/generate",
     children: [
@@ -796,13 +793,13 @@ const navigationItems = [
   { type: "section", label: "Reports & Analytics" },
   {
     key: "reports",
-    label: "Reports",
+    label: "Reports & Analytics",
     icon: FileText,
     path: "/hrhead/reports",
     children: buildReportNavChildren("/hrhead/reports"),
   },
   { key: "leaveBalance", label: "Set Leave Balance", icon: ClipboardList, path: "/hrhead/leave-balance", hidden: true },
-  ...buildSelfServiceNavItems("/hrhead"),
+  ...buildSelfServiceNavItems("/hrhead", { includeNomination: false }),
 ];
 
 const modules = {
@@ -1008,7 +1005,7 @@ export default function HrheadDashboard(props) {
       portalLabel="HR Head Workspace"
       navigationItems={navigationItems}
       modules={modules}
-      contentClassName="space-y-4 p-6"
+      contentClassName="space-y-4 p-4"
     />
   );
 }

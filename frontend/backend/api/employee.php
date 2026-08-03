@@ -1979,6 +1979,15 @@ if ($method === 'PATCH') {
 
     $restoredEmployee = fetch_employee($pdo, $id);
 
+    $linkedUser = $restoredEmployee !== null
+        ? find_employee_user_for_emails($pdo, [(string)($restoredEmployee['email'] ?? '')])
+        : null;
+
+    if ($linkedUser !== null) {
+        $pdo->prepare('UPDATE users SET is_archived = 0 WHERE id = :id')
+            ->execute([':id' => (int)$linkedUser['id']]);
+    }
+
     try {
         $employeeName = (string)($restoredEmployee['fullName'] ?? trim((string)($restoredEmployee['firstName'] ?? '')) . ' ' . trim((string)($restoredEmployee['lastName'] ?? '')));
         $employeeName = trim($employeeName);
@@ -1992,10 +2001,6 @@ if ($method === 'PATCH') {
             'account_activated',
             (string)$id
         );
-
-        $linkedUser = $restoredEmployee !== null
-            ? find_employee_user_for_emails($pdo, [(string)($restoredEmployee['email'] ?? '')])
-            : null;
 
         if ($linkedUser !== null) {
             hris_notify_users(
@@ -2035,6 +2040,15 @@ if ($method === 'DELETE') {
     );
     $statement->execute([':id' => $id]);
 
+    $linkedUser = $archivedEmployee !== null
+        ? find_employee_user_for_emails($pdo, [(string)($archivedEmployee['email'] ?? '')])
+        : null;
+
+    if ($linkedUser !== null) {
+        $pdo->prepare('UPDATE users SET is_archived = 1 WHERE id = :id')
+            ->execute([':id' => (int)$linkedUser['id']]);
+    }
+
     try {
         $employeeName = (string)($archivedEmployee['fullName'] ?? trim((string)($archivedEmployee['firstName'] ?? '')) . ' ' . trim((string)($archivedEmployee['lastName'] ?? '')));
         $employeeName = trim($employeeName);
@@ -2048,10 +2062,6 @@ if ($method === 'DELETE') {
             'system_alert',
             (string)$id
         );
-
-        $linkedUser = $archivedEmployee !== null
-            ? find_employee_user_for_emails($pdo, [(string)($archivedEmployee['email'] ?? '')])
-            : null;
 
         if ($linkedUser !== null) {
             hris_notify_users(
