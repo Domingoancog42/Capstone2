@@ -3,7 +3,17 @@ export const AUTO_REFRESH_CHANNEL_NAME = "hris:auto-refresh";
 export const AUTO_REFRESH_STORAGE_KEY = "hris:auto-refresh:last-event";
 export const AUTO_REFRESH_DEBOUNCE_MS = 250;
 export const AUTO_REFRESH_FALLBACK_INTERVAL_MS = 10000;
+/**
+ * The safety-net interval used while the long-poll feed is delivering.
+ *
+ * Server-side changes arrive over the feed within seconds, so the per-screen timer stops being the
+ * thing that keeps a screen current and becomes a backstop against the feed having gone quiet
+ * without saying so. A minute is frequent enough to be that backstop and infrequent enough that the
+ * two mechanisms together cost less than the 10s timer did on its own.
+ */
+export const AUTO_REFRESH_LIVE_INTERVAL_MS = 60000;
 export const AUTO_REFRESH_ALL_TOPIC = "*";
+export const LIVE_UPDATES_HEALTH_EVENT = "hris:live-updates:health";
 
 const AUTO_REFRESH_TAB_STORAGE_KEY = "hris:auto-refresh:tab-id";
 const MUTATION_METHODS = new Set(["post", "put", "patch", "delete"]);
@@ -41,6 +51,7 @@ const LEGACY_TOPIC_EVENTS = {
 
 let sharedChannel = null;
 let bridgeStarted = false;
+let liveUpdatesHealthy = false;
 const recentExternalEventIds = new Set();
 
 function makeId(prefix = "sync") {
@@ -290,9 +301,9 @@ export function ensureAutoRefreshBridge() {
 }
 
 /**
- * `broadcast: false` keeps an event inside this tab. Used by the server change-feed poller: every
- * tab polls for itself, so relaying its findings would make each change bounce around the browser
- * and trigger a second round of reloads for no new information.
+ * `broadcast: false` keeps an event inside this tab, for callers whose trigger every tab already
+ * sees for itself — relaying those would make one change bounce around the browser and trigger a
+ * second round of reloads for no new information.
  */
 export function publishAutoRefresh(payload = {}) {
   const normalizedPayload = createAutoRefreshPayload(payload);
@@ -352,6 +363,33 @@ export function subscribeAutoRefresh(listener, options = {}) {
   };
 }
 
+/**
+ * Whether the long-poll change feed is currently delivering for this browser.
+ *
+ * Owned by `liveUpdatesService`; read by `useAutoRefreshOnChange` to decide how hard its own timer
+ * has to work. It lives here rather than in the service so that the hook never imports the service —
+ * a screen must keep refreshing on its timer whether or not the feed was ever started.
+ */
+export function setLiveUpdatesHealthy(next) {
+  const value = Boolean(next);
+
+  if (value === liveUpdatesHealthy) {
+    return value;
+  }
+
+  liveUpdatesHealthy = value;
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(LIVE_UPDATES_HEALTH_EVENT, { detail: { healthy: value } }));
+  }
+
+  return value;
+}
+
+export function isLiveUpdatesHealthy() {
+  return liveUpdatesHealthy;
+}
+
 ensureAutoRefreshBridge();
 
 const autoRefreshConfig = {
@@ -360,14 +398,18 @@ const autoRefreshConfig = {
   AUTO_REFRESH_DEBOUNCE_MS,
   AUTO_REFRESH_EVENT,
   AUTO_REFRESH_FALLBACK_INTERVAL_MS,
+  AUTO_REFRESH_LIVE_INTERVAL_MS,
   AUTO_REFRESH_STORAGE_KEY,
   AUTO_REFRESH_TAB_ID,
+  LIVE_UPDATES_HEALTH_EVENT,
   createAutoRefreshPayload,
   ensureAutoRefreshBridge,
+  isLiveUpdatesHealthy,
   normalizeAutoRefreshPayload,
   normalizeAutoRefreshTopic,
   normalizeAutoRefreshTopics,
   publishAutoRefresh,
+  setLiveUpdatesHealthy,
   shouldPublishAutoRefreshForRequest,
   subscribeAutoRefresh,
   topicFromRequestUrl,

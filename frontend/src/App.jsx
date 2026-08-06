@@ -355,12 +355,9 @@ export default function App() {
   }, [currentPath, handleLogout, navigate, user]);
 
   /*
-   * Live status refresh. Runs only while somebody is signed in: the feed needs a session, and a
-   * poll on the login screen would just 401 in a loop.
-   *
-   * Keyed on the user's id rather than the object, because `setUser` below replaces that object on
-   * every permission change. Restarting the poller resets its revision baseline, so depending on the
-   * object identity would make it drop the very next change it was supposed to report.
+   * The change feed only makes sense for a signed-in browser: it needs a session to authorise the
+   * request, and there is nothing on the login screen for it to keep current. Keying the effect on
+   * `userId` also means signing out tears the parked request down rather than leaving it to 401.
    */
   useEffect(() => {
     if (!userId) {
@@ -377,7 +374,7 @@ export default function App() {
    * re-read. Without this an admin unchecking a module changed nothing on the affected person's
    * screen until they signed out and back in.
    *
-   * The stored copy is compared before calling setUser: this runs on a change-feed event, and
+   * The stored copy is compared before calling setUser: this runs on an auto-refresh event, and
    * handing React a new user object when nothing actually changed would remount the workspace under
    * whoever is using it.
    */
@@ -404,8 +401,8 @@ export default function App() {
 
   /*
    * `settings` is here because the admin screen saves the permission matrix through settings.php,
-   * so that is the topic a save in this browser publishes. `permissions` covers the change feed and
-   * the permissions.php endpoint.
+   * so that is the topic a save in this browser publishes. `permissions` covers the
+   * permissions.php endpoint.
    */
   useAutoRefreshOnChange(refreshPermissions, {
     topics: ["permissions", "settings"],

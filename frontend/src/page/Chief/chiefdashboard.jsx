@@ -22,7 +22,7 @@ import BubbleChat from "../../components/bubble_chat/bubble_chat";
 import { getEmployees } from "../../services/api";
 import TeamOverview from "./teamoverview";
 
-function ChiefOvertimeWorkspace({ user }) {
+function useChiefEmployees(errorMessage) {
   const [employees, setEmployees] = useState([]);
   const [error, setError] = useState("");
 
@@ -41,7 +41,7 @@ function ChiefOvertimeWorkspace({ user }) {
       } catch (requestError) {
         if (active) {
           setEmployees([]);
-          setError(requestError.response?.data?.message || "Unable to load employee options for overtime.");
+          setError(requestError.response?.data?.message || errorMessage);
         }
       }
     };
@@ -51,21 +51,54 @@ function ChiefOvertimeWorkspace({ user }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [errorMessage]);
+
+  return { employees, error };
+}
+
+function ChiefEmployeeLoadError({ error }) {
+  if (!error) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+      {error}
+    </div>
+  );
+}
+
+function ChiefOvertimeWorkspace({ user }) {
+  const { employees, error } = useChiefEmployees("Unable to load employee options for overtime.");
 
   return (
     <div className="space-y-4">
-      {error ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-          {error}
-        </div>
-      ) : null}
+      <ChiefEmployeeLoadError error={error} />
       <OvertimeWorkspace
         user={user}
         employees={employees}
         title="Overtime Management"
         description="File, review, and monitor division overtime requests."
         submitLabel="File Overtime Request"
+      />
+    </div>
+  );
+}
+
+// The travel order form lets a chief pick the employees travelling, so this view needs the
+// employee directory that the other chief LeaveDashboard views do not load.
+function ChiefTravelWorkspace({ user }) {
+  const { employees, error } = useChiefEmployees("Unable to load employee options for travel orders.");
+
+  return (
+    <div className="space-y-4">
+      <ChiefEmployeeLoadError error={error} />
+      <LeaveDashboard
+        user={user}
+        employees={employees}
+        leaveRequestLayout="management"
+        activeView="travel"
+        showRequestTabs={false}
       />
     </div>
   );
@@ -157,16 +190,9 @@ const modules = {
   },
   travel: {
     title: "Travel Order",
-    description: "Review submitted travel orders from the chief workspace.",
+    description: "File travel orders for division employees and review submitted requests.",
     hidePageIntro: true,
-    render: ({ user }) => (
-      <LeaveDashboard
-        user={user}
-        leaveRequestLayout="management"
-        activeView="travel"
-        showRequestTabs={false}
-      />
-    ),
+    render: ({ user }) => <ChiefTravelWorkspace user={user} />,
   },
   cto: {
     title: "Compensatory Time Off",

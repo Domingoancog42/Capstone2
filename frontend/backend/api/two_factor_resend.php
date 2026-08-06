@@ -24,7 +24,7 @@ $user = session_user_record($pdo, $userId);
 
 if (!$user || strtolower((string)($user['status'] ?? '')) !== 'active') {
     hris_two_factor_clear_pending_login();
-    hris_two_factor_log($pdo, $userId, 'otp_resend', 'invalid_session');
+    write_auth_audit($pdo, ['id' => $userId], 'two_factor.resend_invalid_session', 'A 2FA resend was rejected because the account is no longer available.');
     json_response([
         'success' => false,
         'message' => 'Your account is no longer available for verification.',
@@ -34,7 +34,6 @@ if (!$user || strtolower((string)($user['status'] ?? '')) !== 'active') {
 $emailPolicyViolation = hris_email_domain_policy_violation($pdo, (string)($user['email'] ?? ''));
 if ($emailPolicyViolation !== null) {
     hris_two_factor_clear_pending_login();
-    hris_two_factor_log($pdo, $userId, 'otp_resend', 'email_domain_blocked');
     write_auth_audit($pdo, $user, 'login.email_domain_blocked', 'A 2FA resend was blocked by the email domain policy.', [
         'username' => $user['username'] ?? null,
         'email' => $user['email'] ?? null,
@@ -49,7 +48,7 @@ if ($emailPolicyViolation !== null) {
 try {
     $challenge = hris_two_factor_issue_code($pdo, $user, true);
 } catch (TwoFactorRateLimitException $exception) {
-    $codeRow = hris_two_factor_latest_open_code($pdo, $userId);
+    $codeRow = hris_two_factor_latest_open_code($userId);
 
     json_response([
         'success' => false,
@@ -64,10 +63,6 @@ try {
         'error' => $exception->getMessage(),
     ], 500);
 }
-
-write_auth_audit($pdo, $user, 'two_factor.otp_resent', 'A 2FA verification code was resent.', [
-    'username' => $user['username'] ?? null,
-]);
 
 json_response([
     'success' => true,

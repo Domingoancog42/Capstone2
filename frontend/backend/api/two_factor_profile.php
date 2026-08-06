@@ -10,7 +10,8 @@ $userId = (int)($sessionUser['id'] ?? 0);
 function two_factor_profile_payload(PDO $pdo, array $sessionUser): array
 {
     $userId = (int)($sessionUser['id'] ?? 0);
-    hris_ensure_two_factor_tables($pdo);
+    hris_ensure_two_factor_schema($pdo);
+    hris_ensure_audit_logs_table($pdo);
 
     $statement = $pdo->prepare(
         'SELECT two_factor_enabled
@@ -22,13 +23,14 @@ function two_factor_profile_payload(PDO $pdo, array $sessionUser): array
     $statement->execute([':id' => $userId]);
     $personalEnabled = (bool)((int)$statement->fetchColumn());
 
+    // The 2FA trail lives in audit_logs, which already carries richer request context
+    // (location, device, browser) than the retired two_factor_logs table ever did.
     $lastVerificationStatement = $pdo->prepare(
         'SELECT created_at
-         FROM two_factor_logs
+         FROM audit_logs
          WHERE user_id = :user_id
-           AND action = "verify"
-           AND status = "success"
-         ORDER BY created_at DESC
+           AND action = "two_factor.verify_success"
+         ORDER BY created_at DESC, id DESC
          LIMIT 1'
     );
     $lastVerificationStatement->execute([':user_id' => $userId]);
@@ -36,12 +38,15 @@ function two_factor_profile_payload(PDO $pdo, array $sessionUser): array
     $activityStatement = $pdo->prepare(
         'SELECT
             action,
-            status,
+            summary,
             ip_address AS ipAddress,
+            device,
+            browser,
             created_at AS createdAt
-         FROM two_factor_logs
+         FROM audit_logs
          WHERE user_id = :user_id
-         ORDER BY created_at DESC
+           AND category = "auth"
+         ORDER BY created_at DESC, id DESC
          LIMIT 12'
     );
     $activityStatement->execute([':user_id' => $userId]);
@@ -83,7 +88,6 @@ if ($method === 'PUT' || $method === 'POST') {
         ':id' => $userId,
     ]);
 
-    hris_two_factor_log($pdo, $userId, 'personal_setting_updated', $enabled ? 'enabled' : 'disabled');
     write_auth_audit($pdo, $sessionUser, 'two_factor.personal_setting_updated', 'A user updated their personal 2FA setting.', [
         'enabled' => $enabled,
     ]);

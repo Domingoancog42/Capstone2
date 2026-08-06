@@ -96,6 +96,16 @@ function require_employee_signature_record(PDO $pdo, int $employeeId): array
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
+/*
+ * NOTE: reads are deliberately NOT restricted to the caller's own record. LeaveForm.jsx and
+ * LeaveMonetizationForm.jsx render a completed form by fetching the signatures of the requester, the
+ * reviewer and the approver, so a self-only rule would blank every signed document in the app.
+ *
+ * The cost is that a signed-in account can walk employee ids and collect every signature image.
+ * Closing that means scoping a read to signatures that appear on a document the caller is allowed to
+ * see, which needs the leave/IPCR relationships checked per request -- worth doing, but a change of
+ * its own rather than something to bolt onto this gate.
+ */
 if ($method === 'GET') {
     $employeeId = employee_signature_int($_GET['employeeId'] ?? 0);
 
@@ -121,6 +131,22 @@ if ($method === 'GET') {
 if ($method === 'PUT') {
     $body = read_json_body();
     $employeeId = employee_signature_int($body['employeeId'] ?? 0);
+
+    /*
+     * Without this, any signed-in account could PUT a signature onto any employee id. An e-signature
+     * is what marks a leave form or an IPCR as signed by that person, so an unchecked write here is a
+     * forgery tool -- and the matching GET below hands out the image to copy.
+     *
+     * Only the profile page writes signatures, always for the caller's own record, so restricting
+     * this to self-or-HR costs no existing behaviour.
+     */
+    hris_require_employee_record_access(
+        $pdo,
+        $sessionUser,
+        $employeeId,
+        'You can only change your own signature.'
+    );
+
     require_employee_signature_record($pdo, $employeeId);
 
     $signature = validate_employee_signature($body['signatureDataUrl'] ?? null);

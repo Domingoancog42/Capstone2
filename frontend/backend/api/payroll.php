@@ -24,7 +24,6 @@ const PAYROLL_STAFF_ROLES = ['admin', 'hrhead', 'hrstaff', 'regionaldirector'];
 const PAYROLL_EDITABLE_STATUSES = ['Draft', 'Rejected'];
 const PAYROLL_ACTIVE_STATUSES = ['Draft', 'Pending Approval', 'Approved', 'Rejected', 'Paid'];
 const PAYROLL_ALL_STATUSES = ['Draft', 'Pending Approval', 'Approved', 'Rejected', 'Paid', 'Archived'];
-const PAYROLL_META_PREFIX = 'payroll_meta:';
 const PAYROLL_DEFAULT_PERA_AMOUNT = 2000.0;
 /*
  * DBM Budget Circular No. 004-03: the daily wage rate of a government position is its authorised
@@ -111,11 +110,6 @@ const PAYROLL_DEDUCTION_FIELD_ALIASES = [
     'laptoploan' => 'laptopLoan',
     'otherdeductions' => 'otherDeductions',
 ];
-
-function payroll_setting_key(int $payrollId): string
-{
-    return PAYROLL_META_PREFIX . $payrollId;
-}
 
 function payroll_normalize_status(mixed $value): string
 {
@@ -1496,26 +1490,30 @@ function payroll_with_legacy_fk_bypass(PDO $pdo, callable $callback): mixed
 
 function payroll_store_meta(PDO $pdo, int $payrollId, array $meta): void
 {
+    hris_ensure_payroll_meta_table($pdo);
+
     $statement = $pdo->prepare(
-        'INSERT INTO settings (setting_key, setting_value)
-         VALUES (:setting_key, :setting_value)
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+        'INSERT INTO PayrollMeta (payroll_id, meta_json)
+         VALUES (:payroll_id, :meta_json)
+         ON DUPLICATE KEY UPDATE meta_json = VALUES(meta_json)'
     );
     $statement->execute([
-        ':setting_key' => payroll_setting_key($payrollId),
-        ':setting_value' => json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ':payroll_id' => $payrollId,
+        ':meta_json' => json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
     ]);
 }
 
 function payroll_fetch_meta(PDO $pdo, int $payrollId): array
 {
+    hris_ensure_payroll_meta_table($pdo);
+
     $statement = $pdo->prepare(
-        'SELECT setting_value
-         FROM settings
-         WHERE setting_key = :setting_key
+        'SELECT meta_json
+         FROM PayrollMeta
+         WHERE payroll_id = :payroll_id
          LIMIT 1'
     );
-    $statement->execute([':setting_key' => payroll_setting_key($payrollId)]);
+    $statement->execute([':payroll_id' => $payrollId]);
     $value = $statement->fetchColumn();
 
     if (!is_string($value) || trim($value) === '') {

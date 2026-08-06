@@ -4,11 +4,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/email-domain-policy.php';
 require_once __DIR__ . '/two-factor-utils.php';
-require_once __DIR__ . '/rate-limit-utils.php';
 
 require_method('POST');
-
-hris_rate_limit_guard($pdo, 'twoFactor');
 
 $body = read_json_body();
 $code = preg_replace('/\D+/', '', (string)($body['code'] ?? $body['otp'] ?? '')) ?? '';
@@ -30,13 +27,13 @@ if ($pending === null || $userId <= 0) {
     ], 401);
 }
 
-hris_ensure_two_factor_tables($pdo);
+hris_ensure_two_factor_schema($pdo);
 
 $user = session_user_record($pdo, $userId);
 
 if (!$user || strtolower((string)($user['status'] ?? '')) !== 'active') {
     hris_two_factor_clear_pending_login();
-    hris_two_factor_log($pdo, $userId, 'verify', 'invalid_session');
+    write_auth_audit($pdo, ['id' => $userId], 'two_factor.verify_invalid_session', 'A 2FA verification was rejected because the account is no longer available.');
     json_response([
         'success' => false,
         'message' => 'Your account is no longer available for verification.',
@@ -46,7 +43,6 @@ if (!$user || strtolower((string)($user['status'] ?? '')) !== 'active') {
 $emailPolicyViolation = hris_email_domain_policy_violation($pdo, (string)($user['email'] ?? ''));
 if ($emailPolicyViolation !== null) {
     hris_two_factor_clear_pending_login();
-    hris_two_factor_log($pdo, $userId, 'verify', 'email_domain_blocked');
     write_auth_audit($pdo, $user, 'login.email_domain_blocked', 'A 2FA verification was blocked by the email domain policy.', [
         'username' => $user['username'] ?? null,
         'email' => $user['email'] ?? null,
@@ -59,21 +55,23 @@ if ($emailPolicyViolation !== null) {
 }
 
 $settings = hris_two_factor_settings($pdo);
-$codeRow = hris_two_factor_latest_open_code($pdo, $userId);
+$codeRow = hris_two_factor_latest_open_code($userId);
 
 if (!$codeRow) {
-    hris_two_factor_log($pdo, $userId, 'verify', 'missing_code');
+    write_auth_audit($pdo, $user, 'two_factor.verify_missing_code', 'A 2FA code was submitted with no active challenge.', [
+        'username' => $user['username'] ?? null,
+    ]);
+
     json_response([
         'success' => false,
         'message' => 'No active verification code was found. Request a new code.',
     ], 410);
 }
 
-$expiresAt = hris_datetime_timestamp($codeRow['expires_at'] ?? null);
+$expiresAt = (int)($codeRow['expiresAtTimestamp'] ?? 0);
 
-if ($expiresAt === null || $expiresAt < time()) {
-    hris_two_factor_invalidate_open_codes($pdo, $userId);
-    hris_two_factor_log($pdo, $userId, 'verify', 'expired');
+if ($expiresAt <= 0 || $expiresAt < time()) {
+    hris_two_factor_invalidate_open_codes($userId);
     write_auth_audit($pdo, $user, 'two_factor.verify_expired', 'An expired 2FA code was submitted.', [
         'username' => $user['username'] ?? null,
     ]);
@@ -90,9 +88,12 @@ $attempts = max(0, (int)($codeRow['attempts'] ?? 0));
 
 if ($attempts >= $settings['maxAttempts']) {
     hris_two_factor_lock_account($pdo, $userId);
-    hris_two_factor_invalidate_open_codes($pdo, $userId);
+    hris_two_factor_invalidate_open_codes($userId);
     hris_two_factor_clear_pending_login();
-    hris_two_factor_log($pdo, $userId, 'verify', 'locked');
+    write_auth_audit($pdo, $user, 'two_factor.verify_locked', 'An account was locked after too many 2FA attempts.', [
+        'username' => $user['username'] ?? null,
+        'attempts' => $attempts,
+    ]);
 
     json_response([
         'success' => false,
@@ -100,24 +101,11 @@ if ($attempts >= $settings['maxAttempts']) {
     ], 423);
 }
 
-$matches = password_verify($code, (string)($codeRow['otp_hash'] ?? ''));
+$matches = password_verify($code, (string)($codeRow['otpHash'] ?? ''));
 
 if (!$matches) {
-    $nextAttempts = $attempts + 1;
-    $statement = $pdo->prepare(
-        'UPDATE user_two_factor_codes
-         SET attempts = :attempts
-         WHERE id = :id
-           AND user_id = :user_id'
-    );
-    $statement->execute([
-        ':attempts' => $nextAttempts,
-        ':id' => (int)$codeRow['id'],
-        ':user_id' => $userId,
-    ]);
-
+    $nextAttempts = hris_two_factor_record_failed_attempt($userId);
     $remainingAttempts = max(0, $settings['maxAttempts'] - $nextAttempts);
-    hris_two_factor_log($pdo, $userId, 'verify', 'failed');
     write_auth_audit($pdo, $user, 'two_factor.verify_failed', 'A 2FA verification attempt failed.', [
         'username' => $user['username'] ?? null,
         'attempts' => $nextAttempts,
@@ -140,9 +128,12 @@ if (!$matches) {
 
     if ($remainingAttempts <= 0) {
         hris_two_factor_lock_account($pdo, $userId);
-        hris_two_factor_invalidate_open_codes($pdo, $userId);
+        hris_two_factor_invalidate_open_codes($userId);
         hris_two_factor_clear_pending_login();
-        hris_two_factor_log($pdo, $userId, 'verify', 'locked');
+        write_auth_audit($pdo, $user, 'two_factor.verify_locked', 'An account was locked after too many 2FA attempts.', [
+            'username' => $user['username'] ?? null,
+            'attempts' => $nextAttempts,
+        ]);
 
         json_response([
             'success' => false,
@@ -151,7 +142,7 @@ if (!$matches) {
         ], 423);
     }
 
-    $freshCode = hris_two_factor_latest_open_code($pdo, $userId);
+    $freshCode = hris_two_factor_latest_open_code($userId);
 
     json_response([
         'success' => false,
@@ -161,17 +152,7 @@ if (!$matches) {
     ], 401);
 }
 
-$statement = $pdo->prepare(
-    'UPDATE user_two_factor_codes
-     SET verified = 1
-     WHERE id = :id
-       AND user_id = :user_id
-       AND verified = 0'
-);
-$statement->execute([
-    ':id' => (int)$codeRow['id'],
-    ':user_id' => $userId,
-]);
+hris_two_factor_invalidate_open_codes($userId);
 
 $sessionUser = format_user($user);
 session_regenerate_id(true);
@@ -180,12 +161,15 @@ $_SESSION['last_activity_at'] = time();
 $_SESSION['two_factor_verified_at'] = time();
 hris_two_factor_clear_pending_login();
 
-hris_two_factor_log($pdo, $userId, 'verify', 'success');
+// Recorded as its own action so the profile Security tab can find the last successful verification.
+write_auth_audit($pdo, $sessionUser, 'two_factor.verify_success', 'A 2FA verification code was accepted.', [
+    'username' => $sessionUser['username'],
+]);
 write_auth_audit($pdo, $sessionUser, 'login.success', 'A user signed in successfully after 2FA verification.', [
     'username' => $sessionUser['username'],
     'two_factor' => true,
 ]);
-hris_two_factor_notify_user($pdo, $userId, 'New login detected', 'Your account signed in successfully with 2FA verification.', 'login_detected');
+hris_two_factor_notify_admins_of_login($pdo, $sessionUser, true);
 hris_two_factor_safe_alert_email(
     (string)($sessionUser['email'] ?? ''),
     'New Login Detected',

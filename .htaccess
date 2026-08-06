@@ -1,0 +1,45 @@
+# The project sits inside htdocs, so every file in it is a URL whether or not
+# anything links to it -- and htdocs is configured with `Options Indexes`, which
+# means a browser can walk the tree. That is survivable while the only client is
+# this machine. It stops being survivable the moment port 80 is reachable from
+# anywhere else, which is what these rules are for.
+#
+# Directives in a .htaccess apply to the directory and everything under it, so
+# this file covers the whole project. The narrower ones live next to what they
+# protect: backend/api/, backend/uploads/, backend/backups/, backend/database/,
+# and the front-end bundle (frontend/public/.htaccess, copied into build/).
+
+# No directory listings anywhere in the project.
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Development trees, reachable over HTTP purely because of where they sit:
+    #
+    #   frontend/src          the entire uncompiled application, including the
+    #                         vendored PHPMailer copy
+    #   frontend/node_modules thousands of files nobody has audited
+    #
+    # Only frontend/build (the compiled bundle) and frontend/backend (the API)
+    # are meant to answer a request. Note that PHP's own require_once of
+    # ../../src/PHPMailer-master/... reads from disk and never goes through
+    # Apache, so blocking the URL does not affect outgoing mail.
+    #
+    # frontend/public is deliberately not in this list. A RewriteEngine in a
+    # subdirectory's .htaccess replaces the rules inherited from here rather
+    # than adding to them, and frontend/public/.htaccess has one -- so a rule
+    # naming it here would be silently skipped, which is worse than not having
+    # it. It is also the one directory of the three that leaks nothing: it holds
+    # the build's own inputs (the logos, index.html, manifest.json), and the
+    # compiled copies of those are public anyway.
+    RewriteRule ^frontend/(src|node_modules)(/|$) - [F,L]
+</IfModule>
+
+# Configuration and manifests. The .env files carry no secrets by design -- see
+# frontend/.env.example -- but they do describe the deployment, and
+# package-lock.json is an exact inventory of dependency versions to look up
+# advisories against. Apache already blocks .ht* files itself.
+<FilesMatch "^(?i:\.env.*|\.gitignore|package\.json|package-lock\.json|composer\.(json|lock))$">
+    Require all denied
+</FilesMatch>

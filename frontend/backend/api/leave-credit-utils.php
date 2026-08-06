@@ -1,6 +1,12 @@
 <?php
 declare(strict_types=1);
 
+/*
+ * Each entry is a credit balance an employee holds. 'chargedBy' lists the other leave types that
+ * draw from that same balance instead of carrying one of their own: mandatory/forced leave is the
+ * required annual use of vacation credits, not a separate entitlement, so filing it spends
+ * vacation days.
+ */
 function leave_credit_default_definitions(): array
 {
     return [
@@ -8,6 +14,10 @@ function leave_credit_default_definitions(): array
             'code' => 'VL',
             'name' => 'Vacation Leave',
             'total' => 15.0,
+            'chargedBy' => [
+                ['name' => 'Forced Leave', 'code' => 'FL'],
+                ['name' => 'Mandatory/Forced Leave', 'code' => 'MFL'],
+            ],
         ],
         'SL' => [
             'code' => 'SL',
@@ -18,11 +28,6 @@ function leave_credit_default_definitions(): array
             'code' => 'SPL',
             'name' => 'Special Privilege Leave',
             'total' => 3.0,
-        ],
-        'FL' => [
-            'code' => 'FL',
-            'name' => 'Forced Leave',
-            'total' => 5.0,
         ],
         'SOPL' => [
             'code' => 'SOPL',
@@ -47,6 +52,32 @@ function leave_credit_default_definitions(): array
     ];
 }
 
+/*
+ * A request may run past the employee's remaining credits, in which case only the covered part is
+ * charged to the balance and the rest is filed as Leave Without Pay. The split is stored per
+ * request so credit usage, approval checks, and CSC Form No. 6 (7.C) all read the same numbers.
+ */
+function ensure_leave_request_pay_split_columns(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    $paidDaysStatement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'paid_days'");
+    if ($paidDaysStatement !== false && $paidDaysStatement->fetch() === false) {
+        $pdo->exec('ALTER TABLE leave_requests ADD COLUMN paid_days DECIMAL(5,2) NULL AFTER total_days');
+    }
+
+    $unpaidDaysStatement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'unpaid_days'");
+    if ($unpaidDaysStatement !== false && $unpaidDaysStatement->fetch() === false) {
+        $pdo->exec('ALTER TABLE leave_requests ADD COLUMN unpaid_days DECIMAL(5,2) NULL AFTER paid_days');
+    }
+
+    $ensured = true;
+}
+
 function leave_credit_resolve_year(?int $year = null): int
 {
     $resolvedYear = (int)($year ?? date('Y'));
@@ -66,24 +97,42 @@ function leave_credit_round(float $value): float
     return round($value, 2);
 }
 
+/*
+ * Resolves each credit balance to the leave_types rows that spend it. 'leave_type_id' is the row
+ * the balance itself is stored against, while 'charged_leave_type_ids' also covers the leave types
+ * listed under 'chargedBy', so usage is summed across all of them.
+ */
 function leave_credit_type_rows(PDO $pdo): array
 {
     $definitions = leave_credit_default_definitions();
-    $names = array_map(
-        static fn (array $definition): string => (string)$definition['name'],
-        array_values($definitions)
-    );
-    $codes = array_map(
-        static fn (array $definition): string => (string)$definition['code'],
-        array_values($definitions)
-    );
+    $lookup = [];
+    $names = [];
+    $codes = [];
 
-    $placeholders = implode(', ', array_fill(0, count($definitions), '?'));
+    foreach ($definitions as $definitionCode => $definition) {
+        $chargingTypes = array_merge(
+            [['name' => $definition['name'], 'code' => $definition['code'], 'canonical' => true]],
+            array_map(
+                static fn (array $alias): array => $alias + ['canonical' => false],
+                $definition['chargedBy'] ?? []
+            )
+        );
+
+        foreach ($chargingTypes as $chargingType) {
+            $names[] = (string)$chargingType['name'];
+            $codes[] = (string)$chargingType['code'];
+            $lookup['name:' . strtolower((string)$chargingType['name'])] = [$definitionCode, (bool)$chargingType['canonical']];
+            $lookup['code:' . strtoupper((string)$chargingType['code'])] = [$definitionCode, (bool)$chargingType['canonical']];
+        }
+    }
+
+    $namePlaceholders = implode(', ', array_fill(0, count($names), '?'));
+    $codePlaceholders = implode(', ', array_fill(0, count($codes), '?'));
     $statement = $pdo->prepare(
         'SELECT leave_type_id, name, code
          FROM leave_types
          WHERE is_active = 1
-           AND (name IN (' . $placeholders . ') OR code IN (' . $placeholders . '))'
+           AND (name IN (' . $namePlaceholders . ') OR code IN (' . $codePlaceholders . '))'
     );
     $statement->execute([...$names, ...$codes]);
 
@@ -91,29 +140,57 @@ function leave_credit_type_rows(PDO $pdo): array
     foreach ($statement->fetchAll() as $row) {
         $rowName = strtolower(trim((string)($row['name'] ?? '')));
         $rowCode = strtoupper(trim((string)($row['code'] ?? '')));
+        $match = $lookup['code:' . $rowCode] ?? $lookup['name:' . $rowName] ?? null;
 
-        foreach ($definitions as $definitionCode => $definition) {
-            if (
-                $rowCode === strtoupper((string)$definition['code'])
-                || $rowName === strtolower((string)$definition['name'])
-            ) {
-                $trackedTypes[$definitionCode] = [
-                    'leave_type_id' => (int)$row['leave_type_id'],
-                    'code' => (string)$definition['code'],
-                    'name' => (string)$definition['name'],
-                    'total' => (float)$definition['total'],
-                ];
-            }
+        if ($match === null) {
+            continue;
+        }
+
+        [$definitionCode, $isCanonical] = $match;
+        $definition = $definitions[$definitionCode];
+        $leaveTypeId = (int)$row['leave_type_id'];
+
+        if (!isset($trackedTypes[$definitionCode])) {
+            $trackedTypes[$definitionCode] = [
+                'leave_type_id' => 0,
+                'code' => (string)$definition['code'],
+                'name' => (string)$definition['name'],
+                'total' => (float)$definition['total'],
+                'charged_leave_type_ids' => [],
+            ];
+        }
+
+        $trackedTypes[$definitionCode]['charged_leave_type_ids'][] = $leaveTypeId;
+
+        if ($isCanonical) {
+            $trackedTypes[$definitionCode]['leave_type_id'] = $leaveTypeId;
         }
     }
 
-    return $trackedTypes;
+    /* A balance with no row to store against cannot be tracked at all. */
+    return array_filter(
+        $trackedTypes,
+        static fn (array $trackedType): bool => (int)$trackedType['leave_type_id'] > 0
+    );
+}
+
+function leave_credit_charged_leave_type_ids(array $trackedTypes): array
+{
+    $leaveTypeIds = [];
+
+    foreach ($trackedTypes as $trackedType) {
+        foreach ($trackedType['charged_leave_type_ids'] ?? [(int)$trackedType['leave_type_id']] as $leaveTypeId) {
+            $leaveTypeIds[] = (int)$leaveTypeId;
+        }
+    }
+
+    return array_values(array_unique($leaveTypeIds));
 }
 
 function leave_credit_tracked_type_by_id(PDO $pdo, int $leaveTypeId): ?array
 {
     foreach (leave_credit_type_rows($pdo) as $trackedType) {
-        if ((int)$trackedType['leave_type_id'] === $leaveTypeId) {
+        if (in_array($leaveTypeId, $trackedType['charged_leave_type_ids'] ?? [], true)) {
             return $trackedType;
         }
     }
@@ -179,16 +256,14 @@ function recalculate_employee_leave_credit_usage(PDO $pdo, int $employeeId, ?int
         return;
     }
 
+    ensure_leave_request_pay_split_columns($pdo);
     ensure_employee_default_leave_credits($pdo, $employeeId, $year);
 
-    $leaveTypeIds = array_map(
-        static fn (array $trackedType): int => (int)$trackedType['leave_type_id'],
-        array_values($trackedTypes)
-    );
+    $leaveTypeIds = leave_credit_charged_leave_type_ids($trackedTypes);
     $placeholders = implode(', ', array_fill(0, count($leaveTypeIds), '?'));
 
     $usageStatement = $pdo->prepare(
-        'SELECT leave_type_id, COALESCE(SUM(total_days), 0) AS used_credits
+        'SELECT leave_type_id, COALESCE(SUM(COALESCE(paid_days, total_days)), 0) AS used_credits
          FROM leave_requests
          WHERE employee_id = ?
            AND LOWER(status) = "approved"
@@ -212,11 +287,16 @@ function recalculate_employee_leave_credit_usage(PDO $pdo, int $employeeId, ?int
     );
 
     foreach ($trackedTypes as $trackedType) {
-        $leaveTypeId = (int)$trackedType['leave_type_id'];
+        /* Every leave type charging this balance adds to the one stored usage figure. */
+        $usedCredits = 0.0;
+        foreach ($trackedType['charged_leave_type_ids'] as $chargedLeaveTypeId) {
+            $usedCredits += $usageMap[(int)$chargedLeaveTypeId] ?? 0;
+        }
+
         $updateStatement->execute([
-            ':used_credits' => $usageMap[$leaveTypeId] ?? 0,
+            ':used_credits' => leave_credit_round($usedCredits),
             ':employee_id' => $employeeId,
-            ':leave_type_id' => $leaveTypeId,
+            ':leave_type_id' => (int)$trackedType['leave_type_id'],
             ':year' => $year,
         ]);
     }
@@ -304,7 +384,51 @@ function fetch_employee_leave_credit_snapshot(PDO $pdo, int $employeeId, ?int $y
     ];
 }
 
-function validate_leave_credit_approval(PDO $pdo, int $employeeId, int $leaveTypeId, float $numberOfDays, ?string $startDate = null): void
+/*
+ * Splits a request into the days its credit balance can cover and the days that fall through to
+ * Leave Without Pay. Leave types without a tracked balance are always fully with pay.
+ */
+function leave_credit_pay_split(PDO $pdo, int $employeeId, int $leaveTypeId, float $numberOfDays, ?string $startDate = null): array
+{
+    $requestedDays = leave_credit_round(max(0.0, $numberOfDays));
+    $trackedType = leave_credit_tracked_type_by_id($pdo, $leaveTypeId);
+
+    if ($trackedType === null) {
+        return [
+            'tracked' => false,
+            'leaveTypeName' => '',
+            'requestedDays' => $requestedDays,
+            'remaining' => 0.0,
+            'paidDays' => $requestedDays,
+            'unpaidDays' => 0.0,
+        ];
+    }
+
+    $year = null;
+    if (is_string($startDate) && preg_match('/^\d{4}/', $startDate) === 1) {
+        $year = (int)substr($startDate, 0, 4);
+    }
+
+    $snapshot = fetch_employee_leave_credit_snapshot($pdo, $employeeId, $year);
+    $balance = $snapshot['balanceMap'][$trackedType['name']] ?? null;
+    $remaining = leave_credit_round(max(0.0, (float)($balance['remaining'] ?? 0)));
+    $paidDays = leave_credit_round(min($requestedDays, $remaining));
+
+    return [
+        'tracked' => true,
+        'leaveTypeName' => (string)$trackedType['name'],
+        'requestedDays' => $requestedDays,
+        'remaining' => $remaining,
+        'paidDays' => $paidDays,
+        'unpaidDays' => leave_credit_round($requestedDays - $paidDays),
+    ];
+}
+
+/*
+ * $chargeableDays is the part of the request charged to leave credits, which is smaller than the
+ * total days whenever the request also carries Leave Without Pay days.
+ */
+function validate_leave_credit_approval(PDO $pdo, int $employeeId, int $leaveTypeId, float $chargeableDays, ?string $startDate = null): void
 {
     $trackedType = leave_credit_tracked_type_by_id($pdo, $leaveTypeId);
 
@@ -321,7 +445,7 @@ function validate_leave_credit_approval(PDO $pdo, int $employeeId, int $leaveTyp
     $balance = $snapshot['balanceMap'][$trackedType['name']] ?? null;
     $remaining = leave_credit_round((float)($balance['remaining'] ?? 0));
 
-    if ($numberOfDays > $remaining) {
+    if ($chargeableDays > $remaining) {
         json_response([
             'success' => false,
             'message' => sprintf(
@@ -353,19 +477,24 @@ function leave_credit_audit_table_exists(PDO $pdo): bool
 
 function leave_credit_current_used_credits(PDO $pdo, int $employeeId, int $leaveTypeId, int $year): float
 {
+    ensure_leave_request_pay_split_columns($pdo);
+
+    /* Usage covers every leave type that spends this balance, not just the one it is stored under. */
+    $trackedType = leave_credit_tracked_type_by_id($pdo, $leaveTypeId);
+    $leaveTypeIds = $trackedType !== null
+        ? leave_credit_charged_leave_type_ids([$trackedType])
+        : [$leaveTypeId];
+    $placeholders = implode(', ', array_fill(0, count($leaveTypeIds), '?'));
+
     $statement = $pdo->prepare(
-        'SELECT COALESCE(SUM(total_days), 0)
+        'SELECT COALESCE(SUM(COALESCE(paid_days, total_days)), 0)
          FROM leave_requests
-         WHERE employee_id = :employee_id
-           AND leave_type_id = :leave_type_id
+         WHERE employee_id = ?
            AND LOWER(status) = "approved"
-           AND YEAR(start_date) = :year'
+           AND YEAR(start_date) = ?
+           AND leave_type_id IN (' . $placeholders . ')'
     );
-    $statement->execute([
-        ':employee_id' => $employeeId,
-        ':leave_type_id' => $leaveTypeId,
-        ':year' => $year,
-    ]);
+    $statement->execute([$employeeId, $year, ...$leaveTypeIds]);
 
     return leave_credit_round((float)$statement->fetchColumn());
 }
@@ -429,6 +558,7 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null): array
     $resolvedYear = leave_credit_resolve_year($year);
     $definitions = leave_credit_default_definitions();
     $trackedTypes = leave_credit_type_rows($pdo);
+    ensure_leave_request_pay_split_columns($pdo);
 
     $employees = $pdo->query(
         'SELECT
@@ -466,8 +596,12 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null): array
             array_values($trackedTypes)
         );
 
+        /* Balances are stored per pool, but usage comes from every leave type spending that pool. */
+        $chargedLeaveTypeIds = leave_credit_charged_leave_type_ids($trackedTypes);
+
         $employeePlaceholders = implode(', ', array_fill(0, count($employeeIds), '?'));
         $leaveTypePlaceholders = implode(', ', array_fill(0, count($leaveTypeIds), '?'));
+        $chargedLeaveTypePlaceholders = implode(', ', array_fill(0, count($chargedLeaveTypeIds), '?'));
 
         $balanceStatement = $pdo->prepare(
             'SELECT employee_id, leave_type_id, total_credits, updated_at
@@ -493,15 +627,15 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null): array
         }
 
         $usageStatement = $pdo->prepare(
-            'SELECT employee_id, leave_type_id, COALESCE(SUM(total_days), 0) AS used_credits
+            'SELECT employee_id, leave_type_id, COALESCE(SUM(COALESCE(paid_days, total_days)), 0) AS used_credits
              FROM leave_requests
              WHERE LOWER(status) = "approved"
                AND YEAR(start_date) = ?
                AND employee_id IN (' . $employeePlaceholders . ')
-               AND leave_type_id IN (' . $leaveTypePlaceholders . ')
+               AND leave_type_id IN (' . $chargedLeaveTypePlaceholders . ')
              GROUP BY employee_id, leave_type_id'
         );
-        $usageStatement->execute([$resolvedYear, ...$employeeIds, ...$leaveTypeIds]);
+        $usageStatement->execute([$resolvedYear, ...$employeeIds, ...$chargedLeaveTypeIds]);
 
         foreach ($usageStatement->fetchAll() as $row) {
             $usageRowsByEmployee[(int)$row['employee_id']][(int)$row['leave_type_id']] = leave_credit_round((float)($row['used_credits'] ?? 0));
@@ -518,7 +652,12 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null): array
             $trackedType = $trackedTypes[$definitionCode] ?? null;
             $leaveTypeId = (int)($trackedType['leave_type_id'] ?? 0);
             $storedRow = $leaveTypeId > 0 ? ($balanceRowsByEmployee[$employeeId][$leaveTypeId] ?? null) : null;
-            $usedCredits = $leaveTypeId > 0 ? (float)($usageRowsByEmployee[$employeeId][$leaveTypeId] ?? 0) : 0.0;
+
+            $usedCredits = 0.0;
+            foreach ($trackedType['charged_leave_type_ids'] ?? [] as $chargedLeaveTypeId) {
+                $usedCredits += (float)($usageRowsByEmployee[$employeeId][(int)$chargedLeaveTypeId] ?? 0);
+            }
+
             $totalCredits = $storedRow['total'] ?? leave_credit_round((float)$definition['total']);
             $remainingCredits = leave_credit_round($totalCredits - $usedCredits);
 

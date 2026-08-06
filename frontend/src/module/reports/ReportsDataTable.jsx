@@ -3,8 +3,6 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  Check,
-  Columns3,
   Search,
   X,
 } from "lucide-react";
@@ -84,69 +82,6 @@ function ReportCell({ column, row, renderer }) {
   );
 }
 
-function ColumnVisibilityMenu({ columns, hidden, onToggle, onReset }) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef(null);
-
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-
-    const handleClickOutside = (event) => {
-      if (containerRef.current && !containerRef.current.contains(event.target)) {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open]);
-
-  return (
-    <div className="relative" ref={containerRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-        className="inline-flex min-h-[38px] items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-      >
-        <Columns3 size={15} aria-hidden="true" />
-        Columns
-      </button>
-
-      {open ? (
-        <div className="absolute right-0 z-30 mt-1 max-h-[280px] w-56 overflow-y-auto rounded-xl border border-slate-200 bg-white py-1.5 shadow-lg">
-          {columns.map((column) => {
-            const isVisible = !hidden.has(column.key);
-
-            return (
-              <button
-                key={column.key}
-                type="button"
-                onClick={() => onToggle(column.key)}
-                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                <span className="truncate">{column.label}</span>
-                {isVisible ? <Check size={15} className="shrink-0 text-emerald-600" aria-hidden="true" /> : null}
-              </button>
-            );
-          })}
-          <div className="mt-1 border-t border-slate-200 pt-1">
-            <button
-              type="button"
-              onClick={onReset}
-              className="w-full px-3 py-2 text-left text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
-            >
-              Show all columns
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export default function ReportsDataTable({
   columns = [],
   rows = [],
@@ -167,7 +102,6 @@ export default function ReportsDataTable({
   const [sortConfig, setSortConfig] = useState({ key: "", direction: "asc" });
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const [currentPage, setCurrentPage] = useState(1);
-  const [hiddenColumns, setHiddenColumns] = useState(() => new Set());
   const [columnWidths, setColumnWidths] = useState({});
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
   const resizeRef = useRef(null);
@@ -179,7 +113,6 @@ export default function ReportsDataTable({
     setSearch("");
     setSortConfig({ key: "", direction: "asc" });
     setCurrentPage(1);
-    setHiddenColumns(new Set());
     setColumnWidths({});
     setSelectedKeys(new Set());
   }, [columnKeys]);
@@ -188,10 +121,7 @@ export default function ReportsDataTable({
     setCurrentPage(1);
   }, [rows, search, rowsPerPage]);
 
-  const visibleColumns = useMemo(
-    () => columns.filter((column) => !hiddenColumns.has(column.key)),
-    [columns, hiddenColumns]
-  );
+  const visibleColumns = columns;
 
   const searchedRows = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -239,20 +169,6 @@ export default function ReportsDataTable({
       }
 
       return { key: "", direction: "asc" };
-    });
-  };
-
-  const toggleColumn = (key) => {
-    setHiddenColumns((current) => {
-      const next = new Set(current);
-
-      if (next.has(key)) {
-        next.delete(key);
-      } else if (current.size < columns.length - 1) {
-        next.add(key);
-      }
-
-      return next;
     });
   };
 
@@ -321,15 +237,7 @@ export default function ReportsDataTable({
           <span aria-hidden="true" />
         )}
 
-        <div className="flex flex-wrap items-center gap-2">
-          {toolbar}
-          <ColumnVisibilityMenu
-            columns={columns}
-            hidden={hiddenColumns}
-            onToggle={toggleColumn}
-            onReset={() => setHiddenColumns(new Set())}
-          />
-        </div>
+        <div className="flex flex-wrap items-center gap-2">{toolbar}</div>
       </div>
 
       {filterChips.length > 0 ? (

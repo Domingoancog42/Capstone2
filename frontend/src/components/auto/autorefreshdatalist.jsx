@@ -3,7 +3,9 @@ import {
   AUTO_REFRESH_ALL_TOPIC,
   AUTO_REFRESH_DEBOUNCE_MS,
   AUTO_REFRESH_FALLBACK_INTERVAL_MS,
+  AUTO_REFRESH_LIVE_INTERVAL_MS,
   autoRefreshTopicMatches,
+  isLiveUpdatesHealthy,
   normalizeAutoRefreshTopics,
   subscribeAutoRefresh,
 } from "./autorefreshconfig";
@@ -41,13 +43,6 @@ function useLatestRef(value) {
 function clearTimer(timerRef) {
   if (timerRef.current !== null && typeof window !== "undefined") {
     window.clearTimeout(timerRef.current);
-    timerRef.current = null;
-  }
-}
-
-function clearIntervalTimer(timerRef) {
-  if (timerRef.current !== null && typeof window !== "undefined") {
-    window.clearInterval(timerRef.current);
     timerRef.current = null;
   }
 }
@@ -198,19 +193,24 @@ export function useAutoRefreshData({
  * fetch-and-store logic and only need to be told *when* to re-run it.
  *
  * Replaces the `useEffect(() => { void loadRecords(); }, [loadRecords])` that every workspace has,
- * and additionally re-runs it whenever the topic changes — from a mutation in this tab, another tab
- * of this browser, or another user's browser via the server change feed.
+ * and additionally re-runs it whenever the topic changes — from a mutation in this tab or in
+ * another tab of this browser.
  *
  * The callback receives `{ background }`. It is `true` for every refresh that was not the first
  * load, and screens should use it to skip their loading skeleton: swapping a populated table for
  * spinner rows every time somebody else clicks Approve is the reload this is meant to replace.
+ *
+ * `intervalMs` is left unset by callers on purpose. The timer then paces itself against the
+ * long-poll feed — a minute while the feed is delivering, ten seconds when it is not — so screens
+ * get the cheap cadence when the feed is doing the work and the old cadence the moment it stops,
+ * without any screen knowing the feed exists. Passing a number opts out and pins the interval.
  */
 export function useAutoRefreshOnChange(onRefresh, {
   enabled = true,
   topic = AUTO_REFRESH_ALL_TOPIC,
   topics,
   debounceMs = AUTO_REFRESH_DEBOUNCE_MS,
-  intervalMs = AUTO_REFRESH_FALLBACK_INTERVAL_MS,
+  intervalMs,
   refreshOnFocus = true,
   refreshOnMount = true,
 } = {}) {
@@ -220,6 +220,7 @@ export function useAutoRefreshOnChange(onRefresh, {
   );
   const topicKey = topicList.join("|");
   const onRefreshRef = useLatestRef(onRefresh);
+  const intervalMsRef = useLatestRef(intervalMs);
   const debounceTimerRef = useRef(null);
   const intervalTimerRef = useRef(null);
   const inFlightRef = useRef(false);
@@ -261,14 +262,41 @@ export function useAutoRefreshOnChange(onRefresh, {
       }, Math.max(0, Number(debounceMs) || 0));
     }, { topics: topicList });
 
-    const safeIntervalMs = Math.max(0, Number(intervalMs) || 0);
-    if (safeIntervalMs > 0) {
-      intervalTimerRef.current = window.setInterval(() => {
+    /*
+     * Rescheduled after each tick rather than run on a fixed `setInterval`, so that a change in the
+     * feed's health is picked up by the next tick. An interval armed once would keep firing at
+     * whatever cadence was current when the screen mounted, and the whole point is that this slows
+     * down and speeds up underneath a screen that never re-renders for it.
+     */
+    const resolveIntervalMs = () => {
+      const override = intervalMsRef.current;
+
+      if (override !== undefined && override !== null) {
+        return Math.max(0, Number(override) || 0);
+      }
+
+      return isLiveUpdatesHealthy() ? AUTO_REFRESH_LIVE_INTERVAL_MS : AUTO_REFRESH_FALLBACK_INTERVAL_MS;
+    };
+
+    const scheduleIntervalTick = () => {
+      const nextIntervalMs = resolveIntervalMs();
+
+      if (!active || nextIntervalMs <= 0) {
+        return;
+      }
+
+      intervalTimerRef.current = window.setTimeout(() => {
+        intervalTimerRef.current = null;
+
         if (pageIsVisible()) {
           run(true, "interval");
         }
-      }, safeIntervalMs);
-    }
+
+        scheduleIntervalTick();
+      }, nextIntervalMs);
+    };
+
+    scheduleIntervalTick();
 
     const handleFocusRefresh = () => {
       if (pageIsVisible()) {
@@ -284,7 +312,7 @@ export function useAutoRefreshOnChange(onRefresh, {
     return () => {
       active = false;
       clearTimer(debounceTimerRef);
-      clearIntervalTimer(intervalTimerRef);
+      clearTimer(intervalTimerRef);
       if (refreshOnFocus) {
         window.removeEventListener("focus", handleFocusRefresh);
         document.removeEventListener("visibilitychange", handleFocusRefresh);
@@ -293,7 +321,7 @@ export function useAutoRefreshOnChange(onRefresh, {
     };
     // topicList is rebuilt per render; topicKey is its stable identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounceMs, enabled, intervalMs, onRefreshRef, refreshOnFocus, refreshOnMount, topicKey]);
+  }, [debounceMs, enabled, intervalMsRef, onRefreshRef, refreshOnFocus, refreshOnMount, topicKey]);
 }
 
 export default function AutoRefreshDataList({

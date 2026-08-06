@@ -463,402 +463,501 @@ const MultiSeriesTrend = memo(function MultiSeriesTrend({
 });
 
 /* ------------------------------------------------------------------ */
-/* Tab panels                                                          */
+/* Chart cards                                                         */
 /* ------------------------------------------------------------------ */
+
+const EMPTY_ARRAY = [];
 
 const asRows = (data, formatter = formatNumber) => data.map((item) => [item.label, formatter(item.value)]);
 
-function OverviewPanel({ charts, theme, loading, refreshing }) {
-  const [compositionView, setCompositionView] = useState("gender");
-  const growth = charts.employeeGrowth || [];
-  const composition = compositionView === "gender" ? charts.genderDistribution || [] : charts.inclusionDistribution || [];
+function WorkforceMovementCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.employeeGrowth || EMPTY_ARRAY;
 
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <ChartCard
-        title="Workforce Movement"
-        description="Hires against separations over the last 12 months."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={growth.length === 0}
-        tableColumns={["Month", "Hires", "Separations"]}
-        tableRows={growth.map((row) => [row.label, formatNumber(row.hires), formatNumber(row.separations)])}
-      >
-        <MovementChart data={growth} theme={theme} />
-      </ChartCard>
+    <ChartCard
+      title="Workforce Movement"
+      description="Hires against separations over the last 12 months."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Month", "Hires", "Separations"]}
+      tableRows={data.map((row) => [row.label, formatNumber(row.hires), formatNumber(row.separations)])}
+    >
+      <MovementChart data={data} theme={theme} />
+    </ChartCard>
+  );
+}
 
-      <ChartCard
-        title="Headcount Trend"
-        description="Total active roster at the close of each month."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={growth.length === 0}
-        tableColumns={["Month", "Headcount"]}
-        tableRows={growth.map((row) => [row.label, formatNumber(row.headcount)])}
-      >
-        <HeadcountChart data={growth} theme={theme} />
-      </ChartCard>
+function HeadcountTrendCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.employeeGrowth || EMPTY_ARRAY;
 
-      <ChartCard
-        title="Employee Distribution"
-        description={compositionView === "gender" ? "Workforce split by recorded gender." : "Inclusion categories across the workforce."}
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={composition.length === 0}
-        tableColumns={["Category", "Employees"]}
-        tableRows={asRows(composition)}
-      >
-        <div>
-          <div className="mb-2 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-            {[
-              { key: "gender", label: "Gender" },
-              { key: "inclusion", label: "Inclusion" },
-            ].map((option) => (
-              <button
-                key={option.key}
-                type="button"
-                onClick={() => setCompositionView(option.key)}
-                aria-pressed={compositionView === option.key}
-                className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
-                  compositionView === option.key
-                    ? "bg-white text-slate-900 shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <DonutChart data={composition} theme={theme} unitLabel="employees" />
+  return (
+    <ChartCard
+      title="Headcount Trend"
+      description="Total active roster at the close of each month."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Month", "Headcount"]}
+      tableRows={data.map((row) => [row.label, formatNumber(row.headcount)])}
+    >
+      <HeadcountChart data={data} theme={theme} />
+    </ChartCard>
+  );
+}
+
+function EmployeeCompositionCard({ charts, theme, loading, refreshing, className }) {
+  const [view, setView] = useState("gender");
+  const data = (view === "gender" ? charts.genderDistribution : charts.inclusionDistribution) || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Employee Distribution"
+      description={view === "gender" ? "Workforce split by recorded gender." : "Inclusion categories across the workforce."}
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Category", "Employees"]}
+      tableRows={asRows(data)}
+    >
+      <div>
+        <div className="mb-2 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+          {[
+            { key: "gender", label: "Gender" },
+            { key: "inclusion", label: "Inclusion" },
+          ].map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => setView(option.key)}
+              aria-pressed={view === option.key}
+              className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                view === option.key ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
-      </ChartCard>
-
-      <ChartCard
-        title="Employment Status"
-        description="Headcount per appointment type."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.employmentStatus || []).length === 0}
-        tableColumns={["Employment Status", "Employees"]}
-        tableRows={asRows(charts.employmentStatus || [])}
-      >
-        <RankedBarChart data={charts.employmentStatus || []} theme={theme} seriesLabel="Employees" />
-      </ChartCard>
-    </div>
+        <DonutChart data={data} theme={theme} unitLabel="employees" />
+      </div>
+    </ChartCard>
   );
 }
 
-function EmployeePanel({ charts, theme, loading, refreshing }) {
+/**
+ * Active against inactive. The donut answers the split the active and inactive employee reports are
+ * about; the table view names the individual record statuses that rolled into each slice.
+ */
+function RecordStatusCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.recordStatus || EMPTY_ARRAY;
+  const populated = data.filter((slice) => Number(slice.value) > 0);
+  const detailRows = data.flatMap((slice) =>
+    (slice.detail || EMPTY_ARRAY).map((entry) => [entry.label, slice.label, formatNumber(entry.value)])
+  );
+
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <ChartCard
-        title="Division Distribution"
-        description="Total headcount per division. Toggle the table view for the active and inactive split."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.divisionDistribution || []).length === 0}
-        tableColumns={["Division", "Active", "Inactive", "Total"]}
-        tableRows={(charts.divisionDistribution || []).map((row) => [
-          row.label,
-          formatNumber(row.active),
-          formatNumber(row.inactive),
-          formatNumber(row.value),
-        ])}
-      >
-        <DonutChart data={charts.divisionDistribution || []} theme={theme} unitLabel="employees" />
-      </ChartCard>
-
-      <ChartCard
-        title="Designation Distribution"
-        description="Headcount by position."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.designationDistribution || []).length === 0}
-        tableColumns={["Designation", "Employees"]}
-        tableRows={asRows(charts.designationDistribution || [])}
-      >
-        <DonutChart data={charts.designationDistribution || []} theme={theme} unitLabel="employees" />
-      </ChartCard>
-
-      <ChartCard
-        title="Age Distribution"
-        description="Employees grouped into five-year age bands."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.ageDistribution || []).length === 0}
-        tableColumns={["Age Group", "Employees"]}
-        tableRows={asRows(charts.ageDistribution || [])}
-      >
-        <ColumnChart data={charts.ageDistribution || []} theme={theme} colorIndex={2} />
-      </ChartCard>
-
-      <ChartCard
-        title="Years of Service"
-        description="Tenure distribution measured from the recorded hiring date."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.yearsOfService || []).length === 0}
-        tableColumns={["Years of Service", "Employees"]}
-        tableRows={asRows(charts.yearsOfService || [])}
-      >
-        <ColumnChart data={charts.yearsOfService || []} theme={theme} colorIndex={3} />
-      </ChartCard>
-    </div>
+    <ChartCard
+      title="Active vs Inactive"
+      description="Share of the roster still active. Toggle the table view for the individual record statuses."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={populated.length === 0}
+      className={className}
+      tableColumns={["Record Status", "Group", "Employees"]}
+      tableRows={detailRows}
+    >
+      <DonutChart data={populated} theme={theme} unitLabel="employees" />
+    </ChartCard>
   );
 }
 
-function PayrollPanel({ charts, theme, loading, refreshing, available }) {
-  if (!available) {
-    return <ModuleUnavailable label="Payroll" />;
-  }
+function EmploymentStatusCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.employmentStatus || EMPTY_ARRAY;
 
-  const payrollSeries = [
+  return (
+    <ChartCard
+      title="Employment Status"
+      description="Headcount per appointment type."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Employment Status", "Employees"]}
+      tableRows={asRows(data)}
+    >
+      <RankedBarChart data={data} theme={theme} seriesLabel="Employees" />
+    </ChartCard>
+  );
+}
+
+function DivisionDistributionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.divisionDistribution || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Division Distribution"
+      description="Total headcount per division. Toggle the table view for the active and inactive split."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Division", "Active", "Inactive", "Total"]}
+      tableRows={data.map((row) => [
+        row.label,
+        formatNumber(row.active),
+        formatNumber(row.inactive),
+        formatNumber(row.value),
+      ])}
+    >
+      <DonutChart data={data} theme={theme} unitLabel="employees" />
+    </ChartCard>
+  );
+}
+
+function DesignationDistributionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.designationDistribution || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Designation Distribution"
+      description="Headcount by position."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Designation", "Employees"]}
+      tableRows={asRows(data)}
+    >
+      <DonutChart data={data} theme={theme} unitLabel="employees" />
+    </ChartCard>
+  );
+}
+
+function AgeDistributionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.ageDistribution || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Age Distribution"
+      description="Employees grouped into five-year age bands."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Age Group", "Employees"]}
+      tableRows={asRows(data)}
+    >
+      <ColumnChart data={data} theme={theme} colorIndex={2} />
+    </ChartCard>
+  );
+}
+
+function YearsOfServiceCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.yearsOfService || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Years of Service"
+      description="Tenure distribution measured from the recorded hiring date."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Years of Service", "Employees"]}
+      tableRows={asRows(data)}
+    >
+      <ColumnChart data={data} theme={theme} colorIndex={3} />
+    </ChartCard>
+  );
+}
+
+/** Read straight off the employees table, so it stands even when the payroll module has no tables. */
+function SalaryDistributionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.salaryDistribution || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Salary Distribution"
+      description="Employees grouped into monthly basic salary brackets."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Salary Bracket", "Employees"]}
+      tableRows={asRows(data)}
+    >
+      <ColumnChart data={data} theme={theme} colorIndex={2} />
+    </ChartCard>
+  );
+}
+
+function PayrollTrendCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.payrollTrend || EMPTY_ARRAY;
+  const series = [
     { key: "gross", label: "Gross Pay", color: theme.series[0] },
     { key: "deductions", label: "Deductions", color: theme.series[1] },
     { key: "net", label: "Net Pay", color: theme.series[2] },
   ];
 
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <ChartCard
-        title="Monthly Payroll Expense"
-        description="Gross pay, deductions, and net pay over the last 12 months."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.payrollTrend || []).length === 0}
-        className="xl:col-span-2"
-        tableColumns={["Month", "Gross Pay", "Deductions", "Net Pay"]}
-        tableRows={(charts.payrollTrend || []).map((row) => [
-          row.label,
-          formatCurrency(row.gross),
-          formatCurrency(row.deductions),
-          formatCurrency(row.net),
-        ])}
-      >
-        <MultiSeriesTrend
-          data={charts.payrollTrend || []}
-          theme={theme}
-          series={payrollSeries}
-          valueFormatter={(value) => formatCurrency(value)}
-          axisFormatter={formatCompactCurrency}
-        />
-      </ChartCard>
-
-      <ChartCard
-        title="Payroll by Division"
-        description="Net payroll released per division for the selected period."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.payrollByDivision || []).length === 0}
-        tableColumns={["Division", "Net Pay"]}
-        tableRows={asRows(charts.payrollByDivision || [], formatCurrency)}
-      >
-        <RankedBarChart
-          data={charts.payrollByDivision || []}
-          theme={theme}
-          seriesLabel="Net Pay"
-          valueFormatter={formatCurrency}
-          axisFormatter={formatCompactCurrency}
-        />
-      </ChartCard>
-
-      <ChartCard
-        title="Payroll Status"
-        description="Payroll runs by release state for the selected period."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.payrollStatus || []).length === 0}
-        tableColumns={["Status", "Runs"]}
-        tableRows={asRows(charts.payrollStatus || [])}
-      >
-        <DonutChart data={charts.payrollStatus || []} theme={theme} unitLabel="payroll runs" />
-      </ChartCard>
-
-      <ChartCard
-        title="Deduction Distribution"
-        description="Total amount withheld per deduction type."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.deductionDistribution || []).length === 0}
-        tableColumns={["Deduction", "Amount"]}
-        tableRows={asRows(charts.deductionDistribution || [], formatCurrency)}
-      >
-        <RankedBarChart
-          data={charts.deductionDistribution || []}
-          theme={theme}
-          seriesLabel="Amount"
-          valueFormatter={formatCurrency}
-          axisFormatter={formatCompactCurrency}
-          colorIndex={1}
-        />
-      </ChartCard>
-
-      <ChartCard
-        title="Salary Distribution"
-        description="Employees grouped into monthly basic salary brackets."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.salaryDistribution || []).length === 0}
-        tableColumns={["Salary Bracket", "Employees"]}
-        tableRows={asRows(charts.salaryDistribution || [])}
-      >
-        <ColumnChart data={charts.salaryDistribution || []} theme={theme} colorIndex={2} />
-      </ChartCard>
-    </div>
+    <ChartCard
+      title="Monthly Payroll Expense"
+      description="Gross pay, deductions, and net pay over the last 12 months."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Month", "Gross Pay", "Deductions", "Net Pay"]}
+      tableRows={data.map((row) => [
+        row.label,
+        formatCurrency(row.gross),
+        formatCurrency(row.deductions),
+        formatCurrency(row.net),
+      ])}
+    >
+      <MultiSeriesTrend
+        data={data}
+        theme={theme}
+        series={series}
+        valueFormatter={(value) => formatCurrency(value)}
+        axisFormatter={formatCompactCurrency}
+      />
+    </ChartCard>
   );
 }
 
-function LeavePanel({ charts, theme, loading, refreshing, available }) {
-  if (!available) {
-    return <ModuleUnavailable label="Leave" />;
-  }
+function PayrollByDivisionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.payrollByDivision || EMPTY_ARRAY;
 
-  const leaveSeries = [
+  return (
+    <ChartCard
+      title="Payroll by Division"
+      description="Net payroll released per division for the selected period."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Division", "Net Pay"]}
+      tableRows={asRows(data, formatCurrency)}
+    >
+      <RankedBarChart
+        data={data}
+        theme={theme}
+        seriesLabel="Net Pay"
+        valueFormatter={formatCurrency}
+        axisFormatter={formatCompactCurrency}
+      />
+    </ChartCard>
+  );
+}
+
+function PayrollStatusCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.payrollStatus || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Payroll Status"
+      description="Payroll runs by release state for the selected period."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Status", "Runs"]}
+      tableRows={asRows(data)}
+    >
+      <DonutChart data={data} theme={theme} unitLabel="payroll runs" />
+    </ChartCard>
+  );
+}
+
+function DeductionDistributionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.deductionDistribution || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Deduction Distribution"
+      description="Total amount withheld per deduction type."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Deduction", "Amount"]}
+      tableRows={asRows(data, formatCurrency)}
+    >
+      <RankedBarChart
+        data={data}
+        theme={theme}
+        seriesLabel="Amount"
+        valueFormatter={formatCurrency}
+        axisFormatter={formatCompactCurrency}
+        colorIndex={1}
+      />
+    </ChartCard>
+  );
+}
+
+function LeaveStatusCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.leaveStatus || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Leave Statistics"
+      description="Leave applications by status for the selected period."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Status", "Requests", "Days"]}
+      tableRows={data.map((row) => [row.label, formatNumber(row.value), formatDecimal(row.days)])}
+    >
+      <DonutChart data={data} theme={theme} unitLabel="requests" />
+    </ChartCard>
+  );
+}
+
+function LeaveTypeDistributionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.leaveTypeDistribution || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Leave Type Distribution"
+      description="Requests filed per leave type."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Leave Type", "Requests", "Days"]}
+      tableRows={data.map((row) => [row.label, formatNumber(row.value), formatDecimal(row.days)])}
+    >
+      <DonutChart data={data} theme={theme} unitLabel="requests" />
+    </ChartCard>
+  );
+}
+
+function LeaveTrendCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.leaveTrend || EMPTY_ARRAY;
+  const series = [
     { key: "filed", label: "Filed", color: theme.series[0] },
     { key: "approved", label: "Approved", color: theme.series[2] },
     { key: "rejected", label: "Rejected", color: theme.series[1] },
   ];
 
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <ChartCard
-        title="Leave Statistics"
-        description="Leave applications by status for the selected period."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.leaveStatus || []).length === 0}
-        tableColumns={["Status", "Requests", "Days"]}
-        tableRows={(charts.leaveStatus || []).map((row) => [row.label, formatNumber(row.value), formatDecimal(row.days)])}
-      >
-        <DonutChart data={charts.leaveStatus || []} theme={theme} unitLabel="requests" />
-      </ChartCard>
-
-      <ChartCard
-        title="Leave Type Distribution"
-        description="Requests filed per leave type."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.leaveTypeDistribution || []).length === 0}
-        tableColumns={["Leave Type", "Requests", "Days"]}
-        tableRows={(charts.leaveTypeDistribution || []).map((row) => [
-          row.label,
-          formatNumber(row.value),
-          formatDecimal(row.days),
-        ])}
-      >
-        <DonutChart data={charts.leaveTypeDistribution || []} theme={theme} unitLabel="requests" />
-      </ChartCard>
-
-      <ChartCard
-        title="Monthly Leave Trend"
-        description="Filed, approved, and rejected leave over the last 12 months."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.leaveTrend || []).length === 0}
-        className="xl:col-span-2"
-        tableColumns={["Month", "Filed", "Approved", "Rejected"]}
-        tableRows={(charts.leaveTrend || []).map((row) => [
-          row.label,
-          formatNumber(row.filed),
-          formatNumber(row.approved),
-          formatNumber(row.rejected),
-        ])}
-      >
-        <MultiSeriesTrend data={charts.leaveTrend || []} theme={theme} series={leaveSeries} asArea />
-      </ChartCard>
-    </div>
+    <ChartCard
+      title="Monthly Leave Trend"
+      description="Filed, approved, and rejected leave over the last 12 months."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Month", "Filed", "Approved", "Rejected"]}
+      tableRows={data.map((row) => [
+        row.label,
+        formatNumber(row.filed),
+        formatNumber(row.approved),
+        formatNumber(row.rejected),
+      ])}
+    >
+      <MultiSeriesTrend data={data} theme={theme} series={series} asArea />
+    </ChartCard>
   );
 }
 
-function AttendancePanel({ charts, theme, loading, refreshing, available }) {
-  if (!available) {
-    return <ModuleUnavailable label="Attendance" />;
-  }
+function AttendanceSummaryCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.attendanceSummary || EMPTY_ARRAY;
 
-  const trendSeries = [
+  return (
+    <ChartCard
+      title="Attendance Summary"
+      description="Daily attendance records by status."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Status", "Records"]}
+      tableRows={asRows(data)}
+    >
+      <DonutChart data={data} theme={theme} unitLabel="records" />
+    </ChartCard>
+  );
+}
+
+function AttendanceExceptionsCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.attendanceExceptions || EMPTY_ARRAY;
+
+  return (
+    <ChartCard
+      title="Attendance Exceptions"
+      description="Late arrivals, undertime, and filed overtime."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.every((item) => !item.value)}
+      className={className}
+      tableColumns={["Exception", "Records"]}
+      tableRows={asRows(data)}
+    >
+      <ColumnChart data={data} theme={theme} seriesLabel="Records" colorIndex={1} />
+    </ChartCard>
+  );
+}
+
+function AttendanceTrendCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.attendanceTrend || EMPTY_ARRAY;
+  const series = [
     { key: "present", label: "Present", color: theme.series[2] },
     { key: "absent", label: "Absent", color: theme.series[1] },
     { key: "late", label: "Late", color: theme.series[3] },
   ];
 
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <ChartCard
-        title="Attendance Summary"
-        description="Daily attendance records by status."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.attendanceSummary || []).length === 0}
-        tableColumns={["Status", "Records"]}
-        tableRows={asRows(charts.attendanceSummary || [])}
-      >
-        <DonutChart data={charts.attendanceSummary || []} theme={theme} unitLabel="records" />
-      </ChartCard>
-
-      <ChartCard
-        title="Attendance Exceptions"
-        description="Late arrivals, undertime, and filed overtime."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.attendanceExceptions || []).every((item) => !item.value)}
-        tableColumns={["Exception", "Records"]}
-        tableRows={asRows(charts.attendanceExceptions || [])}
-      >
-        <ColumnChart data={charts.attendanceExceptions || []} theme={theme} seriesLabel="Records" colorIndex={1} />
-      </ChartCard>
-
-      <ChartCard
-        title="Attendance Trend"
-        description="Present, absent, and late counts per day across the selected range."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.attendanceTrend || []).length === 0}
-        className="xl:col-span-2"
-        tableColumns={["Date", "Present", "Absent", "Late"]}
-        tableRows={(charts.attendanceTrend || []).map((row) => [
-          row.label,
-          formatNumber(row.present),
-          formatNumber(row.absent),
-          formatNumber(row.late),
-        ])}
-      >
-        <MultiSeriesTrend data={charts.attendanceTrend || []} theme={theme} series={trendSeries} labelKey="label" />
-      </ChartCard>
-    </div>
+    <ChartCard
+      title="Attendance Trend"
+      description="Present, absent, and late counts per day across the selected range."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Date", "Present", "Absent", "Late"]}
+      tableRows={data.map((row) => [
+        row.label,
+        formatNumber(row.present),
+        formatNumber(row.absent),
+        formatNumber(row.late),
+      ])}
+    >
+      <MultiSeriesTrend data={data} theme={theme} series={series} labelKey="label" />
+    </ChartCard>
   );
 }
 
-function PerformancePanel({ charts, theme, loading, refreshing, available }) {
-  if (!available) {
-    return <ModuleUnavailable label="Performance (IPCR)" />;
-  }
+function PerformanceByDivisionCard({ charts, theme, loading, refreshing, className }) {
+  const data = charts.performanceByDivision || EMPTY_ARRAY;
 
   return (
-    <div className="grid gap-4">
-      <ChartCard
-        title="Average IPCR Rating by Division"
-        description="Mean final rating across submitted individual performance commitment reviews."
-        loading={loading}
-        refreshing={refreshing}
-        isEmpty={(charts.performanceByDivision || []).length === 0}
-        tableColumns={["Division", "Average Rating", "Evaluations"]}
-        tableRows={(charts.performanceByDivision || []).map((row) => [
-          row.label,
-          formatDecimal(row.value),
-          formatNumber(row.evaluations),
-        ])}
-      >
-        <MultiSeriesTrend
-          data={charts.performanceByDivision || []}
-          theme={theme}
-          series={[{ key: "value", label: "Average Rating", color: theme.series[6] }]}
-          labelKey="label"
-          valueFormatter={formatDecimal}
-          axisFormatter={formatDecimal}
-          allowDecimals
-        />
-      </ChartCard>
-    </div>
+    <ChartCard
+      title="Average IPCR Rating by Division"
+      description="Mean final rating across submitted individual performance commitment reviews."
+      loading={loading}
+      refreshing={refreshing}
+      isEmpty={data.length === 0}
+      className={className}
+      tableColumns={["Division", "Average Rating", "Evaluations"]}
+      tableRows={data.map((row) => [row.label, formatDecimal(row.value), formatNumber(row.evaluations)])}
+    >
+      <MultiSeriesTrend
+        data={data}
+        theme={theme}
+        series={[{ key: "value", label: "Average Rating", color: theme.series[6] }]}
+        labelKey="label"
+        valueFormatter={formatDecimal}
+        axisFormatter={formatDecimal}
+        allowDecimals
+      />
+    </ChartCard>
   );
 }
 
@@ -876,58 +975,182 @@ function ModuleUnavailable({ label }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Report to analytics routing                                         */
+/* ------------------------------------------------------------------ */
 
 /**
- * Which panels answer to each sidebar report category. The category now comes from the sidebar, so
- * there is no tab strip — a category simply renders its own charts.
- *
- * The former "Overview" panel rides with `employee`: workforce movement, headcount, composition, and
- * employment status are all employee analytics, and dropping the tab should not drop those charts.
- * Categories absent from this map (training, audit) have no chart data in the dashboard payload.
+ * Every chart the dashboard can draw, keyed by id. `module` names the backend availability flag the
+ * card depends on, so a card is dropped rather than drawn empty when its tables do not exist, and
+ * `wide` marks the cards that need the full row.
  */
-const CATEGORY_PANELS = {
-  employee: [
-    { key: "overview", Panel: OverviewPanel },
-    { key: "employee", Panel: EmployeePanel },
-  ],
-  payroll: [{ key: "payroll", Panel: PayrollPanel }],
-  leave: [{ key: "leave", Panel: LeavePanel }],
-  attendance: [{ key: "attendance", Panel: AttendancePanel }],
-  performance: [{ key: "performance", Panel: PerformancePanel }],
+const CHART_CARDS = {
+  workforceMovement: { Card: WorkforceMovementCard },
+  headcountTrend: { Card: HeadcountTrendCard },
+  employeeComposition: { Card: EmployeeCompositionCard },
+  recordStatus: { Card: RecordStatusCard },
+  employmentStatus: { Card: EmploymentStatusCard },
+  divisionDistribution: { Card: DivisionDistributionCard },
+  designationDistribution: { Card: DesignationDistributionCard },
+  ageDistribution: { Card: AgeDistributionCard },
+  yearsOfService: { Card: YearsOfServiceCard },
+  salaryDistribution: { Card: SalaryDistributionCard },
+
+  payrollTrend: { Card: PayrollTrendCard, module: "payroll", wide: true },
+  payrollByDivision: { Card: PayrollByDivisionCard, module: "payroll" },
+  payrollStatus: { Card: PayrollStatusCard, module: "payroll" },
+  deductionDistribution: { Card: DeductionDistributionCard, module: "payroll" },
+
+  leaveStatus: { Card: LeaveStatusCard, module: "leave" },
+  leaveTypeDistribution: { Card: LeaveTypeDistributionCard, module: "leave" },
+  leaveTrend: { Card: LeaveTrendCard, module: "leave", wide: true },
+
+  attendanceSummary: { Card: AttendanceSummaryCard, module: "attendance" },
+  attendanceExceptions: { Card: AttendanceExceptionsCard, module: "attendance" },
+  attendanceTrend: { Card: AttendanceTrendCard, module: "attendance", wide: true },
+
+  performanceByDivision: { Card: PerformanceByDivisionCard, module: "performance", wide: true },
 };
 
-/** Categories whose panels refuse to render when the backing module has no tables yet. */
-const CATEGORY_AVAILABILITY_KEY = {
-  payroll: "payroll",
-  leave: "leave",
-  attendance: "attendance",
-  performance: "performance",
+/**
+ * The analytics that describe each report. Picking a report narrows the dashboard to the charts that
+ * actually answer for it — choosing "Total Active Employees" no longer paints the whole category.
+ * Audit and training reports are listed with an empty set because the dashboard payload carries no
+ * chart series for them; their headline figures still render.
+ */
+const REPORT_CHARTS = {
+  /* Employee */
+  "employee-list": ["headcountTrend", "divisionDistribution", "employmentStatus", "employeeComposition"],
+  "employee-active": ["recordStatus", "headcountTrend"],
+  "employee-inactive": ["recordStatus", "workforceMovement"],
+  "employee-male": ["employeeComposition"],
+  "employee-female": ["employeeComposition"],
+  "employee-pwd": ["employeeComposition"],
+  "employee-senior": ["ageDistribution"],
+  "employee-permanent": ["employmentStatus"],
+  "employee-cos": ["employmentStatus"],
+  "employee-newly-hired": ["workforceMovement", "headcountTrend"],
+  "employee-separated": ["workforceMovement"],
+  "employee-retired": ["ageDistribution", "yearsOfService"],
+  "employee-birthdays": ["ageDistribution"],
+  "employee-near-retirement": ["ageDistribution", "yearsOfService"],
+  "employees-by-division": ["divisionDistribution"],
+  "employees-by-designation": ["designationDistribution"],
+  "employees-by-employment-status": ["employmentStatus"],
+  "employees-by-salary-grade": ["salaryDistribution"],
+  "employees-by-age": ["ageDistribution"],
+  "employees-by-years-of-service": ["yearsOfService"],
+  "department-division-report": ["divisionDistribution"],
+
+  /* Payroll */
+  "payroll-report": ["payrollTrend", "payrollStatus"],
+  "payroll-released": ["payrollTrend", "payrollStatus"],
+  "payroll-pending": ["payrollStatus"],
+  "payroll-by-division": ["payrollByDivision"],
+  "payroll-by-employee": ["salaryDistribution"],
+  "payroll-summary": ["payrollTrend"],
+  "payroll-deductions": ["deductionDistribution"],
+  "payroll-net-pay-summary": ["payrollTrend", "payrollByDivision"],
+
+  /* Leave */
+  "leave-report": ["leaveStatus", "leaveTypeDistribution"],
+  "leave-filed": ["leaveTrend"],
+  "leave-approved": ["leaveStatus", "leaveTrend"],
+  "leave-rejected": ["leaveStatus", "leaveTrend"],
+  "leave-pending": ["leaveStatus"],
+  "leave-cancelled": ["leaveStatus"],
+  "leave-monetized": ["leaveTypeDistribution"],
+  "leave-balance": ["leaveTypeDistribution"],
+  "leave-utilization": ["leaveTypeDistribution", "leaveTrend"],
+  "leave-by-division": ["leaveTrend"],
+  "leave-by-employee": ["leaveTypeDistribution"],
+
+  /* Attendance */
+  "attendance-report": ["attendanceSummary", "attendanceTrend"],
+  "attendance-absences": ["attendanceSummary", "attendanceTrend"],
+  "attendance-late": ["attendanceExceptions", "attendanceTrend"],
+  "attendance-undertime": ["attendanceExceptions"],
+  "attendance-monthly": ["attendanceSummary", "attendanceTrend"],
+  "overtime-report": ["attendanceExceptions"],
+  "cto-report": ["attendanceExceptions"],
+
+  /* Performance */
+  "ipcr-report": ["performanceByDivision"],
+  "performance-evaluation-report": ["performanceByDivision"],
+  "performance-top-performers": ["performanceByDivision"],
+  "performance-division-ratings": ["performanceByDivision"],
+
+  /* Audit and training have no chart series in the dashboard payload. */
+  "audit-activity-logs": EMPTY_ARRAY,
+  "audit-login-history": EMPTY_ARRAY,
+  "audit-report-actions": EMPTY_ARRAY,
+  "training-seminars-report": EMPTY_ARRAY,
 };
 
-export default function ReportsCharts({ dashboard, loading = false, refreshing = false, category = "" }) {
+/** Only reached by a report key the map above has not been taught yet, so a new report is never blank. */
+const CATEGORY_FALLBACK_CHARTS = {
+  employee: ["headcountTrend", "divisionDistribution"],
+  payroll: ["payrollTrend", "payrollStatus"],
+  leave: ["leaveStatus", "leaveTrend"],
+  attendance: ["attendanceSummary", "attendanceTrend"],
+  performance: ["performanceByDivision"],
+};
+
+/** Categories that explain themselves instead of charting when the backing module has no tables. */
+const CATEGORY_MODULE = {
+  payroll: { key: "payroll", label: "Payroll" },
+  leave: { key: "leave", label: "Leave" },
+  attendance: { key: "attendance", label: "Attendance" },
+  performance: { key: "performance", label: "Performance (IPCR)" },
+};
+
+/* ------------------------------------------------------------------ */
+
+export default function ReportsCharts({
+  dashboard,
+  loading = false,
+  refreshing = false,
+  category = "",
+  reportKey = "",
+}) {
   const theme = useReportsTheme();
   const charts = useMemo(() => dashboard?.charts || {}, [dashboard]);
   const availability = dashboard?.availability || {};
-  const panels = CATEGORY_PANELS[category];
 
-  if (!panels) {
+  const cardIds = (REPORT_CHARTS[reportKey] || CATEGORY_FALLBACK_CHARTS[category] || EMPTY_ARRAY).filter((id) => {
+    const entry = CHART_CARDS[id];
+
+    return entry && (!entry.module || availability[entry.module] !== false);
+  });
+
+  const module = CATEGORY_MODULE[category];
+
+  if (module && availability[module.key] === false) {
+    return <ModuleUnavailable label={module.label} />;
+  }
+
+  if (cardIds.length === 0) {
     return null;
   }
 
-  const availabilityKey = CATEGORY_AVAILABILITY_KEY[category];
-  const panelProps = {
-    charts,
-    theme,
-    loading,
-    refreshing,
-    ...(availabilityKey ? { available: availability[availabilityKey] !== false } : {}),
-  };
+  // A lone chart reads better across the full row than stranded beside white space.
+  const single = cardIds.length === 1;
 
   return (
-    <div className="space-y-4">
-      {panels.map(({ key, Panel }) => (
-        <Panel key={key} {...panelProps} />
-      ))}
+    <div className={single ? "grid gap-4" : "grid gap-4 xl:grid-cols-2"}>
+      {cardIds.map((id) => {
+        const { Card, wide } = CHART_CARDS[id];
+
+        return (
+          <Card
+            key={id}
+            charts={charts}
+            theme={theme}
+            loading={loading}
+            refreshing={refreshing}
+            className={wide && !single ? "xl:col-span-2" : undefined}
+          />
+        );
+      })}
     </div>
   );
 }

@@ -8,7 +8,6 @@ import {
   Download,
   Eye,
   FileText,
-  Gauge,
   KeyRound,
   Layers,
   LockKeyhole,
@@ -77,7 +76,6 @@ import {
 } from "../../services/api";
 import TwoFactorAuthenticationSettings from "./twofactorauthentication";
 import AuditLogsSettings, { defaultAuditPagination } from "./auditlogs";
-import RateLimitSettings from "./ratelimit";
 import RoleSettings from "./roles";
 import MathCaptchaSettings from "./math_captcha";
 import EmailDomainPolicySettings, {
@@ -171,13 +169,6 @@ const settingsGroups = [
         icon: MailX,
         description: "Allowed and blocked email domains",
         keywords: ["email", "mail", "domain", "gmail", "temporary", "temp", "blocker", "disposable"],
-      },
-      {
-        key: "rateLimiting",
-        label: "Rate Limiting",
-        icon: Gauge,
-        description: "Request throttling and blocked addresses",
-        keywords: ["rate", "limit", "throttle", "block", "ip", "abuse"],
       },
     ],
   },
@@ -3103,8 +3094,6 @@ export default function DivisionSettings({ onSettingsChange }) {
           </SettingsPanel>
         </div>
       ) : null}
-
-      {activeTab === "rateLimiting" ? <RateLimitSettings /> : null}
 
       {activeTab === "roles" ? <RoleSettings /> : null}
 

@@ -132,6 +132,18 @@ function get_role_distribution(PDO $pdo, ?int $divisionId): array
     return $statement->fetchAll();
 }
 
+/**
+ * Job Order is legacy seed data — the employee form only ever creates Regular or Contractual
+ * appointments — so the Employment Status card leaves it out rather than charting a category the
+ * office no longer appoints under. Reports carry the same rule in
+ * `reports_excluded_employment_status_sql()`; the two files never include each other, so the
+ * condition is stated in both.
+ */
+function analytics_excluded_employment_status_sql(): string
+{
+    return ' AND LOWER(COALESCE(TRIM(employment_status), "")) NOT IN ("job order", "jo")';
+}
+
 function get_employment_status_distribution(PDO $pdo, ?int $divisionId): array
 {
     if ($divisionId !== null && $divisionId <= 0) {
@@ -140,6 +152,9 @@ function get_employment_status_distribution(PDO $pdo, ?int $divisionId): array
 
     $rowScope = analytics_employee_scope_condition($divisionId, '', 'division_id');
     $totalScope = analytics_employee_scope_condition($divisionId, '', 'total_division_id');
+    // The excluded rows leave the denominator too, so the slice percentages still add up to 100
+    // against the headcount the card actually shows.
+    $excluded = analytics_excluded_employment_status_sql();
     $sql = 'SELECT
                 COALESCE(NULLIF(TRIM(employment_status), ""), "Not Specified") AS employment_status,
                 COUNT(id) AS count,
@@ -148,9 +163,9 @@ function get_employment_status_distribution(PDO $pdo, ?int $divisionId): array
             CROSS JOIN (
                 SELECT COUNT(id) AS total_count
                 FROM employees
-                WHERE is_archived = 0' . $totalScope . '
+                WHERE is_archived = 0' . $totalScope . $excluded . '
             ) t
-            WHERE is_archived = 0' . $rowScope . '
+            WHERE is_archived = 0' . $rowScope . $excluded . '
             GROUP BY employment_status, t.total_count
             ORDER BY count DESC';
 

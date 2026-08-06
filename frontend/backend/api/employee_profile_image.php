@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
 
-require_session_user();
+$sessionUser = require_session_user();
 require_method('POST');
 
 function employee_profile_int(mixed $value): int
@@ -143,6 +143,20 @@ if ($employeeId <= 0) {
         'message' => 'Employee record is required.',
     ], 422);
 }
+
+/*
+ * `employeeId` arrives from the request body, so before this check any signed-in account could
+ * replace or delete the photo on anyone else's record just by changing the number.
+ *
+ * The three callers are the profile page saving its own avatar and the two management screens, so
+ * self-or-HR matches what the app already does.
+ */
+hris_require_employee_record_access(
+    $pdo,
+    $sessionUser,
+    $employeeId,
+    'You can only change your own profile picture.'
+);
 
 $existingEmployee = fetch_employee_profile_record($pdo, $employeeId);
 if ($existingEmployee === null) {

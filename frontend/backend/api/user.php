@@ -9,6 +9,29 @@ $sessionUser = require_session_user();
 hris_ensure_user_security_columns($pdo);
 hris_ensure_email_verification_columns($pdo);
 
+/**
+ * Account administration is admin/HR-head work. Before this gate the only check on the file was
+ * require_session_user(), so any signed-in account -- including a plain employee -- could POST a new
+ * user with role_id 1, or PUT a new role_id and password_hash onto someone else's account. That is a
+ * full takeover from the lowest privilege level in the system.
+ *
+ * The two roles here are the ones granted the `users` module by hris_default_role_permission_access()
+ * in app_settings.php, so this enforces on the server what that template already claims. Reads are
+ * deliberately left open: ProfilePage, RoleAnalyticsOverview and the Regional Director dashboard all
+ * call getUsers() for every role, and list_users() returns no password material.
+ */
+function users_require_account_manager(array $sessionUser): void
+{
+    if (in_array(hris_user_role_key($sessionUser), ['admin', 'hrhead'], true)) {
+        return;
+    }
+
+    json_response([
+        'success' => false,
+        'message' => 'You are not allowed to manage user accounts.',
+    ], 403);
+}
+
 function user_text(mixed $value): string
 {
     return trim((string)($value ?? ''));
@@ -192,6 +215,49 @@ function user_apply_permission_selection(PDO $pdo, int $userId, mixed $template,
     }
 }
 
+/**
+ * Mirror an account's Active/Inactive status onto the linked employee row.
+ *
+ * The Add/Edit User form writes users.status_id, but employee reports and the workforce charts read
+ * employees.status, and nothing used to write it — so deactivating an account left every report
+ * still counting that person as active. The Employee Management list hid the split by displaying
+ * the account status over the employee's own (getEmployeeCardStatus), which made the reports look
+ * broken when they were faithfully reporting a column that never changed.
+ *
+ * Records are paired on the shared e-mail address, the same link employee.php uses in
+ * find_employee_user_by_email(). The two columns carry different collations, so the match is done
+ * on LOWER(TRIM(...)) against a bound value rather than column-to-column, which MariaDB rejects
+ * with "Illegal mix of collations".
+ *
+ * A status that already records *why* someone left — Resigned, Retired, Separated — is never
+ * overwritten: deactivating only touches a plain "Active", and reactivating only lifts a plain
+ * "Inactive". Flattening Retired to Inactive would destroy detail the Separated and Retired reports
+ * depend on.
+ */
+function user_sync_employee_status(PDO $pdo, string $email, bool $isActive): int
+{
+    $email = trim($email);
+
+    if ($email === '') {
+        return 0;
+    }
+
+    $statement = $pdo->prepare(
+        'UPDATE employees
+         SET status = :status
+         WHERE is_archived = 0
+           AND LOWER(TRIM(email)) = LOWER(:email)
+           AND LOWER(COALESCE(TRIM(status), "")) = :current_status'
+    );
+    $statement->execute([
+        ':status' => $isActive ? 'Active' : 'Inactive',
+        ':email' => $email,
+        ':current_status' => $isActive ? 'inactive' : 'active',
+    ]);
+
+    return $statement->rowCount();
+}
+
 function update_user(PDO $pdo, int $id, array $user, string $password, mixed $permissions = null): void
 {
     $existingUser = fetch_user($pdo, $id);
@@ -259,10 +325,24 @@ function update_user(PDO $pdo, int $id, array $user, string $password, mixed $pe
 
     $updatedUser = fetch_user($pdo, $id);
     $permissionsOverridden = user_apply_permission_selection($pdo, $id, $permissions, $updatedUser);
+    $statusChanged = (int)($existingUser['statusId'] ?? 0) !== (int)$user['status_id'];
+
+    // Keep the employee row in step with the account. Logged rather than fatal: the account itself
+    // is already saved, and failing the request here would report a save that did happen as an error.
+    if ($statusChanged) {
+        try {
+            user_sync_employee_status(
+                $pdo,
+                (string)($updatedUser['email'] ?? ''),
+                strcasecmp((string)($updatedUser['status'] ?? ''), 'Active') === 0
+            );
+        } catch (Throwable $syncException) {
+            error_log('Employee status sync error: ' . $syncException->getMessage());
+        }
+    }
 
     try {
         $roleChanged = (int)($existingUser['roleId'] ?? 0) !== (int)$user['role_id'];
-        $statusChanged = (int)($existingUser['statusId'] ?? 0) !== (int)$user['status_id'];
         $policyChanged = (int)($existingUser['mustChangePassword'] ?? 0) !== (int)$user['must_change_password'];
 
         if ($roleChanged || $statusChanged || $policyChanged) {
@@ -364,6 +444,9 @@ if ($method === 'GET') {
 
 $body = read_json_body();
 
+// Everything past this point creates, rewrites or archives an account.
+users_require_account_manager($sessionUser);
+
 if ($method === 'POST') {
     $password = (string)($body['password'] ?? '');
     $sendActivationEmail = user_bool($body['sendActivationEmail'] ?? false);
@@ -411,6 +494,17 @@ if ($method === 'POST') {
         $body['permissions'] ?? null,
         $createdUser
     );
+
+    // An account created straight into Inactive must not leave an existing employee row reading Active.
+    try {
+        user_sync_employee_status(
+            $pdo,
+            (string)($createdUser['email'] ?? $user['email']),
+            strcasecmp((string)($createdUser['status'] ?? ''), 'Active') === 0
+        );
+    } catch (Throwable $syncException) {
+        error_log('Employee status sync error: ' . $syncException->getMessage());
+    }
 
     try {
         $notificationMessage = sprintf(

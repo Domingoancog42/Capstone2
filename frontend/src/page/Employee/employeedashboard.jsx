@@ -95,7 +95,6 @@ const navigationItems = [
       { key: "travel", label: "Travel Order", path: "/employee/travel-order" },
       { key: "passSlip", label: "Pass Slips", path: "/employee/pass-slips" },
       { key: "cto", label: "Compensatory Time Off", path: "/employee/compensatory-time-off" },
-      { key: "overtime", label: "Overtime", path: "/employee/overtime" },
       { key: "leaveMonetization", label: "Leave Monetization", path: "/employee/leave-monetization" },
     ],
   },
@@ -147,7 +146,7 @@ const modules = {
         user={user}
         title="Travel Order Requests"
         description="Submit travel orders and monitor the status of each official trip request."
-        submitLabel="Submit Travel Order"
+        allowCreate={false}
       />
     ),
   },
@@ -160,7 +159,7 @@ const modules = {
         user={user}
         title="Pass Slip Requests"
         description="Submit pass slips and monitor the status of your outgoing requests."
-        submitLabel="Submit Pass Slip"
+        submitLabel="Create Pass Slip"
         showDivisionFilter={false}
       />
     ),
@@ -174,7 +173,7 @@ const modules = {
         user={user}
         title="Compensatory Time Off Requests"
         description="Submit compensatory time off requests and track their status in real time."
-        submitLabel="Submit Compensatory Time Off"
+        submitLabel="File CTO"
         showEmployeeFilter={false}
       />
     ),

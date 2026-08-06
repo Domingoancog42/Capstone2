@@ -40,18 +40,20 @@ const TABLE_BALANCE_COLUMNS = [
   { key: "VL", label: "Vacation Leave Balance" },
   { key: "SL", label: "Sick Leave Balance" },
   { key: "SPL", label: "Special Leave Balance" },
-  { key: "FL", label: "Force Leave Balance" },
   { key: "SOPL", label: "Solo Parent Leave" },
   { key: "STL", label: "Study Leave" },
   { key: "ML", label: "Maternity Leave" },
   { key: "PL", label: "Paternity Leave" },
 ];
 
+/*
+ * Forced leave has no entry of its own: filing it spends vacation credits, so adjusting the
+ * vacation balance is what changes how much forced leave an employee can still take.
+ */
 const LEAVE_TYPE_OPTIONS = [
   { code: "VL", label: "Vacation Leave" },
   { code: "SL", label: "Sick Leave" },
   { code: "SPL", label: "Special Privilege Leave" },
-  { code: "FL", label: "Forced Leave" },
   { code: "SOPL", label: "Solo Parent Leave" },
   { code: "STL", label: "Study Leave" },
   { code: "ML", label: "Maternity Leave" },
@@ -65,12 +67,19 @@ const GENDER_RESTRICTED_LEAVE_CODES = {
   PL: "male",
 };
 
-const QUICK_ADJUSTMENT_AMOUNTS = [0.5, 1, 5];
+// One click on the stepper moves the balance by a monthly accrual (1.25 days);
+// typed values may be finer (quarter day) for corrections.
+const BALANCE_STEP = 1.25;
 
 
 function formatBalanceValue(value) {
   const numericValue = Number(value) || 0;
   return numericValue.toFixed(2).replace(/\.00$/, "");
+}
+
+// Keeps stepper arithmetic free of floating point drift (0.1 + 0.2 style noise).
+function roundBalance(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 function formatDateTime(value) {
@@ -254,7 +263,6 @@ function getSortValue(row, sortKey) {
     case "VL":
     case "SL":
     case "SPL":
-    case "FL":
     case "SOPL":
     case "STL":
     case "ML":
@@ -713,22 +721,30 @@ function LeaveAdjustmentCard({
   onClear,
   onRemove,
 }) {
-  const operation = draft?.operation === "deduct" ? "deduct" : "add";
-  const rawAmount = draft?.amount ?? "";
-  const amount = Number(rawAmount);
-  const hasAmount = rawAmount !== "" && !Number.isNaN(amount) && amount > 0;
-  const nextRemaining = hasAmount
-    ? (operation === "add" ? balance.remaining + amount : balance.remaining - amount)
-    : balance.remaining;
-  const exceedsBalance = hasAmount && operation === "deduct" && nextRemaining < 0;
+  // The input carries the *new* remaining balance, so an untouched card simply
+  // mirrors whatever the employee currently has left.
+  const rawTarget = draft?.target ?? formatBalanceValue(balance.remaining);
+  const target = Number(rawTarget);
+  const hasTarget = rawTarget !== "" && !Number.isNaN(target);
+  const nextRemaining = hasTarget ? roundBalance(target) : balance.remaining;
+  const delta = hasTarget ? roundBalance(nextRemaining - balance.remaining) : 0;
+  const hasChange = delta !== 0;
+  const operation = delta > 0 ? "add" : "deduct";
+  const exceedsBalance = hasTarget && nextRemaining < 0;
 
-  const cardToneClass = !hasAmount
+  const cardToneClass = !hasChange
     ? "border-slate-200 bg-white hover:border-slate-300"
     : exceedsBalance
       ? "border-rose-400 bg-rose-50/70 shadow-sm"
       : operation === "add"
         ? "border-emerald-300 bg-emerald-50/60 shadow-sm"
         : "border-amber-300 bg-amber-50/60 shadow-sm";
+
+  const stepBalance = (direction) => {
+    const base = hasTarget ? nextRemaining : balance.remaining;
+    const stepped = roundBalance(base + (direction * BALANCE_STEP));
+    onChange({ target: formatBalanceValue(Math.max(0, stepped)) });
+  };
 
   return (
     <article className={`rounded-3xl border p-4 transition ${cardToneClass}`}>
@@ -740,7 +756,7 @@ function LeaveAdjustmentCard({
           <div className="min-w-0">
             <p className="m-0 truncate text-sm font-semibold text-slate-900">{type.label}</p>
             <p className="m-0 mt-0.5 text-xs text-slate-500">
-              Remaining <strong className="font-semibold text-slate-700">{formatBalanceValue(balance.remaining)}</strong>
+              Current <strong className="font-semibold text-slate-700">{formatBalanceValue(balance.remaining)}</strong>
               {" · "}Used {formatBalanceValue(balance.used)}
               {" · "}Total {formatBalanceValue(balance.total)}
             </p>
@@ -759,73 +775,68 @@ function LeaveAdjustmentCard({
         ) : null}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2.5">
           <button
             type="button"
-            onClick={() => onChange({ operation: "add" })}
-            className={`inline-flex min-h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-bold transition ${
-              operation === "add" ? "bg-emerald-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"
-            }`}
+            onClick={() => stepBalance(-1)}
+            disabled={hasTarget && nextRemaining <= 0}
+            aria-label={`Decrease ${type.label} balance by ${BALANCE_STEP} day(s)`}
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-slate-300 bg-white text-slate-600 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300 disabled:hover:bg-white disabled:hover:text-slate-600"
           >
-            <Plus size={14} />
-            Add
+            <Minus size={16} />
           </button>
-          <button
-            type="button"
-            onClick={() => onChange({ operation: "deduct" })}
-            className={`inline-flex min-h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-bold transition ${
-              operation === "deduct" ? "bg-rose-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"
-            }`}
-          >
-            <Minus size={14} />
-            Deduct
-          </button>
-        </div>
 
-        <div className="flex items-center gap-1.5">
           <input
             type="number"
             min="0"
             step="0.25"
             inputMode="decimal"
-            value={rawAmount}
-            onChange={(event) => onChange({ amount: event.target.value })}
-            placeholder="0"
-            aria-label={`${type.label} adjustment amount`}
-            className="h-10 w-24 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+            value={rawTarget}
+            onChange={(event) => onChange({ target: event.target.value })}
+            placeholder={formatBalanceValue(balance.remaining)}
+            aria-label={`${type.label} remaining balance`}
+            className="h-10 w-24 rounded-xl border border-slate-300 bg-white px-3 text-center text-sm font-semibold text-slate-900 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
           />
-          <span className="text-xs font-medium text-slate-500">day(s)</span>
+
+          <button
+            type="button"
+            onClick={() => stepBalance(1)}
+            aria-label={`Increase ${type.label} balance by ${BALANCE_STEP} day(s)`}
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-slate-300 bg-white text-slate-600 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700"
+          >
+            <Plus size={16} />
+          </button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          {QUICK_ADJUSTMENT_AMOUNTS.map((quickAmount) => (
-            <button
-              key={quickAmount}
-              type="button"
-              onClick={() => onChange({ amount: String(quickAmount) })}
-              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700"
-            >
-              {quickAmount}
-            </button>
-          ))}
-        </div>
+        <span className="text-xs font-medium text-slate-500">remaining day(s)</span>
 
-        {hasAmount ? (
+        {hasChange ? (
           <button
             type="button"
             onClick={onClear}
             className="ml-auto inline-flex items-center gap-1 rounded-xl px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
           >
             <Undo2 size={12} />
-            Clear
+            Reset
           </button>
         ) : null}
       </div>
 
-      {hasAmount ? (
+      {hasChange ? (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-white/80 px-3 py-2">
-          <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">New balance</span>
+          <span className="inline-flex items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">New balance</span>
+            <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+              exceedsBalance
+                ? "bg-rose-100 text-rose-700"
+                : operation === "add"
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-amber-100 text-amber-700"
+            }`}>
+              {delta > 0 ? "+" : "-"}{formatBalanceValue(Math.abs(delta))}
+            </span>
+          </span>
           <span className="inline-flex items-center gap-2 text-sm font-semibold">
             <span className="text-slate-400">{formatBalanceValue(balance.remaining)}</span>
             <span className="text-slate-400">&rarr;</span>
@@ -838,7 +849,7 @@ function LeaveAdjustmentCard({
 
       {exceedsBalance ? (
         <p className="m-0 mt-2 text-xs font-semibold text-rose-600">
-          Deduction exceeds the remaining balance of {formatBalanceValue(balance.remaining)} day(s).
+          The remaining balance cannot go below 0 day(s).
         </p>
       ) : null}
     </article>
@@ -896,19 +907,27 @@ function LeaveBalanceAdjustmentModal({
       visibleTypes
         .map((type) => {
           const draft = drafts[type.code];
-          const amount = Number(draft?.amount);
+          const target = Number(draft?.target);
 
-          if (!draft || draft.amount === "" || Number.isNaN(amount) || amount <= 0) {
+          if (!draft || draft.target === "" || Number.isNaN(target)) {
             return null;
           }
 
           const balance = getBalanceRecord(row, type.code);
-          const operation = draft.operation === "deduct" ? "deduct" : "add";
-          const nextRemaining = operation === "add"
-            ? balance.remaining + amount
-            : balance.remaining - amount;
+          const nextRemaining = roundBalance(target);
+          const delta = roundBalance(nextRemaining - balance.remaining);
 
-          return { type, balance, operation, amount, nextRemaining };
+          if (delta === 0) {
+            return null;
+          }
+
+          return {
+            type,
+            balance,
+            operation: delta > 0 ? "add" : "deduct",
+            amount: Math.abs(delta),
+            nextRemaining,
+          };
         })
         .filter(Boolean),
     [drafts, row, visibleTypes]
@@ -919,7 +938,7 @@ function LeaveBalanceAdjustmentModal({
   const updateDraft = useCallback((code, patch) => {
     setDrafts((current) => ({
       ...current,
-      [code]: { operation: "add", amount: "", ...(current[code] || {}), ...patch },
+      [code]: { target: "", ...(current[code] || {}), ...patch },
     }));
     setFormError("");
   }, []);
@@ -949,11 +968,11 @@ function LeaveBalanceAdjustmentModal({
       return;
     }
     if (pendingChanges.length === 0) {
-      setFormError("Enter an amount on at least one leave type before saving.");
+      setFormError("Change the remaining balance on at least one leave type before saving.");
       return;
     }
     if (invalidChanges.length > 0) {
-      setFormError("Fix the highlighted deductions that exceed the remaining balance.");
+      setFormError("Fix the highlighted leave types: the remaining balance cannot be negative.");
       return;
     }
 
@@ -997,7 +1016,7 @@ function LeaveBalanceAdjustmentModal({
       open={open}
       onClose={onClose}
       title="Add New Balance"
-      description="Add or deduct leave credits per leave type, then record the reason for the change."
+      description="Set the remaining leave credits per leave type, then record the reason for the change."
       maxWidthClassName="max-w-5xl"
     >
       <form onSubmit={handleSubmit}>
@@ -1088,7 +1107,7 @@ function LeaveBalanceAdjustmentModal({
                 <div>
                   <p className="m-0 text-sm font-semibold text-slate-900">Leave Credits</p>
                   <p className="m-0 mt-0.5 text-xs text-slate-500">
-                    Adjust any number of leave types &mdash; blank rows are left untouched.
+                    Each field shows the remaining balance &mdash; use &minus;/+ or type a new value. Unchanged rows are left untouched.
                   </p>
                 </div>
                 <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${

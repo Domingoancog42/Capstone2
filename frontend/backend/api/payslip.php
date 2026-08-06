@@ -301,6 +301,9 @@ function payslip_read_filters(): array
 
 function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser): array
 {
+    // The join below reads it, and a payslip can be opened before any payroll request has run.
+    hris_ensure_payroll_meta_table($pdo);
+
     $params = [];
     $employeeScopeSql = '';
     $payrollJoinSql = 'LEFT JOIN (
@@ -355,12 +358,12 @@ function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser):
             paid.total_allowance AS paidTotalAllowance,
             paid.total_deduction AS paidTotalDeduction,
             paid.net_pay AS paidNetPay,
-            payroll_meta.setting_value AS paidPayrollMeta
+            payroll_meta.meta_json AS paidPayrollMeta
          FROM employees e
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id
          ' . $payrollJoinSql . '
-         LEFT JOIN settings payroll_meta ON payroll_meta.setting_key = CONCAT("payroll_meta:", paid.payroll_id)
+         LEFT JOIN PayrollMeta payroll_meta ON payroll_meta.payroll_id = paid.payroll_id
          WHERE e.is_archived = 0' . $employeeScopeSql . '
          ' . $orderBySql
     );

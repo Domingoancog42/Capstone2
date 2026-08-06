@@ -3,10 +3,15 @@ import { Clock3, LoaderCircle, LockKeyhole, ShieldCheck, ShieldOff } from "lucid
 import ProfileSectionCard from "../ProfileSectionCard";
 import { profileSectionAnchorId } from "../profileUtils";
 
+// Audit actions arrive dotted and snake_cased, e.g. "two_factor.verify_success".
 function formatActivityAction(action = "") {
   return String(action || "")
-    .replace(/_/g, " ")
+    .replace(/[._]/g, " ")
     .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function formatActivityContext(item = {}) {
+  return [item.ipAddress, item.browser, item.device].filter(Boolean).join(" - ") || "Unknown device";
 }
 
 function formatDateTime(value) {
@@ -238,10 +243,10 @@ export default function SecuritySection({
                     <div key={`${item.createdAt || "activity"}-${index}`} className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                       <div className="min-w-0">
                         <p className="m-0 text-sm font-semibold text-slate-900">
-                          {formatActivityAction(item.action)} - {formatActivityAction(item.status)}
+                          {formatActivityAction(item.action)}
                         </p>
                         <p className="m-0 mt-1 text-xs font-semibold text-slate-500">
-                          {item.ipAddress || "Unknown IP"}
+                          {formatActivityContext(item)}
                         </p>
                       </div>
                       <p className="m-0 text-xs font-semibold text-slate-500">

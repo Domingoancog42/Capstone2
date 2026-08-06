@@ -37,6 +37,10 @@ import {
 
 const COMPENSATORY_STATUSES = ["Pending", "Reviewed", "Approved", "Rejected", "Cancelled"];
 
+// Stable identity for the default prop: a literal `[]` in the signature is a fresh array on every
+// render, which invalidated the employee memos and, through them, the modal's default values.
+const EMPTY_EMPLOYEES = [];
+
 const initialForm = {
   employeeRecordId: "",
   hoursApplied: "",
@@ -911,7 +915,19 @@ function CompensatoryModal({
   const [visible, setVisible] = useState(false);
   const [form, setForm] = useState(initialForm);
   const [errors, setErrors] = useState({});
+  /*
+   * Held in a ref so the reset effect below can read the newest defaults without listing
+   * `defaultValues` as a dependency. The parent rebuilds that object on every render, and the
+   * auto-refresh poll re-renders the workspace every few seconds — depending on it directly
+   * wiped whatever the user had typed mid-form.
+   */
+  const defaultValuesRef = useRef(defaultValues);
 
+  useEffect(() => {
+    defaultValuesRef.current = defaultValues;
+  }, [defaultValues]);
+
+  // Reset only on the closed -> open transition, never on an incidental re-render.
   useEffect(() => {
     if (!open) {
       setVisible(false);
@@ -920,12 +936,12 @@ function CompensatoryModal({
 
     setForm({
       ...initialForm,
-      ...defaultValues,
+      ...defaultValuesRef.current,
     });
     setErrors({});
     const frame = window.requestAnimationFrame(() => setVisible(true));
     return () => window.cancelAnimationFrame(frame);
-  }, [defaultValues, open]);
+  }, [open]);
 
   if (!open) {
     return null;
@@ -952,8 +968,8 @@ function CompensatoryModal({
     if (canSelectEmployee && !form.employeeRecordId) nextErrors.employeeRecordId = "Employee is required.";
     if (!form.hoursApplied) {
       nextErrors.hoursApplied = "Number of hours applied for is required.";
-    } else if (Number.isNaN(hours) || hours <= 0 || hours > 4) {
-      nextErrors.hoursApplied = "Maximum of 4 hours is allowed per request.";
+    } else if (Number.isNaN(hours) || hours < 4) {
+      nextErrors.hoursApplied = "Minimum of 4 hours is required per request.";
     }
     if (!form.startDate) nextErrors.startDate = "Inclusive start date is required.";
     if (!form.endDate) nextErrors.endDate = "Inclusive end date is required.";
@@ -1045,21 +1061,20 @@ function CompensatoryModal({
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">Number of Hours Applied For *</span>
               <input
                 type="number"
-                min="0.5"
-                max="4"
+                min="4"
                 step="0.25"
                 value={form.hoursApplied}
                 onChange={updateField("hoursApplied")}
-                placeholder="Max 4 hours per request"
+                placeholder="Minimum 4 hours per request"
                 className={inputClasses}
               />
-              <p className="m-0 mt-1 text-xs text-slate-500">Strict limit: 4 hours maximum for each request.</p>
+              <p className="m-0 mt-1 text-xs text-slate-500">Strict limit: 4 hours minimum for each request.</p>
               {errors.hoursApplied ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.hoursApplied}</p> : null}
             </label>
 
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <p className="m-0 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Request Rule</p>
-              <p className="m-0 mt-2 text-sm font-semibold text-slate-900">Hours must stay between 0.25 and 4.00.</p>
+              <p className="m-0 mt-2 text-sm font-semibold text-slate-900">Hours must be at least 4.00.</p>
               <p className="m-0 mt-1 text-sm text-slate-600">Use remarks to explain the offsetting work or justification.</p>
             </div>
 
@@ -1119,7 +1134,7 @@ function CompensatoryModal({
             disabled={submitting}
             className="inline-flex min-h-10 items-center justify-center rounded-xl bg-teal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {submitting ? "Submitting..." : "Submit Compensatory Time Off"}
+            {submitting ? "Submitting..." : "File CTO"}
           </button>
         </div>
       </form>
@@ -1129,10 +1144,10 @@ function CompensatoryModal({
 
 export default function CompensatoryWorkspace({
   user,
-  employees = [],
+  employees = EMPTY_EMPLOYEES,
   title = "Compensatory Time Off",
   description = "Submit, review, and monitor compensatory time off requests.",
-  submitLabel = "File Compensatory Time Off",
+  submitLabel = "File CTO",
   showHeaderCloseButton = true,
   showEmployeeFilter = true,
   onPendingCountChange,

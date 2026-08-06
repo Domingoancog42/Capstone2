@@ -288,11 +288,13 @@ function password_change_issue_code(PDO $pdo, array $sessionUser, bool $enforceR
         );
     } catch (Throwable $exception) {
         password_change_clear_pending($userId);
-        hris_two_factor_log($pdo, $userId, 'password_change.otp_email_failed', 'failed');
+        write_auth_audit($pdo, $sessionUser, 'password.change_otp_email_failed', 'A password change code could not be emailed.', [
+            'error' => $exception->getMessage(),
+        ]);
         throw $exception;
     }
 
-    hris_two_factor_log($pdo, $userId, 'password_change.otp_sent', 'sent');
+    write_auth_audit($pdo, $sessionUser, 'password.change_otp_sent', 'A password change verification code was emailed.');
     hris_two_factor_notify_user(
         $pdo,
         $userId,
@@ -344,7 +346,9 @@ function password_change_apply(PDO $pdo, array $sessionUser, string $code, strin
     if (!password_verify($code, (string)($pending['otpHash'] ?? ''))) {
         $attempts = (int)($pending['attempts'] ?? 0) + 1;
         $_SESSION['password_change_pending']['attempts'] = $attempts;
-        hris_two_factor_log($pdo, $userId, 'password_change.otp_failed', 'failed');
+        write_auth_audit($pdo, $sessionUser, 'password.change_otp_failed', 'A password change verification attempt failed.', [
+            'attempts' => $attempts,
+        ]);
 
         if ($attempts >= $settings['maxAttempts']) {
             password_change_lock($userId, $settings['lockSeconds']);
@@ -425,7 +429,6 @@ function password_change_apply(PDO $pdo, array $sessionUser, string $code, strin
     $_SESSION['user'] = $formattedUser;
     $_SESSION['last_activity_at'] = time();
 
-    hris_two_factor_log($pdo, $userId, 'password_change.completed', 'success');
     write_auth_audit($pdo, $formattedUser, 'password.change_completed', 'A user changed their password from the profile page.', [
         'username' => $formattedUser['username'] ?? null,
     ]);
@@ -488,7 +491,7 @@ if ($action === 'request') {
     $passwordHash = (string)($account['password_hash'] ?? '');
 
     if ($passwordHash === '' || !password_verify($currentPassword, $passwordHash)) {
-        hris_two_factor_log($pdo, $userId, 'password_change.current_password_failed', 'failed');
+        write_auth_audit($pdo, $sessionUser, 'password.change_current_password_failed', 'A password change request failed the current-password check.');
         json_response([
             'success' => false,
             'message' => 'Current password is incorrect.',

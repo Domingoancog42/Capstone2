@@ -159,6 +159,17 @@ function reports_employee_base_sql(string $extraWhere = ''): string
         WHERE e.is_archived = 0' . ($extraWhere !== '' ? ' AND ' . $extraWhere : '');
 }
 
+/**
+ * Job Order is legacy seed data — the employee form only ever creates Regular or Contractual
+ * appointments — so employee reports leave it out of the Employment Status filter and chart rather
+ * than offering a category the office no longer appoints under. Both spellings are covered because
+ * imported rows carry either one.
+ */
+function reports_excluded_employment_status_sql(string $column): string
+{
+    return ' AND LOWER(COALESCE(TRIM(' . $column . '), "")) NOT IN ("job order", "jo")';
+}
+
 function reports_employee_filters(): array
 {
     return [
@@ -235,30 +246,39 @@ function reports_definitions(): array
             'description' => 'Complete employee master list filtered by hiring or creation date.',
             'where' => '',
         ],
+        // Both are headcount snapshots of the whole roster, so they opt out of the hire-date window
+        // the other employee reports use. Left on it, "Total Active Employees" on the default Last
+        // 30 Days range answered "employees hired in the last 30 days who are active" — two rows out
+        // of three hundred — rather than the total it is named for.
         'employee-active' => [
             'label' => 'Total Active Employees',
             'description' => 'Employees currently flagged as active in the master list.',
             'where' => 'LOWER(e.status) = "active"',
+            'dateExpression' => null,
         ],
         'employee-inactive' => [
             'label' => 'Total Inactive Employees',
             'description' => 'Employees whose record status is anything other than active.',
             'where' => 'LOWER(e.status) <> "active"',
+            'dateExpression' => null,
         ],
         'employee-male' => [
             'label' => 'Male Employees',
             'description' => 'Employees recorded with a male gender.',
             'where' => 'LOWER(e.gender) = "male"',
+            'dateExpression' => null,
         ],
         'employee-female' => [
             'label' => 'Female Employees',
             'description' => 'Employees recorded with a female gender.',
             'where' => 'LOWER(e.gender) = "female"',
+            'dateExpression' => null,
         ],
         'employee-pwd' => [
             'label' => 'PWD Employees',
             'description' => 'Employees registered as persons with disability.',
             'where' => 'e.pwd = 1',
+            'dateExpression' => null,
             'columns' => [
                 ['employeeId', 'Employee ID'],
                 ['employeeName', 'Employee Name'],
@@ -288,16 +308,13 @@ function reports_definitions(): array
             'label' => 'Permanent Employees',
             'description' => 'Employees under a permanent or regular appointment.',
             'where' => 'LOWER(COALESCE(e.employment_status, "")) IN ("permanent", "regular")',
+            'dateExpression' => null,
         ],
         'employee-cos' => [
             'label' => 'Contract of Service Employees',
             'description' => 'Employees engaged through contract of service or contractual appointments.',
             'where' => 'LOWER(COALESCE(e.employment_status, "")) IN ("contractual", "contract of service", "cos")',
-        ],
-        'employee-casual' => [
-            'label' => 'Casual Employees',
-            'description' => 'Employees under a casual appointment.',
-            'where' => 'LOWER(COALESCE(e.employment_status, "")) = "casual"',
+            'dateExpression' => null,
         ],
         'employee-newly-hired' => [
             'label' => 'Newly Hired Employees',
@@ -310,11 +327,13 @@ function reports_definitions(): array
             'label' => 'Separated Employees',
             'description' => 'Employees marked as resigned, separated, or terminated.',
             'where' => 'LOWER(COALESCE(e.status, "")) IN ("resigned", "separated", "terminated", "inactive")',
+            'dateExpression' => null,
         ],
         'employee-retired' => [
             'label' => 'Retired Employees',
             'description' => 'Employees whose record status is retired.',
             'where' => 'LOWER(COALESCE(e.status, "")) = "retired"',
+            'dateExpression' => null,
         ],
         'employee-birthdays' => [
             'label' => 'Employees with Birthday this Month',
@@ -345,37 +364,6 @@ function reports_definitions(): array
                 ['yearsOfService', 'Years of Service'],
             ],
             'orderBy' => 'age DESC',
-        ],
-        'employee-without-email' => [
-            'label' => 'Employees without Email',
-            'description' => 'Employees missing a usable e-mail address on their profile.',
-            'where' => '(e.email IS NULL OR TRIM(e.email) = "")',
-            'dateExpression' => null,
-            'columns' => [
-                ['employeeId', 'Employee ID'],
-                ['employeeName', 'Employee Name'],
-                ['division', 'Division'],
-                ['phone', 'Phone'],
-                ['status', 'Status'],
-            ],
-        ],
-        'employee-without-government-ids' => [
-            'label' => 'Employees without Government IDs',
-            'description' => 'Employees missing one or more of their GSIS, Pag-IBIG, PhilHealth, or TIN numbers.',
-            'where' => '(COALESCE(TRIM(e.emp_gsis_id_no), "") = ""
-                OR COALESCE(TRIM(e.emp_pagibig_id_no), "") = ""
-                OR COALESCE(TRIM(e.emp_philhealth_id_no), "") = ""
-                OR COALESCE(TRIM(e.tin_no), "") = "")',
-            'dateExpression' => null,
-            'columns' => [
-                ['employeeId', 'Employee ID'],
-                ['employeeName', 'Employee Name'],
-                ['division', 'Division'],
-                ['gsisNo', 'GSIS No.'],
-                ['pagibigNo', 'Pag-IBIG No.'],
-                ['philhealthNo', 'PhilHealth No.'],
-                ['tinNo', 'TIN'],
-            ],
         ],
     ];
 
@@ -2111,6 +2099,33 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
 
     $charts['employeeGrowth'] = reports_employee_growth($pdo, $divisionId);
 
+    // Active against everything else, which is what the active and inactive employee reports ask.
+    // Each slice keeps the individual record statuses that rolled into it so the card's table view
+    // can name them — "Inactive" on its own never says whether they resigned or retired.
+    $statusRows = reports_rows(
+        $pdo,
+        'SELECT COALESCE(NULLIF(TRIM(e.status), ""), "Unspecified") AS label, COUNT(e.id) AS value
+         FROM employees e WHERE e.is_archived = 0' . $scope . '
+         GROUP BY label ORDER BY value DESC',
+        $scopeParams
+    );
+
+    $recordStatus = [
+        ['label' => 'Active', 'value' => 0, 'detail' => []],
+        ['label' => 'Inactive', 'value' => 0, 'detail' => []],
+    ];
+
+    foreach ($statusRows as $row) {
+        $label = (string)$row['label'];
+        $value = (int)$row['value'];
+        $bucket = strtolower($label) === 'active' ? 0 : 1;
+
+        $recordStatus[$bucket]['value'] += $value;
+        $recordStatus[$bucket]['detail'][] = ['label' => $label, 'value' => $value];
+    }
+
+    $charts['recordStatus'] = $recordStatus;
+
     $charts['genderDistribution'] = array_map(
         static fn (array $row): array => ['label' => (string)$row['label'], 'value' => (int)$row['value']],
         reports_rows(
@@ -2142,7 +2157,8 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
         reports_rows(
             $pdo,
             'SELECT COALESCE(NULLIF(TRIM(e.employment_status), ""), "Unspecified") AS label, COUNT(e.id) AS value
-             FROM employees e WHERE e.is_archived = 0' . $scope . '
+             FROM employees e WHERE e.is_archived = 0' . $scope
+                . reports_excluded_employment_status_sql('e.employment_status') . '
              GROUP BY label ORDER BY value DESC',
             $scopeParams
         )
@@ -2543,7 +2559,8 @@ function reports_filter_options(PDO $pdo): array
         $pdo,
         'SELECT DISTINCT TRIM(employment_status) AS value
          FROM employees
-         WHERE is_archived = 0 AND COALESCE(TRIM(employment_status), "") <> ""
+         WHERE is_archived = 0 AND COALESCE(TRIM(employment_status), "") <> ""'
+            . reports_excluded_employment_status_sql('employment_status') . '
          ORDER BY value ASC'
     );
     $statuses = reports_rows(
@@ -2640,127 +2657,6 @@ function reports_catalog(PDO $pdo): array
     }
 
     return $ordered;
-}
-
-// ===================================================================
-// Scheduled reports
-// ===================================================================
-
-function reports_ensure_schedule_table(PDO $pdo): void
-{
-    $pdo->exec(
-        'CREATE TABLE IF NOT EXISTS report_schedules (
-            id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
-            name            VARCHAR(150)    NOT NULL,
-            report_type     VARCHAR(100)    NOT NULL,
-            frequency       ENUM("daily", "weekly", "monthly", "quarterly", "annually") NOT NULL DEFAULT "monthly",
-            export_format   ENUM("pdf", "xlsx", "csv") NOT NULL DEFAULT "pdf",
-            date_range      VARCHAR(40)     NOT NULL DEFAULT "lastMonth",
-            recipients      TEXT            NULL,
-            filters_json    TEXT            NULL,
-            is_active       TINYINT(1)      NOT NULL DEFAULT 1,
-            last_run_at     DATETIME        NULL,
-            next_run_at     DATETIME        NULL,
-            created_by      INT UNSIGNED    NULL,
-            created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY idx_report_schedules_active (is_active),
-            KEY idx_report_schedules_next_run (next_run_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-    );
-}
-
-function reports_next_run_at(string $frequency): string
-{
-    $now = new DateTimeImmutable('tomorrow 07:00');
-
-    return match ($frequency) {
-        'daily' => $now->format('Y-m-d H:i:s'),
-        'weekly' => (new DateTimeImmutable('next monday 07:00'))->format('Y-m-d H:i:s'),
-        'quarterly' => (new DateTimeImmutable('first day of this month 07:00'))->modify('+3 months')->format('Y-m-d H:i:s'),
-        'annually' => (new DateTimeImmutable('first day of january next year 07:00'))->format('Y-m-d H:i:s'),
-        default => (new DateTimeImmutable('first day of next month 07:00'))->format('Y-m-d H:i:s'),
-    };
-}
-
-function reports_schedule_row(array $row): array
-{
-    $filters = json_decode((string)($row['filters_json'] ?? ''), true);
-
-    return [
-        'id' => (int)$row['id'],
-        'name' => (string)$row['name'],
-        'reportType' => (string)$row['report_type'],
-        'frequency' => (string)$row['frequency'],
-        'exportFormat' => (string)$row['export_format'],
-        'dateRange' => (string)$row['date_range'],
-        'recipients' => array_values(array_filter(array_map('trim', explode(',', (string)($row['recipients'] ?? ''))))),
-        'filters' => is_array($filters) ? $filters : [],
-        'isActive' => (bool)$row['is_active'],
-        'lastRunAt' => $row['last_run_at'] ?? null,
-        'nextRunAt' => $row['next_run_at'] ?? null,
-        'createdAt' => $row['created_at'] ?? null,
-    ];
-}
-
-function reports_list_schedules(PDO $pdo): array
-{
-    reports_ensure_schedule_table($pdo);
-    $definitions = reports_definitions();
-
-    return array_map(static function (array $row) use ($definitions): array {
-        $schedule = reports_schedule_row($row);
-        $schedule['reportLabel'] = $definitions[$schedule['reportType']]['label'] ?? $schedule['reportType'];
-
-        return $schedule;
-    }, reports_rows($pdo, 'SELECT * FROM report_schedules ORDER BY is_active DESC, next_run_at ASC, id DESC'));
-}
-
-function reports_validate_schedule(array $body, array $definitions): array
-{
-    $name = substr(reports_text($body['name'] ?? ''), 0, 150);
-    $reportType = reports_text($body['reportType'] ?? '');
-    $frequency = strtolower(reports_text($body['frequency'] ?? 'monthly'));
-    $exportFormat = strtolower(reports_text($body['exportFormat'] ?? 'pdf'));
-    $dateRange = reports_text($body['dateRange'] ?? 'lastMonth');
-    $recipients = $body['recipients'] ?? [];
-
-    if ($name === '') {
-        json_response(['success' => false, 'message' => 'Schedule name is required.'], 422);
-    }
-
-    if (!isset($definitions[$reportType])) {
-        json_response(['success' => false, 'message' => 'Selected report type is invalid.'], 422);
-    }
-
-    if (!in_array($frequency, ['daily', 'weekly', 'monthly', 'quarterly', 'annually'], true)) {
-        json_response(['success' => false, 'message' => 'Selected frequency is invalid.'], 422);
-    }
-
-    if (!in_array($exportFormat, ['pdf', 'xlsx', 'csv'], true)) {
-        json_response(['success' => false, 'message' => 'Selected export format is invalid.'], 422);
-    }
-
-    if (is_string($recipients)) {
-        $recipients = explode(',', $recipients);
-    }
-
-    $recipients = array_values(array_filter(
-        array_map(static fn ($email): string => trim((string)$email), (array)$recipients),
-        static fn (string $email): bool => $email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) !== false
-    ));
-
-    return [
-        'name' => $name,
-        'reportType' => $reportType,
-        'frequency' => $frequency,
-        'exportFormat' => $exportFormat,
-        'dateRange' => $dateRange,
-        'recipients' => implode(',', $recipients),
-        'filters' => (string)json_encode(is_array($body['filters'] ?? null) ? $body['filters'] : []),
-        'isActive' => !empty($body['isActive'] ?? true) ? 1 : 0,
-    ];
 }
 
 // ===================================================================
@@ -3011,111 +2907,6 @@ function reports_stream_export(string $format, array $definition, array $rows, a
 $requestMethod = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 $action = strtolower(reports_text($_GET['action'] ?? ''));
 $definitions = reports_definitions();
-
-if ($action === 'schedules') {
-    reports_ensure_schedule_table($pdo);
-
-    if ($requestMethod === 'GET') {
-        json_response([
-            'success' => true,
-            'schedules' => reports_list_schedules($pdo),
-        ]);
-    }
-
-    if ($requestMethod === 'POST' || $requestMethod === 'PUT') {
-        $body = read_json_body();
-        $payload = reports_validate_schedule($body, $definitions);
-        $scheduleId = (int)($body['id'] ?? $_GET['id'] ?? 0);
-
-        if ($requestMethod === 'PUT' && $scheduleId > 0) {
-            $statement = $pdo->prepare(
-                'UPDATE report_schedules
-                    SET name = :name,
-                        report_type = :report_type,
-                        frequency = :frequency,
-                        export_format = :export_format,
-                        date_range = :date_range,
-                        recipients = :recipients,
-                        filters_json = :filters_json,
-                        is_active = :is_active,
-                        next_run_at = :next_run_at
-                  WHERE id = :id'
-            );
-            $statement->execute([
-                ':name' => $payload['name'],
-                ':report_type' => $payload['reportType'],
-                ':frequency' => $payload['frequency'],
-                ':export_format' => $payload['exportFormat'],
-                ':date_range' => $payload['dateRange'],
-                ':recipients' => $payload['recipients'],
-                ':filters_json' => $payload['filters'],
-                ':is_active' => $payload['isActive'],
-                ':next_run_at' => reports_next_run_at($payload['frequency']),
-                ':id' => $scheduleId,
-            ]);
-
-            reports_write_audit($pdo, $sessionUser, 'report.schedule_updated', 'Updated scheduled report "' . $payload['name'] . '".', [
-                'reportType' => $payload['reportType'],
-                'scheduleId' => $scheduleId,
-            ]);
-        } else {
-            $statement = $pdo->prepare(
-                'INSERT INTO report_schedules
-                    (name, report_type, frequency, export_format, date_range, recipients, filters_json, is_active, next_run_at, created_by)
-                 VALUES
-                    (:name, :report_type, :frequency, :export_format, :date_range, :recipients, :filters_json, :is_active, :next_run_at, :created_by)'
-            );
-            $statement->execute([
-                ':name' => $payload['name'],
-                ':report_type' => $payload['reportType'],
-                ':frequency' => $payload['frequency'],
-                ':export_format' => $payload['exportFormat'],
-                ':date_range' => $payload['dateRange'],
-                ':recipients' => $payload['recipients'],
-                ':filters_json' => $payload['filters'],
-                ':is_active' => $payload['isActive'],
-                ':next_run_at' => reports_next_run_at($payload['frequency']),
-                ':created_by' => isset($sessionUser['id']) ? (int)$sessionUser['id'] : null,
-            ]);
-            $scheduleId = (int)$pdo->lastInsertId();
-
-            reports_write_audit($pdo, $sessionUser, 'report.schedule_created', 'Created scheduled report "' . $payload['name'] . '".', [
-                'reportType' => $payload['reportType'],
-                'scheduleId' => $scheduleId,
-                'frequency' => $payload['frequency'],
-            ]);
-        }
-
-        json_response([
-            'success' => true,
-            'message' => 'Scheduled report saved.',
-            'schedules' => reports_list_schedules($pdo),
-        ]);
-    }
-
-    if ($requestMethod === 'DELETE') {
-        $scheduleId = (int)($_GET['id'] ?? 0);
-
-        if ($scheduleId <= 0) {
-            json_response(['success' => false, 'message' => 'A schedule id is required.'], 422);
-        }
-
-        $statement = $pdo->prepare('DELETE FROM report_schedules WHERE id = :id');
-        $statement->execute([':id' => $scheduleId]);
-
-        reports_write_audit($pdo, $sessionUser, 'report.schedule_deleted', 'Deleted scheduled report #' . $scheduleId . '.', [
-            'scheduleId' => $scheduleId,
-        ]);
-
-        json_response([
-            'success' => true,
-            'message' => 'Scheduled report deleted.',
-            'schedules' => reports_list_schedules($pdo),
-        ]);
-    }
-
-    json_response(['success' => false, 'message' => 'Method not allowed.'], 405);
-}
 
 if ($action === 'activity') {
     if ($requestMethod === 'DELETE') {

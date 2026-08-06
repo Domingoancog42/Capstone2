@@ -692,7 +692,7 @@ function settings_unlock_account(PDO $pdo, array $sessionUser, int $id): void
 function list_settings(PDO $pdo): void
 {
     hris_ensure_user_security_columns($pdo);
-    hris_ensure_two_factor_tables($pdo);
+    hris_ensure_two_factor_schema($pdo);
     hris_ensure_audit_logs_table($pdo);
     hris_ensure_organization_structure_columns($pdo);
 
@@ -1150,7 +1150,6 @@ if (($method === 'POST' || $method === 'PUT') && $type === 'two_factor') {
     write_auth_audit($pdo, $sessionUser, 'two_factor.settings_updated', 'Two-factor authentication settings were updated.', [
         'settings' => $normalized['settings'],
     ]);
-    hris_two_factor_log($pdo, (int)($sessionUser['id'] ?? 0), 'settings_updated', 'success');
     hris_two_factor_notify_settings_changed($pdo, $sessionUser, $normalized['settings']);
 
     list_settings($pdo);

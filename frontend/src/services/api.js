@@ -533,8 +533,10 @@ export const uploadOpcrVerification = async (assignmentId, file) => {
  * Rewards & Recognition. `fetchAwardCycles` returns every cycle with its nominations nested, plus
  * the `viewerKey` the screen matches against each nomination to find the signed-in user's own vote.
  */
-export const fetchAwardCycles = async () => {
-  const response = await api.get("/rewards.php", { params: { action: "list" } });
+export const fetchAwardCycles = async ({ archived = false } = {}) => {
+  const response = await api.get("/rewards.php", {
+    params: { action: "list", ...(archived ? { archived: 1 } : {}) },
+  });
   return response.data;
 };
 
@@ -550,6 +552,16 @@ export const updateAwardCycle = async (payload) => {
 
 export const setAwardCycleStatus = async (payload) => {
   const response = await api.put("/rewards.php?action=status", payload);
+  return response.data;
+};
+
+export const archiveAwardCycle = async (cycleId) => {
+  const response = await api.put("/rewards.php?action=archive", { cycleId });
+  return response.data;
+};
+
+export const restoreAwardCycle = async (cycleId) => {
+  const response = await api.put("/rewards.php?action=restore", { cycleId });
   return response.data;
 };
 
@@ -569,11 +581,30 @@ export const withdrawAwardNomination = async (cycleId) => {
 };
 
 /**
- * Revision string per topic, used by the live-update poller to spot work done by other users.
- * Deliberately unauthenticated of side effects — it only ever reads.
+ * The signed-in user's own award certificates, minted when a cycle they won was closed.
+ *
+ * Takes no employee argument on purpose — the server scopes the list to the employee record behind
+ * the session, so "My Awards" cannot be pointed at somebody else's.
  */
-export const getChangeFeed = async () => {
-  const response = await api.get("/changes.php");
+export const fetchMyAwardCertificates = async () => {
+  const response = await api.get("/rewards.php", { params: { action: "certificates" } });
+  return response.data;
+};
+
+/**
+ * One long-poll against the change feed.
+ *
+ * The shared 20s client timeout would abort a full hold just before the server answers, so this
+ * request carries its own: the hold plus enough margin for the final tick's queries and the trip
+ * back. `signal` lets the caller drop a parked request immediately when the tab is hidden or the
+ * user signs out, instead of leaving an Apache worker thread pinned to a reader that has gone.
+ */
+export const getChangeFeed = async ({ cursor = "", holdSeconds = 25, signal } = {}) => {
+  const response = await api.get("/changes.php", {
+    params: { cursor, hold: holdSeconds },
+    timeout: (holdSeconds + 10) * 1000,
+    signal,
+  });
   return response.data;
 };
 
@@ -629,24 +660,6 @@ export const deleteReportActivity = async (ids = []) => {
 
 export const logReportAction = async (payload = {}) => {
   const response = await api.post("/reports.php?action=log", payload);
-  return response.data;
-};
-
-export const getReportSchedules = async () => {
-  const response = await api.get("/reports.php", { params: { action: "schedules" } });
-  return response.data;
-};
-
-export const saveReportSchedule = async (payload = {}) => {
-  const method = payload?.id ? "put" : "post";
-  const response = await api[method]("/reports.php?action=schedules", payload);
-  return response.data;
-};
-
-export const deleteReportSchedule = async (id) => {
-  const response = await api.delete("/reports.php", {
-    params: { action: "schedules", id },
-  });
   return response.data;
 };
 
@@ -811,43 +824,6 @@ export const saveLeaveType = async (leaveType) => {
     type: "leave_type",
     ...leaveType,
   });
-  return response.data;
-};
-
-export const fetchRateLimitOverview = async () => {
-  const response = await api.get("/rate_limit.php");
-  return response.data;
-};
-
-export const saveRateLimitSettings = async (settings) => {
-  const response = await api.put("/rate_limit.php", {
-    action: "settings",
-    ...settings,
-  });
-  return response.data;
-};
-
-export const blockRateLimitAddress = async ({ group, identifier, minutes, reason }) => {
-  const response = await api.post("/rate_limit.php", {
-    action: "block",
-    group,
-    identifier,
-    minutes,
-    reason,
-  });
-  return response.data;
-};
-
-export const releaseRateLimitBlock = async (id) => {
-  const response = await api.put("/rate_limit.php", {
-    action: "unblock",
-    id,
-  });
-  return response.data;
-};
-
-export const clearRateLimitCounters = async () => {
-  const response = await api.delete("/rate_limit.php");
   return response.data;
 };
 

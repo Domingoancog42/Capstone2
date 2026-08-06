@@ -90,21 +90,63 @@ export function formatDateDisplay(value) {
   }).format(date);
 }
 
+/*
+ * Date inputs hand back "YYYY-MM-DD", which `new Date()` reads as UTC midnight and can shift a day
+ * when the weekday is what matters. Building the date from its parts keeps it local.
+ */
+function toLocalDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value));
+  if (parts) {
+    return new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function isWeekendDate(value) {
+  const date = toLocalDate(value);
+  if (!date) {
+    return false;
+  }
+
+  const weekday = date.getDay();
+  return weekday === 0 || weekday === 6;
+}
+
+/*
+ * CSC Form No. 6 asks for working days, so Saturdays and Sundays inside the range are not counted:
+ * a leave from Wednesday to the following Monday is four working days, not six.
+ */
 export function getDurationDays(startDate, endDate) {
-  if (!startDate || !endDate) {
+  const start = toLocalDate(startDate);
+  const end = toLocalDate(endDate);
+
+  if (!start || !end || end < start) {
     return 0;
   }
 
-  const start = new Date(startDate);
-  const end = new Date(endDate);
+  let workingDays = 0;
+  const cursor = new Date(start);
 
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return 0;
+  while (cursor <= end) {
+    const weekday = cursor.getDay();
+    if (weekday !== 0 && weekday !== 6) {
+      workingDays += 1;
+    }
+
+    cursor.setDate(cursor.getDate() + 1);
   }
 
-  const millisecondsPerDay = 1000 * 60 * 60 * 24;
-  const raw = Math.floor((end.getTime() - start.getTime()) / millisecondsPerDay) + 1;
-  return raw > 0 ? raw : 0;
+  return workingDays;
 }
 
 export function getInitials(name) {

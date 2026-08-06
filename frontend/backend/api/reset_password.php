@@ -3,13 +3,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/password-reset-utils.php';
-require_once __DIR__ . '/rate-limit-utils.php';
 
 require_method('POST');
-
-// Guessing a reset code is what the passwordReset group throttles; asking for a new one
-// is free.
-hris_rate_limit_guard($pdo, 'passwordReset');
 
 hris_ensure_user_security_columns($pdo);
 

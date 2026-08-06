@@ -9,7 +9,6 @@ import {
   FolderTree,
   Loader2,
   Printer,
-  RefreshCw,
   Search,
   Sheet,
 } from "lucide-react";
@@ -200,8 +199,6 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     payrollYear: "",
     payrollMonth: "",
   });
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
 
   const [catalog, setCatalog] = useState(EMPTY_ARRAY);
   const [filterOptions, setFilterOptions] = useState({});
@@ -240,13 +237,6 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     };
   }, []);
 
-  /* ---------------- Debounced global search ---------------- */
-
-  useEffect(() => {
-    const timer = setTimeout(() => setSearch(searchInput.trim()), 400);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
-
   /* ---------------- Request parameters ---------------- */
 
   const dateParams = useMemo(
@@ -272,10 +262,16 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     () => (activeCategory ? [activeCategory] : EMPTY_ARRAY),
     [activeCategory]
   );
-  const reportTypeInCategory = useMemo(
-    () => (activeCategory?.reports || EMPTY_ARRAY).some((entry) => entry.key === filters.reportType),
+  const selectedCatalogReport = useMemo(
+    () => (activeCategory?.reports || EMPTY_ARRAY).find((entry) => entry.key === filters.reportType) || null,
     [activeCategory, filters.reportType]
   );
+  const reportTypeInCategory = Boolean(selectedCatalogReport);
+  /**
+   * Snapshot reports ("Total Active Employees" and friends) have no date column to window on, so the
+   * range control is hidden for them rather than left on screen doing nothing.
+   */
+  const supportsDateRange = selectedCatalogReport ? selectedCatalogReport.supportsDateRange !== false : true;
   const categoryTitle =
     activeCategory?.label
     || REPORT_CATEGORIES.find((entry) => entry.key === category)?.title
@@ -305,7 +301,6 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     const params = {
       ...dateParams,
       reportType: filters.reportType,
-      search,
     };
 
     FILTER_CONTROLS.forEach((control) => {
@@ -317,7 +312,7 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     });
 
     return params;
-  }, [dateParams, filters, search]);
+  }, [dateParams, filters]);
 
   const customRangeIncomplete =
     filters.dateRange === "custom" && (!filters.customStart || !filters.customEnd);
@@ -423,24 +418,14 @@ export default function AdminReports({ showSummary = true, user, category = "" }
       chips.push({ key: control.key, label: control.label, value: option?.label || value });
     });
 
-    if (search) {
-      chips.push({ key: "search", label: "Search", value: search });
-    }
-
     return chips;
-  }, [filterOptions, filters, search, supportedFilters]);
+  }, [filterOptions, filters, supportedFilters]);
 
   const clearChip = (key) => {
-    if (key === "search") {
-      setSearchInput("");
-      return;
-    }
-
     updateFilter(key, "");
   };
 
   const clearAllChips = () => {
-    setSearchInput("");
     setFilters((current) => ({
       ...current,
       divisionId: "",
@@ -603,40 +588,25 @@ export default function AdminReports({ showSummary = true, user, category = "" }
             <ReportPicker catalog={categoryCatalog} value={filters.reportType} onChange={(value) => updateFilter("reportType", value)} />
           </div>
 
-          <div>
-            <label htmlFor="reports-date-range" className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">
-              Date Range
-            </label>
-            <select
-              id="reports-date-range"
-              value={filters.dateRange}
-              onChange={(event) => updateFilter("dateRange", event.target.value)}
-              className={selectClasses}
-            >
-              {DATE_RANGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label htmlFor="reports-search" className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">
-              Global Search
-            </label>
-            <div className="relative">
-              <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-              <input
-                id="reports-search"
-                type="search"
-                value={searchInput}
-                onChange={(event) => setSearchInput(event.target.value)}
-                placeholder="Name, division, status..."
-                className="min-h-[40px] w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-              />
+          {supportsDateRange ? (
+            <div>
+              <label htmlFor="reports-date-range" className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">
+                Date Range
+              </label>
+              <select
+                id="reports-date-range"
+                value={filters.dateRange}
+                onChange={(event) => updateFilter("dateRange", event.target.value)}
+                className={selectClasses}
+              >
+                {DATE_RANGE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
             </div>
-          </div>
+          ) : null}
 
-          {filters.dateRange === "custom" ? (
+          {supportsDateRange && filters.dateRange === "custom" ? (
             <>
               <div>
                 <label htmlFor="reports-custom-start" className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">
@@ -692,10 +662,11 @@ export default function AdminReports({ showSummary = true, user, category = "" }
         </div>
       ) : null}
 
-      {/* ---------------- Analytics ---------------- */}
+      {/* ---------------- Analytics for the selected report ---------------- */}
       {showSummary ? (
         <ReportsCharts
           category={category}
+          reportKey={filters.reportType}
           dashboard={dashboard}
           loading={dashboardLoading && !dashboard}
           refreshing={dashboardLoading && Boolean(dashboard)}
@@ -717,7 +688,7 @@ export default function AdminReports({ showSummary = true, user, category = "" }
             <p className="m-0 mt-1 max-w-3xl text-sm text-slate-500">
               {report?.description || "Select a report to view its records."}
             </p>
-            {report?.dateRange ? (
+            {report?.dateRange && supportsDateRange ? (
               <p className="m-0 mt-1 text-xs text-slate-400">
                 {`${report.dateRange.label} · ${report.dateRange.start} to ${report.dateRange.end}`}
               </p>
@@ -746,18 +717,9 @@ export default function AdminReports({ showSummary = true, user, category = "" }
               onRemoveChip={clearChip}
               onClearChips={activeFilterChips.length > 0 ? clearAllChips : undefined}
               toolbar={(
-                <>
-                  <ToolbarButton icon={Eye} onClick={handlePreview} disabled={!report}>
-                    View
-                  </ToolbarButton>
-                  <ToolbarButton
-                    icon={RefreshCw}
-                    onClick={() => setFilters((current) => ({ ...current }))}
-                    busy={refreshingReport}
-                  >
-                    Refresh
-                  </ToolbarButton>
-                </>
+                <ToolbarButton icon={Eye} onClick={handlePreview} disabled={!report}>
+                  View
+                </ToolbarButton>
               )}
             />
           )}

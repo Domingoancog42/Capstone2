@@ -1,11 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CalendarDays, FileUp, X } from "lucide-react";
+import { AlertTriangle, CalendarDays, FileUp, X } from "lucide-react";
 import EmployeeSearchSelect from "./EmployeeSearchSelect";
-import { getDurationDays, resolveRoleKey } from "../../utils/leaveHelpers";
+import { getDurationDays, isWeekendDate, resolveRoleKey } from "../../utils/leaveHelpers";
 import {
   DEFAULT_LEAVE_REQUEST_DETAILS,
   packLeaveReason,
 } from "../../utils/leaveRequestDetails";
+import {
+  confirmLeaveWithoutPay,
+  formatLeaveDays,
+  resolveLeaveWithoutPaySplit,
+} from "../../utils/leaveWithoutPay";
 
 const VACATION_DETAIL_OPTIONS = [
   { label: "Within the Philippines", value: "within_philippines" },
@@ -50,6 +55,7 @@ export default function LeaveRequestModal({
   user,
   leaveTypes = [],
   employees = [],
+  leaveCredits = [],
   isSubmitting = false,
   showHeaderCloseButton = true,
   onClose,
@@ -109,6 +115,25 @@ export default function LeaveRequestModal({
       (employee) => String(employee.employeeRecordId) === String(form.employeeId)
     ) || null;
   }, [canSelectEmployee, employeeOptions, form.division, form.employeeId, form.employeeName, user]);
+
+  /*
+   * The credits belong to the signed-in user, so they only describe the request when the filer
+   * is filing for themself. When someone files on another employee's behalf the API answers with
+   * the split for that employee instead.
+   */
+  const leaveWithoutPaySplit = useMemo(() => {
+    if (canSelectEmployee) {
+      return null;
+    }
+
+    return resolveLeaveWithoutPaySplit({
+      leaveType: form.leaveType,
+      numberOfDays: computedDays,
+      balances: leaveCredits,
+    });
+  }, [canSelectEmployee, computedDays, form.leaveType, leaveCredits]);
+
+  const chargesLeaveWithoutPay = Boolean(leaveWithoutPaySplit && leaveWithoutPaySplit.unpaidDays > 0);
 
   if (!open) {
     return null;
@@ -189,7 +214,26 @@ export default function LeaveRequestModal({
     if (!form.leaveType) nextErrors.leaveType = "Leave type is required.";
     if (!form.startDate) nextErrors.startDate = "Start date is required.";
     if (!form.endDate) nextErrors.endDate = "End date is required.";
-    if (form.startDate && form.endDate && getDurationDays(form.startDate, form.endDate) <= 0) {
+
+    /*
+     * Leave is counted in working days, so a Saturday or Sunday cannot be the first or last day
+     * of a request; the weekends inside the range are simply skipped.
+     */
+    if (form.startDate && isWeekendDate(form.startDate)) {
+      nextErrors.startDate = "Start date must be a working day (Monday to Friday).";
+    }
+
+    if (form.endDate && isWeekendDate(form.endDate)) {
+      nextErrors.endDate = "End date must be a working day (Monday to Friday).";
+    }
+
+    if (
+      form.startDate
+      && form.endDate
+      && !nextErrors.startDate
+      && !nextErrors.endDate
+      && getDurationDays(form.startDate, form.endDate) <= 0
+    ) {
       nextErrors.endDate = "End date must not be earlier than start date.";
     }
 
@@ -227,8 +271,13 @@ export default function LeaveRequestModal({
       return;
     }
 
+    if (chargesLeaveWithoutPay && !(await confirmLeaveWithoutPay(leaveWithoutPaySplit))) {
+      return;
+    }
+
     await onSubmit?.({
       ...form,
+      acknowledgeLeaveWithoutPay: chargesLeaveWithoutPay ? "1" : "",
       numberOfDays: computedDays || 1,
       reason: packLeaveReason(form.reason, {
         vacationScope: form.vacationScope,
@@ -448,6 +497,27 @@ export default function LeaveRequestModal({
               />
               {errors.endDate ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.endDate}</p> : null}
             </label>
+
+            {computedDays > 0 ? (
+              <p className="m-0 text-xs text-slate-500 sm:col-span-2">
+                {computedDays} working day{computedDays === 1 ? "" : "s"} applied for. Saturdays and
+                Sundays inside the range are not counted.
+              </p>
+            ) : null}
+
+            {chargesLeaveWithoutPay ? (
+              <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                <p className="m-0 flex items-center gap-2 text-sm font-semibold text-amber-900">
+                  <AlertTriangle size={15} />
+                  Insufficient {leaveWithoutPaySplit.leaveType} balance
+                </p>
+                <p className="m-0 mt-1 text-xs text-amber-800">
+                  You have {formatLeaveDays(leaveWithoutPaySplit.remainingCredits)} day(s) of credits left.
+                  Submitting files {formatLeaveDays(leaveWithoutPaySplit.paidDays)} day(s) with pay and
+                  {" "}{formatLeaveDays(leaveWithoutPaySplit.unpaidDays)} day(s) as Leave Without Pay.
+                </p>
+              </div>
+            ) : null}
 
             {normalizedLeaveType === "sick leave" ? (
               <label>

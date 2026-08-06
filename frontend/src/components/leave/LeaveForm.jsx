@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { formatDateDisplay, getDurationDays } from "../../utils/leaveHelpers";
 import { unpackLeaveReason } from "../../utils/leaveRequestDetails";
 import { buildSignatureTimestampLabel } from "../../utils/signatureTimestamp";
+import { resolveCreditPoolName } from "../../utils/leaveWithoutPay";
 import { getCurrentEmployeeSignature, getEmployeeSignature } from "../../services/api";
 import { fetchLeaveCredits, fetchLeaveRequestById, fetchLeaveTypes } from "../../services/leaveService";
 
@@ -165,14 +166,28 @@ function formatCreditValue(value) {
     : numericValue.toFixed(2).replace(/\.?0+$/, "");
 }
 
-function resolvePendingBalance(balance, requestedDays, appliesToRequestedType, requestStatus) {
+function toDayCount(value, fallback) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+/*
+ * Credits are only deducted once a request is approved, so a request still awaiting action has to
+ * show the balance it will leave behind rather than the balance on file today.
+ */
+function resolvePendingBalance(balance, chargedDays, requestStatus) {
   if (!balance) {
     return "";
   }
 
   const remaining = Number(balance.remaining ?? balance.total ?? 0);
-  const projectedRemaining = appliesToRequestedType && requestStatus === "pending"
-    ? Math.max(0, remaining - requestedDays)
+  const isAwaitingAction = requestStatus === "pending" || requestStatus === "reviewed";
+  const projectedRemaining = isAwaitingAction
+    ? Math.max(0, remaining - chargedDays)
     : Math.max(0, remaining);
 
   return formatCreditValue(projectedRemaining);
@@ -204,6 +219,19 @@ function buildFormData(request, employees, leaveCreditSnapshot = null, available
     || (/bar|board/.test(normalizedReason) ? "bar_review" : "");
   const numberOfDays = request?.numberOfDays || getDurationDays(request?.startDate, request?.endDate) || "";
   const requestedDays = Number(numberOfDays || 0);
+  /*
+   * A request filed beyond the employee's remaining credits carries Leave Without Pay days. Only
+   * the with pay portion is charged against the certified credits in 7.A, and 7.C reports both.
+   */
+  const paidDays = Math.min(toDayCount(request?.paidDays, requestedDays), requestedDays);
+  const unpaidDays = Math.max(0, toDayCount(request?.unpaidDays, 0));
+  const hasActionableStatus = ["pending", "reviewed", "approved"].includes(normalizedStatus);
+  /*
+   * 7.A certifies the credits this application draws from, so only the applied leave type's column
+   * is filled. Leaving the other column blank keeps unrelated balances off the certification.
+   */
+  const chargesVacationCredits = resolveCreditPoolName(normalizedLeaveType) === "vacation leave";
+  const chargesSickCredits = isSickLeave;
   const creditsAsOf = leaveCreditSnapshot?.creditsAsOf
     ? toDateInputValue(leaveCreditSnapshot.creditsAsOf)
     : "";
@@ -215,8 +243,12 @@ function buildFormData(request, employees, leaveCreditSnapshot = null, available
     middleName: nameParts.middleName,
     applicantName: request?.employeeName || employeeRecord?.fullName || "",
     dateOfFiling: toDateInputValue(request?.dateFiled),
-    position: employeeRecord?.position || "",
-    salary: formatSalary(employeeRecord),
+    /*
+     * Most dashboards render the form without an employee directory to match against, so the
+     * request's own employee details are the reliable source and the directory is the fallback.
+     */
+    position: request?.position || employeeRecord?.position || "",
+    salary: formatSalary(Number(request?.basicSalary) > 0 ? request : employeeRecord),
     leaveType: matchedLeaveType,
     leaveTypeOther,
     leaveDetailVacationWithinChecked: isVacationOrPrivilege && vacationScope === "within_philippines",
@@ -236,16 +268,16 @@ function buildFormData(request, employees, leaveCreditSnapshot = null, available
     inclusiveDates: formatInclusiveDates(request?.startDate, request?.endDate),
     commutation: "",
     creditsAsOf,
-    vlEarned: formatCreditValue(vacationCredits?.total),
-    vlLess: normalizedLeaveType === "vacation leave" ? formatCreditValue(requestedDays) : "",
-    vlBalance: resolvePendingBalance(vacationCredits, requestedDays, normalizedLeaveType === "vacation leave", normalizedStatus),
-    slEarned: formatCreditValue(sickCredits?.total),
-    slLess: isSickLeave ? formatCreditValue(requestedDays) : "",
-    slBalance: resolvePendingBalance(sickCredits, requestedDays, isSickLeave, normalizedStatus),
+    vlEarned: chargesVacationCredits ? formatCreditValue(vacationCredits?.total) : "",
+    vlLess: chargesVacationCredits ? formatCreditValue(paidDays) : "",
+    vlBalance: chargesVacationCredits ? resolvePendingBalance(vacationCredits, paidDays, normalizedStatus) : "",
+    slEarned: chargesSickCredits ? formatCreditValue(sickCredits?.total) : "",
+    slLess: chargesSickCredits ? formatCreditValue(paidDays) : "",
+    slBalance: chargesSickCredits ? resolvePendingBalance(sickCredits, paidDays, normalizedStatus) : "",
     recommendation: isRejected ? "disapproved" : "",
     disapprovalReason: isRejected ? rejectedNote : "",
-    approvedDaysPay: "",
-    approvedDaysNoPay: "",
+    approvedDaysPay: hasActionableStatus ? formatCreditValue(paidDays) : "",
+    approvedDaysNoPay: hasActionableStatus && unpaidDays > 0 ? formatCreditValue(unpaidDays) : "",
     approvedOthers: "",
     disapprovedReason: isRejected ? rejectedNote : "",
   };

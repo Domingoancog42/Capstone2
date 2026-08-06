@@ -14,9 +14,18 @@ coverage/
 # Real SMTP credentials. smtp-config.php itself is safe to commit; it reads
 # these at runtime. See smtp-credentials.example.php for the template.
 /frontend/backend/api/smtp-credentials.local.php
+#
+# Create React App env files are a special case: every REACT_APP_* value is
+# compiled into the public JavaScript bundle, so they cannot hold a secret in
+# the first place. .env.development and .env.production are shared deployment
+# configuration and belong in the repo -- a clone without them silently builds
+# against http://localhost and fails on every other device. Machine-specific
+# overrides go in .env.local / .env.*.local, which stay ignored.
 .env
 .env.*
 !.env.example
+!.env.development
+!.env.production
 
 # ---------------------------------------------------------------
 # Database dumps: employee records and password hashes, and tens of
@@ -25,7 +34,13 @@ coverage/
 # A structure-only schema file is safe to commit — a mysqldump/phpMyAdmin
 # export with INSERT rows is not.
 # ---------------------------------------------------------------
-/frontend/backend/backups/
+#
+# Ignore the dumps themselves, but keep the .htaccess that denies web access to
+# them -- both directories sit inside htdocs, so without that file a fresh clone
+# serves every backup to anyone who asks. Ignoring the directory outright would
+# stop git from ever descending into it, hence the `/*` + negation form.
+/frontend/backend/backups/*
+!/frontend/backend/backups/.htaccess
 /frontend/backend/database/*.sql
 !/frontend/backend/database/schema.sql
 *.sql.gz
@@ -34,7 +49,9 @@ coverage/
 # ---------------------------------------------------------------
 # Runtime artefacts
 # ---------------------------------------------------------------
-/frontend/backend/uploads/
+# Uploaded files stay out of the repo; the .htaccess hardening them does not.
+/frontend/backend/uploads/*
+!/frontend/backend/uploads/.htaccess
 *.log
 npm-debug.log*
 yarn-debug.log*

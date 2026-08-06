@@ -31,6 +31,10 @@ import {
   normalizeLeaveStatus,
 } from "../../utils/leaveHelpers";
 import { getLeaveReasonDisplay } from "../../utils/leaveRequestDetails";
+import {
+  confirmLeaveWithoutPay,
+  extractLeaveWithoutPayPrompt,
+} from "../../utils/leaveWithoutPay";
 
 const leaveBalanceCards = [
   { type: "Vacation Leave", tone: "from-teal-600 to-cyan-600", icon: CalendarDays },
@@ -132,15 +136,35 @@ export default function EmployeeLeaveWorkspace({ user }) {
     setCurrentPage(1);
   }, [leaveType, query, rowsPerPage, status]);
 
-  const handleSubmitRequest = async (payload) => {
-    setSubmitting(true);
+  const submitLeaveRequest = async (payload) => {
     try {
       const result = await fileLeaveRequest(payload);
       setRequests((current) => [result.request, ...current]);
-      toast.success("Leave request submitted successfully.");
+      toast.success(result.message || "Leave request submitted successfully.");
       setModalOpen(false);
     } catch (error) {
+      /*
+       * The modal already warns when it can see the balance. This covers the cases it cannot,
+       * such as credits that changed while the form was open.
+       */
+      const leaveWithoutPayPrompt = extractLeaveWithoutPayPrompt(error);
+
+      if (leaveWithoutPayPrompt && !payload?.acknowledgeLeaveWithoutPay) {
+        if (await confirmLeaveWithoutPay(leaveWithoutPayPrompt)) {
+          await submitLeaveRequest({ ...payload, acknowledgeLeaveWithoutPay: "1" });
+        }
+
+        return;
+      }
+
       toast.error(error?.response?.data?.message || error?.message || "Unable to submit leave request.");
+    }
+  };
+
+  const handleSubmitRequest = async (payload) => {
+    setSubmitting(true);
+    try {
+      await submitLeaveRequest(payload);
     } finally {
       setSubmitting(false);
     }
@@ -391,6 +415,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
         open={modalOpen}
         user={user}
         leaveTypes={LEAVE_TYPES}
+        leaveCredits={leaveCredits}
         isSubmitting={submitting}
         onClose={() => setModalOpen(false)}
         onSubmit={handleSubmitRequest}

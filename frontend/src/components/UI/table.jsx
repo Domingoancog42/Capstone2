@@ -75,10 +75,16 @@ export default function Table({
   className = "",
   tableClassName = "",
   stickyHeader = false,
+  /*
+   * The floor the table refuses to shrink below before its wrapper starts scrolling sideways.
+   * 760px suits the record tables this was written for, but a two- or three-column table has no
+   * reason to force a phone into horizontal scrolling — those pass `min-w-0` or a smaller floor.
+   */
+  minWidthClassName = "min-w-[760px]",
 }) {
   return (
     <div className={`overflow-x-auto ${className}`.trim()}>
-      <table className={`min-w-[760px] w-full border-collapse ${tableClassName}`.trim()}>
+      <table className={`${minWidthClassName} w-full border-collapse ${tableClassName}`.trim()}>
         <thead>
           <tr>
             {columns.map((column) => (

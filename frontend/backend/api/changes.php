@@ -2,23 +2,34 @@
 declare(strict_types=1);
 
 /**
- * Change feed for live status refresh.
+ * Long-polled change feed for cross-machine live refresh.
  *
- * Clients poll this and compare each topic's revision against the one they last saw. A changed
- * revision means "something in that topic moved" — the client then republishes its existing
- * auto-refresh event for the topic and every screen already listening reloads itself.
+ * The browser already syncs itself: a mutation publishes an auto-refresh event and BroadcastChannel
+ * relays it to the other tabs. That never leaves the machine, so when HR approves a leave on their
+ * computer the employee's browser has no way to learn anything happened.
  *
- * This exists because the browser-side sync (BroadcastChannel + localStorage) only reaches other
- * tabs of the *same* browser. When HR approves a leave on their machine, the employee's browser has
- * no way to learn about it without asking the server. This is that ask, kept deliberately cheap so
- * it can run on a short interval.
+ * This is that missing link. The client sends the cursor it last saw and the request is *held open*
+ * until a revision actually moves — up to `hold` seconds — instead of answering "nothing changed"
+ * straight away and being asked again a few seconds later. An approval therefore reaches the other
+ * machine within one inner tick rather than within one client poll interval, and an idle system
+ * exchanges one request per hold window instead of one every few seconds.
+ *
+ * Two things make holding a PHP request safe here, and both are load-bearing:
+ *   - the session lock is released below, or this request would block every other request the same
+ *     user makes for as long as it is held;
+ *   - the hold is bounded and the inner tick widens as it goes, so a parked connection stays cheap
+ *     and always terminates on its own.
+ *
+ * The real ceiling on this design is that each held request occupies one Apache worker thread for
+ * its whole life. The client keeps that to one connection per browser (not per tab) by electing a
+ * leader tab; see liveUpdatesService.js.
  */
 
 require_once __DIR__ . '/connection-pdo.php';
 
 /*
- * `false` keeps this poll from touching `last_activity_at`. Every open tab hits this endpoint every
- * few seconds, so counting it as activity would hold every session open forever and quietly disable
+ * `false` keeps this from touching `last_activity_at`. Every signed-in browser parks a request here
+ * continuously, so counting it as activity would hold every session open forever and quietly disable
  * the configured inactivity timeout. An idle session still expires here — it just 401s, and the
  * client treats that the same as any other expired request.
  */
@@ -26,8 +37,9 @@ require_session_user(false);
 
 /*
  * Nothing below writes to the session, and PHP's file session handler holds an exclusive lock for
- * the life of the request. Releasing it now stops this poll from serialising against the user's
- * real requests — without this, a poll in flight can stall the page they are actually using.
+ * the life of the request. Releasing it now is what makes a held request survivable: without this,
+ * a poll parked for 25 seconds stalls every other request the same user makes for those 25 seconds,
+ * and the page they are actually using appears to freeze.
  */
 if (session_status() === PHP_SESSION_ACTIVE) {
     session_write_close();
@@ -112,6 +124,8 @@ const CHANGE_FEED_TOPICS = [
     'rewards' => [
         ['table' => 'reward_cycles', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
         ['table' => 'reward_cycle_votes', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
+        // Certificates are minted by closing a cycle, so My Awards fills in without a reload.
+        ['table' => 'reward_certificates', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
     ],
     /*
      * Both permission sources are rows in the key/value `settings` table, so this topic is filtered
@@ -130,19 +144,54 @@ const CHANGE_FEED_TOPICS = [
     'access_request' => [
         ['table' => 'module_access_requests', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
     ],
+    /*
+     * Calendar announcements. Everyone's calendar shows them, so a notice published by HR has to
+     * reach the machines already sitting on the calendar rather than waiting for their next reload.
+     */
+    'announcement' => [
+        ['table' => 'announcements', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
+    ],
 ];
+
+/**
+ * How long one request may be parked.
+ *
+ * 25s is chosen against the things that cut a held connection from the outside: PHP's default
+ * `max_execution_time` of 30s, and the 30–60s idle timeouts common to proxies and antivirus web
+ * shields. Raising it lengthens the quiet period between requests but makes an unexpected mid-flight
+ * cut more likely, and every extra second is a second an Apache worker thread stays occupied.
+ */
+const CHANGE_FEED_MIN_HOLD_SECONDS = 5;
+const CHANGE_FEED_MAX_HOLD_SECONDS = 25;
+const CHANGE_FEED_DEFAULT_HOLD_SECONDS = 25;
+
+/**
+ * The inner tick starts tight and widens.
+ *
+ * A change that lands right after the client reconnects is the common case — somebody clicks Approve
+ * while the other person is watching the list — so the first few seconds are worth scanning often.
+ * A connection still parked twenty seconds in is watching an idle system, and checking it every
+ * second buys latency nobody is waiting on while re-running an aggregate over every listed table.
+ */
+const CHANGE_FEED_MIN_TICK_US = 1000000;
+const CHANGE_FEED_MAX_TICK_US = 3000000;
+const CHANGE_FEED_TICK_STEP_US = 500000;
 
 function changes_table_exists(PDO $pdo, string $table): bool
 {
+    // Safe to hold across ticks: a table does not appear or vanish inside one request.
     static $cache = [];
 
     if (array_key_exists($table, $cache)) {
         return $cache[$table];
     }
 
-    $statement = $pdo->prepare('SHOW TABLES LIKE :table');
-    $statement->execute([':table' => $table]);
-    $cache[$table] = $statement->fetchColumn() !== false;
+    /*
+     * INFORMATION_SCHEMA rather than `SHOW TABLES LIKE :table`: MariaDB's prepared-statement protocol
+     * rejects a placeholder there, and this connection runs with EMULATE_PREPARES off, so the SHOW
+     * form threw on the first table scanned and took the whole feed down with it.
+     */
+    $cache[$table] = hris_database_table_exists($pdo, $table);
 
     return $cache[$table];
 }
@@ -150,11 +199,13 @@ function changes_table_exists(PDO $pdo, string $table): bool
 /**
  * One scan per table returning a short opaque string. Callers only ever compare it for equality —
  * the parts are never parsed, so the exact shape is free to change.
+ *
+ * `$cache` is passed in rather than held static because this now runs once per tick: a static cache
+ * would pin the first tick's answer for the life of the request and the hold could never end.
  */
-function changes_table_revision(PDO $pdo, array $config): string
+function changes_table_revision(PDO $pdo, array $config, array &$cache): string
 {
-    // Topics overlap (payroll and payslip read the same table), so scan each table at most once.
-    static $cache = [];
+    // Topics overlap (payroll and payslip read the same table), so scan each table at most once per tick.
     $cacheKey = implode('|', [
         $config['table'],
         $config['pk'],
@@ -201,25 +252,112 @@ function changes_table_revision(PDO $pdo, array $config): string
     }
 }
 
-/** A topic moves when any of its tables moves, so its revision is just theirs joined together. */
-function changes_revision(PDO $pdo, array $tableConfigs): string
+/**
+ * One tick: every topic's revision, read fresh.
+ *
+ * The per-tick cache is local, so each call re-reads the database. Every statement runs in its own
+ * implicit transaction under autocommit, which is what lets a later tick see a row another
+ * connection committed after this request started — under an open transaction, REPEATABLE READ would
+ * keep handing back the snapshot from the first tick and the hold would never end.
+ */
+function changes_snapshot(PDO $pdo): array
 {
-    $parts = [];
+    $cache = [];
+    $revisions = [];
 
-    foreach ($tableConfigs as $config) {
-        $parts[] = changes_table_revision($pdo, $config);
+    foreach (CHANGE_FEED_TOPICS as $topic => $tableConfigs) {
+        $parts = [];
+
+        foreach ($tableConfigs as $config) {
+            $parts[] = changes_table_revision($pdo, $config, $cache);
+        }
+
+        // A topic moves when any of its tables moves, so its revision is just theirs joined together.
+        $revisions[$topic] = implode('~', $parts);
     }
 
-    return implode('~', $parts);
+    return $revisions;
 }
 
-$revisions = [];
-foreach (CHANGE_FEED_TOPICS as $topic => $tableConfigs) {
-    $revisions[$topic] = changes_revision($pdo, $tableConfigs);
+/**
+ * The whole snapshot reduced to one comparable token.
+ *
+ * The client sends this back instead of the full revision map, so a parked request carries a few
+ * dozen bytes rather than every topic's fingerprint. Which topics actually moved is worked out on
+ * the client by diffing the returned map against the one it already had.
+ */
+function changes_cursor(array $revisions): string
+{
+    return md5((string)json_encode($revisions));
 }
 
-json_response([
-    'success' => true,
-    'revisions' => $revisions,
-    'at' => gmdate('c'),
-]);
+function changes_respond(array $revisions, string $cursor, bool $timedOut): void
+{
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    // Tells any reverse proxy in front of Apache not to sit on the response waiting for more.
+    header('X-Accel-Buffering: no');
+
+    json_response([
+        'success' => true,
+        'revisions' => $revisions,
+        'cursor' => $cursor,
+        'timedOut' => $timedOut,
+        'at' => gmdate('c'),
+    ]);
+}
+
+$requestedHold = isset($_GET['hold']) ? (int)$_GET['hold'] : CHANGE_FEED_DEFAULT_HOLD_SECONDS;
+$holdSeconds = max(CHANGE_FEED_MIN_HOLD_SECONDS, min(CHANGE_FEED_MAX_HOLD_SECONDS, $requestedHold));
+$clientCursor = trim((string)($_GET['cursor'] ?? ''));
+
+// The default 30s cap would kill a full hold mid-flight; the margin covers the final tick's queries.
+set_time_limit($holdSeconds + 15);
+
+$revisions = changes_snapshot($pdo);
+$cursor = changes_cursor($revisions);
+
+/*
+ * A client with no cursor is asking for a baseline, not waiting for news — answer at once so the
+ * first load is not parked for the full hold before it learns where it stands. A cursor that already
+ * disagrees means something moved while the client was away, so that answers immediately too.
+ */
+if ($clientCursor === '' || $clientCursor !== $cursor) {
+    changes_respond($revisions, $cursor, false);
+}
+
+$deadline = microtime(true) + $holdSeconds;
+$tickUs = CHANGE_FEED_MIN_TICK_US;
+
+while (true) {
+    $remainingSeconds = $deadline - microtime(true);
+
+    if ($remainingSeconds <= 0) {
+        break;
+    }
+
+    usleep((int)min($tickUs, $remainingSeconds * 1000000));
+
+    /*
+     * Best effort only: PHP learns a client has gone away when it next writes output, and this
+     * endpoint writes nothing until it answers. A request whose reader has left therefore usually
+     * runs out its hold — which is bounded, and the reason it is bounded.
+     */
+    if (connection_aborted() !== 0) {
+        exit;
+    }
+
+    $revisions = changes_snapshot($pdo);
+    $cursor = changes_cursor($revisions);
+
+    if ($cursor !== $clientCursor) {
+        changes_respond($revisions, $cursor, false);
+    }
+
+    $tickUs = min($tickUs + CHANGE_FEED_TICK_STEP_US, CHANGE_FEED_MAX_TICK_US);
+}
+
+/*
+ * Nothing moved. The revisions still ship so a client that somehow drifted can resynchronise, and
+ * `timedOut` tells it this was the quiet path — it reconnects without treating it as a change.
+ */
+changes_respond($revisions, $cursor, true);

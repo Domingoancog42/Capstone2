@@ -84,6 +84,15 @@ const PAYROLL_VIEWS = {
   },
 };
 
+/*
+ * Every column except the actions one declares an explicit `w-[...]`, so the table has to be allowed
+ * to be at least as wide as those add up to plus room for the buttons. Set it any smaller and the
+ * browser satisfies the constraint by shrinking columns rather than scrolling, and the action cells
+ * -- whose buttons sit in a `flex-nowrap` row that cannot reflow -- spill out over the next column.
+ */
+const REGISTRY_TABLE_MIN_WIDTH = "min-w-[1800px]";
+const RECORDS_TABLE_MIN_WIDTH = "min-w-[1750px]";
+
 const PAY_PERIOD_OPTIONS = ["1st Half", "2nd Half", "Monthly"];
 const ACTIVE_STATUS_OPTIONS = ["Draft", "Pending Approval", "Approved", "Rejected", "Paid"];
 const DEFAULT_ROWS_PER_PAGE = 8;
@@ -3015,15 +3024,17 @@ export default function PayrollManagementWorkspace({
       {
         key: "actions",
         header: "Actions",
-        headerClassName: "w-[150px]",
-        cellClassName: "text-left",
+        // Deliberately no `w-[...]`: ActionIconButton renders a word next to the icon, so the width
+        // of this column depends on which buttons the row's status allows and on how long their
+        // labels are. Leaving it unset lets the auto table layout size it from the content.
+        headerClassName: "whitespace-nowrap",
+        cellClassName: "whitespace-nowrap text-left",
         render: (row) => (
           <div className="flex flex-nowrap items-center justify-start gap-2">
             <ActionIconButton
               label="View payroll registry"
               icon={faEye}
               tone="view"
-              className="h-8 w-8"
               onClick={() => setRegistryDetailEntry(row)}
             />
             {canApprovePayroll && !["Approved", "Paid", "Archived"].includes(row.status) ? (
@@ -3031,7 +3042,6 @@ export default function PayrollManagementWorkspace({
                 label="Approve payroll registry"
                 icon={faCheck}
                 tone="approve"
-                className="h-8 w-8"
                 onClick={() => handleApproveRegistryEntry(row)}
               />
             ) : null}
@@ -3040,7 +3050,6 @@ export default function PayrollManagementWorkspace({
                 label="Mark registry as paid"
                 icon={faMoneyBillWave}
                 tone="approve"
-                className="h-8 w-8"
                 onClick={() => handleMarkRegistryPaid(row)}
               />
             ) : null}
@@ -3049,7 +3058,6 @@ export default function PayrollManagementWorkspace({
                 label="Archive payroll registry"
                 icon={faBoxArchive}
                 tone="archive"
-                className="h-8 w-8"
                 onClick={() => openArchiveRegistryConfirmation(row)}
               />
             ) : null}
@@ -3187,7 +3195,8 @@ export default function PayrollManagementWorkspace({
         {
           key: "actions",
           header: "Actions",
-          headerClassName: `${compactHeaderClassName} w-[150px] text-center`,
+          // Unset width for the same reason as the registry table's actions column above.
+          headerClassName: `${compactHeaderClassName} whitespace-nowrap text-center`,
           cellClassName: `${compactCellClassName} whitespace-nowrap`,
           render: (row) => (
             <div className="flex flex-nowrap items-center justify-end gap-1">
@@ -3196,7 +3205,6 @@ export default function PayrollManagementWorkspace({
                   label="Submit for approval"
                   icon={faPaperPlane}
                   tone="review"
-                  className="h-7 w-7"
                   onClick={() => handleSubmitForApproval(row)}
                 />
               ) : null}
@@ -3206,14 +3214,12 @@ export default function PayrollManagementWorkspace({
                     label="Approve payroll"
                     icon={faCheck}
                     tone="approve"
-                    className="h-7 w-7"
                     onClick={() => handleApprovePayroll(row)}
                   />
                   <ActionIconButton
                     label="Reject payroll"
                     icon={faXmark}
                     tone="reject"
-                    className="h-7 w-7"
                     onClick={() => handleRejectPayroll(row)}
                   />
                 </>
@@ -3223,7 +3229,6 @@ export default function PayrollManagementWorkspace({
                   label="Mark payroll as paid"
                   icon={faMoneyBillWave}
                   tone="approve"
-                  className="h-7 w-7"
                   onClick={() => handleMarkPaidClick(row)}
                 />
               ) : null}
@@ -3231,7 +3236,6 @@ export default function PayrollManagementWorkspace({
                 label="View payroll record"
                 icon={faEye}
                 tone="view"
-                className="h-7 w-7"
                 onClick={() => setViewRecord(row)}
               />
               {row.status !== "Archived" ? (
@@ -3240,7 +3244,6 @@ export default function PayrollManagementWorkspace({
                     label="Edit payroll record"
                     icon={faPen}
                     tone="edit"
-                    className="h-7 w-7"
                     disabled={!canSubmitPayroll || !row.isEditable}
                     onClick={() => {
                       setEditingRecord(row);
@@ -3253,7 +3256,6 @@ export default function PayrollManagementWorkspace({
                       label="Archive payroll record"
                       icon={faBoxArchive}
                       tone="archive"
-                      className="h-7 w-7"
                       disabled={archiveActionLoading}
                       onClick={() => handleArchiveAction({ type: "archive", record: row })}
                     />
@@ -3764,7 +3766,7 @@ export default function PayrollManagementWorkspace({
                   )}
                   stickyHeader
                   className="max-h-[520px] overflow-y-auto"
-                  tableClassName={isRegistryView ? "min-w-[1270px]" : "min-w-[1460px]"}
+                  tableClassName={isRegistryView ? REGISTRY_TABLE_MIN_WIDTH : RECORDS_TABLE_MIN_WIDTH}
                 />
               </div>
 

@@ -98,8 +98,15 @@ function LoyaltyDetailModal({ record, onClose, onMarkRetired }) {
       }
     };
 
+    // Locking the page keeps the card from scrolling the roster behind it.
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [onClose]);
 
   const { employee, tenure, age, tier, retirementEligible, isActive, isRetiredLocally } = record;
@@ -107,15 +114,20 @@ function LoyaltyDetailModal({ record, onClose, onMarkRetired }) {
   const statusLabel = isRetiredLocally ? "Retired" : isActive ? "Active" : "Inactive";
 
   return (
+    /*
+     * z-[70] is the same rung ProfileFloatingCard sits on, above the fixed sidebar (z-50) and header
+     * (z-40) — at z-50 this card shared a layer with the sidebar and collided with it. Scrolling the
+     * overlay rather than centring the card keeps a tall profile reachable on short viewports.
+     */
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-slate-900/50 p-4"
+      className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={`${employee.fullName || "Employee"} loyalty details`}
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className="relative my-auto w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className={`relative h-24 bg-gradient-to-br ${tier.bannerClass}`}>
@@ -133,9 +145,14 @@ function LoyaltyDetailModal({ record, onClose, onMarkRetired }) {
         </div>
 
         <div className="px-4 pb-4">
+          {/*
+            The avatar is pulled up into the banner, and the banner is `relative` — positioned
+            elements paint after static ones, so without `relative z-10` here the gradient covers the
+            top half of the avatar.
+          */}
           <EmployeeAvatar
             employee={employee}
-            className={`-mt-10 h-20 w-20 rounded-2xl border-4 border-white text-lg shadow-md ${
+            className={`relative z-10 -mt-10 h-20 w-20 rounded-2xl border-4 border-white text-lg shadow-md ${
               resolveBackendAssetUrl(employee.profileImage) ? "" : palette.bg
             }`}
           />
@@ -298,7 +315,7 @@ export default function LoyaltyWorkspace({ employees = [] }) {
   const handleMarkRetired = async (record) => {
     const confirmation = await Swal.fire({
       title: "Mark as retired?",
-      html: `<strong>${record.employee.fullName || "This employee"}</strong> will show as retired on this dashboard.<br/><span style="font-size:13px;color:#64748b;">This is a UI preview only — it does not change their employment record.</span>`,
+      html: `<strong>${record.employee.fullName || "This employee"}</strong> will be listed as retired on the Loyalty dashboard.<br/><span style="font-size:13px;color:#64748b;">Their employment record and system access remain unchanged.</span>`,
       icon: "question",
       showCancelButton: true,
       confirmButtonText: "Mark as retired",
@@ -316,7 +333,7 @@ export default function LoyaltyWorkspace({ employees = [] }) {
       return next;
     });
     setSelectedKey(null);
-    toast.success(`${record.employee.fullName || "Employee"} marked as retired (UI preview only).`);
+    toast.success(`${record.employee.fullName || "This employee"} has been marked as retired.`);
   };
 
   const columns = [
@@ -355,22 +372,13 @@ export default function LoyaltyWorkspace({ employees = [] }) {
     },
     {
       key: "tenure",
-      header: "Tenure",
+      header: "Time period",
       render: (record) => <span className="text-slate-600">{formatTenure(record.tenure)}</span>,
     },
     {
       key: "age",
       header: "Age",
       render: (record) => <span className="text-slate-600">{record.age != null ? `${record.age} yrs` : "N/A"}</span>,
-    },
-    {
-      key: "tier",
-      header: "Tier",
-      render: (record) => (
-        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${record.tier.badgeClass}`}>
-          {record.tier.label}
-        </span>
-      ),
     },
     {
       key: "status",

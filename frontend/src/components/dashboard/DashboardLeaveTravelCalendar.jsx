@@ -3,6 +3,7 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import timeGridPlugin from "@fullcalendar/timegrid";
+import { toast } from "react-hot-toast";
 import { CalendarDays, ExternalLink, Mail, Megaphone, Phone, Plane, Plus } from "lucide-react";
 import Button from "../UI/button";
 import Modal from "../UI/modal";
@@ -179,7 +180,8 @@ function buildEventFromAnnouncement(announcement) {
   const meta = ACTIVITY_META.announcement;
 
   return {
-    id: announcement?.id || `announcement-${startDate}-${announcement?.title || ""}`,
+    // Prefixed because leave and travel events are keyed the same way and ids must not collide.
+    id: `announcement-${announcement?.id || `${startDate}-${announcement?.title || ""}`}`,
     title: announcement?.title || "Announcement",
     start: startDate,
     end: endDate ? addDays(endDate, 1) : undefined,
@@ -268,6 +270,7 @@ export default function DashboardLeaveTravelCalendar({
   const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
   const [announcementForm, setAnnouncementForm] = useState(emptyAnnouncementForm);
   const [announcementErrors, setAnnouncementErrors] = useState({});
+  const [announcementSaving, setAnnouncementSaving] = useState(false);
   const employeeLookup = useMemo(() => buildEmployeeLookup(employees), [employees]);
   const calendarEvents = useMemo(() => [
     ...leaveRequests.map((record) => buildEventFromRecord(record, "leave", employeeLookup)),
@@ -287,7 +290,7 @@ export default function DashboardLeaveTravelCalendar({
     setAnnouncementErrors({});
   };
 
-  const handleAnnouncementSubmit = () => {
+  const handleAnnouncementSubmit = async () => {
     const nextErrors = {};
 
     if (!announcementForm.title.trim()) {
@@ -316,13 +319,31 @@ export default function DashboardLeaveTravelCalendar({
       return;
     }
 
-    onSaveAnnouncement?.({
-      title: announcementForm.title.trim(),
-      startDate: announcementForm.startDate,
-      endDate: announcementForm.endDate,
-      description: announcementForm.description.trim(),
-    });
-    closeAnnouncementModal();
+    /*
+     * The modal stays open until the announcement is actually stored. Closing on click alone was
+     * safe while these lived in localStorage; now the publish can be refused by the server, and
+     * closing anyway would report success for a notice nobody else will ever see.
+     */
+    setAnnouncementSaving(true);
+
+    try {
+      await onSaveAnnouncement?.({
+        title: announcementForm.title.trim(),
+        startDate: announcementForm.startDate,
+        endDate: announcementForm.endDate,
+        description: announcementForm.description.trim(),
+      });
+
+      toast.success("Announcement published to the calendar.");
+      closeAnnouncementModal();
+    } catch (error) {
+      const message = error?.response?.data?.message || "Unable to publish the announcement.";
+
+      setAnnouncementErrors({ form: message });
+      toast.error(message);
+    } finally {
+      setAnnouncementSaving(false);
+    }
   };
 
   return (
@@ -558,16 +579,22 @@ export default function DashboardLeaveTravelCalendar({
         onClose={closeAnnouncementModal}
         footer={(
           <>
-            <Button variant="ghost" onClick={closeAnnouncementModal}>
+            <Button variant="ghost" disabled={announcementSaving} onClick={closeAnnouncementModal}>
               Cancel
             </Button>
-            <Button icon={Megaphone} onClick={handleAnnouncementSubmit}>
-              Publish Announcement
+            <Button icon={Megaphone} loading={announcementSaving} onClick={handleAnnouncementSubmit}>
+              {announcementSaving ? "Publishing..." : "Publish Announcement"}
             </Button>
           </>
         )}
       >
         <div className="grid gap-4">
+          {announcementErrors.form ? (
+            <p className="m-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+              {announcementErrors.form}
+            </p>
+          ) : null}
+
           <div className="space-y-2">
             <label htmlFor="calendarAnnouncementTitle" className="text-sm font-semibold text-slate-700">
               Announcement Title

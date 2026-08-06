@@ -1,0 +1,32 @@
+# Uploaded files: profile photos, leave attachments (medical certificates),
+# IPCR/OPCR verification documents.
+#
+# This directory is NOT denied outright, unlike backups/ and database/. The UI
+# renders these straight from disk -- resolveBackendAssetUrl() in the frontend
+# builds <img src="...backend/uploads/profile-images/x.png"> -- so a blanket
+# deny would blank every avatar and break every attachment link.
+#
+# What is enforced instead:
+#
+#   Options -Indexes
+#       No directory listing. Stored names carry 8 random bytes from
+#       random_bytes(8), so an individual file URL is not guessable; listing
+#       the folder would hand over every one of them at once. Turning listing
+#       off is what keeps the random name doing its job.
+#
+#   FilesMatch ... Require all denied
+#       Nothing executable is ever served from here, even if a file with a
+#       script extension gets written. The upload handlers already whitelist
+#       extensions (see store_profile_image() and ipcr_upload_verification()),
+#       so this is the second layer, for the case where that check is bypassed
+#       or a future handler forgets it.
+#
+# NOTE: access is still capability-based -- anyone holding a URL can fetch the
+# file without being signed in. Closing that properly means serving these
+# through an authenticated PHP endpoint that checks the caller against the
+# owning record, and pointing the frontend at it instead of at the raw path.
+Options -Indexes
+
+<FilesMatch "\.(?i:php|php[0-9]*|phtml|phps|phar|inc|cgi|pl|py|asp|aspx|jsp|sh|exe|dll|htaccess|htpasswd)$">
+    Require all denied
+</FilesMatch>

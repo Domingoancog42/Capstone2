@@ -1,0 +1,10 @@
+# Database backups: full mysqldump exports containing every employee record,
+# government ID number, and bcrypt password hash in the system.
+#
+# This directory sits inside htdocs, so without this file Apache serves every
+# dump here as a plain download to anyone who can reach the app -- no login,
+# no session, no audit trail. backup.php is admin-gated and streams these files
+# itself (see backup_stream_record()), which is the only path that should work.
+#
+# Apache 2.4 syntax. AllowOverride All is set for htdocs in httpd.conf.
+Require all denied

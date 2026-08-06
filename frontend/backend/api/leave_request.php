@@ -12,6 +12,11 @@ function leave_text(mixed $value): string
     return trim((string)($value ?? ''));
 }
 
+function leave_truthy(mixed $value): bool
+{
+    return in_array(strtolower(leave_text($value)), ['1', 'true', 'yes', 'on'], true);
+}
+
 function leave_date_or_null(mixed $value): ?string
 {
     $text = leave_text($value);
@@ -151,13 +156,33 @@ function leave_apply_signatory_fallbacks(PDO $pdo, array $request): array
     return $request;
 }
 
+function leave_is_weekend(string $date): bool
+{
+    /* ISO weekday: 6 is Saturday and 7 is Sunday. */
+    return (int)(new DateTimeImmutable($date))->format('N') >= 6;
+}
+
+/*
+ * CSC Form No. 6 asks for working days, so weekends inside the range are skipped: a leave from
+ * Wednesday to the following Monday is four working days, not six.
+ */
 function leave_days(string $startDate, string $endDate): float
 {
     $start = new DateTimeImmutable($startDate);
     $end = new DateTimeImmutable($endDate);
-    $days = (float)$start->diff($end)->days + 1;
 
-    return $end < $start ? 0.0 : $days;
+    if ($end < $start) {
+        return 0.0;
+    }
+
+    $workingDays = 0;
+    for ($cursor = $start; $cursor <= $end; $cursor = $cursor->modify('+1 day')) {
+        if ((int)$cursor->format('N') < 6) {
+            $workingDays++;
+        }
+    }
+
+    return (float)$workingDays;
 }
 
 function leave_request_body(): array
@@ -317,9 +342,14 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
             e.profile_image AS profileImage,
             lt.name AS leaveType,
             d.name AS division,
+            des.name AS position,
+            e.basic_salary AS basicSalary,
+            e.salary_rate AS salaryRate,
             lr.start_date AS startDate,
             lr.end_date AS endDate,
             lr.total_days AS numberOfDays,
+            lr.paid_days AS paidDays,
+            lr.unpaid_days AS unpaidDays,
             lr.reason,
             COALESCE(lr.rejected_note, "") AS rejectedNote,
             lr.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
@@ -336,6 +366,7 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
          INNER JOIN employees e ON e.id = lr.employee_id
          INNER JOIN divisions d ON d.id = e.division_id
          INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          LEFT JOIN employees reviewed_employee ON reviewed_employee.id = lr.reviewed_by_employee_id
          LEFT JOIN employees approved_employee ON approved_employee.id = lr.approved_by_employee_id
          LEFT JOIN leave_attachments la ON la.leave_request_id = lr.leave_request_id
@@ -363,6 +394,13 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
     $request['id'] = (int)$request['id'];
     $request['employeeRecordId'] = (int)$request['employeeRecordId'];
     $request['numberOfDays'] = (float)$request['numberOfDays'];
+    /* Requests filed before the pay split was tracked were fully charged to leave credits. */
+    $request['paidDays'] = $request['paidDays'] !== null
+        ? (float)$request['paidDays']
+        : $request['numberOfDays'];
+    $request['unpaidDays'] = $request['unpaidDays'] !== null ? (float)$request['unpaidDays'] : 0.0;
+    $request['position'] = leave_text($request['position'] ?? '');
+    $request['salaryRate'] = leave_text($request['salaryRate'] ?? '');
     $request['rejectedNote'] = leave_text($request['rejectedNote'] ?? '');
     $request['reviewedByEmployeeRecordId'] = $request['reviewedByEmployeeRecordId'] !== null
         ? (int)$request['reviewedByEmployeeRecordId']
@@ -465,9 +503,14 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
             e.profile_image AS profileImage,
             lt.name AS leaveType,
             d.name AS division,
+            des.name AS position,
+            e.basic_salary AS basicSalary,
+            e.salary_rate AS salaryRate,
             lr.start_date AS startDate,
             lr.end_date AS endDate,
             lr.total_days AS numberOfDays,
+            lr.paid_days AS paidDays,
+            lr.unpaid_days AS unpaidDays,
             lr.reason,
             COALESCE(lr.rejected_note, "") AS rejectedNote,
             lr.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
@@ -484,6 +527,7 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
          INNER JOIN employees e ON e.id = lr.employee_id
          INNER JOIN divisions d ON d.id = e.division_id
          INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          LEFT JOIN employees reviewed_employee ON reviewed_employee.id = lr.reviewed_by_employee_id
          LEFT JOIN employees approved_employee ON approved_employee.id = lr.approved_by_employee_id
          LEFT JOIN (
@@ -512,6 +556,13 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
         $request['id'] = (int)$request['id'];
         $request['employeeRecordId'] = (int)$request['employeeRecordId'];
         $request['numberOfDays'] = (float)$request['numberOfDays'];
+        /* Requests filed before the pay split was tracked were fully charged to leave credits. */
+        $request['paidDays'] = $request['paidDays'] !== null
+            ? (float)$request['paidDays']
+            : $request['numberOfDays'];
+        $request['unpaidDays'] = $request['unpaidDays'] !== null ? (float)$request['unpaidDays'] : 0.0;
+        $request['position'] = leave_text($request['position'] ?? '');
+        $request['salaryRate'] = leave_text($request['salaryRate'] ?? '');
         $request['rejectedNote'] = leave_text($request['rejectedNote'] ?? '');
         $request['reviewedByEmployeeRecordId'] = $request['reviewedByEmployeeRecordId'] !== null
             ? (int)$request['reviewedByEmployeeRecordId']
@@ -706,6 +757,12 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
     if ($endDate === null) {
         $errors[] = 'End date is required.';
     }
+    if ($startDate !== null && leave_is_weekend($startDate)) {
+        $errors[] = 'Start date must be a working day (Monday to Friday).';
+    }
+    if ($endDate !== null && leave_is_weekend($endDate)) {
+        $errors[] = 'End date must be a working day (Monday to Friday).';
+    }
     if ($errors === [] && $startDate !== null && $endDate !== null && leave_days($startDate, $endDate) <= 0) {
         $errors[] = 'End date must not be earlier than start date.';
     }
@@ -718,9 +775,34 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
     }
 
     $leaveTypeId = resolve_leave_type_id($pdo, $leaveType);
-    $numberOfDays = (float)($body['numberOfDays'] ?? 0);
-    if ($numberOfDays <= 0 && $startDate !== null && $endDate !== null) {
-        $numberOfDays = leave_days($startDate, $endDate);
+    /* Counted here rather than taken from the request so the stored days always exclude weekends. */
+    $numberOfDays = leave_days((string)$startDate, (string)$endDate);
+
+    /*
+     * Filing is allowed to exceed the remaining credits, but only once the applicant has been told
+     * that the excess becomes Leave Without Pay. The split is recalculated here rather than trusted
+     * from the client so the stored days always match the balance at filing time.
+     */
+    $paySplit = leave_credit_pay_split($pdo, $employeeId, $leaveTypeId, $numberOfDays, $startDate);
+
+    if ($paySplit['unpaidDays'] > 0 && !leave_truthy($body['acknowledgeLeaveWithoutPay'] ?? null)) {
+        json_response([
+            'success' => false,
+            'code' => 'leave_without_pay_confirmation_required',
+            'message' => sprintf(
+                'Insufficient %s credits. Only %s day(s) remain, so %s day(s) will be filed as Leave Without Pay.',
+                $paySplit['leaveTypeName'],
+                leave_credit_format_days((float)$paySplit['remaining']),
+                leave_credit_format_days((float)$paySplit['unpaidDays'])
+            ),
+            'leaveWithoutPay' => [
+                'leaveType' => $paySplit['leaveTypeName'],
+                'requestedDays' => (float)$paySplit['requestedDays'],
+                'remainingCredits' => (float)$paySplit['remaining'],
+                'paidDays' => (float)$paySplit['paidDays'],
+                'unpaidDays' => (float)$paySplit['unpaidDays'],
+            ],
+        ], 422);
     }
 
     $sessionEmployeeId = hris_session_employee_record_id($pdo, $sessionUser);
@@ -731,7 +813,7 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
     $approvedByEmployeeId = $isRegionalDirectorOwnLeave ? $sessionEmployeeId : null;
 
     if ($isRegionalDirectorOwnLeave) {
-        validate_leave_credit_approval($pdo, $employeeId, $leaveTypeId, $numberOfDays, $startDate);
+        validate_leave_credit_approval($pdo, $employeeId, $leaveTypeId, (float)$paySplit['paidDays'], $startDate);
     }
 
     $attachmentName = leave_text($body['attachmentName'] ?? '');
@@ -759,9 +841,9 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
     try {
         $statement = $pdo->prepare(
             'INSERT INTO leave_requests
-                (employee_id, leave_type_id, start_date, end_date, total_days, reason, status, approved_by_employee_id)
+                (employee_id, leave_type_id, start_date, end_date, total_days, paid_days, unpaid_days, reason, status, approved_by_employee_id)
              VALUES
-                (:employee_id, :leave_type_id, :start_date, :end_date, :total_days, :reason, :status, :approved_by_employee_id)'
+                (:employee_id, :leave_type_id, :start_date, :end_date, :total_days, :paid_days, :unpaid_days, :reason, :status, :approved_by_employee_id)'
         );
         $statement->execute([
             ':employee_id' => $employeeId,
@@ -769,6 +851,8 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
             ':start_date' => $startDate,
             ':end_date' => $endDate,
             ':total_days' => $numberOfDays,
+            ':paid_days' => $paySplit['paidDays'],
+            ':unpaid_days' => $paySplit['unpaidDays'],
             ':reason' => $reason,
             ':status' => $initialStatus,
             ':approved_by_employee_id' => $approvedByEmployeeId,
@@ -856,7 +940,7 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
     }
 
     $currentStatusStatement = $pdo->prepare(
-        'SELECT employee_id, leave_type_id, start_date, total_days, status,
+        'SELECT employee_id, leave_type_id, start_date, total_days, paid_days, status,
                 reviewed_by_employee_id, approved_by_employee_id
          FROM leave_requests
          WHERE leave_request_id = :id
@@ -954,11 +1038,16 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
     }
 
     if ($status === 'approved' && $currentStatus !== 'approved') {
+        /* Only the with pay portion is charged to credits; the rest was filed as Leave Without Pay. */
+        $chargeableDays = ($currentRequest['paid_days'] ?? null) !== null
+            ? (float)$currentRequest['paid_days']
+            : (float)($currentRequest['total_days'] ?? 0);
+
         validate_leave_credit_approval(
             $pdo,
             (int)($currentRequest['employee_id'] ?? 0),
             (int)($currentRequest['leave_type_id'] ?? 0),
-            (float)($currentRequest['total_days'] ?? 0),
+            $chargeableDays,
             (string)($currentRequest['start_date'] ?? '')
         );
     }
@@ -1094,6 +1183,7 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
 
 try {
     ensure_leave_request_rejected_note_column($pdo);
+    ensure_leave_request_pay_split_columns($pdo);
     ensure_leave_request_reviewed_status($pdo);
     ensure_leave_approval_reviewed_status($pdo);
     ensure_leave_request_action_actor_columns($pdo);

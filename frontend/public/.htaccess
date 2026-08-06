@@ -1,0 +1,71 @@
+# This file lives in public/ rather than in build/ because `npm run build`
+# empties build/ and re-copies public/ into it. Anything written straight into
+# build/ survives exactly until the next build.
+#
+# It governs the compiled front end only -- the PHP under backend/ has its own
+# .htaccess files.
+
+# The bundle is a fixed set of files; there is no reason to let anyone page
+# through the directory to enumerate them.
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Anything that exists on disk is served as-is.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Everything else falls through to the app shell instead of an Apache 404.
+    #
+    # The app navigates by component state, not by URL -- react-router-dom is in
+    # package.json but nothing imports it -- so today this only affects mistyped
+    # addresses. It is here for the day routing becomes URL-driven, when a
+    # refresh on any path other than / would otherwise 404.
+    #
+    # The substitution is deliberately relative: it resolves against whichever
+    # directory this file sits in, so the rule keeps working if the build is
+    # moved or served from the document root.
+    RewriteRule ^ index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Assets copied verbatim from public/ -- mgb.png, background.png, the
+    # favicon -- keep their names across builds, so a long cache would pin a
+    # replaced image in browsers that already have it. A day is enough to save
+    # the repeat downloads (background.png alone is over 6 MB) without making a
+    # swap invisible for a year.
+    <FilesMatch "\.(?i:png|jpe?g|gif|svg|ico|woff2?|ttf)$">
+        Header set Cache-Control "public, max-age=86400"
+    </FilesMatch>
+
+    # Webpack output carries an 8-character content hash in the filename
+    # (main.e98eb1b2.js). A changed file gets a changed name, so these can be
+    # cached permanently -- and must be listed after the rule above, which would
+    # otherwise also match the hashed images under static/media/.
+    <FilesMatch "\.[0-9a-f]{8}\.(?i:js|css|png|jpe?g|gif|svg|woff2?|ttf)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+
+    # index.html is what names the hashed files, so it is the one thing that
+    # must never come from cache. Cache it and a rebuilt bundle keeps loading
+    # the previous version.
+    <FilesMatch "^index\.html$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+    </FilesMatch>
+
+    # Do not let a browser second-guess a Content-Type and execute something as
+    # script that was not served as one.
+    Header always set X-Content-Type-Options "nosniff"
+
+    # No embedding by other sites -- the session cookie is SameSite=Lax, which
+    # is not on its own a defence against a clickjacked same-site GET.
+    # SAMEORIGIN rather than DENY because html2canvas, used by the payslip and
+    # certificate exports, renders through a same-origin iframe.
+    Header always set X-Frame-Options "SAMEORIGIN"
+
+    # Employee names and record ids show up in URLs; do not leak them to
+    # third-party hosts through the Referer header.
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>

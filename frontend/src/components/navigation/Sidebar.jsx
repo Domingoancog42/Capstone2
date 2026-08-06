@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Trophy,
   Users,
+  X,
 } from "lucide-react";
 import NotificationBadge from "../UI/NotificationBadge";
 import { subscribeAutoRefresh } from "../../components/auto/autorefreshconfig";
@@ -554,6 +555,25 @@ export default function Sidebar({
           >
             <Menu size={16} />
           </motion.span>
+        </button>
+      ) : null}
+
+      {/*
+        * The scrim is the primary way out of the drawer, but it is only a strip of dimmed page on a
+        * phone — small, and not obviously a control. This gives the gesture a visible target.
+        */}
+      {onCloseMobile ? (
+        <button
+          type="button"
+          aria-label="Close navigation menu"
+          onClick={onCloseMobile}
+          className={`absolute right-3 top-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-lg transition lg:hidden ${
+            isCrimson
+              ? "bg-white/15 text-white hover:bg-white/25"
+              : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+          }`}
+        >
+          <X size={16} />
         </button>
       ) : null}
 

@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, ChevronUp, Search } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Search, X } from "lucide-react";
 
 export default function EmployeeSearchSelect({
   employeeOptions = [],
   selectedEmployee = null,
+  selectedEmployees = [],
+  multiple = false,
   onSelect,
+  onClear,
   disabled = false,
   placeholder = "Search employee...",
 }) {
@@ -24,11 +27,30 @@ export default function EmployeeSearchSelect({
     );
   }, [employeeOptions, query]);
 
+  const selectedIds = useMemo(
+    () => new Set(
+      (multiple ? selectedEmployees : [selectedEmployee])
+        .filter(Boolean)
+        .map((employee) => String(employee.employeeRecordId))
+    ),
+    [multiple, selectedEmployee, selectedEmployees]
+  );
+
   useEffect(() => {
     if (disabled) {
       setOpen(false);
     }
   }, [disabled]);
+
+  const triggerLabel = multiple
+    ? (selectedIds.size === 0
+      ? placeholder
+      : selectedIds.size === 1
+        ? selectedEmployees[0]?.employeeName
+        : `${selectedIds.size} employees selected`)
+    : (selectedEmployee ? selectedEmployee.employeeName : placeholder);
+
+  const hasSelection = multiple ? selectedIds.size > 0 : Boolean(selectedEmployee);
 
   return (
     <div className="relative">
@@ -42,13 +64,34 @@ export default function EmployeeSearchSelect({
             : "bg-white text-slate-900 hover:border-slate-300 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
         }`}
       >
-        <span className={selectedEmployee ? "text-slate-900" : "text-slate-400"}>
-          {selectedEmployee
-            ? selectedEmployee.employeeName
-            : placeholder}
+        <span className={hasSelection ? "text-slate-900" : "text-slate-400"}>
+          {triggerLabel}
         </span>
         {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
+
+      {multiple && selectedEmployees.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {selectedEmployees.map((employee) => (
+            <span
+              key={employee.employeeRecordId}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-800"
+            >
+              {employee.employeeName}
+              {disabled ? null : (
+                <button
+                  type="button"
+                  aria-label={`Remove ${employee.employeeName}`}
+                  onClick={() => onSelect?.(employee)}
+                  className="grid h-4 w-4 place-items-center rounded text-teal-700 transition hover:bg-teal-100"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       {open && !disabled ? (
         <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
@@ -66,6 +109,26 @@ export default function EmployeeSearchSelect({
           <div className="max-h-64 overflow-y-auto p-2">
             {filteredOptions.length === 0 ? (
               <p className="m-0 rounded-xl px-3 py-3 text-sm text-slate-500">No employees found.</p>
+            ) : multiple ? (
+              filteredOptions.map((employee) => (
+                <label
+                  key={employee.employeeRecordId}
+                  className="flex w-full cursor-pointer items-start gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-slate-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(String(employee.employeeRecordId))}
+                    onChange={() => onSelect?.(employee)}
+                    className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300 accent-teal-700"
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold text-slate-900">{employee.employeeName}</span>
+                    <span className="block text-xs text-slate-500">
+                      {employee.division || "No division assigned"}
+                    </span>
+                  </span>
+                </label>
+              ))
             ) : filteredOptions.map((employee) => (
               <button
                 key={employee.employeeRecordId}
@@ -89,6 +152,34 @@ export default function EmployeeSearchSelect({
               </button>
             ))}
           </div>
+
+          {multiple ? (
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-3 py-2.5">
+              <span className="text-xs font-semibold text-slate-500">
+                {selectedIds.size} selected
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onClear?.()}
+                  disabled={selectedIds.size === 0}
+                  className="inline-flex min-h-8 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Clear all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    setQuery("");
+                  }}
+                  className="inline-flex min-h-8 items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-800"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

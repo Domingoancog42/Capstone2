@@ -41,6 +41,10 @@ import {
   resolveRoleKey,
 } from "../../utils/leaveHelpers";
 import { getLeaveReasonDisplay } from "../../utils/leaveRequestDetails";
+import {
+  confirmLeaveWithoutPay,
+  extractLeaveWithoutPayPrompt,
+} from "../../utils/leaveWithoutPay";
 import { requestApprovalCaptcha } from "../../utils/approvalCaptcha";
 
 const defaultFilterState = {
@@ -640,16 +644,32 @@ export default function LeaveDashboard({
     setCurrentPage(1);
   };
 
-  const handleSubmitRequest = async (payload) => {
-    setIsSubmitting(true);
-
+  const submitLeaveRequest = async (payload) => {
     try {
       const result = await fileLeaveRequest(payload);
       setRequests((current) => [result.request, ...current]);
       toast.success(result.message || "Leave request submitted successfully.");
       setIsRequestModalOpen(false);
     } catch (error) {
-      toast.error(error?.message || "Unable to submit leave request.");
+      const leaveWithoutPayPrompt = extractLeaveWithoutPayPrompt(error);
+
+      if (leaveWithoutPayPrompt && !payload?.acknowledgeLeaveWithoutPay) {
+        if (await confirmLeaveWithoutPay(leaveWithoutPayPrompt)) {
+          await submitLeaveRequest({ ...payload, acknowledgeLeaveWithoutPay: "1" });
+        }
+
+        return;
+      }
+
+      toast.error(error?.response?.data?.message || error?.message || "Unable to submit leave request.");
+    }
+  };
+
+  const handleSubmitRequest = async (payload) => {
+    setIsSubmitting(true);
+
+    try {
+      await submitLeaveRequest(payload);
     } finally {
       setIsSubmitting(false);
     }
@@ -977,7 +997,7 @@ export default function LeaveDashboard({
           employees={employees}
           title="Compensatory Time Off Management"
           description="Create, review, approve, reject, cancel, and monitor employee compensatory time off requests."
-          submitLabel="File Compensatory Time Off"
+          submitLabel="File CTO"
           showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("cto", count)}
         />

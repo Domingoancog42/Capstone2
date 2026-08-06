@@ -1097,7 +1097,14 @@ function hris_migrate_two_factor_settings_to_settings(PDO $pdo): void
     $pdo->exec('DROP TABLE IF EXISTS two_factor_settings');
 }
 
-function hris_ensure_two_factor_tables(PDO $pdo): void
+/**
+ * Provisions the two-factor schema: the per-user opt-in column and the settings rows.
+ *
+ * The one-time passcode itself lives in the PHP session (see two-factor-utils.php) and every 2FA
+ * event is written to audit_logs, so `user_two_factor_codes` and `two_factor_logs` are retired
+ * here the same way `two_factor_settings` was.
+ */
+function hris_ensure_two_factor_schema(PDO $pdo): void
 {
     static $ensured = false;
 
@@ -1121,43 +1128,8 @@ function hris_ensure_two_factor_tables(PDO $pdo): void
     hris_migrate_two_factor_settings_to_settings($pdo);
     hris_seed_two_factor_settings($pdo);
 
-    $pdo->exec(
-        'CREATE TABLE IF NOT EXISTS user_two_factor_codes (
-            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id INT UNSIGNED NOT NULL,
-            otp_hash VARCHAR(255) NOT NULL,
-            expires_at DATETIME NOT NULL,
-            attempts INT UNSIGNED NOT NULL DEFAULT 0,
-            verified TINYINT(1) NOT NULL DEFAULT 0,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY idx_user_two_factor_codes_user_id (user_id),
-            KEY idx_user_two_factor_codes_lookup (user_id, verified, expires_at),
-            KEY idx_user_two_factor_codes_created_at (created_at),
-            CONSTRAINT fk_user_two_factor_codes_user_id
-                FOREIGN KEY (user_id) REFERENCES users(id)
-                ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-    );
-
-    $pdo->exec(
-        'CREATE TABLE IF NOT EXISTS two_factor_logs (
-            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id INT UNSIGNED NULL,
-            ip_address VARCHAR(45) NULL,
-            action VARCHAR(80) NOT NULL,
-            status VARCHAR(40) NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY idx_two_factor_logs_user_id (user_id),
-            KEY idx_two_factor_logs_action (action),
-            KEY idx_two_factor_logs_status (status),
-            KEY idx_two_factor_logs_created_at (created_at),
-            CONSTRAINT fk_two_factor_logs_user_id
-                FOREIGN KEY (user_id) REFERENCES users(id)
-                ON DELETE SET NULL
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-    );
+    $pdo->exec('DROP TABLE IF EXISTS user_two_factor_codes');
+    $pdo->exec('DROP TABLE IF EXISTS two_factor_logs');
 
     $ensured = true;
 }
@@ -1200,7 +1172,7 @@ function hris_ensure_email_verification_tables(PDO $pdo): void
 
 function hris_two_factor_settings(PDO $pdo): array
 {
-    hris_ensure_two_factor_tables($pdo);
+    hris_ensure_two_factor_schema($pdo);
 
     $defaults = hris_two_factor_default_settings();
     $definitions = hris_two_factor_setting_definitions();
@@ -1324,7 +1296,7 @@ function hris_normalize_two_factor_settings_payload(array $body): array
 
 function hris_store_two_factor_settings(PDO $pdo, array $settings): void
 {
-    hris_ensure_two_factor_tables($pdo);
+    hris_ensure_two_factor_schema($pdo);
 
     foreach (hris_two_factor_setting_definitions() as $name => $definition) {
         if (!array_key_exists($name, $settings)) {
@@ -1341,7 +1313,7 @@ function hris_store_two_factor_settings(PDO $pdo, array $settings): void
 
 function hris_two_factor_personal_enabled(PDO $pdo, int $userId): bool
 {
-    hris_ensure_two_factor_tables($pdo);
+    hris_ensure_two_factor_schema($pdo);
 
     if ($userId <= 0) {
         return false;

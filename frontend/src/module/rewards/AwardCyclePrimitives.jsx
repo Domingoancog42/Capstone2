@@ -27,18 +27,26 @@ export function NomineeAvatar({ employee, name, className = "" }) {
   );
 }
 
-/** Shared by the cycle list and the cycle detail so the two cannot drift out of step. */
-export function StatusPill({ status, className = "" }) {
-  const closed = status === "closed";
+/**
+ * Shared by the cycle list and the cycle detail so the two cannot drift out of step.
+ *
+ * Archiving outranks the voting status: a cycle in the archive still carries whichever state it was
+ * in when it was retired, but "Ongoing" on a cycle nobody can vote in would be a lie, so the pill
+ * reports the archive instead. Restoring it brings the underlying status back into view unchanged.
+ */
+export function StatusPill({ status, archived = false, className = "" }) {
+  const tone = archived
+    ? { label: "Archived", pill: "border-amber-200 bg-amber-50 text-amber-800", dot: "bg-amber-500" }
+    : status === "closed"
+      ? { label: "Closed", pill: "border-slate-200 bg-slate-100 text-slate-600", dot: "bg-slate-400" }
+      : { label: "Ongoing", pill: "border-emerald-200 bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" };
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
-        closed ? "border-slate-200 bg-slate-100 text-slate-600" : "border-emerald-200 bg-emerald-50 text-emerald-700"
-      } ${className}`.trim()}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${tone.pill} ${className}`.trim()}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${closed ? "bg-slate-400" : "bg-emerald-500"}`} aria-hidden="true" />
-      {closed ? "Closed" : "Ongoing"}
+      <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} aria-hidden="true" />
+      {tone.label}
     </span>
   );
 }

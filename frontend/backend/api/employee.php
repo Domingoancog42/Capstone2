@@ -11,6 +11,61 @@ hris_ensure_organization_structure_columns($pdo);
 hris_ensure_user_security_columns($pdo);
 hris_ensure_email_verification_columns($pdo);
 
+/**
+ * Who may write to the employee master list.
+ *
+ * These are the roles granted the `employees` module by hris_default_role_permission_access() in
+ * app_settings.php. Until now the file's only check was require_session_user(), which meant any
+ * signed-in account could create an employee together with a linked user account carrying an
+ * arbitrary roleId -- the same privilege escalation user.php had, by another door -- or archive
+ * anyone on the roster.
+ *
+ * Reads stay open to every signed-in role on purpose: ProfilePage, the Chief and Regional Director
+ * dashboards, RoleAnalyticsOverview and the loan filing screen all call getEmployees() regardless of
+ * role, so gating GET here would blank those pages. That leaves the roster's salary and government-ID
+ * columns readable by any account, which is a real exposure and wants a field-level filter on
+ * list_employees() -- a separate change, since it needs each caller checked for what it actually reads.
+ */
+function employees_can_manage(array $sessionUser): bool
+{
+    return hris_can_manage_employee_records($sessionUser);
+}
+
+function employees_require_manager(array $sessionUser): void
+{
+    if (employees_can_manage($sessionUser)) {
+        return;
+    }
+
+    json_response([
+        'success' => false,
+        'message' => 'You are not allowed to manage employee records.',
+    ], 403);
+}
+
+/**
+ * The profile page lets any role edit its own personal, address, government-ID and employment
+ * sections, and it saves them through PUT /employee.php. So an edit is allowed when the caller
+ * manages employees *or* the row being written is the caller's own linked record.
+ */
+function employees_require_manager_or_self(PDO $pdo, array $sessionUser, int $employeeId): void
+{
+    if (employees_can_manage($sessionUser)) {
+        return;
+    }
+
+    $ownRecordId = hris_session_employee_record_id($pdo, $sessionUser);
+
+    if ($ownRecordId !== null && $ownRecordId === $employeeId && $employeeId > 0) {
+        return;
+    }
+
+    json_response([
+        'success' => false,
+        'message' => 'You can only edit your own employee record.',
+    ], 403);
+}
+
 function employee_null_if_empty(mixed $value): mixed
 {
     if ($value === null) {
@@ -1695,12 +1750,14 @@ if ($method === 'GET') {
 
 $employeeAction = (string)($_POST['action'] ?? $_GET['action'] ?? '');
 if ($method === 'POST' && in_array($employeeAction, ['importEmployeesCsv', 'import'], true)) {
+    employees_require_manager($sessionUser);
     import_employees_csv($pdo);
 }
 
 $body = read_json_body();
 
 if ($method === 'POST') {
+    employees_require_manager($sessionUser);
     $employee = employee_payload($body);
     if ($employee['employee_id'] === '') {
         $employee['employee_id'] = generate_employee_id($pdo);
@@ -1805,9 +1862,50 @@ if ($method === 'PUT') {
         ], 422);
     }
 
+    employees_require_manager_or_self($pdo, $sessionUser, $id);
+    $isSelfServiceEdit = !employees_can_manage($sessionUser);
+
     $employee = employee_payload($body);
     $roleId = (int)($body['roleId'] ?? 0);
     $sendActivationEmail = employee_bool($body['sendActivationEmail'] ?? false);
+
+    /*
+     * A self-service edit is the profile page saving its own personal / address / government
+     * sections. buildEmployeePayload() in profileUtils.js ships the whole row every time, though,
+     * including pay and posting, and the read-only flags that hide those inputs are client-side only.
+     * So the columns the employee does not own are put back from the stored row before the write, and
+     * the linked-account role is dropped entirely -- without that, PUT {"id": <own id>, "roleId": 1}
+     * promotes the caller to Admin through upsert_employee_linked_user() below.
+     *
+     * Email is preserved too: it is the join between employees and users, and changing it has its own
+     * verified flow in email_verification.php.
+     */
+    if ($isSelfServiceEdit) {
+        $roleId = 0;
+        $sendActivationEmail = false;
+
+        $protectedStatement = $pdo->prepare(
+            'SELECT employee_id, email, division_id, designation_id, basic_salary,
+                    salary_rate, date_hired, status, employment_status
+             FROM employees
+             WHERE id = :id
+             LIMIT 1'
+        );
+        $protectedStatement->execute([':id' => $id]);
+        $protectedColumns = $protectedStatement->fetch();
+
+        if (!$protectedColumns) {
+            json_response([
+                'success' => false,
+                'message' => 'Employee record not found.',
+            ], 404);
+        }
+
+        foreach ($protectedColumns as $column => $value) {
+            $employee[$column] = $value;
+        }
+    }
+
     validate_employee_payload($pdo, $employee);
     validate_employee_account_payload($pdo, $roleId);
 
@@ -1955,6 +2053,7 @@ if ($method === 'PUT') {
 }
 
 if ($method === 'PATCH') {
+    employees_require_manager($sessionUser);
     $id = (int)($body['id'] ?? 0);
     $restore = (string)($body['restore'] ?? '') === '1';
 
@@ -2024,6 +2123,7 @@ if ($method === 'PATCH') {
 }
 
 if ($method === 'DELETE') {
+    employees_require_manager($sessionUser);
     $id = (int)($body['id'] ?? 0);
 
     if ($id <= 0) {

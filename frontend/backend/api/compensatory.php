@@ -417,8 +417,8 @@ function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
     $errors = [];
     if ($hoursApplied === null) {
         $errors[] = 'Number of hours applied for is required.';
-    } elseif ($hoursApplied <= 0 || $hoursApplied > 4) {
-        $errors[] = 'Number of hours applied for must be greater than 0 and not exceed 4 hours.';
+    } elseif ($hoursApplied < 4) {
+        $errors[] = 'Number of hours applied for must be at least 4 hours.';
     }
     if ($startDate === null) {
         $errors[] = 'Inclusive start date is required.';

@@ -28,14 +28,27 @@ import { buildSignatureTimestampLabel } from "../../utils/signatureTimestamp";
 import { getEmployeeSignature } from "../../services/api";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
+  authorizeTravelOrder,
   fetchTravelOrders,
   fileTravelOrder,
   updateTravelOrderStatus,
 } from "../../services/travelOrderService";
 import { requestApprovalCaptcha } from "../../utils/approvalCaptcha";
 
+// Printed in the AUTHORIZATION block of the form and shown verbatim in the acceptance dialog the
+// employee answers after the Regional Director approves -- they must be the same words.
+const TRAVEL_AUTHORIZATION_TEXT = "I hereby authorize the Accountant to deduct the corresponding amount of the unliquidated cash advance from my succeeding salary for my failure to liquidate this travel within twenty (20) days upon return to my permanent official station pursuant to Commission on Audit (COA) Circular No. 2012-004 dated November 28, 2012.";
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 const initialForm = {
-  employeeRecordId: "",
+  employeeRecordIds: [],
   destination: "",
   purpose: "",
   startDate: "",
@@ -373,6 +386,7 @@ function TravelPreviewSelectionBox({ checked = false }) {
 function TravelOrderPreviewModal({ request, onClose }) {
   const [visible, setVisible] = useState(false);
   const [employeeSignature, setEmployeeSignature] = useState("");
+  const [recommendedBySignature, setRecommendedBySignature] = useState("");
   const [approvedBySignature, setApprovedBySignature] = useState("");
   const printRef = useRef(null);
 
@@ -418,6 +432,35 @@ function TravelOrderPreviewModal({ request, onClose }) {
   useEffect(() => {
     let mounted = true;
 
+    const loadRecommendedBySignature = async () => {
+      if (!request?.recommendedByEmployeeRecordId) {
+        setRecommendedBySignature("");
+        return;
+      }
+
+      try {
+        const result = await getEmployeeSignature(request.recommendedByEmployeeRecordId);
+        if (!mounted) {
+          return;
+        }
+
+        setRecommendedBySignature(String(result?.employee?.signatureDataUrl || ""));
+      } catch {
+        if (mounted) {
+          setRecommendedBySignature("");
+        }
+      }
+    };
+
+    loadRecommendedBySignature();
+    return () => {
+      mounted = false;
+    };
+  }, [request?.recommendedByEmployeeRecordId]);
+
+  useEffect(() => {
+    let mounted = true;
+
     const loadApprovedBySignature = async () => {
       if (!request?.approvedByEmployeeRecordId) {
         setApprovedBySignature("");
@@ -459,12 +502,16 @@ function TravelOrderPreviewModal({ request, onClose }) {
   const assistanceLabor = displayValue(request.assistanceLabor) || "-";
   const approvedBy = displayValue(request.approvedBy);
   const approvedByRole = displayValue(request.approvedByRole) || "Regional Director";
+  const recommendedBy = displayValue(request.recommendedBy);
+  const recommendedByRole = displayValue(request.recommendedByRole) || "Division Chief";
   const signatoryRole = displayValue(request.signatoryRole) || "Official Employee";
   const perDiemsAllowed = travelBoolean(request.perDiems, true);
-  const applicantTimestampLabel = buildSignatureTimestampLabel(
-    "Filed",
-    request.createdAt || request.dateFiled
-  );
+  const applicantTimestampLabel = request.employeeAuthorizedAt
+    ? buildSignatureTimestampLabel("Authorized", request.employeeAuthorizedAt)
+    : buildSignatureTimestampLabel("Filed", request.createdAt || request.dateFiled);
+  const recommendedTimestampLabel = (recommendedBy || request.recommendedByEmployeeRecordId)
+    ? buildSignatureTimestampLabel("Filed", request.createdAt || request.dateFiled)
+    : "";
   const approvedTimestampLabel = (
     approvedBy || request.approvedByEmployeeRecordId || normalizeLeaveStatus(request.status) === "Approved"
   )
@@ -728,6 +775,23 @@ function TravelOrderPreviewModal({ request, onClose }) {
             </div>
 
             <div style={travelFormStyles.raGrid}>
+              <div style={{ gridColumn: "1" }}>
+                <p style={travelFormStyles.raLabel}>Recommended by:</p>
+                <div style={travelFormStyles.raSigPreview}>
+                  {recommendedBySignature ? (
+                    <img
+                      src={recommendedBySignature}
+                      alt={`${recommendedBy || "Division Chief"} signature`}
+                      style={travelFormStyles.raSigImage}
+                    />
+                  ) : recommendedTimestampLabel ? (
+                    <div style={travelFormStyles.signatureTimestamp}>{recommendedTimestampLabel}</div>
+                  ) : null}
+                </div>
+                <div style={travelFormStyles.raName}>{recommendedBy}</div>
+                <div style={travelFormStyles.raRole}>{recommendedByRole}</div>
+              </div>
+
               <div style={{ gridColumn: "2" }}>
                 <p style={travelFormStyles.raLabel}>Approved by:</p>
                 <div style={travelFormStyles.raSigPreview}>
@@ -750,12 +814,7 @@ function TravelOrderPreviewModal({ request, onClose }) {
 
             <div style={travelFormStyles.auth}>
               <p style={travelFormStyles.authTitle}>A U T H O R I Z A T I O N</p>
-              <p style={travelFormStyles.authText}>
-                I hereby authorize the Accountant to deduct the corresponding amount of the unliquidated cash
-                advance from my succeeding salary for my failure to liquidate this travel within twenty (20)
-                days upon return to my permanent official station pursuant to Commission on Audit (COA) Circular
-                No. 2012-004 dated November 28, 2012.
-              </p>
+              <p style={travelFormStyles.authText}>{TRAVEL_AUTHORIZATION_TEXT}</p>
               <div style={travelFormStyles.authSig}>
                 <div style={travelFormStyles.authSigPreview}>
                   {employeeSignature ? (
@@ -816,7 +875,7 @@ function TravelOrderFormModal({
 
     setForm({
       ...initialForm,
-      employeeRecordId: defaultEmployeeRecordId ? String(defaultEmployeeRecordId) : "",
+      employeeRecordIds: defaultEmployeeRecordId ? [String(defaultEmployeeRecordId)] : [],
     });
     setErrors({});
     const frame = window.requestAnimationFrame(() => setVisible(true));
@@ -836,7 +895,9 @@ function TravelOrderFormModal({
     event.preventDefault();
     const nextErrors = {};
 
-    if (canSelectEmployee && !form.employeeRecordId) nextErrors.employeeRecordId = "Employee is required.";
+    if (canSelectEmployee && form.employeeRecordIds.length === 0) {
+      nextErrors.employeeRecordId = "Select at least one employee.";
+    }
     if (!form.destination.trim()) nextErrors.destination = "Destination is required.";
     if (!form.startDate) nextErrors.startDate = "Start date is required.";
     if (!form.endDate) nextErrors.endDate = "End date is required.";
@@ -850,7 +911,7 @@ function TravelOrderFormModal({
     }
 
     await onSubmit({
-      employeeRecordId: Number(form.employeeRecordId),
+      employeeRecordIds: form.employeeRecordIds.map((recordId) => Number(recordId)).filter(Boolean),
       destination: form.destination.trim(),
       purpose: form.purpose.trim(),
       startDate: form.startDate,
@@ -862,22 +923,24 @@ function TravelOrderFormModal({
   };
 
   const inputClasses = "min-h-[46px] w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100";
-  const resolvedEmployee = employeeOptions.find(
-    (employee) => String(employee.employeeRecordId) === String(form.employeeRecordId)
-  ) || (!canSelectEmployee && fallbackEmployeeName
-    ? {
-      employeeRecordId: form.employeeRecordId || "",
-      employeeId: "",
-      employeeName: fallbackEmployeeName,
-    }
-    : null);
+  const selectedEmployees = employeeOptions.filter(
+    (employee) => form.employeeRecordIds.includes(String(employee.employeeRecordId))
+  );
+  const readOnlyEmployeeName = selectedEmployees[0]?.employeeName || fallbackEmployeeName || "";
 
-  const handleSelectEmployee = (employee) => {
+  const handleToggleEmployee = (employee) => {
+    const recordId = String(employee.employeeRecordId);
     setForm((current) => ({
       ...current,
-      employeeRecordId: String(employee.employeeRecordId),
+      employeeRecordIds: current.employeeRecordIds.includes(recordId)
+        ? current.employeeRecordIds.filter((selectedId) => selectedId !== recordId)
+        : [...current.employeeRecordIds, recordId],
     }));
     setErrors((current) => ({ ...current, employeeRecordId: "" }));
+  };
+
+  const handleClearEmployees = () => {
+    setForm((current) => ({ ...current, employeeRecordIds: [] }));
   };
 
   return (
@@ -922,24 +985,34 @@ function TravelOrderFormModal({
 
         <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="sm:col-span-2">
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Employee</span>
+            <div className="sm:col-span-2">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">
+                {canSelectEmployee ? "Employees" : "Employee"}
+              </span>
               {canSelectEmployee ? (
-                <EmployeeSearchSelect
-                  employeeOptions={employeeOptions}
-                  selectedEmployee={resolvedEmployee}
-                  onSelect={handleSelectEmployee}
-                />
+                <>
+                  <EmployeeSearchSelect
+                    multiple
+                    employeeOptions={employeeOptions}
+                    selectedEmployees={selectedEmployees}
+                    onSelect={handleToggleEmployee}
+                    onClear={handleClearEmployees}
+                    placeholder="Search and select employees..."
+                  />
+                  <p className="m-0 mt-1 text-xs text-slate-500">
+                    Tick the checkbox of every employee covered by this travel. A separate travel order is filed for each one.
+                  </p>
+                </>
               ) : (
                 <input
                   type="text"
-                  value={resolvedEmployee?.employeeName || ""}
+                  value={readOnlyEmployeeName}
                   readOnly
                   className={`${inputClasses} cursor-not-allowed bg-slate-50 text-slate-500`.trim()}
                 />
               )}
               {errors.employeeRecordId ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.employeeRecordId}</p> : null}
-            </label>
+            </div>
 
             <label className="sm:col-span-2">
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">Destination</span>
@@ -1069,7 +1142,10 @@ export default function TravelOrderWorkspace({
 
   const managePermission = canManageLeave(user);
   const viewAllPermission = canViewAllLeaves(user);
-  const allowEmployeeSelection = resolveRoleKey(user) === "admin";
+  // Admins file on anyone's behalf; a chief files for their division and is stamped as the
+  // recommending officer on each form (see resolve_travel_recommender_id in travel_order.php).
+  const isAdmin = resolveRoleKey(user) === "admin";
+  const allowEmployeeSelection = isAdmin || resolveRoleKey(user) === "chief";
   const pendingCount = useMemo(() => countPendingRecords(requests), [requests]);
 
   const loadRequests = useCallback(async ({ background = false } = {}) => {
@@ -1093,6 +1169,107 @@ export default function TravelOrderWorkspace({
 
   useAutoRefreshOnChange(loadRequests, { topic: "travel_order" });
 
+  /*
+   * Once the Regional Director approves, the travel order waits at pending until its employee
+   * accepts the COA liquidation authorization. Prompt them here, one order at a time.
+   *
+   * Both refs guard against this screen's auto-refresh: without them every poll would stack a
+   * second dialog on top of the open one, and answering "No" would be undone by the next tick.
+   * Declining only defers -- the prompt returns on the next visit, nothing is written.
+   */
+  const authorizationPromptOpenRef = useRef(false);
+  const deferredAuthorizationsRef = useRef(new Set());
+
+  useEffect(() => {
+    if (authorizationPromptOpenRef.current) {
+      return undefined;
+    }
+
+    const awaitingRequests = requests.filter((request) => (
+      request.awaitingAuthorization
+      && matchesUserRecordScope(request, user)
+      && !deferredAuthorizationsRef.current.has(request.id)
+    ));
+
+    if (awaitingRequests.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const promptForAuthorization = async () => {
+      authorizationPromptOpenRef.current = true;
+
+      try {
+        for (const request of awaitingRequests) {
+          if (cancelled) {
+            break;
+          }
+
+          const confirmation = await Swal.fire({
+            title: "Travel Order Authorization",
+            html: `
+              <p style="margin:0 0 10px;font-size:14px;color:#334155;">
+                Your travel order to <strong>${escapeHtml(request.destination)}</strong>
+                (${escapeHtml(formatDateDisplay(request.startDate))} - ${escapeHtml(formatDateDisplay(request.endDate))})
+                has been approved by the Regional Director.
+              </p>
+              <p style="margin:0 0 10px;font-size:13px;text-align:justify;line-height:1.6;color:#0f172a;">
+                ${escapeHtml(TRAVEL_AUTHORIZATION_TEXT)}
+              </p>
+              <p style="margin:0;font-size:13px;font-weight:600;color:#334155;">
+                Do you accept this authorization?
+              </p>
+            `,
+            icon: "info",
+            showCancelButton: true,
+            confirmButtonText: "Yes, I authorize",
+            cancelButtonText: "No, not now",
+            confirmButtonColor: "#0f766e",
+            cancelButtonColor: "#64748b",
+            reverseButtons: true,
+            allowOutsideClick: false,
+            allowEscapeKey: false,
+          });
+
+          if (!confirmation.isConfirmed) {
+            deferredAuthorizationsRef.current.add(request.id);
+            continue;
+          }
+
+          try {
+            const result = await authorizeTravelOrder(request.id);
+            setRequests((current) =>
+              current.map((item) => (item.id === result.request.id ? result.request : item))
+            );
+            await Swal.fire({
+              title: "Authorized",
+              text: result.message || "Travel authorization accepted. Your travel order is now approved.",
+              icon: "success",
+              confirmButtonColor: "#0f766e",
+            });
+          } catch (error) {
+            deferredAuthorizationsRef.current.add(request.id);
+            await Swal.fire({
+              title: "Authorization failed",
+              text: error?.response?.data?.message || error?.message || "Unable to accept the travel authorization.",
+              icon: "error",
+              confirmButtonColor: "#dc2626",
+            });
+          }
+        }
+      } finally {
+        authorizationPromptOpenRef.current = false;
+      }
+    };
+
+    void promptForAuthorization();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [requests, user]);
+
   useEffect(() => {
     if (!loading) {
       onPendingCountChange?.(pendingCount);
@@ -1108,8 +1285,10 @@ export default function TravelOrderWorkspace({
         division: employee.department || employee.division || "",
       }))
       .filter((employee) => employee.employeeRecordId && employee.employeeName)
-      .filter((employee) => !(allowEmployeeSelection && matchesUserEmployeeOption(employee, user))),
-    [allowEmployeeSelection, employees, user]
+      // An admin files purely on behalf of others, so drop their own record. A chief can be on the
+      // trip too and has no self-service travel page, so they stay in their own list.
+      .filter((employee) => !(isAdmin && matchesUserEmployeeOption(employee, user))),
+    [employees, isAdmin, user]
   );
 
   const resolvedEmployee = useMemo(() => {
@@ -1178,29 +1357,63 @@ export default function TravelOrderWorkspace({
     setCurrentPage(1);
   }, [query, status, dateFilter, rowsPerPage]);
 
-  const handleSubmitRequest = async (payload) => {
+  const handleSubmitRequest = async ({ employeeRecordIds = [], ...details }) => {
+    const targetRecordIds = employeeRecordIds.length > 0
+      ? employeeRecordIds
+      : [resolvedEmployee?.employeeRecordId || ""];
+
     setSubmitting(true);
     try {
-      const result = await fileTravelOrder({
-        ...payload,
-        employeeRecordId: payload.employeeRecordId || resolvedEmployee?.employeeRecordId,
-        employeeId:
-          employeeOptions.find((employee) => employee.employeeRecordId === Number(payload.employeeRecordId))?.employeeId
-          || resolvedEmployee?.employeeId
-          || user?.employee_id
-          || "",
-        employeeName:
-          employeeOptions.find((employee) => employee.employeeRecordId === Number(payload.employeeRecordId))?.employeeName
-          || resolvedEmployee?.employeeName
-          || user?.full_name
-          || user?.username
-          || "",
-      });
-      setRequests((current) => [result.request, ...current]);
-      setModalOpen(false);
-      toast.success("Travel order submitted successfully.");
-    } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Unable to submit travel order.");
+      const createdRequests = [];
+      const failures = [];
+
+      for (const employeeRecordId of targetRecordIds) {
+        const matchedEmployee = employeeOptions.find(
+          (employee) => String(employee.employeeRecordId) === String(employeeRecordId)
+        );
+
+        try {
+          const result = await fileTravelOrder({
+            ...details,
+            employeeRecordId,
+            employeeId:
+              matchedEmployee?.employeeId
+              || resolvedEmployee?.employeeId
+              || user?.employee_id
+              || "",
+            employeeName:
+              matchedEmployee?.employeeName
+              || resolvedEmployee?.employeeName
+              || user?.full_name
+              || user?.username
+              || "",
+          });
+          createdRequests.push(result.request);
+        } catch (error) {
+          failures.push({
+            employeeName: matchedEmployee?.employeeName || resolvedEmployee?.employeeName || "Selected employee",
+            message: error?.response?.data?.message || error?.message || "Unable to submit travel order.",
+          });
+        }
+      }
+
+      if (createdRequests.length > 0) {
+        setRequests((current) => [...createdRequests.slice().reverse(), ...current]);
+        setModalOpen(false);
+        toast.success(
+          createdRequests.length === 1
+            ? "Travel order submitted successfully."
+            : `${createdRequests.length} travel orders submitted successfully.`
+        );
+      }
+
+      if (failures.length > 0) {
+        toast.error(
+          createdRequests.length === 0
+            ? failures[0].message
+            : `Failed for ${failures.map((failure) => failure.employeeName).join(", ")}.`
+        );
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1410,6 +1623,10 @@ export default function TravelOrderWorkspace({
                     const showDecisionActions = managePermission
                       && normalizeLeaveStatus(request.status) === "Pending"
                       && !isOwnRequest;
+                    // Already approved by the Regional Director and waiting on the employee, so the
+                    // approve action is spent. Reject and cancel stay available for a trip called off
+                    // before the employee gets round to authorizing it.
+                    const showApproveAction = showDecisionActions && !request.awaitingAuthorization;
                     const canReviewRequest = managePermission;
 
                     return (
@@ -1426,7 +1643,18 @@ export default function TravelOrderWorkspace({
                         <td className="px-3 py-3 text-sm text-slate-600">
                           {formatDateDisplay(request.startDate)} - {formatDateDisplay(request.endDate)}
                         </td>
-                        <td className="px-3 py-3"><LeaveStatusBadge status={request.status} /></td>
+                        <td className="px-3 py-3">
+                          {request.awaitingAuthorization ? (
+                            <span
+                              className="inline-flex min-h-7 items-center rounded-full border border-sky-200 bg-sky-50 px-2.5 text-xs font-semibold text-sky-700"
+                              title="Approved by the Regional Director. Waiting for the employee to accept the travel authorization."
+                            >
+                              Awaiting Authorization
+                            </span>
+                          ) : (
+                            <LeaveStatusBadge status={request.status} />
+                          )}
+                        </td>
                         <td className="px-3 py-3 text-sm text-slate-600">{formatDateDisplay(request.dateFiled)}</td>
                         <td className="px-3 py-3">
                           <div className="flex flex-wrap gap-2">
@@ -1436,14 +1664,16 @@ export default function TravelOrderWorkspace({
                               tone={canReviewRequest ? "review" : "view"}
                               onClick={() => handleAction(canReviewRequest ? "review" : "view", request)}
                             />
+                            {showApproveAction ? (
+                              <ActionIconButton
+                                label="Approve travel order"
+                                icon={faCheck}
+                                tone="approve"
+                                onClick={() => handleAction("approve", request)}
+                              />
+                            ) : null}
                             {showDecisionActions ? (
                               <>
-                                <ActionIconButton
-                                  label="Approve travel order"
-                                  icon={faCheck}
-                                  tone="approve"
-                                  onClick={() => handleAction("approve", request)}
-                                />
                                 <ActionIconButton
                                   label="Reject travel order"
                                   icon={faXmark}

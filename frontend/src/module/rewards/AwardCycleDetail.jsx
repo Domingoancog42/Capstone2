@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CalendarDays, Filter, Pencil, Search, Trash2, Users } from "lucide-react";
+import { Archive, ArrowLeft, CalendarDays, Filter, Pencil, RotateCcw, Search, Users } from "lucide-react";
 import { toast } from "react-hot-toast";
 import Button from "../../components/UI/button";
 import Card, {
@@ -53,7 +53,8 @@ export default function AwardCycleDetail({
   onBack,
   onEdit,
   onToggleStatus,
-  onDelete,
+  onArchive,
+  onRestore,
   onVote,
   onWithdraw,
 }) {
@@ -63,6 +64,9 @@ export default function AwardCycleDetail({
   const tiedLeaders = useMemo(() => leadingTie(cycle.nominations), [cycle.nominations]);
 
   const closed = cycle.status === "closed";
+  const archived = Boolean(cycle.isArchived);
+  // An archived cycle is out of circulation: it reads exactly like a closed one, ballot and all.
+  const readOnly = closed || archived;
   // Closing a tie would force the podium to crown one of them arbitrarily, so the button waits.
   const blockedByTie = !closed && tiedLeaders.length > 0;
   const topVotes = leaderboard[0]?.votes ?? 0;
@@ -82,7 +86,7 @@ export default function AwardCycleDetail({
     setReason(myNomination?.reason || "");
   }, [myNomination?.nomineeKey, myNomination?.reason]);
 
-  const canVote = Boolean(viewerKey) && !closed && employeeOptions.length > 0;
+  const canVote = Boolean(viewerKey) && !readOnly && employeeOptions.length > 0;
 
   const [page, setPage] = useState(1);
   const [ballotQuery, setBallotQuery] = useState("");
@@ -235,7 +239,7 @@ export default function AwardCycleDetail({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-3">
               <h2 className="m-0 text-lg font-semibold leading-tight text-slate-900">{cycle.category}</h2>
-              <StatusPill status={cycle.status} />
+              <StatusPill status={cycle.status} archived={archived} />
             </div>
             {cycle.description ? <p className="m-0 mt-1.5 text-sm text-slate-500">{cycle.description}</p> : null}
             <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-500">
@@ -257,24 +261,34 @@ export default function AwardCycleDetail({
 
           {canManage ? (
             <div className="flex shrink-0 flex-wrap items-center gap-2">
-              <Button variant="secondary" size="sm" icon={Pencil} onClick={() => onEdit(cycle)}>
-                Edit
-              </Button>
-              <Button
-                size="sm"
-                disabled={blockedByTie || saving}
-                title={blockedByTie ? "Voting is tied — one nominee must be ahead before it can close." : undefined}
-                onClick={() => onToggleStatus(cycle)}
-              >
-                {closed ? "Reopen voting" : "Close voting"}
-              </Button>
-              <Button
-                variant="icon"
-                size="sm"
-                icon={Trash2}
-                aria-label={`Delete ${cycle.category}`}
-                onClick={() => onDelete(cycle)}
-              />
+              {archived ? (
+                <Button size="sm" icon={RotateCcw} disabled={saving} onClick={() => onRestore(cycle)}>
+                  Restore
+                </Button>
+              ) : (
+                <>
+                  <Button variant="secondary" size="sm" icon={Pencil} onClick={() => onEdit(cycle)}>
+                    Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={blockedByTie || saving}
+                    title={blockedByTie ? "Voting is tied — one nominee must be ahead before it can close." : undefined}
+                    onClick={() => onToggleStatus(cycle)}
+                  >
+                    {closed ? "Reopen voting" : "Close voting"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={Archive}
+                    disabled={saving}
+                    onClick={() => onArchive(cycle)}
+                  >
+                    Archive
+                  </Button>
+                </>
+              )}
             </div>
           ) : null}
         </div>
@@ -290,11 +304,17 @@ export default function AwardCycleDetail({
 
       <div className="grid gap-4 lg:grid-cols-3">
         <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-1">
-          {closed ? (
+          {readOnly ? (
             /* Nothing here is actionable once voting closes, so the form gives way to the outcome. */
             <>
-              <h3 className="m-0 text-base font-semibold text-slate-900">Voting is closed</h3>
-              <p className="m-0 mt-1 text-sm leading-6 text-slate-500">Results are final for this cycle.</p>
+              <h3 className="m-0 text-base font-semibold text-slate-900">
+                {archived ? "This cycle is archived" : "Voting is closed"}
+              </h3>
+              <p className="m-0 mt-1 text-sm leading-6 text-slate-500">
+                {archived
+                  ? "Restore it to put it back on the list and reopen it for voting."
+                  : "Results are final for this cycle."}
+              </p>
               {myNomination ? (
                 <p className="m-0 mt-4 text-sm leading-6 text-slate-500">
                   You voted for <span className="font-semibold text-slate-700">{myNomination.nomineeName}</span>.

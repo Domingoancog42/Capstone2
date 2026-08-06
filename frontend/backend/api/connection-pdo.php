@@ -326,7 +326,7 @@ function hris_enrich_user_with_employee(PDO $pdo, array $user): array
 
 function session_user_record(PDO $pdo, int $id): ?array
 {
-    hris_ensure_two_factor_tables($pdo);
+    hris_ensure_two_factor_schema($pdo);
     hris_ensure_email_verification_columns($pdo);
 
     $statement = $pdo->prepare(
@@ -403,11 +403,6 @@ function require_session_user(bool $extendSession = true): array
             'message' => 'You need to sign in first.',
         ], 401);
     }
-
-    // Optional global throttle for signed-in traffic. The guard exempts settings.php and
-    // rate_limit.php so an administrator can always switch it back off.
-    require_once __DIR__ . '/rate-limit-utils.php';
-    hris_rate_limit_guard($pdo, 'api');
 
     $timeoutMinutes = hris_security_settings($pdo)['sessionTimeoutMinutes'] ?? 30;
     $timeoutSeconds = max(1, (int)$timeoutMinutes) * 60;
@@ -537,6 +532,41 @@ function hris_session_employee_record_id(PDO $pdo, array $user): ?int
     return null;
 }
 
+/**
+ * The roles that may write to somebody else's employee record -- the master list, the profile photo,
+ * the e-signature. It matches the `employees` module in hris_default_role_permission_access().
+ *
+ * It lives here rather than in employee.php because three endpoints need the same answer and they do
+ * not include one another. Keeping one definition is what stops employee.php from being tightened
+ * while employee_signature.php quietly keeps its own looser copy.
+ */
+function hris_can_manage_employee_records(array $user): bool
+{
+    return in_array(hris_user_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
+}
+
+/**
+ * Allow the write when the caller manages employee records, or when the row being written is the
+ * caller's own. Anything else is a 403.
+ */
+function hris_require_employee_record_access(PDO $pdo, array $user, int $employeeId, string $message): void
+{
+    if (hris_can_manage_employee_records($user)) {
+        return;
+    }
+
+    $ownRecordId = hris_session_employee_record_id($pdo, $user);
+
+    if ($employeeId > 0 && $ownRecordId !== null && $ownRecordId === $employeeId) {
+        return;
+    }
+
+    json_response([
+        'success' => false,
+        'message' => $message,
+    ], 403);
+}
+
 function format_user(array $user): array
 {
     global $pdo;
@@ -648,6 +678,61 @@ function hris_database_table_exists(PDO $pdo, string $table): bool
     $statement->execute([':table_name' => $table]);
 
     return (int)$statement->fetchColumn() > 0;
+}
+
+/**
+ * Payroll computation snapshots — the JSON a payslip is rebuilt from — used to live in `settings`
+ * under a `payroll_meta:<payroll_id>` key. That left the application settings store mostly full of
+ * payroll data, and orphaned a row every time a payroll run was deleted, because a key/value table
+ * has no foreign key to cascade through.
+ *
+ * They have their own table now. This creates it and carries anything still sitting in `settings`
+ * across on the first request that touches payroll, so an existing install repairs itself instead of
+ * needing a migration run by hand.
+ */
+function hris_ensure_payroll_meta_table(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    // The foreign key needs its parent; on a database without payroll there is nothing to move yet.
+    if (!hris_database_table_exists($pdo, 'Payroll')) {
+        return;
+    }
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS PayrollMeta (
+            payroll_id INT NOT NULL,
+            meta_json LONGTEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (payroll_id),
+            CONSTRAINT fk_payroll_meta_payroll
+                FOREIGN KEY (payroll_id) REFERENCES Payroll(payroll_id)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+
+    if (hris_database_table_exists($pdo, 'settings')) {
+        /*
+         * `payroll_meta:` is 13 characters, so the id starts at 14. The join drops orphans — rows
+         * whose payroll run is already gone — rather than migrating them: the foreign key would
+         * reject them anyway, and they describe a run nobody can open.
+         */
+        $pdo->exec(
+            'INSERT IGNORE INTO PayrollMeta (payroll_id, meta_json)
+             SELECT CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED), s.setting_value
+             FROM settings s
+             INNER JOIN Payroll p ON p.payroll_id = CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED)
+             WHERE s.setting_key LIKE "payroll_meta:%"'
+        );
+        $pdo->exec('DELETE FROM settings WHERE setting_key LIKE "payroll_meta:%"');
+    }
+
+    $ensured = true;
 }
 
 function hris_normalize_notification_type(string $type): string

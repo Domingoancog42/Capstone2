@@ -2,33 +2,9 @@ import React, { useCallback, useState } from "react";
 import DashboardLeaveTravelCalendar from "../../components/dashboard/DashboardLeaveTravelCalendar";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import { getEmployees } from "../../services/api";
+import { createAnnouncement, fetchAnnouncements } from "../../services/announcementService";
 import { fetchLeaveRequests } from "../../services/leaveService";
 import { fetchTravelOrders } from "../../services/travelOrderService";
-
-const ANNOUNCEMENT_STORAGE_KEY = "hris:leave-travel-calendar-announcements";
-
-function readStoredAnnouncements() {
-  if (typeof window === "undefined") {
-    return [];
-  }
-
-  try {
-    const storedValue = window.localStorage.getItem(ANNOUNCEMENT_STORAGE_KEY);
-    const parsedValue = storedValue ? JSON.parse(storedValue) : [];
-
-    return Array.isArray(parsedValue) ? parsedValue : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveStoredAnnouncements(announcements) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(ANNOUNCEMENT_STORAGE_KEY, JSON.stringify(announcements));
-}
 
 export default function LeaveTravelCalendarWorkspace({
   canManageAnnouncements = true,
@@ -38,35 +14,37 @@ export default function LeaveTravelCalendarWorkspace({
   const [employees, setEmployees] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [travelOrders, setTravelOrders] = useState([]);
-  const [announcements, setAnnouncements] = useState(readStoredAnnouncements);
+  const [announcements, setAnnouncements] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const handleSaveAnnouncement = (announcement) => {
-    setAnnouncements((currentAnnouncements) => {
-      const nextAnnouncement = {
-        ...announcement,
-        id: announcement.id || `announcement-${Date.now()}`,
-        createdAt: announcement.createdAt || new Date().toISOString(),
-      };
-      const nextAnnouncements = [
-        nextAnnouncement,
-        ...currentAnnouncements.filter((item) => item.id !== nextAnnouncement.id),
-      ];
+  /*
+   * Resolves once the announcement is stored, so the modal can stay open and show the failure
+   * instead of closing over a publish that never happened. The list is refreshed from the response
+   * rather than patched locally, which keeps this browser showing the same rows every other one sees.
+   */
+  const handleSaveAnnouncement = async (announcement) => {
+    const response = await createAnnouncement(announcement);
 
-      saveStoredAnnouncements(nextAnnouncements);
-      return nextAnnouncements;
-    });
+    if (response?.announcement) {
+      setAnnouncements((currentAnnouncements) => [
+        response.announcement,
+        ...currentAnnouncements.filter((item) => item.id !== response.announcement.id),
+      ]);
+    }
+
+    return response;
   };
 
   const loadCalendarData = useCallback(async ({ background = false } = {}) => {
     setLoading(!background);
 
     try {
-      const [employeeResult, leaveResult, travelResult] = await Promise.allSettled([
+      const [employeeResult, leaveResult, travelResult, announcementResult] = await Promise.allSettled([
         getEmployees(),
         fetchLeaveRequests(),
         fetchTravelOrders(),
+        fetchAnnouncements(),
       ]);
 
       setEmployees(
@@ -84,10 +62,16 @@ export default function LeaveTravelCalendarWorkspace({
           ? travelResult.value.requests
           : []
       );
+      setAnnouncements(
+        announcementResult.status === "fulfilled" && Array.isArray(announcementResult.value?.announcements)
+          ? announcementResult.value.announcements
+          : []
+      );
       setError(
         employeeResult.status === "rejected"
         || leaveResult.status === "rejected"
         || travelResult.status === "rejected"
+        || announcementResult.status === "rejected"
           ? "Some calendar data could not be loaded."
           : ""
       );
@@ -97,7 +81,7 @@ export default function LeaveTravelCalendarWorkspace({
   }, []);
 
   useAutoRefreshOnChange(loadCalendarData, {
-    topics: ["leave_request", "travel_order", "employee"],
+    topics: ["leave_request", "travel_order", "employee", "announcement"],
   });
 
   return (

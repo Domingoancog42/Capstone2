@@ -1037,17 +1037,27 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
   };
 
   const attendanceColumns = [
-    {
-      key: "index",
-      header: "No.",
-      headerClassName: "w-[76px]",
-      cellClassName: "w-[76px]",
-      render: (_row, index) => (
-        <span className="font-semibold text-slate-700">
-          {(safePage - 1) * rowsPerPage + index + 1}
-        </span>
-      ),
-    },
+    isEmployeeView
+      ? {
+          key: "employeeId",
+          header: "ID NO.",
+          headerClassName: "w-[120px]",
+          cellClassName: "w-[120px]",
+          render: (row) => (
+            <span className="font-semibold text-slate-700">{row.employeeId || "N/A"}</span>
+          ),
+        }
+      : {
+          key: "index",
+          header: "No.",
+          headerClassName: "w-[76px]",
+          cellClassName: "w-[76px]",
+          render: (_row, index) => (
+            <span className="font-semibold text-slate-700">
+              {(safePage - 1) * rowsPerPage + index + 1}
+            </span>
+          ),
+        },
     {
       key: "employeeName",
       header: <SortableHeader label="Employee Name" columnKey="employeeName" sortConfig={sortConfig} onSort={handleSort} />,
@@ -1057,11 +1067,13 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
         </div>
       ),
     },
-    {
-      key: "department",
-      header: <SortableHeader label="Division" columnKey="department" sortConfig={sortConfig} onSort={handleSort} />,
-      render: (row) => row.department || "Unassigned division",
-    },
+    isEmployeeView
+      ? null
+      : {
+          key: "department",
+          header: <SortableHeader label="Division" columnKey="department" sortConfig={sortConfig} onSort={handleSort} />,
+          render: (row) => row.department || "Unassigned division",
+        },
     {
       key: "date",
       header: <SortableHeader label="Date" columnKey="date" sortConfig={sortConfig} onSort={handleSort} />,
@@ -1102,60 +1114,64 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       header: <SortableHeader label="Undertime" columnKey="undertimeMinutes" sortConfig={sortConfig} onSort={handleSort} />,
       render: (row) => `${row.undertimeMinutes || 0} min`,
     },
-    {
-      key: "status",
-      header: <SortableHeader label="Status" columnKey="status" sortConfig={sortConfig} onSort={handleSort} />,
-      render: (row) => (
-        <span className={`inline-flex min-h-7 items-center rounded-full border px-2.5 text-xs font-semibold ${statusClasses(row.status)}`}>
-          {row.status}
-        </span>
-      ),
-    },
-    {
-      key: "actions",
-      header: "Actions",
-      render: (row) => (
-        <div className="flex min-w-[170px] flex-wrap items-center gap-2">
-          <ActionIconButton
-            label="View DTR"
-            icon={faEye}
-            tone="view"
-            onClick={() => openDtr(row)}
-          />
-          <ActionIconButton
-            label="View attendance logs"
-            icon={faClockRotateLeft}
-            tone="review"
-            text="Logs"
-            onClick={() => openLogs(row)}
-          />
-          <ActionIconButton
-            label="Print DTR"
-            icon={faPrint}
-            tone="print"
-            onClick={() => printRecordDtr(row)}
-          />
-          {canEdit ? (
-            <ActionIconButton
-              label="Edit attendance record"
-              icon={faPen}
-              tone="edit"
-              onClick={() => openEdit(row)}
-            />
-          ) : null}
-          {canRequestAdjustment ? (
-            <ActionIconButton
-              label="Request attendance adjustment"
-              icon={faFilePen}
-              tone="edit"
-              text="Request"
-              onClick={() => openAdjustmentRequest(row)}
-            />
-          ) : null}
-        </div>
-      ),
-    },
-  ];
+    isEmployeeView
+      ? null
+      : {
+          key: "status",
+          header: <SortableHeader label="Status" columnKey="status" sortConfig={sortConfig} onSort={handleSort} />,
+          render: (row) => (
+            <span className={`inline-flex min-h-7 items-center rounded-full border px-2.5 text-xs font-semibold ${statusClasses(row.status)}`}>
+              {row.status}
+            </span>
+          ),
+        },
+    isEmployeeView
+      ? null
+      : {
+          key: "actions",
+          header: "Actions",
+          render: (row) => (
+            <div className="flex min-w-[170px] flex-wrap items-center gap-2">
+              <ActionIconButton
+                label="View DTR"
+                icon={faEye}
+                tone="view"
+                onClick={() => openDtr(row)}
+              />
+              <ActionIconButton
+                label="View attendance logs"
+                icon={faClockRotateLeft}
+                tone="review"
+                text="Logs"
+                onClick={() => openLogs(row)}
+              />
+              <ActionIconButton
+                label="Print DTR"
+                icon={faPrint}
+                tone="print"
+                onClick={() => printRecordDtr(row)}
+              />
+              {canEdit ? (
+                <ActionIconButton
+                  label="Edit attendance record"
+                  icon={faPen}
+                  tone="edit"
+                  onClick={() => openEdit(row)}
+                />
+              ) : null}
+              {canRequestAdjustment ? (
+                <ActionIconButton
+                  label="Request attendance adjustment"
+                  icon={faFilePen}
+                  tone="edit"
+                  text="Request"
+                  onClick={() => openAdjustmentRequest(row)}
+                />
+              ) : null}
+            </div>
+          ),
+        },
+  ].filter(Boolean);
 
   const logColumns = [
     { key: "punchAt", header: "Punch Date & Time", render: (row) => formatDateTime(row.punchAt) },
@@ -1406,7 +1422,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                 emptyMessage="No attendance records found."
                 stickyHeader
                 className="max-h-[560px] overflow-y-auto"
-                tableClassName="min-w-[1540px]"
+                tableClassName={isEmployeeView ? "min-w-[1000px]" : "min-w-[1540px]"}
               />
             </div>
 

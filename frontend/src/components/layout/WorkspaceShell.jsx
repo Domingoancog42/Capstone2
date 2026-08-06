@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Breadcrumbs from "../breadcrumbs/breadcrumbs";
 import Header from "../navigation/Header";
 import Sidebar from "../navigation/Sidebar";
@@ -30,6 +30,26 @@ export default function WorkspaceShell({
     () => getProfilePathForRole(user?.roleKey || user?.role),
     [user?.role, user?.roleKey]
   );
+
+  /*
+   * The drawer is an overlay, so the page behind it must not scroll — without this a touch drag
+   * that starts on the scrim scrolls the workspace underneath and the drawer appears to drift.
+   * Restores the previous value rather than clearing it, since the profile floating card locks the
+   * body the same way and can still be open behind the drawer.
+   */
+  useEffect(() => {
+    if (!mobileSidebarOpen) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mobileSidebarOpen]);
+
   return (
     // Transparent so the page gradient on <html> shows through; dark mode paints over it there.
     <div className="min-h-screen bg-transparent">

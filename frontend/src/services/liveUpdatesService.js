@@ -1,127 +1,340 @@
-import { publishAutoRefresh } from "../components/auto/autorefreshconfig";
+import {
+  AUTO_REFRESH_TAB_ID,
+  publishAutoRefresh,
+  setLiveUpdatesHealthy,
+} from "../components/auto/autorefreshconfig";
 import { getChangeFeed } from "./api";
 
 /**
- * Server-mediated live refresh.
+ * Server-mediated live refresh, over long polling.
  *
- * The browser already syncs itself: a mutation publishes an auto-refresh event, and BroadcastChannel
- * relays it to other tabs. But that never leaves the machine. When HR approves a leave on their
+ * The browser already syncs itself: a mutation publishes an auto-refresh event and BroadcastChannel
+ * relays it to the other tabs. But that never leaves the machine. When HR approves a leave on their
  * computer, the employee's browser has no idea anything happened.
  *
- * This closes that gap the cheap way: poll `changes.php` for a revision string per topic and, when
- * one moves, publish the auto-refresh event for that topic. Every screen already listening for those
- * events reloads itself, so no screen needs to know this exists.
+ * This closes that gap. A request to `changes.php` is left parked on the server until a topic's
+ * revision actually moves, and the moment one does the response comes back and this republishes the
+ * matching auto-refresh event. Every screen already listening for those events reloads itself, so no
+ * screen needs to know this exists.
+ *
+ * Long polling rather than a short interval because the two costs pull apart: a short interval buys
+ * latency with request volume, and each request pays for a full scan of the tables behind every
+ * topic. Parking the request instead pushes the waiting onto the server, where it can watch far more
+ * cheaply than the client can ask — an approval lands in a couple of seconds while an idle system
+ * exchanges roughly one request per 25 seconds.
+ *
+ * Two rules keep that affordable on XAMPP, where a held request occupies an Apache worker thread for
+ * its whole life:
+ *   - one connection per browser, not per tab. Tabs elect a leader; the leader polls and publishes
+ *     across BroadcastChannel, and the others read that for free.
+ *   - nothing is held while the tab is hidden. A backgrounded tab releases both the connection and
+ *     its leadership, and the screens it holds refresh on focus anyway.
  */
 
+/** Must stay at or under the server's own cap, or every request would be cut short of its hold. */
+const HOLD_SECONDS = 25;
+/** A breath between reconnects, so a server answering instantly cannot spin this into a tight loop. */
+const RECONNECT_DELAY_MS = 250;
+const MIN_BACKOFF_MS = 2000;
+/** Errors back off so a dead backend is not hammered for the whole session. */
+const MAX_BACKOFF_MS = 60000;
+
+const LEADER_STORAGE_KEY = "hris:live-updates:leader";
+const LEADER_HEARTBEAT_MS = 3000;
 /**
- * Short enough that an approval on one machine lands on another before the person watching decides
- * to reload by hand. The tab-switch case is already instant — `handleWake` polls on focus — so this
- * only paces the case where both windows are visible at once.
+ * Three missed heartbeats. Long enough that a leader stalled behind a slow render is not deposed
+ * mid-flight, short enough that closing the leader tab does not leave the others unfed for long.
  */
-const DEFAULT_INTERVAL_MS = 6000;
-/** Errors back off so a dead backend is not hammered every 10s for the whole session. */
-const MAX_INTERVAL_MS = 120000;
+const LEADER_STALE_MS = 9000;
+const FOLLOWER_RETRY_MS = 4000;
 
-let pollTimerId = null;
 let running = false;
-let inFlight = false;
-let intervalMs = DEFAULT_INTERVAL_MS;
-let consecutiveFailures = 0;
+/** Bumped to retire a loop. A loop compares it after every await and returns if it no longer owns it. */
+let loopToken = 0;
+let inFlightController = null;
+let heartbeatTimerId = null;
+let isLeader = false;
+let cursor = "";
 /** null until the first successful poll — the baseline must not be reported as change. */
 let lastRevisions = null;
+let consecutiveFailures = 0;
 
 function isVisible() {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
 }
 
-function currentDelay() {
-  if (consecutiveFailures === 0) {
-    return intervalMs;
-  }
-
-  return Math.min(intervalMs * 2 ** consecutiveFailures, MAX_INTERVAL_MS);
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
-function scheduleNextPoll() {
-  if (!running) {
+function isAbortError(error) {
+  return error?.code === "ERR_CANCELED"
+    || error?.name === "CanceledError"
+    || error?.name === "AbortError";
+}
+
+function backoffDelayMs() {
+  return Math.min(MIN_BACKOFF_MS * 2 ** Math.max(0, consecutiveFailures - 1), MAX_BACKOFF_MS);
+}
+
+function abortInFlight() {
+  if (inFlightController) {
+    try {
+      inFlightController.abort();
+    } catch {
+      // Already settled; nothing to release.
+    }
+
+    inFlightController = null;
+  }
+}
+
+function readLeaderRecord() {
+  try {
+    const raw = window.localStorage.getItem(LEADER_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLeaderRecord() {
+  try {
+    window.localStorage.setItem(
+      LEADER_STORAGE_KEY,
+      JSON.stringify({ tabId: AUTO_REFRESH_TAB_ID, at: Date.now() })
+    );
+  } catch {
+    /*
+     * Private or restricted modes have no localStorage, so leadership cannot be coordinated and
+     * `claimLeadership` will let every tab through. That degrades to one connection per tab — more
+     * server threads than intended, but still correct.
+     */
+  }
+}
+
+function leaderIsFresh(record) {
+  return Boolean(record) && Date.now() - Number(record?.at || 0) < LEADER_STALE_MS;
+}
+
+/**
+ * Two tabs can briefly both believe they lead — localStorage has no compare-and-set — and that is
+ * deliberately tolerated. The cost is one redundant connection until the next heartbeat settles it;
+ * the cost of preventing it is a locking protocol between tabs that can deadlock and leave nobody
+ * polling at all.
+ */
+function claimLeadership() {
+  const record = readLeaderRecord();
+
+  if (record && record.tabId !== AUTO_REFRESH_TAB_ID && leaderIsFresh(record)) {
+    isLeader = false;
+    return false;
+  }
+
+  writeLeaderRecord();
+  isLeader = true;
+
+  return true;
+}
+
+function releaseLeadership() {
+  if (!isLeader) {
     return;
   }
 
-  window.clearTimeout(pollTimerId);
-  pollTimerId = window.setTimeout(runPoll, currentDelay());
+  isLeader = false;
+
+  try {
+    const record = readLeaderRecord();
+
+    // Only clear our own claim: another tab may have taken over already.
+    if (record && record.tabId === AUTO_REFRESH_TAB_ID) {
+      window.localStorage.removeItem(LEADER_STORAGE_KEY);
+    }
+  } catch {
+    // Nothing to clear.
+  }
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimerId !== null) {
+    window.clearInterval(heartbeatTimerId);
+    heartbeatTimerId = null;
+  }
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+
+  /*
+   * On its own timer rather than after each response: a leader parked on a 25s hold would otherwise
+   * look stale for most of every hold and be deposed by a follower on a loop of its own.
+   */
+  heartbeatTimerId = window.setInterval(() => {
+    if (isLeader) {
+      writeLeaderRecord();
+    }
+  }, LEADER_HEARTBEAT_MS);
 }
 
 function changedTopics(previous, next) {
   return Object.keys(next).filter((topic) => previous[topic] !== next[topic]);
 }
 
-async function runPoll() {
-  if (!running || inFlight || !isVisible()) {
-    scheduleNextPoll();
+function applyRevisions(revisions) {
+  if (lastRevisions === null) {
+    lastRevisions = revisions;
     return;
   }
 
-  inFlight = true;
+  const topics = changedTopics(lastRevisions, revisions);
+  lastRevisions = revisions;
 
-  try {
-    const payload = await getChangeFeed();
-    const revisions = payload?.revisions;
+  topics.forEach((topic) => {
+    /*
+     * `broadcast: true` is the whole point of electing a leader: this tab did the asking, and the
+     * relay is how the other tabs of this browser learn the answer without each holding a connection
+     * of their own.
+     */
+    publishAutoRefresh({
+      broadcast: true,
+      dispatchLegacy: true,
+      source: "server",
+      topic,
+    });
+  });
+}
 
-    if (!revisions || typeof revisions !== "object") {
-      throw new Error("Change feed returned no revisions.");
+async function runLoop(token) {
+  while (running && token === loopToken) {
+    /*
+     * A hidden tab holds nothing. It gives up its leadership so a visible tab elsewhere can take
+     * over, and lets the loop end — `handleWake` starts a fresh one when the tab comes back.
+     */
+    if (!isVisible()) {
+      releaseLeadership();
+      return;
     }
 
-    consecutiveFailures = 0;
+    if (!claimLeadership()) {
+      /*
+       * Being a follower is not being stale: the leader publishes across BroadcastChannel and this
+       * tab's screens refresh from that. Health therefore tracks the leader's heartbeat, so the
+       * per-screen fallback timers stay relaxed here too.
+       */
+      setLiveUpdatesHealthy(leaderIsFresh(readLeaderRecord()));
+      await sleep(FOLLOWER_RETRY_MS);
+      continue;
+    }
 
-    if (lastRevisions === null) {
-      lastRevisions = revisions;
-    } else {
-      const topics = changedTopics(lastRevisions, revisions);
-      lastRevisions = revisions;
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    inFlightController = controller;
 
-      topics.forEach((topic) => {
-        publishAutoRefresh({
-          broadcast: false,
-          dispatchLegacy: true,
-          source: "server",
-          topic,
-        });
+    try {
+      const payload = await getChangeFeed({
+        cursor,
+        holdSeconds: HOLD_SECONDS,
+        signal: controller ? controller.signal : undefined,
       });
+
+      if (!running || token !== loopToken) {
+        return;
+      }
+
+      const revisions = payload?.revisions;
+
+      if (!revisions || typeof revisions !== "object") {
+        throw new Error("Change feed returned no revisions.");
+      }
+
+      cursor = String(payload.cursor || "");
+      consecutiveFailures = 0;
+      setLiveUpdatesHealthy(true);
+      applyRevisions(revisions);
+
+      await sleep(RECONNECT_DELAY_MS);
+    } catch (error) {
+      if (!running || token !== loopToken) {
+        return;
+      }
+
+      // Hidden, signed out, or superseded by a newer loop — the top of the loop decides what next.
+      if (isAbortError(error)) {
+        continue;
+      }
+
+      if (error?.response?.status === 401) {
+        /*
+         * The session is gone and the response interceptor has already told the app. Reconnecting
+         * would mean a 401 every 25 seconds for as long as this tab stays open.
+         */
+        stopLiveUpdates();
+        return;
+      }
+
+      consecutiveFailures += 1;
+      setLiveUpdatesHealthy(false);
+      await sleep(backoffDelayMs());
+    } finally {
+      if (inFlightController === controller) {
+        inFlightController = null;
+      }
     }
-  } catch {
-    // A failed poll is not worth surfacing — the next one either recovers or backs off further.
-    consecutiveFailures += 1;
-  } finally {
-    inFlight = false;
-    scheduleNextPoll();
   }
 }
 
-/** Poll immediately when the tab comes back, so a returning user never reads stale statuses. */
+function restartLoop() {
+  /*
+   * Retire the current loop before starting the next. Bumping the token alone would leave the old
+   * loop parked on its hold for up to 25 more seconds, holding a second server thread the whole
+   * time; aborting makes it fail fast and see that it no longer owns the token.
+   */
+  abortInFlight();
+  loopToken += 1;
+  void runLoop(loopToken);
+}
+
+/** Reconnect the moment the tab is usable again, so a returning user never reads stale statuses. */
 function handleWake() {
-  if (!running || !isVisible()) {
+  if (!running) {
     return;
   }
 
-  window.clearTimeout(pollTimerId);
-  pollTimerId = window.setTimeout(runPoll, 0);
+  if (!isVisible()) {
+    // Free the thread now rather than at the end of the hold.
+    abortInFlight();
+    return;
+  }
+
+  consecutiveFailures = 0;
+  restartLoop();
 }
 
-export function startLiveUpdates({ intervalMs: requestedInterval } = {}) {
+function handleUnload() {
+  releaseLeadership();
+}
+
+export function startLiveUpdates() {
   if (typeof window === "undefined" || running) {
     return;
   }
 
   running = true;
-  intervalMs = Math.max(3000, Number(requestedInterval) || DEFAULT_INTERVAL_MS);
-  consecutiveFailures = 0;
+  cursor = "";
   lastRevisions = null;
+  consecutiveFailures = 0;
 
   document.addEventListener("visibilitychange", handleWake);
   window.addEventListener("focus", handleWake);
   window.addEventListener("online", handleWake);
+  window.addEventListener("beforeunload", handleUnload);
 
-  runPoll();
+  startHeartbeat();
+  restartLoop();
 }
 
 export function stopLiveUpdates() {
@@ -130,12 +343,18 @@ export function stopLiveUpdates() {
   }
 
   running = false;
-  window.clearTimeout(pollTimerId);
-  pollTimerId = null;
+  loopToken += 1;
+  abortInFlight();
+  stopHeartbeat();
+  releaseLeadership();
+  setLiveUpdatesHealthy(false);
+
+  cursor = "";
   lastRevisions = null;
   consecutiveFailures = 0;
 
   document.removeEventListener("visibilitychange", handleWake);
   window.removeEventListener("focus", handleWake);
   window.removeEventListener("online", handleWake);
+  window.removeEventListener("beforeunload", handleUnload);
 }

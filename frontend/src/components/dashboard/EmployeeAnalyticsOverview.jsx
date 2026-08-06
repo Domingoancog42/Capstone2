@@ -4,7 +4,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock3,
-  Wallet,
+  Trophy,
 } from "lucide-react";
 import {
   Area,
@@ -20,6 +20,7 @@ import AnalyticsPieChart from "../chart/piechart";
 import AdminStatCard from "./AdminStatCard";
 import DashboardWelcomeBanner from "./DashboardWelcomeBanner";
 import { useAutoRefreshOnChange } from "../auto/autorefreshdatalist";
+import { fetchAwardCycles } from "../../services/api";
 import { fetchAttendanceRecords } from "../../services/attendanceService";
 import { fetchCompensatoryRequests } from "../../services/compensatoryService";
 import { fetchLeaveCredits, fetchLeaveRequests } from "../../services/leaveService";
@@ -89,6 +90,9 @@ const EMPTY_DATA = {
   compensatory: [],
   overtime: [],
   attendance: [],
+  awardCycles: [],
+  /* The server's answer to "which of these votes is mine" — see `fetchAwardCycles`. */
+  viewerKey: "",
 };
 
 function parseRecordDate(value) {
@@ -259,6 +263,7 @@ export default function EmployeeAnalyticsOverview({ user, onNavigate }) {
         compensatoryResult,
         overtimeResult,
         attendanceResult,
+        awardCycleResult,
       ] = await Promise.allSettled([
         fetchLeaveCredits(),
         fetchLeaveRequests(),
@@ -267,6 +272,7 @@ export default function EmployeeAnalyticsOverview({ user, onNavigate }) {
         fetchCompensatoryRequests(),
         fetchOvertimeRequests(),
         fetchAttendanceRecords(),
+        fetchAwardCycles(),
       ]);
 
       /*
@@ -291,6 +297,12 @@ export default function EmployeeAnalyticsOverview({ user, onNavigate }) {
         attendance: attendanceResult.status === "fulfilled" && Array.isArray(attendanceResult.value?.records)
           ? attendanceResult.value.records
           : [],
+        // Award cycles are the same for everybody, so there is nothing to scope to this user here —
+        // `viewerKey` is what tells their own vote apart from the rest.
+        awardCycles: awardCycleResult.status === "fulfilled" && Array.isArray(awardCycleResult.value?.cycles)
+          ? awardCycleResult.value.cycles
+          : [],
+        viewerKey: awardCycleResult.status === "fulfilled" ? String(awardCycleResult.value?.viewerKey ?? "") : "",
       });
 
       const failed = [
@@ -301,6 +313,7 @@ export default function EmployeeAnalyticsOverview({ user, onNavigate }) {
         compensatoryResult,
         overtimeResult,
         attendanceResult,
+        awardCycleResult,
       ].some((result) => result.status === "rejected");
 
       setError(failed ? "Some dashboard data could not be loaded." : "");
@@ -319,7 +332,7 @@ export default function EmployeeAnalyticsOverview({ user, onNavigate }) {
    * instead of blanking the dashboard every time an approver clicks something.
    */
   useAutoRefreshOnChange(loadDashboard, {
-    topics: ["leave_request", "leave_credit", "attendance"],
+    topics: ["leave_request", "leave_credit", "attendance", "rewards"],
     refreshOnMount: false,
   });
 
@@ -377,10 +390,20 @@ export default function EmployeeAnalyticsOverview({ user, onNavigate }) {
     return { total: allRequests.length, approved, pending, filedThisMonth };
   }, [allRequests]);
 
-  const totalRemainingCredits = useMemo(
-    () => data.leaveCredits.reduce((sum, balance) => sum + (Number(balance.remaining) || 0), 0),
-    [data.leaveCredits]
-  );
+  /*
+   * Award cycles still open that this employee has not voted in — the one number about nominations
+   * they can act on. Cycles they have already voted in are not counted: the vote can still be
+   * changed, but nothing is waiting on them. The list endpoint leaves archived cycles out entirely.
+   */
+  const openNominations = useMemo(() => (
+    data.awardCycles.filter((cycle) => (
+      cycle?.status !== "closed"
+      && !cycle?.isArchived
+      && !(Array.isArray(cycle?.nominations) ? cycle.nominations : []).some(
+        (nomination) => String(nomination?.voterKey ?? "") === data.viewerKey && data.viewerKey !== ""
+      )
+    )).length
+  ), [data.awardCycles, data.viewerKey]);
 
   /*
    * Both slices of the leave donut are built from the same balances, so a leave type keeps one
@@ -559,13 +582,15 @@ export default function EmployeeAnalyticsOverview({ user, onNavigate }) {
       onClick: () => onNavigate?.("/employee/calendar"),
     },
     {
-      label: "Leave Credits Left",
-      value: formatCreditValue(totalRemainingCredits),
-      icon: Wallet,
-      accent: "from-teal-500 via-teal-600 to-emerald-500",
-      iconTone: "bg-gradient-to-br from-teal-500 to-emerald-600",
-      glow: "bg-teal-200",
-      onClick: () => onNavigate?.("/employee/leave-request"),
+      // The leave figure this slot used to hold is still on the screen, in full, in the Leave
+      // Balance donut below — this card is the one thing on the dashboard asking to be acted on.
+      label: "Nominations To Vote",
+      value: numberFormatter.format(openNominations),
+      icon: Trophy,
+      accent: "from-rose-500 via-rose-600 to-red-500",
+      iconTone: "bg-gradient-to-br from-rose-500 to-red-600",
+      glow: "bg-rose-200",
+      onClick: () => onNavigate?.("/employee/nominate"),
     },
   ];
 

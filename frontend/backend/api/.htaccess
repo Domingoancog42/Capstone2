@@ -1,0 +1,30 @@
+# The endpoints in this directory have to stay reachable -- this is the API.
+# What is closed off is the files that are only ever require_once'd by those
+# endpoints and are never requested over HTTP by the front end.
+#
+# Requesting an include directly does not usually leak anything on its own:
+# connection-pdo.php runs its own session and CSRF checks, and most of the
+# others only define functions and emit nothing. The reason to deny them is the
+# case where PHP is not executing -- a bad php_module line, a renamed handler, a
+# copy of the tree served by something that is not this Apache -- and .php files
+# get sent as plain text. smtp-credentials.local.php is the one that matters:
+# it holds a live Gmail app password.
+#
+# Adding an endpoint means leaving it OUT of this list. The list is explicit,
+# not a pattern, precisely because a pattern would have caught the real
+# endpoints that happen to be named with a dash (deduction-catalog.php,
+# email-domain-policy.php are includes, but session.php and csrf.php are not,
+# and no naming rule separates them).
+<FilesMatch "^(?i:connection-pdo|app_settings|audit_logs_helper|deduction-catalog|email-domain-policy|hris-mail|leave-credit-utils|password-reset-utils|two-factor-utils|smtp-config|smtp-credentials\.local|smtp-credentials\.example)\.php$">
+    Require all denied
+</FilesMatch>
+
+# Developer tooling that triggers the password-expiry path by hand. Harmless
+# locally, but it is not part of the application and there is no reason for it
+# to answer a request from outside.
+<FilesMatch "^(?i:test_password_expiry)\.php$">
+    Require all denied
+</FilesMatch>
+
+# Do not hand out the endpoint list.
+Options -Indexes

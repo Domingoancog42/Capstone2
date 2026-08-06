@@ -81,10 +81,6 @@ export function tallyNominations(nominations = []) {
     .map((entry, index) => ({ ...entry, rank: index + 1 }));
 }
 
-export function leadingNominee(nominations = []) {
-  return tallyNominations(nominations)[0] || null;
-}
-
 /**
  * The nominees sharing the top vote count, but only when more than one does — an empty array means
  * there is a clear leader (or nobody has voted).
@@ -150,6 +146,7 @@ export function normalizeCycle(cycle) {
     nominations: Array.isArray(cycle?.nominations) ? cycle.nominations.map(normalizeNomination) : [],
     createdByName: String(cycle?.createdByName || "").trim(),
     createdAt: cycle?.createdAt || null,
+    isArchived: Boolean(cycle?.isArchived),
   };
 }
 

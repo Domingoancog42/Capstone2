@@ -13,6 +13,15 @@ export async function fileTravelOrder(payload) {
   return response.data;
 }
 
+export async function authorizeTravelOrder(requestId) {
+  const response = await api.put("/travel_order.php", {
+    id: requestId,
+    action: "authorize",
+  });
+  notifyLeaveRequestsChanged();
+  return response.data;
+}
+
 export async function updateTravelOrderStatus(requestId, status, rejectedNote = "") {
   const response = await api.put("/travel_order.php", {
     id: requestId,
