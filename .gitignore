@@ -28,18 +28,23 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Real HRIS data -- deliberately NOT in this public repo. These hold live
-# employee records, bcrypt password hashes and uploaded ID documents, and a
-# public commit would keep them in the history and in GitHub's caches even
-# after a later delete. The .htaccess files ARE kept: they are the rules that
-# deny web access to these directories, so they belong with the code.
-#
-# To set up a fresh checkout, import your own dump into the `hris` database.
+# Real HRIS data. The rolling backups and the uploaded documents stay out of
+# this public repo: they hold live employee records, bcrypt password hashes and
+# scanned IDs, and a public commit keeps them in the history and in GitHub's
+# caches even after a later delete. The .htaccess files ARE kept: they are the
+# rules that deny web access to these directories, so they belong with the code.
 
-# Database dumps -- schema plus live rows.
+# Rolling database backups -- excluded.
 /backend/backups/*
 !/backend/backups/.htaccess
+
+# backend/database/hris.sql is the deliberate exception, committed so the schema
+# and its seed rows ship with the project. It carries real account emails and
+# bcrypt password hashes: anyone deploying from this repo should treat every
+# account in it as compromised and force a password reset. Any OTHER dump
+# dropped in this directory stays ignored.
 /backend/database/*.sql
+!/backend/database/hris.sql
 
 # Anything users uploaded, plus the chat presence file, which is runtime state
 # carrying account emails. Empty directories are recreated on first upload;
