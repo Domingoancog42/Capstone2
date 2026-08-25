@@ -1,0 +1,79 @@
+# The endpoints in this directory have to stay reachable -- this is the API.
+# What is closed off is the files that are only ever require_once'd by those
+# endpoints and are never requested over HTTP by the front end.
+#
+# Requesting an include directly does not usually leak anything on its own:
+# connection-pdo.php runs its own session and CSRF checks, and most of the
+# others only define functions and emit nothing. The reason to deny them is the
+# case where PHP is not executing -- a bad php_module line, a renamed handler, a
+# copy of the tree served by something that is not this Apache -- and .php files
+# get sent as plain text. smtp-credentials.local.php is the one that matters:
+# it holds a live Gmail app password.
+#
+# Adding an endpoint means leaving it OUT of this list. The list is explicit,
+# not a pattern, precisely because a pattern would have caught the real
+# endpoints that happen to be named with a dash (deduction-catalog.php,
+# email-domain-policy.php are includes, but session.php and csrf.php are not,
+# and no naming rule separates them).
+#
+# app_settings.php was on this list until its library was folded into settings.php.
+# settings.php is an endpoint and has to stay reachable, so that code is now served
+# by a file the front end requests. It holds no credentials -- the case this list
+# guards against is smtp-credentials.local.php -- but it is one more file that would
+# be readable as text if PHP ever stopped executing.
+#
+# two-factor-utils.php left this list the same way. Its library, together with the
+# two_factor_verify.php / two_factor_resend.php / two_factor_profile.php endpoints,
+# is now two_factor.php -- an endpoint, so it must NOT be added back here. It guards
+# itself the way settings.php does: the router only runs when the file is the script
+# that was actually requested, so a require_once gets the library and nothing else.
+<FilesMatch "^(?i:connection-pdo|audit_logs_helper|auth|deduction-catalog|email-domain-policy|employee-pds-profile-utils|hris-mail|leave-credit-utils|password-reset-utils|pds-xlsx|rate-limit|throttle|smtp-config|smtp-credentials\.local|smtp-credentials\.example)\.php$">
+    Require all denied
+</FilesMatch>
+
+# auth.php holds the role and permission guards and throttle.php decides which limit applies where.
+# Both are require_once'd by connection-pdo.php and neither is ever requested directly, so they join
+# the list above.
+#
+# rate-limit.php was missing from that list until they were added. It is an include like the rest and
+# was never reachable in any useful sense, but it had no business answering a request either.
+#
+# jwt.php left the list because the file is gone: it, token.php and the auth_tokens table were the
+# bearer-token half of authentication, removed once it was clear nothing ever asked for a token. The
+# SetEnvIf that used to sit here, forcing the Authorization header through to PHP under CGI, went with
+# them -- there is nothing left in this API that reads that header.
+
+# Developer tooling that triggers the password-expiry path by hand. Harmless
+# locally, but it is not part of the application and there is no reason for it
+# to answer a request from outside.
+<FilesMatch "^(?i:test_password_expiry)\.php$">
+    Require all denied
+</FilesMatch>
+
+# Do not hand out the endpoint list.
+Options -Indexes
+
+# Response headers for the API.
+#
+# These endpoints answer JSON, never a document, so the policy can be far
+# tighter than the one the front end needs: an API response has no scripts, no
+# styles and no images to load, and there is no legitimate reason for one ever
+# to be rendered inside a frame. The project-wide headers in the top-level
+# .htaccess (nosniff, Referrer-Policy, dropping X-Powered-By) merge with these.
+#
+# frame-ancestors 'none' is stricter than the bundle's 'self' on purpose. The
+# reason the front end allows same-origin framing -- html2canvas rendering the
+# payslip export through an iframe -- does not apply to a JSON endpoint.
+<IfModule mod_headers.c>
+    Header always set Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    Header always set X-Frame-Options "DENY"
+
+    # No Cache-Control here on purpose. Every endpoint goes through
+    # connection-pdo.php, which starts a session, and PHP's session cache
+    # limiter already emits "no-store, no-cache, must-revalidate" -- which is
+    # what these answers need, since they are per-session and carry payroll and
+    # PII. Setting one here as well does not replace PHP's: mod_headers' `always`
+    # table and PHP's headers_out are different places, so both are sent and the
+    # response carries two conflicting Cache-Control lines. One correct header
+    # beats two that have to be reconciled.
+</IfModule>

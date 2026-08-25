@@ -5,6 +5,12 @@
 /.pnp
 .pnp.js
 
+# php dependencies (run: php composer.phar install in backend/)
+/backend/vendor
+/backend/composer.phar
+/backend/.composer
+/backend/.secrets/*.key
+
 # testing
 /coverage
 
@@ -21,3 +27,30 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Real HRIS data -- deliberately NOT in this public repo. These hold live
+# employee records, bcrypt password hashes and uploaded ID documents, and a
+# public commit would keep them in the history and in GitHub's caches even
+# after a later delete. The .htaccess files ARE kept: they are the rules that
+# deny web access to these directories, so they belong with the code.
+#
+# To set up a fresh checkout, import your own dump into the `hris` database.
+
+# Database dumps -- schema plus live rows.
+/backend/backups/*
+!/backend/backups/.htaccess
+/backend/database/*.sql
+
+# Anything users uploaded, plus the chat presence file, which is runtime state
+# carrying account emails. Empty directories are recreated on first upload;
+# .gitkeep keeps the ones the code expects to already exist.
+/backend/uploads/**
+!/backend/uploads/**/
+!/backend/uploads/.htaccess
+!/backend/uploads/**/.gitkeep
+
+# Live SMTP credentials (a Gmail app password). The file's own docblock says it
+# is gitignored -- this is the line that makes that true. The .example.php
+# template beside it is committed and carries empty values.
+/backend/api/smtp-credentials.local.php
+/backend/api/*.local.php
