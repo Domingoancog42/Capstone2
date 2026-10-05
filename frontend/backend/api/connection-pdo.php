@@ -2129,16 +2129,16 @@ function ensure_payroll_meta_column(PDO $pdo): void
     }
 
     // A fresh, empty database may not have been imported yet.
-    if (!database_table_exists($pdo, 'Payroll')) {
+    if (!database_table_exists($pdo, 'payroll')) {
         return;
     }
 
-    if (!database_column_exists($pdo, 'Payroll', 'meta_json')) {
+    if (!database_column_exists($pdo, 'payroll', 'meta_json')) {
         try {
-            $pdo->exec('ALTER TABLE Payroll ADD COLUMN meta_json LONGTEXT NULL AFTER net_pay');
+            $pdo->exec('ALTER TABLE payroll ADD COLUMN meta_json LONGTEXT NULL AFTER net_pay');
         } catch (Throwable $exception) {
             // Another request may have completed the same idempotent schema repair first.
-            if (!database_column_exists($pdo, 'Payroll', 'meta_json')) {
+            if (!database_column_exists($pdo, 'payroll', 'meta_json')) {
                 throw $exception;
             }
         }
@@ -2150,7 +2150,7 @@ function ensure_payroll_meta_column(PDO $pdo): void
          * whose payroll run is already gone — rather than attaching them to an unrelated run.
          */
         $pdo->exec(
-            'UPDATE Payroll p
+            'UPDATE payroll p
              INNER JOIN settings s
                 ON p.payroll_id = CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED)
                AND s.setting_key LIKE "payroll_meta:%"
@@ -2160,7 +2160,7 @@ function ensure_payroll_meta_column(PDO $pdo): void
         $pdo->exec(
             'DELETE s
              FROM settings s
-             INNER JOIN Payroll p
+             INNER JOIN payroll p
                 ON p.payroll_id = CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED)
                AND s.setting_key LIKE "payroll_meta:%"
              WHERE BINARY p.meta_json = BINARY s.setting_value'
@@ -2189,7 +2189,7 @@ function ensure_payroll_embedded_detail_columns(PDO $pdo): void
 
     ensure_payroll_meta_column($pdo);
 
-    if (!database_table_exists($pdo, 'Payroll')) {
+    if (!database_table_exists($pdo, 'payroll')) {
         return;
     }
 
@@ -2202,16 +2202,16 @@ function ensure_payroll_embedded_detail_columns(PDO $pdo): void
     $added = [];
 
     foreach ($columns as $column => $definition) {
-        if (database_column_exists($pdo, 'Payroll', $column)) {
+        if (database_column_exists($pdo, 'payroll', $column)) {
             continue;
         }
 
         try {
-            $pdo->exec("ALTER TABLE Payroll ADD COLUMN {$column} {$definition}");
+            $pdo->exec("ALTER TABLE payroll ADD COLUMN {$column} {$definition}");
             $added[] = $column;
         } catch (Throwable $exception) {
             // A parallel request may have completed the same idempotent repair first.
-            if (!database_column_exists($pdo, 'Payroll', $column)) {
+            if (!database_column_exists($pdo, 'payroll', $column)) {
                 throw $exception;
             }
         }
@@ -2234,12 +2234,12 @@ function backfill_payroll_release_columns(PDO $pdo): void
 {
     $statement = $pdo->query(
         'SELECT payroll_id, approval_history_json
-         FROM Payroll
+         FROM payroll
          WHERE released_at IS NULL
            AND COALESCE(approval_history_json, "") <> ""'
     );
     $update = $pdo->prepare(
-        'UPDATE Payroll
+        'UPDATE payroll
          SET released_at = :released_at, released_by = :released_by
          WHERE payroll_id = :payroll_id'
     );
@@ -2294,7 +2294,7 @@ function payroll_read_embedded_json_list(PDO $pdo, int $payrollId, string $colum
         return [];
     }
 
-    $statement = $pdo->prepare("SELECT `{$column}` FROM Payroll WHERE payroll_id = :payroll_id LIMIT 1");
+    $statement = $pdo->prepare("SELECT `{$column}` FROM payroll WHERE payroll_id = :payroll_id LIMIT 1");
     $statement->execute([':payroll_id' => $payrollId]);
 
     return payroll_decode_embedded_json_list($statement->fetchColumn());
@@ -2307,7 +2307,7 @@ function payroll_write_embedded_json_list(PDO $pdo, int $payrollId, string $colu
     }
 
     $statement = $pdo->prepare(
-        "UPDATE Payroll SET `{$column}` = :payload WHERE payroll_id = :payroll_id"
+        "UPDATE payroll SET `{$column}` = :payload WHERE payroll_id = :payroll_id"
     );
     $statement->execute([
         ':payload' => json_encode(
@@ -2326,7 +2326,7 @@ function payroll_next_embedded_item_id(PDO $pdo, string $column, string $idKey =
     }
 
     $maximum = 0;
-    foreach ($pdo->query("SELECT `{$column}` FROM Payroll WHERE `{$column}` IS NOT NULL") as $row) {
+    foreach ($pdo->query("SELECT `{$column}` FROM payroll WHERE `{$column}` IS NOT NULL") as $row) {
         foreach (payroll_decode_embedded_json_list($row[$column] ?? null) as $item) {
             if (is_array($item)) {
                 $maximum = max($maximum, (int)($item[$idKey] ?? 0));

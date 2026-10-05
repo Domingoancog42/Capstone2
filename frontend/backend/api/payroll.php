@@ -1734,7 +1734,7 @@ function payroll_lookup_allowance_amount(PDO $pdo, string $allowanceName, float 
 {
     $statement = $pdo->prepare(
         'SELECT amount
-         FROM Allowance
+         FROM allowance
          WHERE allowance_name = :allowance_name
          ORDER BY allowance_id DESC
          LIMIT 1'
@@ -2034,7 +2034,7 @@ function payroll_store_meta(PDO $pdo, int $payrollId, array $meta): void
     ensure_payroll_meta_column($pdo);
 
     $statement = $pdo->prepare(
-        'UPDATE Payroll
+        'UPDATE payroll
          SET meta_json = :meta_json
          WHERE payroll_id = :payroll_id'
     );
@@ -2050,7 +2050,7 @@ function payroll_fetch_meta(PDO $pdo, int $payrollId): array
 
     $statement = $pdo->prepare(
         'SELECT meta_json
-         FROM Payroll
+         FROM payroll
          WHERE payroll_id = :payroll_id
          LIMIT 1'
     );
@@ -2263,7 +2263,7 @@ function payroll_resolve_allowance_snapshot(PDO $pdo, string $name, float $amoun
 {
     $statement = $pdo->prepare(
         'SELECT allowance_id
-         FROM Allowance
+         FROM allowance
          WHERE allowance_name = :allowance_name
            AND amount = :amount
          ORDER BY allowance_id DESC
@@ -2280,7 +2280,7 @@ function payroll_resolve_allowance_snapshot(PDO $pdo, string $name, float $amoun
     }
 
     $insert = $pdo->prepare(
-        'INSERT INTO Allowance (allowance_name, amount)
+        'INSERT INTO allowance (allowance_name, amount)
          VALUES (:allowance_name, :amount)'
     );
     $insert->execute([
@@ -2544,7 +2544,7 @@ function payroll_base_query(): string
             e.employment_status AS currentEmploymentType,
             e.basic_salary AS currentBasicSalary,
             e.profile_image AS profileImage
-         FROM Payroll p
+         FROM payroll p
          LEFT JOIN employees e ON e.id = p.employee_id
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id';
@@ -2572,7 +2572,7 @@ function payroll_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
     $statement = $pdo->prepare(
         'SELECT a.allowance_name AS name, a.amount
          FROM PayrollAllowance pa
-         INNER JOIN Allowance a ON a.allowance_id = pa.allowance_id
+         INNER JOIN allowance a ON a.allowance_id = pa.allowance_id
          WHERE pa.payroll_id = :payroll_id
          ORDER BY pa.payroll_allowance_id ASC'
     );
@@ -3431,7 +3431,7 @@ function payroll_transition_status(
         $pdo->beginTransaction();
 
         $statement = $pdo->prepare(
-            'UPDATE Payroll
+            'UPDATE payroll
              SET status = :status'
             . ($isRelease ? ', released_at = :released_at, released_by = :released_by' : '')
             . ' WHERE payroll_id = :payroll_id'
@@ -3883,7 +3883,7 @@ function payroll_create(PDO $pdo, array $body, ?int $divisionScopeId = null): vo
 
         $payrollId = payroll_with_legacy_fk_bypass($pdo, static function () use ($pdo, $payload, $employee, $totals): int {
             $statement = $pdo->prepare(
-                'INSERT INTO Payroll
+                'INSERT INTO payroll
                     (employee_id, payroll_date, status, gross_pay, total_allowance, total_deduction, net_pay)
                  VALUES
                     (:employee_id, :payroll_date, :status, :gross_pay, :total_allowance, :total_deduction, :net_pay)'
@@ -4014,7 +4014,7 @@ function payroll_update(PDO $pdo, array $body, string $roleKey = ''): void
 
         payroll_with_legacy_fk_bypass($pdo, static function () use ($pdo, $payrollId, $payload, $employee, $totals): void {
             $statement = $pdo->prepare(
-                'UPDATE Payroll
+                'UPDATE payroll
                  SET employee_id = :employee_id,
                      payroll_date = :payroll_date,
                      status = :status,
@@ -4151,7 +4151,7 @@ function payroll_mark_paid(PDO $pdo, int $payrollId): void
 
         payroll_with_legacy_fk_bypass($pdo, static function () use ($pdo, $payrollId, $payload, $employee, $totals): void {
             $statement = $pdo->prepare(
-                'UPDATE Payroll
+                'UPDATE payroll
                  SET employee_id = :employee_id,
                      payroll_date = :payroll_date,
                      status = :status,

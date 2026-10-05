@@ -705,7 +705,7 @@ function reports_definitions(): array
         'payrollMonth' => 'MONTH(p.payroll_date)',
         'status' => 'p.status',
     ];
-    $payrollJoins = 'FROM Payroll p
+    $payrollJoins = 'FROM payroll p
             LEFT JOIN employees e ON e.id = p.employee_id
             LEFT JOIN divisions d ON d.id = e.division_id';
 
@@ -720,7 +720,7 @@ function reports_definitions(): array
         'label' => 'Released Payroll',
         'description' => 'Payroll the Cashier has released from the payroll registry, listed by release date.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => reports_payroll_release_date_sql(),
         'searchExpressions' => [$employeeName, 'd.name', 'p.status', 'p.payroll_date'],
         'columns' => reports_columns([
@@ -757,7 +757,7 @@ function reports_definitions(): array
         'label' => 'Payroll Register',
         'description' => 'Payroll summaries including gross pay, allowances, deductions, net pay, and status.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [$employeeName, 'd.name', 'p.status', 'p.payroll_date'],
         'columns' => reports_columns([
@@ -789,7 +789,7 @@ function reports_definitions(): array
         'label' => 'Pending Payroll',
         'description' => 'Payroll runs still awaiting review, approval, or release.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [$employeeName, 'd.name', 'p.status'],
         'columns' => reports_columns([
@@ -818,7 +818,7 @@ function reports_definitions(): array
         'label' => 'Payroll by Division',
         'description' => 'Total payroll expense aggregated per division.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => ['d.name'],
         'columns' => reports_columns([
@@ -848,7 +848,7 @@ function reports_definitions(): array
         'label' => 'Payroll by Employee',
         'description' => 'Year-to-date payroll totals summarised per employee.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [$employeeName, 'd.name'],
         'columns' => reports_columns([
@@ -878,7 +878,7 @@ function reports_definitions(): array
         'label' => 'Payroll Summary (Monthly)',
         'description' => 'Month-by-month payroll totals across the selected period.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll'],
+        'requiredTables' => ['payroll'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [],
         'columns' => reports_columns([
@@ -900,7 +900,7 @@ function reports_definitions(): array
                 ROUND(SUM(p.total_allowance), 2) AS totalAllowance,
                 ROUND(SUM(p.total_deduction), 2) AS totalDeduction,
                 ROUND(SUM(p.net_pay), 2) AS netPay
-            FROM Payroll p
+            FROM payroll p
             LEFT JOIN employees e ON e.id = p.employee_id
             GROUP BY DATE_FORMAT(p.payroll_date, "%Y-%m")',
         'orderBy' => 'period DESC',
@@ -913,7 +913,7 @@ function reports_definitions(): array
         'label' => 'Payroll Deductions',
         'description' => 'Itemised deductions applied to payroll runs, grouped by deduction type.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll'],
+        'requiredTables' => ['payroll'],
         'dateExpression' => null,
         'searchExpressions' => [],
         'columns' => reports_columns([
@@ -933,7 +933,7 @@ function reports_definitions(): array
         'label' => 'Net Pay Summary',
         'description' => 'Net pay totals per payroll status for the selected period.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll'],
+        'requiredTables' => ['payroll'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => ['p.status'],
         'columns' => reports_columns([
@@ -949,7 +949,7 @@ function reports_definitions(): array
                 ROUND(SUM(p.gross_pay), 2) AS grossPay,
                 ROUND(SUM(p.total_deduction), 2) AS totalDeduction,
                 ROUND(SUM(p.net_pay), 2) AS netPay
-            FROM Payroll p
+            FROM payroll p
             LEFT JOIN employees e ON e.id = p.employee_id
             GROUP BY COALESCE(NULLIF(TRIM(p.status), ""), "Unspecified")',
         'orderBy' => 'netPay DESC',
@@ -1936,7 +1936,7 @@ function reports_fetch_payroll_deduction_rows(
 
     $statement = $pdo->prepare(
         'SELECT p.payroll_id, p.deduction_items_json
-         FROM Payroll p
+         FROM payroll p
          WHERE DATE(p.payroll_date) BETWEEN :start_date AND :end_date
            AND p.deduction_items_json IS NOT NULL
            AND TRIM(p.deduction_items_json) <> ""' . $divisionScope
@@ -2478,12 +2478,12 @@ function reports_employee_kpis(PDO $pdo, ?int $divisionId, string $previousMonth
 
 function reports_payroll_kpis(PDO $pdo, ?int $divisionId): array
 {
-    if (!reports_table_exists($pdo, 'Payroll')) {
+    if (!reports_table_exists($pdo, 'payroll')) {
         return [];
     }
 
     [$scope, $scopeParams] = reports_division_scope($divisionId);
-    $join = 'FROM Payroll p LEFT JOIN employees e ON e.id = p.employee_id WHERE 1 = 1' . $scope;
+    $join = 'FROM payroll p LEFT JOIN employees e ON e.id = p.employee_id WHERE 1 = 1' . $scope;
     $released = ' AND ' . reports_payroll_released_condition();
     // Counted by the day the Cashier released the batch, the way the Released Payroll table lists it.
     $releasedOn = reports_payroll_release_date_sql();
@@ -2882,7 +2882,7 @@ function reports_deduction_distribution(PDO $pdo): array
     $totals = [];
     $statement = $pdo->query(
         'SELECT payroll_id, deduction_items_json
-         FROM Payroll
+         FROM payroll
          WHERE deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
     );
 
@@ -3094,7 +3094,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
     );
 
     // --- Payroll ---
-    if (reports_table_exists($pdo, 'Payroll')) {
+    if (reports_table_exists($pdo, 'payroll')) {
         $payrollSeries = reports_month_series(12);
         foreach ($payrollSeries as $key => $entry) {
             $payrollSeries[$key]['gross'] = 0.0;
@@ -3108,7 +3108,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
                     ROUND(SUM(p.gross_pay), 2) AS gross,
                     ROUND(SUM(p.total_deduction), 2) AS deductions,
                     ROUND(SUM(p.net_pay), 2) AS net
-             FROM Payroll p
+             FROM payroll p
              LEFT JOIN employees e ON e.id = p.employee_id
              WHERE p.payroll_date >= :window_start' . $scope . '
              GROUP BY DATE_FORMAT(p.payroll_date, "%Y-%m")',
@@ -3131,7 +3131,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
             reports_rows(
                 $pdo,
                 'SELECT COALESCE(d.name, "Unassigned") AS label, ROUND(SUM(p.net_pay), 2) AS value
-                 FROM Payroll p
+                 FROM payroll p
                  LEFT JOIN employees e ON e.id = p.employee_id
                  LEFT JOIN divisions d ON d.id = e.division_id
                  WHERE DATE(p.payroll_date) BETWEEN :start_date AND :end_date' . $scope . '
@@ -3149,7 +3149,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
                 'SELECT COALESCE(NULLIF(TRIM(p.status), ""), "Unspecified") AS label,
                         COUNT(p.payroll_id) AS value,
                         ROUND(SUM(p.net_pay), 2) AS amount
-                 FROM Payroll p
+                 FROM payroll p
                  LEFT JOIN employees e ON e.id = p.employee_id
                  WHERE DATE(p.payroll_date) BETWEEN :start_date AND :end_date' . $scope . '
                  GROUP BY label
@@ -3163,7 +3163,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
         $charts['payrollStatus'] = [];
     }
 
-    if (reports_table_exists($pdo, 'Payroll') && reports_table_exists($pdo, 'other_deductions')) {
+    if (reports_table_exists($pdo, 'payroll') && reports_table_exists($pdo, 'other_deductions')) {
         $charts['deductionDistribution'] = reports_deduction_distribution($pdo);
     } else {
         $charts['deductionDistribution'] = [];
@@ -3424,7 +3424,7 @@ function reports_dashboard(PDO $pdo, array $query, ?int $scopeDivisionId = null)
         $query['customEnd'] ?? null
     );
     $availability = [
-        'payroll' => reports_table_exists($pdo, 'Payroll'),
+        'payroll' => reports_table_exists($pdo, 'payroll'),
         'leave' => reports_table_exists($pdo, 'leave_requests'),
         'attendance' => reports_table_exists($pdo, 'attendance_daily_records'),
         // Either instrument is enough to draw the performance card, which plots both.
@@ -3537,8 +3537,8 @@ function reports_filter_options(PDO $pdo, ?int $scopeDivisionId = null): array
     $leaveTypes = reports_table_exists($pdo, 'leave_types')
         ? reports_rows($pdo, 'SELECT leave_type_id AS id, name, code FROM leave_types WHERE is_active = 1 ORDER BY name ASC')
         : [];
-    $payrollYears = reports_table_exists($pdo, 'Payroll')
-        ? reports_rows($pdo, 'SELECT DISTINCT YEAR(payroll_date) AS value FROM Payroll WHERE payroll_date IS NOT NULL ORDER BY value DESC')
+    $payrollYears = reports_table_exists($pdo, 'payroll')
+        ? reports_rows($pdo, 'SELECT DISTINCT YEAR(payroll_date) AS value FROM payroll WHERE payroll_date IS NOT NULL ORDER BY value DESC')
         : [];
     $leaveYears = reports_table_exists($pdo, 'leave_credits')
         ? reports_rows($pdo, 'SELECT DISTINCT year AS value FROM leave_credits ORDER BY year DESC')

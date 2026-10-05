@@ -72,7 +72,7 @@ function payslip_lookup_allowance_amount(PDO $pdo, string $allowanceName, float 
 {
     $statement = $pdo->prepare(
         'SELECT amount
-         FROM Allowance
+         FROM allowance
          WHERE allowance_name = :allowance_name
          ORDER BY allowance_id DESC
          LIMIT 1'
@@ -243,7 +243,7 @@ function payslip_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
     if (
         $payrollId <= 0
         || !database_table_exists($pdo, 'PayrollAllowance')
-        || !database_table_exists($pdo, 'Allowance')
+        || !database_table_exists($pdo, 'allowance')
     ) {
         return [];
     }
@@ -251,7 +251,7 @@ function payslip_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
     $statement = $pdo->prepare(
         'SELECT a.allowance_name AS name, a.amount
          FROM PayrollAllowance pa
-         INNER JOIN Allowance a ON a.allowance_id = pa.allowance_id
+         INNER JOIN allowance a ON a.allowance_id = pa.allowance_id
          WHERE pa.payroll_id = :payroll_id
          ORDER BY pa.payroll_allowance_id ASC'
     );
@@ -756,10 +756,10 @@ function payslip_fetch_employees(
     $employeeScopeSql = '';
     $payrollJoinSql = 'LEFT JOIN (
             SELECT p.*
-            FROM Payroll p
+            FROM payroll p
             INNER JOIN (
                 SELECT employee_id, MAX(payroll_id) AS payroll_id
-                FROM Payroll
+                FROM payroll
                 WHERE status = "Paid"
                 GROUP BY employee_id
             ) latest_paid ON latest_paid.payroll_id = p.payroll_id
@@ -786,7 +786,7 @@ function payslip_fetch_employees(
 
         $employeeScopeSql = ' AND e.id = :employee_id';
         $params[':employee_id'] = $employeeRecordId;
-        $payrollJoinSql = 'INNER JOIN Payroll paid ON paid.employee_id = e.id AND paid.status = "Paid"';
+        $payrollJoinSql = 'INNER JOIN payroll paid ON paid.employee_id = e.id AND paid.status = "Paid"';
         $orderBySql = 'ORDER BY paid.payroll_date DESC, paid.payroll_id DESC';
     }
 
@@ -799,7 +799,7 @@ function payslip_fetch_employees(
      */
     if ($month !== '' && $requestedPayrollId <= 0) {
         $monthStart = new DateTimeImmutable($month . '-01');
-        $payrollJoinSql = 'INNER JOIN Payroll paid
+        $payrollJoinSql = 'INNER JOIN payroll paid
             ON paid.employee_id = e.id
            AND paid.status = "Paid"
            AND paid.payroll_date >= :month_start
@@ -813,7 +813,7 @@ function payslip_fetch_employees(
     }
 
     if ($requestedPayrollId > 0) {
-        $payrollJoinSql = 'INNER JOIN Payroll paid
+        $payrollJoinSql = 'INNER JOIN payroll paid
             ON paid.employee_id = e.id
            AND paid.status = "Paid"
            AND paid.payroll_id = :requested_payroll_id';
@@ -994,7 +994,7 @@ function payslip_fetch_periods(PDO $pdo, string $roleKey, array $sessionUser): a
             SUM(p.status = "Paid") AS paidCount,
             COUNT(DISTINCT CASE WHEN p.status = "Paid" THEN p.employee_id END) AS employeeCount,
             MAX(CASE WHEN p.status = "Paid" THEN COALESCE(p.released_at, p.payroll_date) END) AS generatedAt
-         FROM Payroll p
+         FROM payroll p
          INNER JOIN employees e ON e.id = p.employee_id AND e.is_archived = 0
          WHERE p.payroll_date IS NOT NULL
            AND p.status <> "Archived"' . $employeeScopeSql . '

@@ -347,11 +347,11 @@ function deduction_type_exists(PDO $pdo, int $deductionTypeId): bool
 
 function deduction_fetch_payroll(PDO $pdo, int $payrollId): ?array
 {
-    if (!deduction_table_exists($pdo, 'Payroll')) {
+    if (!deduction_table_exists($pdo, 'payroll')) {
         return null;
     }
 
-    $statement = $pdo->prepare('SELECT * FROM Payroll WHERE payroll_id = :payroll_id LIMIT 1');
+    $statement = $pdo->prepare('SELECT * FROM payroll WHERE payroll_id = :payroll_id LIMIT 1');
     $statement->execute([':payroll_id' => $payrollId]);
     $payroll = $statement->fetch();
 
@@ -403,7 +403,7 @@ function deduction_recalculate_payroll(PDO $pdo, int $payrollId): void
     ];
 
     $existingColumns = [];
-    foreach ($pdo->query('SHOW COLUMNS FROM Payroll') as $column) {
+    foreach ($pdo->query('SHOW COLUMNS FROM payroll') as $column) {
         $existingColumns[strtolower((string)$column['Field'])] = true;
     }
 
@@ -420,7 +420,7 @@ function deduction_recalculate_payroll(PDO $pdo, int $payrollId): void
 
     // Native prepares are on, so the same placeholder cannot fill two markers — bind one per marker.
     $update = $pdo->prepare(
-        'UPDATE Payroll
+        'UPDATE payroll
          SET ' . implode(', ', $assignments) . '
          WHERE payroll_id = :payroll_id'
     );
@@ -769,7 +769,7 @@ function deduction_update_definition_type(PDO $pdo, array $body): void
  */
 function deduction_list_allowances(PDO $pdo): array
 {
-    if (!deduction_table_exists($pdo, 'Allowance')) {
+    if (!deduction_table_exists($pdo, 'allowance')) {
         return [];
     }
 
@@ -779,7 +779,7 @@ function deduction_list_allowances(PDO $pdo): array
             'allowanceName' => (string)$row['allowance_name'],
             'amount' => (float)$row['amount'],
         ],
-        $pdo->query('SELECT allowance_id, allowance_name, amount FROM Allowance ORDER BY allowance_name')->fetchAll()
+        $pdo->query('SELECT allowance_id, allowance_name, amount FROM allowance ORDER BY allowance_name')->fetchAll()
     );
 }
 
@@ -801,7 +801,7 @@ function deduction_find_payroll_deduction(PDO $pdo, int $payrollDeductionId): ?a
 
     $statement = $pdo->query(
         'SELECT payroll_id, deduction_items_json
-         FROM Payroll
+         FROM payroll
          WHERE deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
     );
 

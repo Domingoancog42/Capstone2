@@ -531,7 +531,7 @@ function get_leave_utilization(PDO $pdo, ?int $divisionId): array
 
 function get_payroll_summary(PDO $pdo, ?int $divisionId): array
 {
-    if (($empty = analytics_empty_for_missing_tables($pdo, ['Payroll'], [])) !== null) {
+    if (($empty = analytics_empty_for_missing_tables($pdo, ['payroll'], [])) !== null) {
         return $empty;
     }
 
@@ -547,7 +547,7 @@ function get_payroll_summary(PDO $pdo, ?int $divisionId): array
             ROUND(COALESCE(SUM(p.total_deduction), 0), 2) AS total_deductions,
             ROUND(COALESCE(SUM(p.net_pay), 0), 2) AS total_net_pay,
             DATE_FORMAT(p.payroll_date, "%M %Y") AS period
-         FROM Payroll p
+         FROM payroll p
          LEFT JOIN employees e ON e.id = p.employee_id
          WHERE YEAR(p.payroll_date) = YEAR(CURDATE())
            AND MONTH(p.payroll_date) = MONTH(CURDATE())
@@ -948,7 +948,7 @@ function get_dashboard_payroll_expense_trend(PDO $pdo, ?int $divisionId, int $ye
 {
     $months = analytics_dashboard_months($year, 'expense');
 
-    if (!analytics_table_exists($pdo, 'Payroll') || ($divisionId !== null && $divisionId <= 0)) {
+    if (!analytics_table_exists($pdo, 'payroll') || ($divisionId !== null && $divisionId <= 0)) {
         return array_values($months);
     }
 
@@ -956,7 +956,7 @@ function get_dashboard_payroll_expense_trend(PDO $pdo, ?int $divisionId, int $ye
     $statement = $pdo->prepare(
         'SELECT MONTH(p.payroll_date) AS month_number,
                 ROUND(COALESCE(SUM(COALESCE(p.net_pay, p.gross_pay, 0)), 0), 2) AS expense
-         FROM Payroll p
+         FROM payroll p
          INNER JOIN employees e ON e.id = p.employee_id
          WHERE p.payroll_date >= :year_start
            AND p.payroll_date < :next_year_start
@@ -1177,7 +1177,7 @@ function get_dashboard_recent_activity(PDO $pdo, ?int $divisionId): array
            AND leave_employee.is_archived = 0' . $scopeFor('leave', 'leave_employee');
     }
 
-    if (analytics_table_exists($pdo, 'Payroll')) {
+    if (analytics_table_exists($pdo, 'payroll')) {
         $sections[] = 'SELECT
             "Payroll" AS source,
             CONCAT("payroll-", p.payroll_id) AS event_id,
@@ -1186,7 +1186,7 @@ function get_dashboard_recent_activity(PDO $pdo, ?int $divisionId): array
             p.payroll_date AS event_at,
             COALESCE(payroll_division.name, "") AS detail,
             COALESCE(p.net_pay, 0) AS amount
-         FROM Payroll p
+         FROM payroll p
          INNER JOIN employees payroll_employee ON payroll_employee.id = p.employee_id
          LEFT JOIN divisions payroll_division ON payroll_division.id = payroll_employee.division_id
          WHERE COALESCE(p.status, "") <> "Archived"

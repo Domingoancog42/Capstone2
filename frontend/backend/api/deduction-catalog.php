@@ -547,7 +547,7 @@ function deduction_catalog_payroll_usage_counts(PDO $pdo): array
     $counts = [];
     $statement = $pdo->query(
         'SELECT payroll_id, deduction_items_json
-         FROM Payroll
+         FROM payroll
          WHERE deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
     );
 
