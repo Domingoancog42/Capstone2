@@ -42,6 +42,8 @@ COPY docker/php/php.ini /usr/local/etc/php/conf.d/zz-hris.ini
 COPY docker/railway-vhost.conf /etc/apache2/sites-available/000-default.conf.template
 COPY frontend/backend/ /var/www/html/
 COPY --from=composer-dependencies /app/vendor/ /var/www/html/vendor/
+# password-reset-utils.php embeds the e-mail logo from ../../public/, relative to api/.
+COPY frontend/public/mgb-email.png /var/www/public/mgb-email.png
 
 RUN set -eux; \
     rm -rf /var/www/html/uploads /var/www/html/backups; \

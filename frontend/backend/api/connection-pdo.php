@@ -366,6 +366,15 @@ unset($hrisGoogleConfig);
 const HRIS_TIMEZONE = 'Asia/Manila';
 const HRIS_TIMEZONE_OFFSET = '+08:00';
 
+/*
+ * The sql_mode XAMPP's my.ini gives MariaDB, which is what every query in this API was written
+ * against. It is pinned per connection, beside the time zone, because a managed server picks its own:
+ * Aiven's MySQL starts in ANSI mode, whose ANSI_QUOTES reads each of the hundreds of "double-quoted"
+ * string literals here as a column name, and whose ONLY_FULL_GROUP_BY and strict mode reject queries
+ * MariaDB has always accepted. On XAMPP this restates the server default and changes nothing.
+ */
+const HRIS_SQL_MODE = 'NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION';
+
 date_default_timezone_set(HRIS_TIMEZONE);
 
 /*
@@ -483,7 +492,7 @@ try {
         $pdo = new PDO($dsn, $dbusername, $dbpassword, $pdoOptions);
     }
 
-    $pdo->exec("SET time_zone = '" . HRIS_TIMEZONE_OFFSET . "'");
+    $pdo->exec("SET time_zone = '" . HRIS_TIMEZONE_OFFSET . "', sql_mode = '" . HRIS_SQL_MODE . "'");
     $conn = $pdo;
 } catch (PDOException $exception) {
     error_log('Database connection failed: ' . $exception->getMessage());
