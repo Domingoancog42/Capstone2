@@ -22,6 +22,8 @@ RUN set -eux; \
         libzip-dev; \
     docker-php-ext-install -j"$(nproc)" curl gd mbstring pdo_mysql zip; \
     docker-php-ext-enable opcache; \
+    a2dismod mpm_event mpm_worker || true; \
+    a2enmod mpm_prefork; \
     a2enmod headers rewrite; \
     rm -rf /var/lib/apt/lists/*
 
@@ -42,4 +44,3 @@ RUN chmod 0755 /usr/local/bin/railway-entrypoint
 EXPOSE 8080
 ENTRYPOINT ["railway-entrypoint"]
 CMD ["apache2-foreground"]
-
