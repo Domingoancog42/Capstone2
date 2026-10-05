@@ -35,6 +35,9 @@ RUN rm -f \
     a2enmod mpm_prefork; \
     test "$(find /etc/apache2/mods-enabled -maxdepth 1 -name 'mpm_*.load' | wc -l)" -eq 1
 
+COPY docker/aiven-project-ca.crt /usr/local/share/ca-certificates/aiven-project-ca.crt
+RUN update-ca-certificates
+
 COPY docker/php/php.ini /usr/local/etc/php/conf.d/zz-hris.ini
 COPY docker/railway-vhost.conf /etc/apache2/sites-available/000-default.conf.template
 COPY frontend/backend/ /var/www/html/
