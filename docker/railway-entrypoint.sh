@@ -12,6 +12,12 @@ esac
 mkdir -p /data/uploads /data/backups
 chown -R www-data:www-data /data/uploads /data/backups
 
+# Some Railway image restores have re-enabled a competing MPM after the build layer completed.
+# Keep the runtime guard as well as the Dockerfile check: mod_php must run with prefork only.
+for module_file in /etc/apache2/mods-enabled/mpm_event.* /etc/apache2/mods-enabled/mpm_worker.*; do
+  [ ! -e "$module_file" ] || rm -f "$module_file"
+done
+
 sed "s/__PORT__/${port}/g" \
   /etc/apache2/sites-available/000-default.conf.template \
   > /etc/apache2/sites-available/000-default.conf
