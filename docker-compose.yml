@@ -1,0 +1,154 @@
+# The XAMPP stack this project was built on -- Apache, PHP 8.2, MariaDB,
+# phpMyAdmin -- as containers, arranged so that no application file has to know
+# it is in one. See DOCKER.md for the commands.
+#
+# Every setting below can be overridden from a .env file next to this one
+# (Compose reads it automatically); the defaults are chosen so that `docker
+# compose up` on a clean checkout just works.
+
+name: capstone2-hris
+
+services:
+  # Apache + mod_php, serving the project the same way htdocs does.
+  app:
+    build: ./docker/php
+    restart: unless-stopped
+    ports:
+      # Port 80 by default, which is what makes every URL in the project
+      # identical to the XAMPP ones -- no ":8080" to add to
+      # REACT_APP_API_BASE_URL, no rebuild. It is also the one port XAMPP's own
+      # Apache wants, so stop XAMPP before starting this, or set HRIS_HTTP_PORT
+      # to something else and reach the app at http://localhost:<port>/Capstone2/...
+      - "${HRIS_HTTP_PORT:-80}:80"
+      # Belongs to the `web` service further down, which shares this container's
+      # network namespace and therefore cannot publish ports of its own. Nothing
+      # listens here unless you start the dev profile.
+      - "127.0.0.1:${HRIS_DEV_PORT:-3000}:3000"
+    environment:
+      # Read by connection-pdo.php. Without them -- running under XAMPP, say --
+      # it falls back to 127.0.0.1/root/no password, so this is the only place
+      # the container's database differs from the local one.
+      HRIS_DB_HOST: db
+      HRIS_DB_NAME: ${HRIS_DB_NAME:-hris}
+      HRIS_DB_USER: ${HRIS_DB_USER:-root}
+      HRIS_DB_PASSWORD: ${HRIS_DB_PASSWORD:-hris}
+      TZ: Asia/Manila
+    volumes:
+      # The whole project, live. Editing a .php file on Windows changes what the
+      # next request runs, with no rebuild and no restart -- opcache is set to
+      # revalidate on every request for exactly this.
+      #
+      # Writes go the other way too: backend/uploads/ and backend/backups/ land
+      # in the real folders, so an upload made in Docker is still there under
+      # XAMPP.
+      - .:/var/www/html/Capstone2
+    depends_on:
+      db:
+        # Not just "started". connection-pdo.php has no retry: the first request
+        # to arrive before MariaDB is listening gets "Database connection
+        # failed." and the front end shows a dead screen. Healthy also means the
+        # dump below has finished importing.
+        condition: service_healthy
+
+  db:
+    # XAMPP ships MariaDB 10.4, which is what generated frontend/backend/database/hris.sql.
+    # 10.11 is the current LTS and reads that dump unchanged -- it is one
+    # database, 40-odd plain InnoDB tables, one generated column, no triggers or
+    # stored procedures.
+    image: mariadb:10.11
+    restart: unless-stopped
+    ports:
+      # Bound to 127.0.0.1, not 0.0.0.0: without the prefix Docker publishes on
+      # every interface, which would put the database on the Wi-Fi. This is here
+      # for HeidiSQL/Workbench on this machine only.
+      #
+      # 3307 rather than 3306 so XAMPP's MySQL can keep running alongside; the
+      # app does not use this port at all, it reaches MariaDB over the compose
+      # network as "db:3306".
+      - "127.0.0.1:${HRIS_DB_PORT:-3307}:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: ${HRIS_DB_PASSWORD:-hris}
+      # Creates the empty database the dump expects. connection-pdo.php would
+      # CREATE DATABASE IF NOT EXISTS it anyway, but the import below has to run
+      # against something.
+      MARIADB_DATABASE: ${HRIS_DB_NAME:-hris}
+      # Adds a mysql@localhost account with no password for the healthcheck to
+      # use, so the check does not need the root credentials.
+      MARIADB_MYSQL_LOCALHOST_USER: "1"
+      # MariaDB's SYSTEM time zone follows the container clock. The app pins
+      # +08:00 per connection in connection-pdo.php regardless, but this keeps
+      # anything else -- phpMyAdmin, a manual query -- on office time too.
+      TZ: Asia/Manila
+    volumes:
+      - db-data:/var/lib/mysql
+      # Imported once, when db-data is created. Editing the dump later changes
+      # nothing until the volume is removed -- see DOCKER.md, "reload the
+      # database".
+      - ./frontend/backend/database/hris.sql:/docker-entrypoint-initdb.d/01-hris.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      # The first boot has to initialise the data directory and import the dump
+      # before it can pass; failures inside this window are not counted.
+      start_period: 60s
+
+  # The replacement for XAMPP's http://localhost/phpmyadmin.
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HRIS_PMA_PORT:-8080}:80"
+    environment:
+      PMA_HOST: db
+      UPLOAD_LIMIT: 256M
+      TZ: Asia/Manila
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # The Create React App dev server, for `docker compose --profile dev up`.
+  #
+  # Off by default. Running `npm start` on Windows against the containers is
+  # faster -- file watching across a Windows bind mount has to fall back to
+  # polling, which this service turns on and pays for in CPU -- and it needs no
+  # extra configuration once app is on port 80. This exists for the case where
+  # you want the whole stack from one command and nothing installed locally.
+  web:
+    profiles: ["dev"]
+    image: node:20-bookworm-slim
+    working_dir: /app
+    # Shares the app container's network namespace. That is what makes CRA's
+    # "proxy": "http://localhost" in package.json resolve to the Apache in that
+    # container: same namespace, same loopback. The alternative -- pointing the
+    # proxy at "http://app" -- would mean editing package.json and breaking the
+    # XAMPP workflow, since the proxy target there has to stay localhost.
+    #
+    # The cost is that this service cannot declare ports; :3000 is published by
+    # app above.
+    network_mode: "service:app"
+    # node_modules is a named volume, so this installs into it on first run and
+    # is a no-op afterwards. It cannot reuse the Windows node_modules on the bind
+    # mount: those are resolved for win32, and anything with a native binary
+    # would not load here.
+    command: sh -c "npm install --no-audit --no-fund && npm start"
+    environment:
+      # Inotify does not fire for changes made by Windows on a bind mount, so
+      # hot reload needs polling. Both names are here because CRA 5 uses webpack
+      # 5 (watchpack) for the bundle and chokidar for the public/ folder.
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      # The dev server would otherwise open a browser inside the container.
+      BROWSER: "none"
+    volumes:
+      - ./frontend:/app
+      - web-node-modules:/app/node_modules
+    depends_on:
+      - app
+
+volumes:
+  # Survives `docker compose down`. `down -v` deletes it, which is how you get a
+  # clean re-import of hris.sql.
+  db-data:
+  web-node-modules:

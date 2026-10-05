@@ -1,0 +1,29 @@
+# Dependencies and generated output
+node_modules/
+frontend/node_modules/
+frontend/build/
+frontend/backend/vendor/
+.vercel/
+
+# Local configuration and credentials
+.env
+.env.*
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+frontend/backend/api/*.local.php
+frontend/backend/api/smtp-config.php
+
+# HR data and runtime files
+frontend/backend/backups/**
+frontend/backend/database/*.sql
+frontend/backend/database/sample-faces/
+frontend/backend/uploads/**
+*.log
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+

@@ -1,0 +1,63 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# php dependencies (run: php composer.phar install in backend/)
+/backend/vendor
+/backend/composer.phar
+/backend/.composer
+/backend/.secrets/*.key
+
+# testing
+/coverage
+
+# production
+/build
+
+# misc
+.DS_Store
+.env.local
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Real HRIS data. The rolling backups and the uploaded documents stay out of
+# this public repo: they hold live employee records, bcrypt password hashes and
+# scanned IDs, and a public commit keeps them in the history and in GitHub's
+# caches even after a later delete. The .htaccess files ARE kept: they are the
+# rules that deny web access to these directories, so they belong with the code.
+
+# Rolling database backups -- excluded.
+/backend/backups/*
+!/backend/backups/.htaccess
+
+# backend/database/hris.sql is the deliberate exception, committed so the schema
+# and its seed rows ship with the project. It carries real account emails and
+# bcrypt password hashes: anyone deploying from this repo should treat every
+# account in it as compromised and force a password reset. Any OTHER dump
+# dropped in this directory stays ignored.
+/backend/database/*.sql
+!/backend/database/hris.sql
+!/backend/database/remove_request_tables.sql
+/backend/database/sample-faces/
+
+# Anything users uploaded, plus the chat presence file, which is runtime state
+# carrying account emails. Empty directories are recreated on first upload;
+# .gitkeep keeps the ones the code expects to already exist.
+/backend/uploads/**
+!/backend/uploads/**/
+!/backend/uploads/.htaccess
+!/backend/uploads/**/.gitkeep
+
+# The complete SMTP configuration includes a live Gmail app password, so the
+# single local config file must never be committed.
+/backend/api/smtp-config.php
+/backend/api/*.local.php

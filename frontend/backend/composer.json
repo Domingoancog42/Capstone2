@@ -1,0 +1,16 @@
+{
+    "name": "mgb/hris-backend",
+    "description": "PHP backend for the MGB Region X HRIS portal",
+    "type": "project",
+    "require": {
+        "php": ">=8.0",
+        "phpmailer/phpmailer": "^6.10"
+    },
+    "config": {
+        "platform": {
+            "php": "8.0.30"
+        },
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}

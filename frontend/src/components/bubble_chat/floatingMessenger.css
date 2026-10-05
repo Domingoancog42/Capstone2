@@ -1,0 +1,194 @@
+/*
+ * Below `lg` (1024px, the breakpoint the sidebar collapses at) the messenger floats bottom-right
+ * as a bubble. From `lg` up the same element sits in the header toolbar beside the theme toggle
+ * and drops its panel below the bar -- the `data-placement="header"` rules at the end of this file.
+ */
+.floating-messenger {
+  --messenger-accent: rgb(var(--ui-accent-rgb, 214 30 30));
+  position: fixed;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: calc(max(20px, env(safe-area-inset-bottom)) + var(--messenger-keyboard-offset, 0px));
+  z-index: 45;
+}
+/* The floating panel opens over the bubble, so the bubble steps aside rather than peeking out. */
+.floating-messenger[data-open="true"] .messenger-trigger { visibility: hidden; }
+.floating-messenger[data-open="true"] > .relative > .messenger-unread { visibility: hidden; }
+.floating-messenger .messenger-trigger {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--messenger-accent);
+  color: white;
+  box-shadow: 0 4px 18px rgb(15 23 42 / 18%);
+  transition: transform 160ms ease;
+}
+.floating-messenger .messenger-trigger:hover { transform: translateY(-2px); }
+.floating-messenger .messenger-panel {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: calc(100vw - 24px);
+  height: 530px;
+  max-height: calc(var(--messenger-viewport-height, 100dvh) - 110px);
+  transform-origin: bottom right;
+  box-shadow: 0 12px 40px rgb(15 23 42 / 16%) !important;
+}
+.floating-messenger .messenger-minimize {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  color: inherit;
+}
+.floating-messenger .messenger-minimize:hover { background: rgb(148 163 184 / 12%); }
+.floating-messenger :is(button, input):focus-visible { outline: 2px solid var(--messenger-accent); outline-offset: 3px; }
+.floating-messenger button { min-height: 40px; }
+.floating-messenger button[type="submit"] { min-width: 40px; }
+.floating-messenger textarea { min-width: 0; font-size: 16px; line-height: 1.5; }
+.floating-messenger .messenger-message-bubble--incoming {
+  border-color: #e2e8f0 !important;
+  box-shadow: none !important;
+}
+.floating-messenger .messenger-composer {
+  border-color: #cbd5e1 !important;
+  box-shadow: none !important;
+}
+.floating-messenger .messenger-composer:focus-within {
+  border-color: #94a3b8 !important;
+  box-shadow: 0 0 0 2px rgb(148 163 184 / 12%) !important;
+}
+.floating-messenger .messenger-composer-input,
+.floating-messenger .messenger-composer-input:focus,
+.floating-messenger .messenger-composer-input:focus-visible {
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+.floating-messenger .messenger-unread {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--messenger-accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+}
+.floating-messenger > .relative > .messenger-unread {
+  position: absolute;
+  right: -3px;
+  top: -3px;
+  border: 2px solid white;
+  min-width: 24px;
+  height: 24px;
+  background: #f4c430;
+  color: #172033;
+  box-shadow: 0 3px 8px rgb(15 23 42 / 20%);
+  animation: messenger-unread-pulse 1.8s ease-in-out infinite;
+  transform-origin: center;
+}
+@keyframes messenger-unread-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 3px 8px rgb(15 23 42 / 20%);
+  }
+  50% {
+    transform: scale(1.12);
+    box-shadow: 0 3px 8px rgb(15 23 42 / 20%), 0 0 0 5px rgb(244 196 48 / 18%);
+  }
+}
+.floating-messenger .bg-gradient-to-br { background-image: none !important; background-color: #e2e8f0; }
+html.dark .floating-messenger .bg-gradient-to-br { background-image: none !important; background-color: #334155 !important; }
+html.dark .floating-messenger .messenger-message-bubble--incoming,
+html.dark .floating-messenger .messenger-composer { border-color: #334155 !important; }
+html.dark .floating-messenger .messenger-composer:focus-within { border-color: #64748b !important; }
+.floating-messenger [class*="bg-[#D61E1E]"] { background-color: var(--messenger-accent); }
+@media (max-width: 640px) {
+  .floating-messenger {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(max(12px, env(safe-area-inset-bottom)) + var(--messenger-keyboard-offset, 0px));
+  }
+  .floating-messenger .messenger-trigger {
+    width: 48px;
+    height: 48px;
+  }
+  .floating-messenger .messenger-panel {
+    width: min(320px, calc(100vw - 48px));
+    height: min(430px, calc(var(--messenger-viewport-height, 100dvh) - 160px));
+    max-height: calc(var(--messenger-viewport-height, 100dvh) - 160px);
+    bottom: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .floating-messenger *, .floating-messenger *::before, .floating-messenger *::after { animation: none !important; transition: none !important; }
+}
+
+/* Header placement (set by the component from `lg` up): a 36px toolbar button with the panel hung below it. */
+.floating-messenger[data-placement="header"] {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+}
+.floating-messenger[data-placement="header"][data-open="true"] .messenger-trigger,
+.floating-messenger[data-placement="header"][data-open="true"] > .relative > .messenger-unread { visibility: visible; }
+.floating-messenger[data-placement="header"] .messenger-trigger {
+  width: 36px;
+  height: 36px;
+  min-height: 36px; /* the 40px floor set for the panel's buttons above would stretch it past the toggle */
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  background: #f8fafc;
+  color: #334155;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.floating-messenger[data-placement="header"] .messenger-trigger svg { width: 16px; height: 16px; }
+.floating-messenger[data-placement="header"] .messenger-trigger:hover {
+  transform: none;
+  border-color: #cbd5e1;
+  background: #fff;
+}
+.floating-messenger[data-placement="header"] .messenger-trigger[aria-expanded="true"] {
+  border-color: rgb(var(--ui-accent-rgb, 214 30 30) / 25%);
+  background: rgb(var(--ui-accent-rgb, 214 30 30) / 10%);
+  color: var(--messenger-accent);
+}
+html.dark .floating-messenger[data-placement="header"] .messenger-trigger {
+  border-color: #334155;
+  background: #111827;
+  color: #e2e8f0;
+  box-shadow: none;
+}
+html.dark .floating-messenger[data-placement="header"] .messenger-trigger:hover {
+  border-color: #52617a;
+  background: #1e293b;
+}
+html.dark .floating-messenger[data-placement="header"] .messenger-trigger[aria-expanded="true"] {
+  border-color: rgb(var(--ui-accent-rgb, 214 30 30) / 45%);
+  background: rgb(var(--ui-accent-rgb, 214 30 30) / 18%);
+  color: #fca5a5;
+}
+.floating-messenger[data-placement="header"] > .relative > .messenger-unread {
+  right: -6px;
+  top: -6px;
+}
+.floating-messenger[data-placement="header"] .messenger-panel {
+  top: calc(100% + 10px);
+  bottom: auto;
+  right: 0;
+  z-index: 50;
+  width: 380px;
+  height: 530px;
+  max-height: calc(100vh - 5rem);
+  transform-origin: top right;
+}

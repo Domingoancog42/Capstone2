@@ -1,0 +1,213 @@
+# This file lives in public/ rather than in build/ because `npm run build`
+# empties build/ and re-copies public/ into it. Anything written straight into
+# build/ survives exactly until the next build.
+#
+# It governs the compiled front end only -- the PHP under backend/ has its own
+# .htaccess files.
+
+# The bundle is a fixed set of files; there is no reason to let anyone page
+# through the directory to enumerate them.
+Options -Indexes
+
+# ---------------------------------------------------------------------------
+# HTTPS enforcement.
+#
+# The project root carries this same rule, and in the normal XAMPP deployment
+# that copy is the one that fires -- it sits above this directory, so it catches
+# the request first and this block never runs. The duplication is deliberate
+# rather than left over: `npm run build` produces a self-contained bundle that
+# can be deployed on its own, to a host where the project root .htaccess is not
+# present, and the front end should not lose its HTTPS enforcement by being
+# moved. Keep the two rules identical; the root file carries the full reasoning.
+#
+# Off until the server config says otherwise. Add this one line to the vhost
+# (or to httpd.conf) once there is a certificate installed:
+#
+#     SetEnv HRIS_FORCE_HTTPS 1
+#
+# That single switch turns on both halves of the enforcement: the redirect
+# below, and -- because PHP's getenv() reads the same variable -- the redirect
+# and HSTS header in connection-pdo.php. There is deliberately no way to enable
+# one without the other, so the two layers cannot drift apart.
+#
+# It has to be SetEnv in the *server or vhost* config rather than in this file.
+# mod_env applies a SetEnv from an .htaccess during the fixup phase, which is
+# the same phase mod_rewrite runs in, so a variable set here would not reliably
+# be visible to the RewriteCond that reads it. Set at the vhost level it is
+# already in place before any of this is evaluated.
+#
+# Why it is not simply on: this application's normal home is XAMPP over plain
+# http://localhost. A checkout that redirected every request to an https:// port
+# with nothing listening on it would be indistinguishable from a broken server,
+# and the first thing anyone would do is delete the rule.
+#
+# The redirect is 308, not 301: a 301 permits the browser to retry a POST as a
+# GET, which would turn a mistyped http:// on a payroll or leave submission into
+# a request whose body is silently dropped. 308 preserves both.
+#
+# Be clear about what this does and does not buy. By the time Apache answers,
+# the request has already crossed the network in the clear -- the redirect
+# rescues the request, not the password in it. The HSTS header that
+# connection-pdo.php sends once enforcement is on is the part that actually
+# closes the hole, by ensuring the browser never sends that first plaintext
+# request again.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    RewriteCond %{ENV:HRIS_FORCE_HTTPS} =1
+    RewriteCond %{HTTPS} !=on
+    # Behind a TLS-terminating tunnel or load balancer, Apache sees plain HTTP
+    # on port 80 and %{HTTPS} is off even though the user is on https://. This
+    # matches request_is_https() in connection-pdo.php, which reads the same
+    # header -- without it, enforcement would redirect such a request to an
+    # address that resolves back to itself, forever.
+    RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+    RewriteCond %{HTTP:X-Forwarded-Ssl} !=on
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=308,L]
+</IfModule>
+# ---------------------------------------------------------------------------
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Anything that exists on disk is served as-is.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Everything else falls through to the app shell instead of an Apache 404.
+    #
+    # React Router owns valid and wildcard addresses. Sending every non-file request to the app
+    # shell lets both dashboard routes and the authentication-aware 404 page survive a refresh.
+    #
+    # The substitution is deliberately relative: it resolves against whichever
+    # directory this file sits in, so the rule keeps working if the build is
+    # moved or served from the document root.
+    RewriteRule ^ index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Assets copied verbatim from public/ -- mgb.png, background.jpg, the
+    # favicon -- keep their names across builds, so a long cache would pin a
+    # replaced image in browsers that already have it. A day is enough to save
+    # the repeat downloads without making a swap invisible for a year.
+    <FilesMatch "\.(?i:png|jpe?g|gif|svg|ico|woff2?|ttf)$">
+        Header set Cache-Control "public, max-age=86400"
+    </FilesMatch>
+
+    # Webpack output carries an 8-character content hash in the filename
+    # (main.e98eb1b2.js). A changed file gets a changed name, so these can be
+    # cached permanently -- and must be listed after the rule above, which would
+    # otherwise also match the hashed images under static/media/.
+    <FilesMatch "\.[0-9a-f]{8}\.(?i:js|css|png|jpe?g|gif|svg|woff2?|ttf)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+
+    # index.html is what names the hashed files, so it is the one thing that
+    # must never come from cache. Cache it and a rebuilt bundle keeps loading
+    # the previous version.
+    <FilesMatch "^index\.html$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+    </FilesMatch>
+
+    # Do not let a browser second-guess a Content-Type and execute something as
+    # script that was not served as one.
+    Header always set X-Content-Type-Options "nosniff"
+
+    # No embedding by other sites -- the session cookie is SameSite=Lax, which
+    # is not on its own a defence against a clickjacked same-site GET.
+    # SAMEORIGIN rather than DENY because html2canvas, used by the payslip and
+    # certificate exports, renders through a same-origin iframe.
+    Header always set X-Frame-Options "SAMEORIGIN"
+
+    # Employee names and record ids show up in URLs; do not leak them to
+    # third-party hosts through the Referer header.
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # PHP announces its exact version in X-Powered-By, which is a free lookup
+    # against the advisory lists for whoever is scanning. expose_php=Off in
+    # php.ini is the real fix; this covers the case where the deployment does
+    # not control php.ini, and costs nothing where it does.
+    Header always unset X-Powered-By
+
+    # Content Security Policy.
+    #
+    # The app was built to suit one: nothing under src/ names an external host,
+    # index.html carries no inline <script>, and the map tiles that would have
+    # needed a remote img-src are not actually used (react-leaflet is in
+    # package.json but nothing imports it). So script-src can be 'self' plus
+    # exactly one named file -- which is the directive that matters, because it
+    # is the one standing between a stored employee name and an injected
+    # <script>.
+    #
+    # Each of the loosenings below is here for a specific, identified reason:
+    #
+    #   style-src 'unsafe-inline'  sweetalert2, apexcharts and react-select all
+    #                              inject <style> elements at runtime. Inline
+    #                              style is a far weaker foothold than inline
+    #                              script, and there is no nonce to give a
+    #                              library that writes its own tag.
+    #   img-src data:              the login captcha is drawn by GD and inlined
+    #                              as a data: URI, and html2canvas reads canvases
+    #                              back the same way.
+    #   img-src/frame-src blob:    the payslip and certificate exports build a
+    #                              PDF in memory and preview it from a blob.
+    #   frame-ancestors 'self'     matches X-Frame-Options above rather than
+    #                              'none', because html2canvas renders through a
+    #                              same-origin iframe. Modern browsers prefer
+    #                              this directive; the header above is what older
+    #                              ones read, so both are set and they agree.
+    #   accounts.google.com/gsi/   "Sign in with Google" on the login screen.
+    #                              The one external script the page loads
+    #                              (index.html), and the four directives Google
+    #                              documents for it: script-src for the library
+    #                              itself, style-src for the stylesheet it adds,
+    #                              frame-src for the iframe the button is drawn
+    #                              in, connect-src for the status calls it makes.
+    #                              Each is the narrowest path Google publishes,
+    #                              not the host: nothing else on that host is
+    #                              allowed to load. The sign-in popup itself is
+    #                              a separate window and no CSP applies to it.
+    #
+    # 'unsafe-eval' is deliberately absent. The one new Function() in the bundle
+    # belongs to sweetalert2's declarative <swal-*> template parser, which this
+    # app never reaches -- it calls Swal.fire() from JavaScript.
+    #
+    # connect-src 'self' assumes the API is served from this same origin, which
+    # is what REACT_APP_API_BASE_URL being a relative path means. Point that at
+    # an absolute URL on another host and this is the line to widen.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://accounts.google.com/gsi/; object-src 'none'; frame-src 'self' blob: https://accounts.google.com/gsi/; worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# Compression.
+#
+# The bundle ships as a single 8.7 MB main.*.js, and until this block existed
+# Apache sent every byte of it uncompressed: mod_deflate is commented out in
+# the stock XAMPP httpd.conf, so nothing this server returned was ever
+# compressed. On a LAN that is invisible. Through a forwarded port or a dev
+# tunnel -- where the relay measured about 90 KB/s -- it is a minute and a half
+# of blank white page before React has any JavaScript to run, which a user
+# reads as "the site is down" rather than "the site is slow".
+#
+# Minified JavaScript is mostly repeated identifiers and punctuation, so it
+# deflates by roughly 4-5x. That is the difference between a page that arrives
+# and a page that gets abandoned.
+#
+# This needs mod_deflate AND mod_filter loaded -- AddOutputFilterByType is a
+# mod_filter directive, so with only mod_deflate the guard below passes and the
+# rules still do nothing. Both ship with XAMPP but are commented out in
+# conf/httpd.conf; uncomment the LoadModule lines for deflate_module and
+# filter_module. The guard keeps this file valid on a server that has neither.
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css
+  AddOutputFilterByType DEFLATE text/javascript application/javascript
+  AddOutputFilterByType DEFLATE application/json application/manifest+json
+  AddOutputFilterByType DEFLATE image/svg+xml application/xml
+
+  # Already-compressed formats. Re-deflating a PNG or a woff2 spends CPU to add
+  # a few bytes, and the login background is a 356 KB JPEG. dont-vary goes
+  # with no-gzip so these responses are not marked as varying on an encoding
+  # that was never applied to them.
+  SetEnvIfNoCase Request_URI \.(?:gif|jpe?g|png|ico|webp|zip|gz|pdf|woff2?)$ no-gzip dont-vary
+</IfModule>

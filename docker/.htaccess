@@ -1,0 +1,10 @@
+# This directory sits inside the project, so Apache serves it as URLs like
+# /Capstone2/docker/php/php.ini whether or not anything links to it -- the same
+# reason backend/api/, backend/uploads/ and backend/database/ each carry a file
+# like this one.
+#
+# Nothing in here is secret; the container's database password is a compose
+# default and is meant to be changed. But these files describe the deployment,
+# and none of them is ever fetched by the front end, so there is no reason for
+# any of them to answer a request.
+Require all denied

@@ -1,0 +1,5 @@
+# Schema and seed dumps. hris.sql carries live INSERT rows -- employee PII and
+# password hashes -- so it must never be reachable over HTTP. Nothing in the
+# application reads these files at runtime; they are developer tooling, loaded
+# by hand through phpMyAdmin or the mysql client.
+Require all denied

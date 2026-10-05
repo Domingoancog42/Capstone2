@@ -1,0 +1,86 @@
+# The project sits inside htdocs, so every file in it is a URL whether or not
+# anything links to it -- and htdocs is configured with `Options Indexes`, which
+# means a browser can walk the tree. That is survivable while the only client is
+# this machine. It stops being survivable the moment port 80 is reachable from
+# anywhere else, which is what these rules are for.
+#
+# Directives in a .htaccess apply to the directory and everything under it, so
+# this file covers the whole project. The narrower ones live next to what they
+# protect: backend/api/, backend/uploads/, backend/backups/, backend/database/,
+# and the front-end bundle (frontend/public/.htaccess, copied into build/).
+
+# No directory listings anywhere in the project.
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Development trees, reachable over HTTP purely because of where they sit:
+    #
+    #   frontend/src          the entire uncompiled application
+    #   frontend/node_modules thousands of files nobody has audited
+    #
+    # Only frontend/build (the compiled bundle) and frontend/backend (the API)
+    # are meant to answer a request.
+    #
+    # frontend/public is deliberately not in this list. A RewriteEngine in a
+    # subdirectory's .htaccess replaces the rules inherited from here rather
+    # than adding to them, and frontend/public/.htaccess has one -- so a rule
+    # naming it here would be silently skipped, which is worse than not having
+    # it. It is also the one directory of the three that leaks nothing: it holds
+    # the build's own inputs (the logos, index.html, manifest.json), and the
+    # compiled copies of those are public anyway.
+    RewriteRule ^frontend/(src|node_modules)(/|$) - [F,L]
+
+    # Composer's install tree. PHPMailer used to sit in frontend/src, where the
+    # rule above covered it; as a Composer dependency it needs its own. PHP
+    # reads backend/vendor/autoload.php from disk, so denying the URL does not
+    # affect outgoing mail -- it only stops third-party PHP from being run by a
+    # request, which matters because the package ships an interactive helper
+    # (phpmailer/phpmailer/get_oauth_token.php) that answered 200 without this.
+    #
+    # This lives here rather than in a backend/vendor/.htaccess because vendor/
+    # is gitignored and rebuilt by `composer install`, which would not restore
+    # a file placed inside it.
+    RewriteRule ^frontend/backend/vendor(/|$) - [F,L]
+</IfModule>
+
+# Configuration and manifests. The .env files carry no secrets by design -- see
+# frontend/.env -- but they do describe the deployment, and
+# package-lock.json is an exact inventory of dependency versions to look up
+# advisories against. Apache already blocks .ht* files itself.
+#
+# docker-compose.yml is here for the same reason and one more: it names the
+# database user and carries the default password as a literal. The container
+# build files it points at are denied by docker/.htaccess.
+<FilesMatch "^(?i:\.env.*|\.gitignore|package\.json|package-lock\.json|composer\.(json|lock)|docker-compose(\.[^.]+)?\.ya?ml)$">
+    Require all denied
+</FilesMatch>
+
+# Response headers for everything in the project that is not the compiled front
+# end. frontend/public/.htaccess sets a fuller set for the bundle -- including a
+# Content-Security-Policy tuned to what the app actually loads -- and Header
+# directives merge with the ones inherited from here rather than replacing them,
+# so the two files add up instead of fighting.
+<IfModule mod_headers.c>
+    # PHP puts its exact version in X-Powered-By by default, which turns any
+    # response into a version banner to look up advisories against. The real fix
+    # is expose_php=Off in php.ini; this covers a deployment that does not own
+    # php.ini, and is harmless on one that does.
+    #
+    # Both forms are needed, and the reason is easy to get wrong: mod_headers
+    # keeps two tables. `always` acts on err_headers_out, the plain form on
+    # headers_out -- and PHP writes X-Powered-By into headers_out. So the
+    # `always` line alone looks correct, changes nothing, and the header sails
+    # through. Verified with curl rather than assumed.
+    Header unset X-Powered-By
+    Header always unset X-Powered-By
+
+    # No content-type guessing. An upload that Apache serves as text/plain must
+    # not be executed as script because its first bytes happen to look like one.
+    Header always set X-Content-Type-Options "nosniff"
+
+    # Employee names and record ids travel in URLs; keep them off the Referer
+    # header sent to other hosts.
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>

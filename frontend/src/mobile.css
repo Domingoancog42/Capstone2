@@ -1,0 +1,355 @@
+/* ==========================================================================
+ * Mobile layer
+ *
+ * Every rule here lives inside a `max-width` query, so the desktop layout the app was built for is
+ * untouched — nothing below applies at the widths where the sidebar is docked.
+ *
+ * The approach is structural rather than per-screen. ~180 screens write their own toolbars inline,
+ * and the failure they share is one shape: a flex row authored for a 1280px viewport with nowhere
+ * to put its buttons at 360px, so the buttons run past the card edge and collide with whatever sits
+ * beside them. Fixing that shape once reaches every screen, including ones added later, which is
+ * what per-file edits could not promise.
+ *
+ * Loaded after tailwind.css, so where a rule matches a utility at equal specificity it wins on
+ * source order.
+ * ========================================================================== */
+
+/* --------------------------------------------------------------------------
+ * 1. Nothing is wider than the screen
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 1023.98px) {
+  /*
+   * `body` already hides horizontal overflow; the root needs the cap as well or a wide child still
+   * stretches the layout box that every `w-full` inside it measures against. Deliberately not set
+   * on `html` — `overflow-x` there would take `position: sticky` out of the page scroller and
+   * unstick the profile jump bar and every sticky table header.
+   */
+  #root {
+    max-width: 100%;
+  }
+
+  /*
+   * Wide content is meant to scroll inside its own container rather than push the page. These are
+   * the wrappers the tables and the IPCR/OPCR form sheets sit in.
+   */
+  .overflow-x-auto,
+  .overflow-auto {
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+    /* Without this a sideways swipe that runs out of table falls through to the browser's back gesture. */
+    overscroll-behavior-x: contain;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 2. Toolbars wrap instead of colliding
+ *
+ * This is the rule that fixes the overlapping buttons.
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 767.98px) {
+  /*
+   * `[class~="flex"]` is an exact token match, so it reaches layout rows (`flex items-center
+   * justify-between`) and deliberately not `inline-flex`, which is what buttons and badges use to
+   * hold an icon beside its label — those have to stay on one line or every button in the app
+   * breaks in half.
+   *
+   * `flex-wrap` is inert until a row actually runs out of width, so rows that already fit at 360px
+   * render exactly as they did before. Only the rows that were overflowing move.
+   */
+  [class~="flex"]:not([class*="flex-col"]):not([class*="flex-nowrap"]) {
+    flex-wrap: wrap;
+  }
+
+  /*
+   * ...and the items in those rows may shrink. A flex item's default `min-width: auto` floors it at
+   * its content width, which is what pushes a long employee name or a wide select past the card
+   * edge instead of letting it truncate or wrap.
+   */
+  [class~="flex"]:not([class*="flex-col"]) > *:not(svg):not(img) {
+    min-width: 0;
+  }
+
+  /*
+   * Icons are the exception, and the reason the rule above skips them: an icon is a fixed glyph
+   * with no reflow to give, so letting it shrink beside a long label bends it out of shape instead
+   * of wrapping the label. Most call sites already write `shrink-0`; this covers the rest.
+   */
+  [class~="flex"] > svg,
+  [class~="inline-flex"] > svg,
+  button > svg,
+  a > svg {
+    flex-shrink: 0;
+  }
+
+  /*
+   * A row that has wrapped needs vertical breathing room between its lines. `gap` already covers the
+   * screens that set one; this is the floor for the rows that only set a horizontal gap.
+   */
+  [class~="flex"]:not([class*="flex-col"]):not([class*="gap-"]) {
+    row-gap: 0.5rem;
+  }
+
+  /*
+   * Bars with a fixed height opt out: they have no second line to wrap into, so overflow there has
+   * to stay a scroll or a truncation rather than becoming a clipped row.
+   *
+   * The `:not()` chain is repeated so this outranks the wrap rule above rather than tying with it.
+   */
+  .app-topbar,
+  .app-topbar [class~="flex"]:not([class*="flex-col"]):not([class*="flex-nowrap"]) {
+    flex-wrap: nowrap;
+  }
+
+  /*
+   * The long strings that make a card wider than the screen are almost always a single unbroken
+   * token — an email, an employee number, a control number, an uploaded file name.
+   */
+  p,
+  td,
+  th,
+  dd,
+  dt,
+  strong,
+  h1,
+  h2,
+  h3,
+  h4 {
+    overflow-wrap: break-word;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 3. Touch targets
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 767.98px) and (pointer: coarse) {
+  /*
+   * 36px is what the app's own `min-h-9` primitives already use, so this only lifts the
+   * hand-written controls that fell below it rather than restyling the ones built on Button.
+   *
+   * Anchors are left out on purpose: most are inline links inside a sentence, where a min-height
+   * would blow out the line box.
+   */
+  button,
+  select,
+  [role="button"],
+  [role="tab"] {
+    min-height: 36px;
+  }
+
+  /* Checkboxes and radios are the smallest hit areas in the forms and the hardest to tap. */
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-width: 18px;
+    min-height: 18px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 4. Dialogs read as sheets
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 639.98px) {
+  /*
+   * A wrapped footer row is the one place where wrapping reads as broken rather than as adapting —
+   * two half-width buttons on separate lines. Stretch them into a full-width stack instead.
+   */
+  .app-modal-footer {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .app-modal-footer > * {
+    width: 100%;
+  }
+
+  /* The sheet takes the height it needs up to nearly the whole screen, rather than centring in it. */
+  .app-modal-panel {
+    max-height: calc(100dvh - 1.5rem);
+  }
+
+  /* Long forms inside a sheet get the same gutters as the page rather than dialog-sized ones. */
+  .app-modal-content {
+    padding-left: 0.875rem;
+    padding-right: 0.875rem;
+  }
+
+  /* SweetAlert is used for every confirm in the app and sizes itself in px by default. */
+  .swal2-popup {
+    width: calc(100vw - 1.5rem) !important;
+    padding: 1.1rem !important;
+  }
+
+  .swal2-actions {
+    flex-direction: column-reverse !important;
+    width: 100%;
+    gap: 0.5rem;
+  }
+
+  .swal2-actions .swal2-confirm,
+  .swal2-actions .swal2-cancel {
+    width: 100%;
+    margin: 0 !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 5. Navigation drawer
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 1023.98px) {
+  /*
+   * Capped short of the full width so the dimmed page stays visible behind it — that strip is what
+   * tells you the drawer is a layer you can dismiss rather than a screen you navigated to.
+   */
+  .admin-sidebar {
+    width: min(17rem, 86vw);
+    box-shadow: 0 24px 64px rgba(2, 6, 23, 0.45);
+  }
+
+  /* Clears the home indicator on iOS so the last nav item is not sitting under it. */
+  .admin-sidebar-nav {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  /* The collapse control is desktop-only; the drawer closes by tapping the scrim or its own button. */
+  .admin-sidebar-collapse {
+    display: none !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 6. Density
+ *
+ * Padding authored for a 1280px canvas costs a phone most of its usable width. These pull back the
+ * horizontal side only — the vertical rhythm is what keeps a long form readable.
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 479.98px) {
+  .p-6,
+  .px-6 {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .p-8,
+  .px-8 {
+    padding-left: 1.15rem;
+    padding-right: 1.15rem;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 7. Dashboard calendar
+ *
+ * FullCalendar lays its toolbar out as one row of three chunks and sizes everything in px, so it is
+ * the one third-party surface that does not respond to the rules above.
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 639.98px) {
+  .dashboard-leave-travel-calendar .fc .fc-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .dashboard-leave-travel-calendar .fc .fc-toolbar-chunk {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.3rem;
+  }
+
+  .dashboard-leave-travel-calendar .fc .fc-toolbar-title {
+    font-size: 0.95rem;
+    text-align: center;
+  }
+
+  .dashboard-leave-travel-calendar .fc .fc-button {
+    padding: 0.3rem 0.55rem;
+    font-size: 0.7rem;
+  }
+
+  .dashboard-leave-travel-calendar .fc .fc-col-header-cell {
+    font-size: 0.6rem;
+  }
+
+  .dashboard-leave-travel-calendar .fc .fc-daygrid-day-number,
+  .dashboard-leave-travel-calendar .fc .fc-timegrid-slot-label {
+    font-size: 0.68rem;
+  }
+
+  .dashboard-leave-travel-calendar .fc .fc-event {
+    font-size: 0.62rem;
+  }
+
+  /* The badge doubles the height of a day cell that is already down to ~45px wide. */
+  .dashboard-leave-travel-calendar-today-badge {
+    display: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 8. Header notifications
+ *
+ * Keep the bell popover as a compact, scrollable card instead of allowing its
+ * desktop dimensions to cover nearly the entire mobile workspace.
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 639.98px) {
+  .notification-bell-panel {
+    width: min(300px, calc(100vw - 48px));
+    max-width: calc(100vw - 48px);
+  }
+
+  .notification-bell-panel .notification-bell-list {
+    max-height: min(260px, calc(100dvh - 240px));
+  }
+
+  .notification-bell-panel .notification-bell-header {
+    padding: 0.65rem 0.75rem;
+  }
+
+  .notification-bell-panel .notification-bell-footer {
+    padding: 0.75rem;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 9. Profile workspace
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 639.98px) {
+  /* The tab row remains one swipeable line without leaving a permanent scrollbar under it. */
+  .profile-section-nav-rail {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .profile-section-nav-rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Header actions such as Request Edit should be easy to tap and never overrun the card title. */
+  .profile-section-card-actions .app-button {
+    width: 100%;
+  }
+
+  /* Three document actions share the available row; their labels carry the meaning on a phone. */
+  .profile-document-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .profile-document-actions .app-button {
+    min-width: 0;
+    padding-right: 0.35rem;
+    padding-left: 0.35rem;
+  }
+
+  .profile-document-actions .app-button > svg {
+    display: none;
+  }
+}

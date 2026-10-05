@@ -1,0 +1,3244 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * Brand tokens.
+ *
+ * Components still write the hex directly (`bg-[#D61E1E]`) because Tailwind cannot read a custom
+ * property inside an arbitrary value at build time. These exist for the plain CSS below and as the
+ * one place that records what each shade is for, so a future re-brand has a single reference.
+ */
+:root {
+  --brand: #D61E1E;
+  --brand-hover: #B41818;
+  --brand-deep: #911212;
+  --brand-tint: #FEF1F1;
+  --brand-border: #F8BFBF;
+  --brand-border-hover: #F18E8E;
+
+  /*
+   * Page background: lavender blush. The gradient runs light -> base -> slightly deeper down the
+   * viewport, so #FFF0F5 sits across the middle where most content is and the ends only add depth.
+   */
+  --surface-top: #FFF8FB;
+  --surface: #FFF0F5;
+  --surface-bottom: #F6E2E9;
+
+  /* Shared semantic surfaces keep light and dark mode visually consistent across every module. */
+  --app-surface: #ffffff;
+  --app-surface-soft: #f8fafc;
+  --app-surface-raised: #ffffff;
+  --app-border: #e2e8f0;
+  --app-border-strong: #cbd5e1;
+  --app-text: #0f172a;
+  --app-text-soft: #475569;
+  --app-text-muted: #64748b;
+  --app-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-width: 0;
+    width: 100%;
+  }
+
+  /*
+   * The gradient sits on `html` and is fixed, so it spans the viewport once instead of repeating
+   * per scroll container, and short pages do not show a hard stop where the content ends.
+   */
+  html {
+    background: linear-gradient(180deg, var(--surface-top) 0%, var(--surface) 46%, var(--surface-bottom) 100%);
+    background-attachment: fixed;
+    min-height: 100%;
+  }
+
+  body {
+    overflow-x: hidden;
+    background: transparent;
+  }
+
+  img,
+  video,
+  canvas,
+  svg {
+    max-width: 100%;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/*
+ * Most modals render inline, as the last child of whatever stack their module sits in, and
+ * Tailwind's `space-y-*` / `space-x-*` give every child after the first a margin. A fixed element
+ * keeps its margin, so a `fixed inset-0` overlay inside a `space-y-4` slid down 1rem and left an
+ * undimmed strip across the top of the page (Leave Balances, OPCR/IPCR, Service Record). A fixed
+ * element is out of the stack's flow and never wants its spacing. `!important` because the space
+ * utilities' `> :not([hidden]) ~ :not([hidden])` selector outranks this one.
+ */
+[class*="space-y-"] > .fixed,
+[class*="space-x-"] > .fixed {
+  margin: 0 !important;
+}
+
+@media (max-width: 640px) {
+  .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .swal2-popup {
+    width: calc(100vw - 1.5rem) !important;
+  }
+}
+
+html.dark {
+  --surface-top: #020617 !important;
+  --surface: #07101f !important;
+  --surface-bottom: #0b1220 !important;
+  --app-surface: #0f172a;
+  --app-surface-soft: #111b2e;
+  --app-surface-raised: #182338;
+  --app-border: #293750;
+  --app-border-strong: #3a4a63;
+  --app-text: #f8fafc;
+  --app-text-soft: #cbd5e1;
+  --app-text-muted: #94a3b8;
+  --app-shadow: 0 20px 55px rgba(0, 0, 0, 0.38);
+  background: linear-gradient(180deg, var(--surface-top) 0%, var(--surface) 46%, var(--surface-bottom) 100%);
+  background-attachment: fixed;
+  color: var(--app-text);
+  scrollbar-color: #475569 #0b1220;
+}
+
+html.dark body,
+html.dark #root {
+  background: transparent;
+  color: var(--app-text);
+}
+
+html.dark .bg-white {
+  background-color: var(--app-surface) !important;
+}
+
+html.dark .bg-slate-50 {
+  background-color: var(--app-surface-soft) !important;
+}
+
+html.dark .bg-slate-100 {
+  background-color: #182338 !important;
+}
+
+html.dark .bg-slate-200 {
+  background-color: #223049 !important;
+}
+
+html.dark .bg-slate-800 {
+  background-color: #1e293b !important;
+}
+
+html.dark .bg-slate-900 {
+  background-color: #0b1220 !important;
+}
+
+html.dark .text-slate-950,
+html.dark .text-slate-900 {
+  color: var(--app-text) !important;
+}
+
+html.dark .text-slate-800,
+html.dark .text-slate-700 {
+  color: #e2e8f0 !important;
+}
+
+html.dark .text-slate-600,
+html.dark .text-slate-500 {
+  color: #b3c0d2 !important;
+}
+
+html.dark .text-slate-400 {
+  color: var(--app-text-muted) !important;
+}
+
+html.dark .border-slate-100,
+html.dark .border-slate-200,
+html.dark .border-slate-300 {
+  border-color: var(--app-border) !important;
+}
+
+html.dark .bg-white\/95,
+html.dark .bg-white\/90,
+html.dark .bg-white\/85,
+html.dark .bg-white\/80,
+html.dark .bg-white\/75,
+html.dark .bg-white\/70,
+html.dark .bg-white\/60,
+html.dark .bg-white\/50,
+html.dark .bg-white\/40,
+html.dark .bg-white\/30,
+html.dark .bg-slate-50\/90,
+html.dark .bg-slate-50\/80,
+html.dark .bg-slate-50\/70,
+html.dark .bg-slate-50\/60,
+html.dark .bg-slate-100\/90 {
+  background-color: rgba(15, 23, 42, 0.94) !important;
+}
+
+html.dark .dashboard-welcome-banner {
+  background: linear-gradient(135deg, #020617 0%, #0f172a 52%, #1e293b 100%) !important;
+  box-shadow: 0 22px 50px rgba(2, 6, 23, 0.45) !important;
+}
+
+html.dark .dashboard-welcome-banner--clean {
+  border-color: rgba(51, 65, 85, 0.8) !important;
+  background: #0f172a !important;
+  box-shadow: 0 18px 48px rgba(2, 6, 23, 0.32) !important;
+}
+
+html.dark .dashboard-welcome-banner .bg-white\/15 {
+  background-color: rgba(30, 41, 59, 0.7) !important;
+}
+
+html.dark .dashboard-welcome-banner .bg-white\/12 {
+  background-color: rgba(30, 41, 59, 0.55) !important;
+}
+
+html.dark .dashboard-welcome-banner .bg-white\/10 {
+  background-color: rgba(51, 65, 85, 0.45) !important;
+}
+
+html.dark .dashboard-welcome-banner .bg-white\/5 {
+  background-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Dashboard welcome card backdrop. Purely decorative layers (wash, fading dot grid, soft orbs, top
+   hairline) sit under the whole card, and an SVG mountain ridge sits behind the content column.
+   The accent follows the chosen system theme colour via --ui-accent-rgb and falls back to the
+   card's blue when none is set. */
+.dashboard-welcome-banner {
+  --welcome-accent-rgb: var(--ui-accent-rgb, 37 99 235);
+  --welcome-sky-rgb: 14 165 233;
+}
+
+.dashboard-welcome-backdrop__art {
+  color: rgb(var(--welcome-accent-rgb));
+}
+
+.dashboard-welcome-backdrop__wash {
+  background:
+    radial-gradient(circle at 86% -12%, rgb(var(--welcome-accent-rgb) / 0.16), transparent 46%),
+    radial-gradient(circle at 4% 108%, rgb(var(--welcome-sky-rgb) / 0.1), transparent 42%),
+    linear-gradient(120deg, rgb(var(--welcome-accent-rgb) / 0.07) 0%, transparent 44%);
+}
+
+.dashboard-welcome-backdrop__grid {
+  background-image: radial-gradient(circle, rgb(15 23 42 / 0.09) 1px, transparent 1.4px);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 85% at 82% 0%, #000 0%, transparent 100%);
+  mask-image: radial-gradient(ellipse 70% 85% at 82% 0%, #000 0%, transparent 100%);
+}
+
+.dashboard-welcome-backdrop__orb--accent {
+  background: rgb(var(--welcome-accent-rgb) / 0.18);
+}
+
+.dashboard-welcome-backdrop__orb--sky {
+  background: rgb(var(--welcome-sky-rgb) / 0.14);
+}
+
+.dashboard-welcome-backdrop__hairline {
+  background: linear-gradient(90deg, transparent 0%, rgb(var(--welcome-accent-rgb) / 0.45) 50%, transparent 100%);
+}
+
+html.dark .dashboard-welcome-backdrop__wash {
+  background:
+    radial-gradient(circle at 86% -12%, rgb(var(--welcome-accent-rgb) / 0.24), transparent 46%),
+    radial-gradient(circle at 4% 108%, rgb(var(--welcome-sky-rgb) / 0.12), transparent 42%),
+    linear-gradient(120deg, rgb(var(--welcome-accent-rgb) / 0.08) 0%, transparent 44%);
+}
+
+html.dark .dashboard-welcome-backdrop__grid {
+  background-image: radial-gradient(circle, rgb(255 255 255 / 0.07) 1px, transparent 1.4px);
+}
+
+html.dark .dashboard-welcome-backdrop__orb--accent {
+  background: rgb(var(--welcome-accent-rgb) / 0.22);
+}
+
+html.dark .dashboard-welcome-backdrop__orb--sky {
+  background: rgb(var(--welcome-sky-rgb) / 0.12);
+}
+
+html.dark .dashboard-welcome-backdrop__art {
+  color: var(--ui-accent-on-dark, #60a5fa);
+}
+
+html.dark .dashboard-welcome-backdrop__hairline {
+  background: linear-gradient(90deg, transparent 0%, rgb(var(--welcome-accent-rgb) / 0.55) 50%, transparent 100%);
+}
+
+html.dark .analytics-card-shell .analytics-dataset-toggle[data-active="true"] {
+  border-color: #0f766e !important;
+  background-color: #134e4a !important;
+  color: #ccfbf1 !important;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.32) !important;
+}
+
+html.dark .analytics-card-shell .analytics-dataset-toggle[data-active="false"] {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+  color: #cbd5e1 !important;
+}
+
+html.dark .analytics-card-shell .analytics-dataset-toggle[data-active="false"]:hover {
+  background-color: #1e293b !important;
+  color: #f8fafc !important;
+}
+
+html.dark .analytics-pie-chart-panel {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+}
+
+html.dark .analytics-pie-chart-panel .recharts-default-tooltip,
+html.dark .analytics-pie-chart-panel .recharts-tooltip-wrapper .recharts-default-tooltip {
+  background-color: #0f172a !important;
+  border-color: #334155 !important;
+  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45) !important;
+}
+
+html.dark .analytics-pie-chart-panel .recharts-tooltip-label,
+html.dark .analytics-pie-chart-panel .recharts-tooltip-item,
+html.dark .analytics-pie-chart-panel .recharts-tooltip-item-name,
+html.dark .analytics-pie-chart-panel .recharts-tooltip-item-value {
+  color: #e2e8f0 !important;
+}
+
+.dashboard-leave-travel-calendar .fc {
+  color: #0f172a;
+  font-family: inherit;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-toolbar {
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-toolbar-title {
+  color: #0f172a;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-button {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  color: #475569;
+  box-shadow: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-button:hover,
+.dashboard-leave-travel-calendar .fc .fc-button:focus {
+  border-color: #fecaca;
+  background: #fff5f5;
+  color: #D61E1E;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-button-primary:not(:disabled).fc-button-active,
+.dashboard-leave-travel-calendar .fc .fc-button-primary:not(:disabled):active {
+  border-color: #D61E1E;
+  background: #D61E1E;
+  color: #ffffff;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-scrollgrid,
+.dashboard-leave-travel-calendar .fc .fc-theme-standard td,
+.dashboard-leave-travel-calendar .fc .fc-theme-standard th {
+  border-color: #e2e8f0;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-col-header-cell {
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-daygrid-day-number,
+.dashboard-leave-travel-calendar .fc .fc-timegrid-slot-label {
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-event {
+  border-radius: 0.45rem;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-day-today {
+  background: #fff1f2;
+  box-shadow: inset 0 0 0 2px #fb7185;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-day-today .fc-daygrid-day-number {
+  color: #be123c;
+}
+
+.dashboard-leave-travel-calendar-day-label {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.dashboard-leave-travel-calendar-today-badge {
+  border-radius: 9999px;
+  background: #be123c;
+  color: #ffffff;
+  padding: 0.1rem 0.38rem;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-toolbar {
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-toolbar-chunk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  justify-content: center;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-toolbar-title {
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-button {
+  min-height: 1.65rem;
+  padding: 0.2rem 0.42rem;
+  font-size: 0.62rem;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-col-header-cell {
+  font-size: 0.58rem;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-daygrid-day-frame {
+  min-height: 1.95rem;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-daygrid-day-number,
+.dashboard-leave-travel-calendar--compact .fc .fc-timegrid-slot-label {
+  font-size: 0.62rem;
+}
+
+.dashboard-leave-travel-calendar--compact .fc .fc-event {
+  border-radius: 0.25rem;
+  font-size: 0.62rem;
+}
+
+.dashboard-leave-travel-calendar--compact .dashboard-leave-travel-calendar-today-badge {
+  display: none;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc {
+  color: #e2e8f0;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-toolbar-title,
+html.dark .dashboard-leave-travel-calendar .fc .fc-daygrid-day-number,
+html.dark .dashboard-leave-travel-calendar .fc .fc-timegrid-slot-label {
+  color: #e2e8f0;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-button {
+  border-color: #334155;
+  background: #0f172a;
+  color: #cbd5e1;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-button:hover,
+html.dark .dashboard-leave-travel-calendar .fc .fc-button:focus {
+  border-color: #21c45d;
+  background: #13221a;
+  color: #bbf7d0;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-button-primary:not(:disabled).fc-button-active,
+html.dark .dashboard-leave-travel-calendar .fc .fc-button-primary:not(:disabled):active {
+  border-color: #21c45d;
+  background: #21c45d;
+  color: #052e16;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-scrollgrid,
+html.dark .dashboard-leave-travel-calendar .fc .fc-theme-standard td,
+html.dark .dashboard-leave-travel-calendar .fc .fc-theme-standard th {
+  border-color: #334155;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-col-header-cell {
+  background: #111827;
+  color: #cbd5e1;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-day-today {
+  background: rgba(190, 18, 60, 0.24);
+  box-shadow: inset 0 0 0 2px #fb7185;
+}
+
+html.dark .dashboard-leave-travel-calendar .fc .fc-day-today .fc-daygrid-day-number {
+  color: #fecdd3;
+}
+
+html.dark [class*="border-slate-200/"],
+html.dark [class*="border-slate-100/"] {
+  border-color: #334155 !important;
+}
+
+/* The nav scrolls inside a saturated panel, so the default scrollbar reads as a bright seam. */
+.admin-sidebar-nav {
+  scrollbar-width: thin;
+}
+
+.admin-sidebar-nav::-webkit-scrollbar {
+  width: 6px;
+}
+
+.admin-sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.admin-sidebar-nav-on-dark {
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+.admin-sidebar-nav-on-dark::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.25);
+  border-radius: 9999px;
+}
+
+.admin-sidebar-nav-on-dark:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.4);
+}
+
+html.dark .admin-sidebar-nav-on-dark {
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+html.dark .admin-sidebar-nav-on-dark::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.35);
+}
+
+html.dark .admin-sidebar {
+  border-color: #1e293b !important;
+  background: linear-gradient(180deg, #020617 0%, #0f172a 100%) !important;
+  color: #e2e8f0 !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-brand {
+  border-color: rgba(51, 65, 85, 0.9) !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-brand-logo {
+  border-color: rgba(51, 65, 85, 0.9) !important;
+  background: rgba(15, 23, 42, 0.95) !important;
+  color: #cbd5e1 !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-brand-text {
+  color: #f8fafc !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-section {
+  color: #94a3b8 !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-collapse {
+  color: #cbd5e1 !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-item[data-active="true"],
+html.dark .admin-sidebar .admin-sidebar-child[data-active="true"] {
+  border-color: #334155 !important;
+  background-color: transparent !important;
+  color: #f8fafc !important;
+}
+
+/* The active row's fill is a separate sliding element, so it needs recolouring in its own right. */
+html.dark .admin-sidebar .admin-sidebar-active-surface {
+  background-color: #1e293b !important;
+  box-shadow: 0 16px 32px rgba(2, 6, 23, 0.45) !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-item[data-active="false"],
+html.dark .admin-sidebar .admin-sidebar-child[data-active="false"] {
+  color: #cbd5e1 !important;
+}
+
+html.dark .admin-sidebar .admin-sidebar-item[data-active="false"]:hover,
+html.dark .admin-sidebar .admin-sidebar-child[data-active="false"]:hover,
+html.dark .admin-sidebar .admin-sidebar-collapse:hover {
+  background-color: #1e293b !important;
+  color: #f8fafc !important;
+}
+
+html.dark input,
+html.dark select,
+html.dark textarea {
+  background-color: var(--app-surface);
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
+  color-scheme: dark;
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #94a3b8;
+}
+
+html.dark table thead,
+html.dark .bg-gray-50,
+html.dark .bg-gray-100 {
+  background-color: var(--app-surface-soft) !important;
+}
+
+html.dark .text-gray-950,
+html.dark .text-gray-900,
+html.dark .text-gray-800,
+html.dark .text-gray-700 {
+  color: var(--app-text) !important;
+}
+
+html.dark .text-gray-600,
+html.dark .text-gray-500,
+html.dark .text-gray-400 {
+  color: var(--app-text-muted) !important;
+}
+
+html.dark .border-gray-100,
+html.dark .border-gray-200,
+html.dark .border-gray-300 {
+  border-color: var(--app-border) !important;
+}
+
+html.dark .hover\:bg-white:hover,
+html.dark .hover\:bg-white\/70:hover {
+  background-color: #1e293b !important;
+}
+
+html.dark .hover\:bg-slate-50:hover,
+html.dark .hover\:bg-slate-100:hover {
+  background-color: #1e293b !important;
+}
+
+html.dark .hover\:text-slate-900:hover,
+html.dark .hover\:text-slate-950:hover {
+  color: #ffffff !important;
+}
+
+html.dark .shadow-sm,
+html.dark .shadow-md,
+html.dark .shadow-lg,
+html.dark .shadow-xl {
+  box-shadow: var(--app-shadow) !important;
+}
+
+html.dark .shadow-\[0_8px_20px_rgba\(15\,23\,42\,0\.06\)\],
+html.dark .shadow-\[0_18px_45px_rgba\(15\,23\,42\,0\.16\)\] {
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42) !important;
+}
+
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #334155 !important;
+}
+
+html.dark .ring-white,
+html.dark .ring-white\/70 {
+  --tw-ring-color: rgba(15, 23, 42, 0.8) !important;
+}
+
+html.dark .login-page {
+  background-color: transparent !important;
+  color: var(--app-text);
+}
+
+html.dark .login-page .bg-white,
+html.dark .login-page .bg-white\/95 {
+  background-color: rgba(15, 23, 42, 0.96) !important;
+}
+
+html.dark .login-page .bg-slate-50,
+html.dark .login-page .bg-slate-100 {
+  background-color: var(--app-surface-soft) !important;
+}
+
+html.dark .login-page input,
+html.dark .login-page textarea,
+html.dark .login-page select {
+  background-color: #0b1220;
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
+}
+
+html.dark .login-page .text-slate-900,
+html.dark .login-page .text-slate-800,
+html.dark .login-page .text-slate-700 {
+  color: var(--app-text) !important;
+}
+
+html.dark .login-page .text-slate-600,
+html.dark .login-page .text-slate-500 {
+  color: #b3c0d2 !important;
+}
+
+html.dark .login-page .border-slate-200,
+html.dark .login-page .border-slate-300 {
+  border-color: var(--app-border) !important;
+}
+
+
+html.dark .profile-page {
+  color: #e2e8f0;
+}
+
+html.dark .profile-loading-card {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 18px 45px rgba(2, 6, 23, 0.32) !important;
+}
+
+html.dark .profile-loading-icon,
+html.dark .profile-error-icon {
+  color: #21c45d !important;
+}
+
+html.dark .profile-error-card {
+  border-color: #7f1d1d !important;
+  background-color: #450a0a !important;
+  color: #fecaca !important;
+  box-shadow: 0 18px 45px rgba(69, 10, 10, 0.25) !important;
+}
+
+html.dark .profile-warning-banner {
+  border-color: #92400e !important;
+  background-color: #451a03 !important;
+  color: #fde68a !important;
+  box-shadow: 0 14px 32px rgba(69, 26, 3, 0.22) !important;
+}
+
+html.dark .profile-page .profile-header-card {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 22px 50px rgba(2, 6, 23, 0.4) !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-surface {
+  border-color: #1f2937 !important;
+  background: linear-gradient(to bottom, #111827, #0f172a) !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-avatar {
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  background-color: #111827 !important;
+  color: #21c45d !important;
+  box-shadow: 0 14px 32px rgba(2, 6, 23, 0.35) !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-camera {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+  color: #bbf7d0 !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-camera:hover {
+  background-color: #13221a !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-label {
+  color: #bbf7d0 !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-title {
+  color: #f8fafc !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-description {
+  color: #cbd5e1 !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-stat {
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-stat-label {
+  color: #86efac !important;
+}
+
+html.dark .profile-page .profile-header-card .profile-header-card-stat-value {
+  color: #f8fafc !important;
+}
+
+html.dark .profile-page .profile-header-card-actions,
+html.dark .profile-page .profile-header-card-summary,
+html.dark .profile-page .profile-header-card-note {
+  border-color: #1f2937 !important;
+}
+
+html.dark .profile-page .profile-header-card-note {
+  color: #94a3b8 !important;
+}
+
+html.dark .profile-page .profile-header-card-mode {
+  background-color: #1e293b !important;
+  color: #cbd5e1 !important;
+}
+
+html.dark .profile-page .profile-section-nav {
+  border-color: #334155 !important;
+  background-color: rgba(15, 23, 42, 0.96) !important;
+  box-shadow: 0 14px 32px rgba(2, 6, 23, 0.24) !important;
+}
+
+html.dark .profile-page .profile-section-nav-item {
+  color: #cbd5e1 !important;
+}
+
+html.dark .profile-page .profile-section-nav-item:hover {
+  background-color: #1e293b !important;
+  color: #f8fafc !important;
+}
+
+html.dark .profile-page .profile-section-nav-item[data-active="true"] {
+  color: #bbf7d0 !important;
+}
+
+html.dark .profile-page .profile-section-indicator {
+  border-color: #334155 !important;
+  background: #111827 !important;
+}
+
+html.dark .profile-page .profile-section-card {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 18px 45px rgba(2, 6, 23, 0.28) !important;
+}
+
+html.dark .profile-page .profile-section-card-header,
+html.dark .profile-page .profile-section-card-footer {
+  border-color: #1f2937 !important;
+  background-color: #111827 !important;
+}
+
+html.dark .profile-page .profile-section-card-title {
+  color: #f8fafc !important;
+}
+
+html.dark .profile-page .profile-section-card-description {
+  color: #cbd5e1 !important;
+}
+
+html.dark .profile-page .profile-field-label {
+  color: #cbd5e1 !important;
+}
+
+html.dark .profile-page .profile-field-required {
+  color: #21c45d !important;
+}
+
+html.dark .profile-page .profile-field-input {
+  border-color: #334155 !important;
+  background-color: #111827 !important;
+  color: #e2e8f0 !important;
+  caret-color: #21c45d !important;
+}
+
+html.dark .profile-page .profile-field-input::placeholder {
+  color: #64748b !important;
+}
+
+html.dark .profile-page .profile-field-input:focus {
+  border-color: #21c45d !important;
+  box-shadow: 0 0 0 2px rgba(33, 196, 93, 0.18) !important;
+}
+
+html.dark .profile-page .profile-field-input:disabled {
+  opacity: 1 !important;
+  -webkit-text-fill-color: #cbd5e1;
+  background-color: #0f172a !important;
+  color: #cbd5e1 !important;
+}
+
+html.dark .profile-page .profile-field-helper {
+  color: #94a3b8 !important;
+}
+
+html.dark .profile-page .profile-field-error {
+  color: #fca5a5 !important;
+}
+
+html.dark .account-use-return-card {
+  border-color: #92400e !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 20px 55px rgba(2, 6, 23, 0.55) !important;
+}
+
+html.dark .account-use-return-card .account-use-return-card-accent {
+  background-color: #f59e0b !important;
+}
+
+html.dark .account-use-return-card .account-use-return-card-icon {
+  border-color: #92400e !important;
+  background-color: #451a03 !important;
+  color: #fcd34d !important;
+}
+
+html.dark .account-use-return-card .account-use-return-card-label {
+  color: #fcd34d !important;
+}
+
+html.dark .account-use-return-card .account-use-return-card-title {
+  color: #f8fafc !important;
+}
+
+html.dark .account-use-return-card .account-use-return-card-description {
+  color: #cbd5e1 !important;
+}
+/* ==========================================================================
+ * Brand remap
+ *
+ * Screens written before the brand existed style themselves with Tailwind's teal scale — inputs
+ * especially, whose focus ring is `focus:ring-teal-100` in ~72 places. Rather than restate the
+ * brand in every one of them, the scale is remapped to brand tints here, so nothing renders teal.
+ *
+ * The tints are the brand hue (0°) held steady while lightness moves, which is why they read as
+ * one family rather than as separate colours.
+ * ========================================================================== */
+:root {
+  --brand-50: #FEF1F1;
+  --brand-100: #FDE3E3;
+  --brand-200: #F8BFBF;
+  --brand-300: #F18E8E;
+  --brand-400: #E85454;
+  --brand-500: #E23636;
+  --brand-600: #D61E1E;
+  --brand-700: #B41818;
+  --brand-800: #911212;
+  --brand-950: #5C0A0A;
+
+  /* The `accent` Tailwind scale for the stock crimson, until applyUiThemeColor() paints the pick. */
+  --accent-50-rgb: 252 237 237;
+  --accent-100-rgb: 248 219 219;
+  --accent-200-rgb: 242 183 183;
+  --accent-300-rgb: 235 143 143;
+  --accent-400-rgb: 225 89 89;
+  --accent-500-rgb: 219 57 57;
+  --accent-600-rgb: 214 30 30;
+  --accent-700-rgb: 180 25 25;
+  --accent-800-rgb: 141 20 20;
+  --accent-900-rgb: 111 16 16;
+  --accent-950-rgb: 81 11 11;
+}
+
+.bg-teal-50  { background-color: var(--brand-50) !important; }
+.bg-teal-100  { background-color: var(--brand-100) !important; }
+.bg-teal-200  { background-color: var(--brand-200) !important; }
+.bg-teal-500  { background-color: var(--brand-500) !important; }
+.bg-teal-600  { background-color: var(--brand-600) !important; }
+.bg-teal-700  { background-color: var(--brand-700) !important; }
+.hover\:bg-teal-700:hover { background-color: var(--brand-700) !important; }
+.hover\:bg-teal-800:hover { background-color: var(--brand-800) !important; }
+
+.text-teal-600 { color: var(--brand-600) !important; }
+.text-teal-700 { color: var(--brand-700) !important; }
+.text-teal-800 { color: var(--brand-800) !important; }
+.text-teal-950 { color: var(--brand-950) !important; }
+.hover\:text-teal-800:hover { color: var(--brand-800) !important; }
+.group:hover .group-hover\:text-teal-700 { color: var(--brand-700) !important; }
+
+.border-teal-100 { border-color: var(--brand-100) !important; }
+.border-teal-200 { border-color: var(--brand-200) !important; }
+.border-teal-300 { border-color: var(--brand-300) !important; }
+.border-teal-500 { border-color: var(--brand-500) !important; }
+.focus\:border-teal-300:focus { border-color: var(--brand-300) !important; }
+.focus\:border-teal-400:focus { border-color: var(--brand-400) !important; }
+.focus\:border-teal-500:focus { border-color: var(--brand-500) !important; }
+
+.ring-teal-100 { --tw-ring-color: var(--brand-100) !important; }
+.ring-teal-200 { --tw-ring-color: var(--brand-200) !important; }
+.ring-teal-400 { --tw-ring-color: var(--brand-400) !important; }
+.focus\:ring-teal-100:focus { --tw-ring-color: var(--brand-100) !important; }
+.focus\:ring-teal-200:focus { --tw-ring-color: var(--brand-200) !important; }
+
+.from-teal-50  { --tw-gradient-from: var(--brand-50) var(--tw-gradient-from-position) !important; }
+.from-teal-200 { --tw-gradient-from: var(--brand-200) var(--tw-gradient-from-position) !important; }
+.from-teal-500 { --tw-gradient-from: var(--brand-500) var(--tw-gradient-from-position) !important; }
+.from-teal-600 { --tw-gradient-from: var(--brand-600) var(--tw-gradient-from-position) !important; }
+.to-teal-50  { --tw-gradient-to: var(--brand-50) var(--tw-gradient-to-position) !important; }
+.to-teal-400 { --tw-gradient-to: var(--brand-400) var(--tw-gradient-to-position) !important; }
+.to-teal-500 { --tw-gradient-to: var(--brand-500) var(--tw-gradient-to-position) !important; }
+.to-teal-600 { --tw-gradient-to: var(--brand-600) var(--tw-gradient-to-position) !important; }
+
+/*
+ * Buttons come after the scale so a primary action is one flat brand colour whether it was written
+ * as teal-600 or teal-700 — two primaries side by side must not read as two different colours.
+ */
+button.bg-teal-600,
+button.bg-teal-700,
+label.bg-teal-700 {
+  background-color: var(--brand) !important;
+}
+
+button.border-teal-700,
+label.border-teal-700 {
+  border-color: var(--brand) !important;
+}
+
+button.hover\:bg-teal-700:hover,
+button.hover\:bg-teal-800:hover,
+label.hover\:bg-teal-800:hover {
+  background-color: var(--brand-hover) !important;
+}
+
+button.hover\:border-teal-800:hover,
+label.hover\:border-teal-800:hover {
+  border-color: var(--brand-hover) !important;
+}
+
+/*
+ * Two-stop button gradients collapse to a single brand ramp: the `from-` stop takes the brand and
+ * the `to-` stop the deeper shade, so a gradient button reads as one colour with depth rather than
+ * the teal-to-sky sweep it was written as.
+ */
+button.from-teal-500,
+button.from-teal-600,
+button.from-teal-700 {
+  --tw-gradient-from: var(--brand) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(214 30 30 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+button.to-blue-600,
+button.to-cyan-600,
+button.to-sky-600 {
+  --tw-gradient-to: var(--brand-deep) var(--tw-gradient-to-position) !important;
+}
+
+button.hover\:from-teal-700:hover {
+  --tw-gradient-from: var(--brand-hover) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(180 24 24 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+button.hover\:to-blue-700:hover,
+button.hover\:to-cyan-700:hover,
+button.hover\:to-sky-700:hover {
+  --tw-gradient-to: var(--brand-hover) var(--tw-gradient-to-position) !important;
+}
+
+button.focus\:ring-teal-200:focus,
+label.focus-within\:ring-teal-200:focus-within {
+  --tw-ring-color: rgb(214 30 30 / 0.28) !important;
+}
+
+/* Blue and indigo primary buttons predate the brand too; same treatment. */
+button.bg-blue-600,
+button.bg-blue-700,
+button.bg-indigo-600 {
+  background-color: var(--brand) !important;
+}
+
+button.hover\:bg-blue-700:hover,
+button.hover\:bg-blue-800:hover,
+button.hover\:bg-indigo-700:hover {
+  background-color: var(--brand-hover) !important;
+}
+
+button.focus\:ring-blue-200:focus,
+button.focus\:ring-blue-500:focus,
+button.focus\:ring-indigo-500:focus {
+  --tw-ring-color: rgb(214 30 30 / 0.28) !important;
+}
+
+/* ==========================================================================
+ * Cards
+ *
+ * Cards keep a white body — they hold the tables, forms and inputs, and dark text on white is what
+ * makes those readable — and take the brand red as an edge treatment instead.
+ *
+ * The selector is the card shape itself (`rounded-* + border + border-slate-200 + bg-white`), which
+ * ~176 screens write inline rather than through components/UI/card.jsx. Matching on all four
+ * classes at once is what keeps this off plain bordered boxes, table rows and dividers that share
+ * only one or two of them. Compound specificity (0,4,0) also means no !important is needed.
+ * ========================================================================== */
+.rounded-xl.border.border-slate-200.bg-white,
+.rounded-2xl.border.border-slate-200.bg-white,
+.rounded-3xl.border.border-slate-200.bg-white {
+  border-color: var(--brand-200);
+}
+
+/*
+ * The top rule goes only on the large radii. Those are the section-level cards; `rounded-xl` is
+ * mostly small stat tiles, and a bar on every one of those reads as noise rather than structure.
+ * An inset shadow rather than border-top so it cannot shift layout by a pixel.
+ */
+.rounded-2xl.border.border-slate-200.bg-white,
+.rounded-3xl.border.border-slate-200.bg-white {
+  box-shadow: inset 0 3px 0 0 var(--brand-600);
+}
+
+/* Tailwind's own shadow utility would otherwise replace the inset rule rather than join it. */
+.rounded-2xl.border.border-slate-200.bg-white.shadow-sm,
+.rounded-3xl.border.border-slate-200.bg-white.shadow-sm {
+  box-shadow: inset 0 3px 0 0 var(--brand-600), 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}
+
+.rounded-2xl.border.border-slate-200.bg-white.shadow,
+.rounded-2xl.border.border-slate-200.bg-white.shadow-md,
+.rounded-3xl.border.border-slate-200.bg-white.shadow,
+.rounded-3xl.border.border-slate-200.bg-white.shadow-md {
+  box-shadow: inset 0 3px 0 0 var(--brand-600), 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+/* Registry form controls should not inherit the decorative top edge used on cards.
+ * Preserve Tailwind's focus rings and ordinary shadows for keyboard navigation. */
+.leave-credit-registry :is(input, select, textarea, button):is(.rounded-2xl, .rounded-3xl).border.border-slate-200.bg-white {
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow, 0 0 #0000);
+}
+
+/* Dark mode keeps its own surfaces; only the accent carries over. */
+html.dark .rounded-xl.border.border-slate-200.bg-white,
+html.dark .rounded-2xl.border.border-slate-200.bg-white,
+html.dark .rounded-3xl.border.border-slate-200.bg-white {
+  border-color: #334155;
+}
+
+html.dark button.bg-teal-600,
+html.dark button.bg-teal-700,
+html.dark label.bg-teal-700 {
+  background-color: var(--ui-accent, var(--brand)) !important;
+}
+
+html.dark button.border-teal-700,
+html.dark label.border-teal-700,
+html.dark button.text-teal-700,
+html.dark label.text-teal-700 {
+  border-color: var(--ui-accent-on-dark, #f07171) !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark button.hover\:bg-teal-700:hover,
+html.dark button.hover\:bg-teal-800:hover,
+html.dark label.hover\:bg-teal-800:hover {
+  background-color: var(--ui-accent-hover, var(--brand-hover)) !important;
+}
+
+html.dark button.hover\:border-teal-800:hover,
+html.dark label.hover\:border-teal-800:hover {
+  border-color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark button.from-teal-500,
+html.dark button.from-teal-600,
+html.dark button.from-teal-700 {
+  --tw-gradient-from: var(--ui-accent, var(--brand)) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(var(--ui-accent-rgb, 214 30 30) / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+html.dark button.to-blue-600,
+html.dark button.to-cyan-600,
+html.dark button.to-sky-600 {
+  --tw-gradient-to: var(--ui-accent-deep, var(--brand-deep)) var(--tw-gradient-to-position) !important;
+}
+
+html.dark button.hover\:from-teal-700:hover {
+  --tw-gradient-from: var(--ui-accent-hover, var(--brand-hover)) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(var(--ui-accent-rgb, 214 30 30) / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+html.dark button.hover\:to-blue-700:hover,
+html.dark button.hover\:to-cyan-700:hover,
+html.dark button.hover\:to-sky-700:hover {
+  --tw-gradient-to: var(--ui-accent-deep, var(--brand-deep)) var(--tw-gradient-to-position) !important;
+}
+
+html.dark button.focus\:ring-teal-200:focus,
+html.dark label.focus-within\:ring-teal-200:focus-within {
+  --tw-ring-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.28) !important;
+}
+html.dark .leave-management-workspace [class*="border-white"],
+html.dark .employee-leave-workspace [class*="border-white"],
+html.dark .travel-order-workspace [class*="border-white"],
+html.dark .pass-slip-workspace [class*="border-white"],
+html.dark .compensatory-workspace [class*="border-white"] {
+  border-color: #334155 !important;
+}
+
+html.dark .leave-form-preview {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-preview .bg-white,
+html.dark .leave-form-preview .bg-white\/95 {
+  background-color: #ffffff !important;
+}
+
+html.dark .leave-form-preview .bg-slate-50,
+html.dark .leave-form-preview .bg-slate-100 {
+  background-color: #f8fafc !important;
+}
+
+html.dark .leave-form-preview .text-slate-950,
+html.dark .leave-form-preview .text-slate-900,
+html.dark .leave-form-preview .text-slate-800,
+html.dark .leave-form-preview .text-slate-700 {
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-preview .text-slate-600,
+html.dark .leave-form-preview .text-slate-500 {
+  color: #475569 !important;
+}
+
+html.dark .leave-form-preview .border-slate-100,
+html.dark .leave-form-preview .border-slate-200,
+html.dark .leave-form-preview .border-slate-300 {
+  border-color: #cbd5e1 !important;
+}
+
+html.dark .leave-form-preview .hover\:bg-white:hover,
+html.dark .leave-form-preview .hover\:bg-white\/70:hover,
+html.dark .leave-form-preview .hover\:bg-slate-50:hover,
+html.dark .leave-form-preview .hover\:bg-slate-100:hover {
+  background-color: #f8fafc !important;
+}
+
+html.dark .leave-form-preview .hover\:text-slate-900:hover,
+html.dark .leave-form-preview .hover\:text-slate-950:hover {
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-paper {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+html.dark .leave-form-paper table,
+html.dark .leave-form-paper thead,
+html.dark .leave-form-paper tbody,
+html.dark .leave-form-paper tr,
+html.dark .leave-form-paper th,
+html.dark .leave-form-paper td {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-paper th,
+html.dark .leave-form-paper td {
+  border-color: #000000 !important;
+}
+
+html.dark .leave-form-paper input {
+  background-color: transparent !important;
+  color: #111827 !important;
+}
+
+html.dark .leave-form-paper input[type="checkbox"] {
+  background-color: #ffffff !important;
+  accent-color: #111827;
+}
+
+
+
+html.dark .travel-order-form-preview,
+html.dark .compensatory-form-preview,
+html.dark .pass-slip-form-preview {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+html.dark .travel-order-form-preview .bg-white,
+html.dark .compensatory-form-preview .bg-white,
+html.dark .pass-slip-form-preview .bg-white,
+html.dark .travel-order-form-preview .bg-white\/95,
+html.dark .compensatory-form-preview .bg-white\/95,
+html.dark .pass-slip-form-preview .bg-white\/95 {
+  background-color: #ffffff !important;
+}
+
+html.dark .travel-order-form-preview .bg-slate-50,
+html.dark .travel-order-form-preview .bg-slate-100,
+html.dark .compensatory-form-preview .bg-slate-50,
+html.dark .compensatory-form-preview .bg-slate-100,
+html.dark .pass-slip-form-preview .bg-slate-50,
+html.dark .pass-slip-form-preview .bg-slate-100 {
+  background-color: #f8fafc !important;
+}
+
+html.dark .travel-order-form-preview .text-slate-950,
+html.dark .travel-order-form-preview .text-slate-900,
+html.dark .travel-order-form-preview .text-slate-800,
+html.dark .travel-order-form-preview .text-slate-700,
+html.dark .compensatory-form-preview .text-slate-950,
+html.dark .compensatory-form-preview .text-slate-900,
+html.dark .compensatory-form-preview .text-slate-800,
+html.dark .compensatory-form-preview .text-slate-700,
+html.dark .pass-slip-form-preview .text-slate-950,
+html.dark .pass-slip-form-preview .text-slate-900,
+html.dark .pass-slip-form-preview .text-slate-800,
+html.dark .pass-slip-form-preview .text-slate-700 {
+  color: #0f172a !important;
+}
+
+html.dark .travel-order-form-preview .text-slate-600,
+html.dark .travel-order-form-preview .text-slate-500,
+html.dark .compensatory-form-preview .text-slate-600,
+html.dark .compensatory-form-preview .text-slate-500,
+html.dark .pass-slip-form-preview .text-slate-600,
+html.dark .pass-slip-form-preview .text-slate-500 {
+  color: #475569 !important;
+}
+
+html.dark .travel-order-form-preview .border-slate-100,
+html.dark .travel-order-form-preview .border-slate-200,
+html.dark .travel-order-form-preview .border-slate-300,
+html.dark .compensatory-form-preview .border-slate-100,
+html.dark .compensatory-form-preview .border-slate-200,
+html.dark .compensatory-form-preview .border-slate-300,
+html.dark .pass-slip-form-preview .border-slate-100,
+html.dark .pass-slip-form-preview .border-slate-200,
+html.dark .pass-slip-form-preview .border-slate-300 {
+  border-color: #cbd5e1 !important;
+}
+
+html.dark .travel-order-form-preview .hover\:bg-white:hover,
+html.dark .travel-order-form-preview .hover\:bg-slate-50:hover,
+html.dark .compensatory-form-preview .hover\:bg-white:hover,
+html.dark .compensatory-form-preview .hover\:bg-slate-50:hover,
+html.dark .pass-slip-form-preview .hover\:bg-white:hover,
+html.dark .pass-slip-form-preview .hover\:bg-slate-50:hover {
+  background-color: #f8fafc !important;
+}
+
+html.dark .travel-order-form-paper,
+html.dark .compensatory-form-paper,
+html.dark .pass-slip-form-paper {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+html.dark .travel-order-form-paper input,
+html.dark .travel-order-form-paper textarea,
+html.dark .travel-order-form-paper select,
+html.dark .compensatory-form-paper input,
+html.dark .compensatory-form-paper textarea,
+html.dark .compensatory-form-paper select,
+html.dark .pass-slip-form-paper input,
+html.dark .pass-slip-form-paper textarea,
+html.dark .pass-slip-form-paper select {
+  background-color: transparent !important;
+  color: #111827 !important;
+}
+html.dark .notification-bell,
+html.dark .notification-center-page {
+  color: #e2e8f0;
+}
+
+html.dark .notification-bell-panel {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.55) !important;
+}
+
+html.dark .notification-bell .bg-white,
+html.dark .notification-center-page .bg-white {
+  background-color: #0f172a !important;
+}
+
+html.dark .notification-bell .bg-slate-50,
+html.dark .notification-center-page .bg-slate-50,
+html.dark .notification-center-page table thead {
+  background-color: #111827 !important;
+}
+
+html.dark .notification-bell [class*="bg-[#fff7f7]"],
+html.dark .notification-center-page [class*="bg-[#fff7f7]"] {
+  background-color: rgba(6, 78, 59, 0.24) !important;
+}
+
+html.dark .notification-bell [class*="bg-[#D61E1E]/10"],
+html.dark .notification-center-page [class*="bg-[#D61E1E]/10"] {
+  background-color: rgba(33, 196, 93, 0.14) !important;
+}
+
+html.dark .notification-bell .text-\[\#D61E1E\],
+html.dark .notification-center-page .text-\[\#D61E1E\],
+html.dark .notification-bell .hover\:text-\[\#D61E1E\]:hover,
+html.dark .notification-center-page .hover\:text-\[\#D61E1E\]:hover {
+  color: #21c45d !important;
+}
+
+html.dark .notification-bell .border-\[\#D61E1E\]\/25 {
+  border-color: rgba(33, 196, 93, 0.4) !important;
+}
+
+html.dark .notification-bell .bg-emerald-100,
+html.dark .notification-center-page .bg-emerald-100,
+html.dark .notification-bell .bg-emerald-50,
+html.dark .notification-center-page .bg-emerald-50 {
+  background-color: rgba(6, 78, 59, 0.55) !important;
+}
+
+html.dark .notification-bell .text-emerald-700,
+html.dark .notification-center-page .text-emerald-700 {
+  color: #86efac !important;
+}
+
+html.dark .notification-bell .border-emerald-200,
+html.dark .notification-center-page .border-emerald-200 {
+  border-color: #047857 !important;
+}
+
+html.dark .notification-bell .hover\:bg-emerald-100:hover,
+html.dark .notification-center-page .hover\:bg-emerald-100:hover {
+  background-color: rgba(6, 95, 70, 0.65) !important;
+}
+
+html.dark .notification-bell .bg-rose-50,
+html.dark .notification-center-page .bg-rose-50 {
+  background-color: rgba(76, 5, 25, 0.72) !important;
+}
+
+html.dark .notification-bell .border-rose-100,
+html.dark .notification-bell .border-rose-200,
+html.dark .notification-center-page .border-rose-100,
+html.dark .notification-center-page .border-rose-200 {
+  border-color: #7f1d1d !important;
+}
+
+html.dark .notification-bell .text-rose-700,
+html.dark .notification-center-page .text-rose-700 {
+  color: #fca5a5 !important;
+}
+
+html.dark .notification-bell .border-slate-100,
+html.dark .notification-bell .border-slate-200,
+html.dark .notification-bell .border-slate-300,
+html.dark .notification-center-page .border-slate-100,
+html.dark .notification-center-page .border-slate-200,
+html.dark .notification-center-page .border-slate-300 {
+  border-color: #334155 !important;
+}
+
+html.dark .notification-bell .hover\:bg-slate-50:hover,
+html.dark .notification-center-page .hover\:bg-slate-50:hover {
+  background-color: #1e293b !important;
+}
+
+html.dark .notification-center-page tbody tr:hover {
+  background-color: #1e293b !important;
+}
+
+html.dark .notification-bell .disabled\:bg-slate-50:disabled,
+html.dark .notification-center-page .disabled\:bg-slate-50:disabled {
+  background-color: #0f172a !important;
+}
+
+html.dark .notification-bell .disabled\:border-slate-200:disabled,
+html.dark .notification-center-page .disabled\:border-slate-200:disabled {
+  border-color: #334155 !important;
+}
+
+/* ============================================================
+   Reports dashboard
+   ============================================================ */
+
+/* Tinted KPI icons and status badges need their own dark steps —
+   the global .bg-white / .bg-slate-50 overrides do not reach them. */
+html.dark .reports-dashboard .bg-emerald-50 {
+  background-color: rgba(6, 78, 59, 0.55) !important;
+}
+
+html.dark .reports-dashboard .text-emerald-700 {
+  color: #86efac !important;
+}
+
+html.dark .reports-dashboard .border-emerald-200 {
+  border-color: #047857 !important;
+}
+
+html.dark .reports-dashboard .bg-rose-50 {
+  background-color: rgba(76, 5, 25, 0.72) !important;
+}
+
+html.dark .reports-dashboard .text-rose-700,
+html.dark .reports-dashboard .text-rose-600 {
+  color: #fca5a5 !important;
+}
+
+html.dark .reports-dashboard .border-rose-200 {
+  border-color: #7f1d1d !important;
+}
+
+html.dark .reports-dashboard .bg-amber-50 {
+  background-color: rgba(69, 39, 3, 0.7) !important;
+}
+
+html.dark .reports-dashboard .text-amber-800,
+html.dark .reports-dashboard .text-amber-900,
+html.dark .reports-dashboard .text-amber-700 {
+  color: #fcd34d !important;
+}
+
+html.dark .reports-dashboard .border-amber-200 {
+  border-color: #92400e !important;
+}
+
+html.dark .reports-dashboard .bg-sky-50 {
+  background-color: rgba(7, 59, 76, 0.6) !important;
+}
+
+html.dark .reports-dashboard .text-sky-700 {
+  color: #7dd3fc !important;
+}
+
+html.dark .reports-dashboard .border-sky-200 {
+  border-color: #0369a1 !important;
+}
+
+html.dark .reports-dashboard .bg-violet-50 {
+  background-color: rgba(46, 16, 101, 0.65) !important;
+}
+
+html.dark .reports-dashboard .text-violet-700 {
+  color: #c4b5fd !important;
+}
+
+html.dark .reports-dashboard .border-violet-200 {
+  border-color: #6d28d9 !important;
+}
+
+html.dark .reports-dashboard .hover\:bg-slate-50:hover,
+html.dark .reports-dashboard tbody tr:hover {
+  background-color: #1e293b !important;
+}
+
+html.dark .reports-dashboard .bg-slate-100 {
+  background-color: #1e293b !important;
+}
+
+/* The toolbar's Print button prints without ever showing the drawer. The document still has to be
+   in the DOM for the browser to lay it out — `display: none` prints a blank sheet — so it is parked
+   off-canvas at the drawer's own width and the @media print block below drops it back into the
+   flow (a static box ignores `left`, so nothing has to undo the offset). */
+.reports-print-only {
+  position: fixed;
+  top: 0;
+  left: -20000px;
+  width: 1180px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Report preview / print.
+   The preview drawer is portalled to <body>, so printing hides the whole app
+   root and lets the formatted report flow down the page on its own. */
+@media print {
+  #root {
+    display: none !important;
+  }
+
+  /* `reports-no-print` drops the drawer's own controls; `reports-print-hide` drops the parts of
+     the preview that belong to the dashboard rather than to the document — the summary tiles, and
+     the Status column, which repeats the filter the report was run under and is left off the
+     exported files for the same reason (see reports_export_columns() in reports.php).
+     Paper gets the letterhead, the run details and the records only. */
+  .reports-no-print,
+  .reports-no-print *,
+  .reports-print-hide,
+  .reports-print-hide * {
+    display: none !important;
+  }
+
+  .reports-print-shell,
+  .reports-print-panel {
+    position: static !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    transform: none !important;
+    background: #ffffff !important;
+  }
+
+  .reports-print-area {
+    max-height: none !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    padding: 0 !important;
+  }
+
+  /* On paper the drawer stops being a dashboard. Cards, tints, pills and rounded edges are all
+     screen chrome, so everything outside the letterhead and the table is flattened to plain
+     type — the only rules left on the sheet are the ones a formal report is expected to carry. */
+  .reports-print-area *:not(table):not(thead):not(tbody):not(tr):not(th):not(td):not(header) {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+
+  .reports-print-area section,
+  .reports-print-area article {
+    padding: 0 !important;
+    break-inside: auto;
+  }
+
+  .reports-print-area section > div {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  /* The data table is laid out for a scrollable drawer, where a 760px floor keeps the columns
+     readable. Paper has no scrollbar, so on print the floor is dropped and the wrapper's clip is
+     opened — otherwise every column past the page width is simply cut off the sheet. */
+  .reports-print-area .overflow-x-auto {
+    overflow: visible !important;
+  }
+
+  .reports-print-area table {
+    break-inside: auto;
+    min-width: 0 !important;
+    width: 100% !important;
+    table-layout: fixed;
+    border: 1px solid #334155 !important;
+    border-collapse: collapse !important;
+  }
+
+  .reports-print-area td,
+  .reports-print-area th {
+    overflow-wrap: anywhere;
+    padding: 5px 8px !important;
+    font-size: 9.5pt;
+  }
+
+  /* Fully ruled on paper. A printed report is filed and read column by column, often after a page
+     break, so every cell carries its own line rather than the screen's hairline-per-row: the heading
+     band is drawn a shade darker so it still reads as the header when the sheet is photocopied. */
+  .reports-print-area thead th {
+    background: transparent !important;
+    border: 1px solid #334155 !important;
+    color: #0f172a !important;
+  }
+
+  .reports-print-area tbody td {
+    border: 1px solid #94a3b8 !important;
+    color: #0f172a !important;
+  }
+
+  /* Status pills lose their fill with the rest of the chrome, and their colour with it, so the
+     value still reads on a black-and-white office printer. */
+  .reports-print-area tbody td span {
+    color: #0f172a !important;
+    padding: 0 !important;
+  }
+
+  .reports-print-area tr {
+    break-inside: avoid;
+  }
+
+  .reports-print-area thead {
+    display: table-header-group;
+  }
+
+  /* The seal is an <img>, so it survives the "no background graphics" default that would drop a
+     CSS background — but the letterhead has to stay with the first rows rather than being left
+     alone at the foot of a page. */
+  .reports-print-area header {
+    break-inside: avoid;
+    break-after: avoid;
+  }
+
+  @page {
+    margin: 12mm;
+  }
+}
+
+html.dark .notification-bell .disabled\:text-slate-400:disabled,
+html.dark .notification-center-page .disabled\:text-slate-400:disabled {
+  color: #64748b !important;
+}
+
+/* Row action dropdowns keep existing action buttons but stack them in one compact menu. */
+.row-actions-menu-content > div,
+.row-actions-menu-content > span {
+  display: flex;
+  min-width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.375rem;
+}
+
+.row-actions-menu-content > button,
+.row-actions-menu-content .action-icon-button {
+  width: 100%;
+  justify-content: flex-start;
+}
+/* Action button palette — one solid set of tones shared by light and dark themes.
+   Every tone declares its fill, a darker hover/edge shade and a matching focus
+   ring; `view` doubles as the default for any tone that isn't listed below. */
+.action-icon-button {
+  --action-fill: #38aff1;
+  --action-fill-hover: #319ad4;
+  --action-edge: #2c89bc;
+  --tw-ring-color: rgba(56, 175, 241, 0.35);
+  background-color: var(--action-fill);
+  border-color: var(--action-edge);
+  color: #ffffff;
+}
+
+.action-icon-button:hover:not(:disabled) {
+  background-color: var(--action-fill-hover);
+  border-color: var(--action-fill-hover);
+}
+
+.action-icon-button[data-tone="view"],
+.action-icon-button[data-tone="review"] {
+  --action-fill: #38aff1;
+  --action-fill-hover: #319ad4;
+  --action-edge: #2c89bc;
+  --tw-ring-color: rgba(56, 175, 241, 0.35);
+}
+
+.action-icon-button[data-tone="edit"] {
+  --action-fill: #f4a62a;
+  --action-fill-hover: #d79225;
+  --action-edge: #be8121;
+  --tw-ring-color: rgba(244, 166, 42, 0.35);
+}
+
+.action-icon-button[data-tone="archive"],
+.action-icon-button[data-tone="reject"],
+.action-icon-button[data-tone="delete"] {
+  --action-fill: #fa3f19;
+  --action-fill-hover: #dc3716;
+  --action-edge: #c33114;
+  --tw-ring-color: rgba(250, 63, 25, 0.35);
+}
+
+.action-icon-button[data-tone="approve"] {
+  --action-fill: #45bf46;
+  --action-fill-hover: #3da83e;
+  --action-edge: #369537;
+  --tw-ring-color: rgba(69, 191, 70, 0.35);
+}
+
+.action-icon-button[data-tone="export"] {
+  --action-fill: #16a34a;
+  --action-fill-hover: #15803d;
+  --action-edge: #166534;
+  --tw-ring-color: rgba(22, 163, 74, 0.35);
+}
+
+.action-icon-button[data-tone="cancel"] {
+  --action-fill: #737373;
+  --action-fill-hover: #656565;
+  --action-edge: #5a5a5a;
+  --tw-ring-color: rgba(115, 115, 115, 0.35);
+}
+
+.action-icon-button[data-tone="restore"] {
+  --action-fill: #14b8a6;
+  --action-fill-hover: #12a294;
+  --action-edge: #0f8b80;
+  --tw-ring-color: rgba(20, 184, 166, 0.35);
+}
+
+.action-icon-button[data-tone="print"] {
+  --action-fill: #8b5cf6;
+  --action-fill-hover: #7b4fe0;
+  --action-edge: #6b44c4;
+  --tw-ring-color: rgba(139, 92, 246, 0.35);
+}
+
+/* Leaving the service. Gold for a retirement, which the Loyalty screen treats as an honour, and a
+   neutral slate for a resignation — neither is a destructive action, so neither takes the red. */
+.action-icon-button[data-tone="retire"] {
+  --action-fill: #d97706;
+  --action-fill-hover: #c26a05;
+  --action-edge: #a85c05;
+  --tw-ring-color: rgba(217, 119, 6, 0.35);
+}
+
+.action-icon-button[data-tone="resign"] {
+  --action-fill: #64748b;
+  --action-fill-hover: #57657a;
+  --action-edge: #4b5768;
+  --tw-ring-color: rgba(100, 116, 139, 0.35);
+}
+@layer utilities {
+  @keyframes slideInRight {
+    from {
+      transform: translateX(100%);
+    }
+
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes notification-heartbeat {
+    0%,
+    28%,
+    100% {
+      transform: scale(1);
+    }
+
+    10% {
+      transform: scale(1.12);
+    }
+
+    18% {
+      transform: scale(0.96);
+    }
+
+    24% {
+      transform: scale(1.08);
+    }
+  }
+
+  .animate-notification-heartbeat {
+    animation: notification-heartbeat 1.35s ease-in-out infinite;
+    transform-origin: center;
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * The header message popover (ChatBubbleButton).
+ *
+ * Most of what it draws comes from the shared slate/white utilities the global rules above already
+ * remap, so this only covers what those cannot reach: the floating panel's own chrome, and the
+ * avatar gradient, which has no dark counterpart anywhere in the stylesheet. It is scoped to the
+ * popover rather than applied to the shared Avatar so the full Communications workspace keeps the
+ * appearance it already had.
+ */
+html.dark .chat-bubble {
+  color: #e2e8f0;
+}
+
+html.dark .chat-bubble-panel {
+  border-color: #334155 !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.55) !important;
+}
+
+html.dark .chat-bubble .bg-gradient-to-br.from-slate-100 {
+  background-image: linear-gradient(to bottom right, #1e293b, #334155) !important;
+}
+
+html.dark .chat-bubble .border-\[\#D61E1E\]\/25 {
+  border-color: rgba(214, 30, 30, 0.45) !important;
+}
+
+/* ===========================================================================
+   System interface preference
+
+   The admin color preference updates these variables at runtime.  The selectors below also cover
+   older modules that use the original crimson Tailwind arbitrary values, so choosing a color is a
+   presentation-only change that reaches every workspace without touching its functionality.
+   =========================================================================== */
+.app-button {
+  --tw-ring-color: rgb(var(--ui-accent-rgb) / 0.24);
+}
+
+.app-button--primary {
+  border-color: var(--ui-accent) !important;
+  background-color: var(--ui-accent) !important;
+  color: var(--ui-on-accent) !important;
+}
+
+.app-button--primary:hover:not(:disabled) {
+  border-color: var(--ui-accent-hover) !important;
+  background-color: var(--ui-accent-hover) !important;
+}
+
+.app-button--secondary {
+  border-color: var(--ui-accent-border) !important;
+  background-color: #ffffff !important;
+  color: var(--ui-accent) !important;
+}
+
+.app-button--secondary:hover:not(:disabled) {
+  border-color: var(--ui-accent-border-hover) !important;
+  background-color: var(--ui-accent-tint) !important;
+}
+
+.app-button--success {
+  border-color: #166534 !important;
+  background-color: #16a34a !important;
+  color: #ffffff !important;
+}
+
+.app-button--success:hover:not(:disabled) {
+  border-color: #15803d !important;
+  background-color: #15803d !important;
+}
+
+.app-button--ghost {
+  border-color: transparent !important;
+  background-color: transparent !important;
+  color: var(--ui-accent) !important;
+}
+
+.app-button--ghost:hover:not(:disabled) {
+  background-color: var(--ui-accent-tint) !important;
+}
+
+.app-button--danger {
+  border-color: #D61E1E !important;
+  background-color: #D61E1E !important;
+  color: #ffffff !important;
+}
+
+.app-button--danger:hover:not(:disabled) {
+  border-color: #B41818 !important;
+  background-color: #B41818 !important;
+}
+
+html.dark .app-button--secondary {
+  border-color: rgb(var(--ui-accent-rgb) / 0.55) !important;
+  background-color: #0f172a !important;
+  color: var(--ui-accent-soft) !important;
+}
+
+html.dark .app-button--secondary:hover:not(:disabled),
+html.dark .app-button--ghost:hover:not(:disabled) {
+  background-color: rgb(var(--ui-accent-rgb) / 0.15) !important;
+}
+
+html.dark .app-button--ghost {
+  color: var(--ui-accent-soft) !important;
+}
+
+.app-card {
+  border-color: var(--ui-accent-border) !important;
+}
+
+.app-card-title {
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .admin-sidebar {
+  border-color: var(--ui-accent-deep) !important;
+  background-image: linear-gradient(to bottom, var(--ui-accent), var(--ui-accent-deep)) !important;
+}
+
+html[data-ui-theme-color] .admin-sidebar [class~="text-[#D61E1E]"],
+html[data-ui-theme-color] .admin-sidebar [class~="hover:text-[#D61E1E]"]:hover {
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] [class~="bg-[#D61E1E]"] {
+  background-color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] [class~="hover:bg-[#D61E1E]"]:hover,
+html[data-ui-theme-color] [class~="bg-[#B41818]"] {
+  background-color: var(--ui-accent-hover) !important;
+}
+
+html[data-ui-theme-color] [class~="hover:bg-[#B41818]"]:hover {
+  background-color: var(--ui-accent-deep) !important;
+}
+
+html[data-ui-theme-color] [class~="bg-[#FEF1F1]"] {
+  background-color: var(--ui-accent-tint) !important;
+}
+
+html[data-ui-theme-color] [class~="bg-[#D61E1E]/10"] {
+  background-color: rgb(var(--ui-accent-rgb) / 0.1) !important;
+}
+
+html[data-ui-theme-color] [class~="text-[#D61E1E]"],
+html[data-ui-theme-color] [class~="text-[#B41818]"],
+html[data-ui-theme-color] [class~="hover:text-[#D61E1E]"]:hover,
+html[data-ui-theme-color] [class~="hover:text-[#B41818]"]:hover {
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] [class~="border-[#D61E1E]"] {
+  border-color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] [class~="border-[#B41818]"],
+html[data-ui-theme-color] [class~="hover:border-[#B41818]"]:hover {
+  border-color: var(--ui-accent-hover) !important;
+}
+
+html[data-ui-theme-color] [class~="border-[#F8BFBF]"] {
+  border-color: var(--ui-accent-border) !important;
+}
+
+html[data-ui-theme-color] [class~="border-[#F18E8E]"],
+html[data-ui-theme-color] [class~="hover:border-[#F18E8E]"]:hover {
+  border-color: var(--ui-accent-border-hover) !important;
+}
+
+html[data-ui-theme-color] [class~="border-[#D61E1E]/25"] {
+  border-color: rgb(var(--ui-accent-rgb) / 0.25) !important;
+}
+
+html[data-ui-theme-color] [class~="focus:border-[#D61E1E]"]:focus {
+  border-color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] [class~="focus:ring-[#D61E1E]/10"]:focus,
+html[data-ui-theme-color] [class~="focus:ring-[#D61E1E]/20"]:focus {
+  --tw-ring-color: rgb(var(--ui-accent-rgb) / 0.2) !important;
+}
+
+html[data-ui-theme-color] [class~="from-[#D61E1E]"] {
+  --tw-gradient-from: var(--ui-accent) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(var(--ui-accent-rgb) / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+html[data-ui-theme-color] [class~="to-[#D61E1E]"] {
+  --tw-gradient-to: var(--ui-accent) var(--tw-gradient-to-position) !important;
+}
+
+html[data-ui-theme-color] [class~="to-[#911212]"] {
+  --tw-gradient-to: var(--ui-accent-deep) var(--tw-gradient-to-position) !important;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-button:hover,
+.dashboard-leave-travel-calendar .fc .fc-button:focus {
+  border-color: var(--ui-accent-border) !important;
+  background: var(--ui-accent-tint) !important;
+  color: var(--ui-accent) !important;
+}
+
+.dashboard-leave-travel-calendar .fc .fc-button-primary:not(:disabled).fc-button-active,
+.dashboard-leave-travel-calendar .fc .fc-button-primary:not(:disabled):active {
+  border-color: var(--ui-accent) !important;
+  background: var(--ui-accent) !important;
+  color: var(--ui-on-accent) !important;
+}
+
+/* Dashboard welcome panel, account menu, and profile are branded components rather than generic
+   buttons/cards, so they receive the system preference explicitly as well. */
+html[data-ui-theme-color] .dashboard-welcome-banner {
+  background: linear-gradient(135deg, var(--ui-accent) 0%, var(--ui-accent-hover) 52%, var(--ui-accent-deep) 100%) !important;
+  box-shadow: 0 14px 30px rgb(var(--ui-accent-rgb) / 0.28) !important;
+}
+
+html[data-ui-theme-color] .dashboard-welcome-banner--clean {
+  border-color: var(--ui-accent-border) !important;
+  background: #ffffff !important;
+  box-shadow: 0 18px 50px rgb(var(--ui-accent-rgb) / 0.1) !important;
+}
+
+html[data-ui-theme-color] .app-topbar-themed {
+  border-color: var(--ui-accent-border) !important;
+}
+
+html[data-ui-theme-color] .app-account-trigger {
+  border-color: var(--ui-accent-border) !important;
+  background-color: var(--ui-accent-tint) !important;
+}
+
+html[data-ui-theme-color] .app-account-trigger:hover {
+  border-color: var(--ui-accent-border-hover) !important;
+  background-color: var(--ui-accent-soft) !important;
+}
+
+html[data-ui-theme-color] .app-account-menu {
+  border-color: var(--ui-accent-border) !important;
+}
+
+html[data-ui-theme-color] .app-account-menu-banner {
+  background: linear-gradient(135deg, var(--ui-accent) 0%, var(--ui-accent-hover) 52%, var(--ui-accent-deep) 100%) !important;
+}
+
+html[data-ui-theme-color] .app-account-menu-avatar {
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .app-account-menu-action:hover {
+  background-color: var(--ui-accent-tint) !important;
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .app-account-menu-action:hover .app-account-menu-action-icon,
+html[data-ui-theme-color] .app-account-menu-action--logout .app-account-menu-action-icon {
+  background-color: var(--ui-accent-soft) !important;
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .app-account-menu-action--logout {
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .profile-header-card,
+html[data-ui-theme-color] .profile-section-nav,
+html[data-ui-theme-color] .profile-section-card {
+  border-color: var(--ui-accent-border) !important;
+}
+
+html[data-ui-theme-color] .profile-header-card-surface {
+  background: linear-gradient(to bottom, var(--ui-accent-tint), #ffffff) !important;
+}
+
+html[data-ui-theme-color] .profile-header-card-avatar,
+html[data-ui-theme-color] .profile-header-card-camera {
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .profile-header-card-camera:hover {
+  background-color: var(--ui-accent-tint) !important;
+}
+
+html[data-ui-theme-color] .profile-header-card-stat-label,
+html[data-ui-theme-color] .profile-header-card-label,
+html[data-ui-theme-color] .profile-section-nav-item[data-active="true"],
+html[data-ui-theme-color] .profile-section-nav-item:hover {
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .profile-section-indicator {
+  border-color: var(--ui-accent-border) !important;
+  background: var(--ui-accent-tint) !important;
+}
+
+html[data-ui-theme-color] .profile-section-card-icon {
+  border-color: var(--ui-accent-border) !important;
+  background-color: var(--ui-accent-tint) !important;
+  color: var(--ui-accent) !important;
+}
+
+html[data-ui-theme-color] .profile-section-card-header,
+html[data-ui-theme-color] .profile-section-card-footer,
+html[data-ui-theme-color] .profile-section-nav-actions {
+  border-color: var(--ui-accent-border) !important;
+}
+
+html.dark[data-ui-theme-color] .profile-header-card-surface {
+  background: linear-gradient(to bottom, #111827, #0f172a) !important;
+}
+
+html.dark[data-ui-theme-color] .profile-header-card-avatar,
+html.dark[data-ui-theme-color] .profile-header-card-camera {
+  border-color: rgb(var(--ui-accent-rgb) / 0.5) !important;
+  color: var(--ui-accent-soft) !important;
+}
+
+html.dark[data-ui-theme-color] .profile-header-card-stat-label,
+html.dark[data-ui-theme-color] .profile-section-nav-item[data-active="true"],
+html.dark[data-ui-theme-color] .profile-section-nav-item:hover {
+  color: var(--ui-accent-soft) !important;
+}
+
+html.dark[data-ui-theme-color] .profile-section-indicator {
+  border-color: rgb(var(--ui-accent-rgb) / 0.45) !important;
+  background: linear-gradient(135deg, #111827, rgb(var(--ui-accent-rgb) / 0.2)) !important;
+}
+
+/* ==========================================================================
+ * Unified dark interface
+ *
+ * This finishing layer intentionally follows the configurable accent rules above. Dark mode owns
+ * the surfaces; the selected system color remains an accent instead of repainting cards and
+ * navigation with near-white tints.
+ * ========================================================================== */
+html.dark ::selection {
+  background: rgb(var(--ui-accent-rgb, 214 30 30) / 0.34);
+  color: #ffffff;
+}
+
+html.dark hr {
+  border-color: var(--app-border);
+}
+
+html.dark option,
+html.dark optgroup {
+  background-color: #0f172a;
+  color: var(--app-text);
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder,
+html.dark .placeholder\:text-slate-400::placeholder,
+html.dark .placeholder\:text-slate-500::placeholder {
+  color: #7f90aa !important;
+}
+
+html.dark input:disabled,
+html.dark select:disabled,
+html.dark textarea:disabled,
+html.dark .disabled\:bg-slate-50:disabled,
+html.dark .disabled\:bg-slate-100:disabled {
+  border-color: #26344a !important;
+  background-color: #111827 !important;
+  color: #77869d !important;
+}
+
+html.dark input:-webkit-autofill,
+html.dark input:-webkit-autofill:hover,
+html.dark input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--app-text);
+  box-shadow: 0 0 0 1000px #0b1220 inset !important;
+  caret-color: var(--app-text);
+}
+
+html.dark input[type="checkbox"],
+html.dark input[type="radio"] {
+  accent-color: var(--ui-accent, #d61e1e);
+}
+
+html.dark .from-white {
+  --tw-gradient-from: var(--app-surface) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(15 23 42 / 0) var(--tw-gradient-to-position) !important;
+}
+
+html.dark .via-white {
+  --tw-gradient-to: rgb(15 23 42 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--app-surface) var(--tw-gradient-via-position), var(--tw-gradient-to) !important;
+}
+
+html.dark .to-white {
+  --tw-gradient-to: var(--app-surface) var(--tw-gradient-to-position) !important;
+}
+
+html.dark .from-slate-50,
+html.dark .from-gray-50 {
+  --tw-gradient-from: var(--app-surface-soft) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(17 27 46 / 0) var(--tw-gradient-to-position) !important;
+}
+
+html.dark .via-slate-50,
+html.dark .via-gray-50 {
+  --tw-gradient-to: rgb(17 27 46 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--app-surface-soft) var(--tw-gradient-via-position), var(--tw-gradient-to) !important;
+}
+
+html.dark .to-slate-50,
+html.dark .to-gray-50,
+html.dark .to-slate-100,
+html.dark .to-gray-100 {
+  --tw-gradient-to: var(--app-surface-soft) var(--tw-gradient-to-position) !important;
+}
+
+/* Semantic badges and notices keep their hue while using low-luminance surfaces. */
+html.dark .bg-red-50,
+html.dark .bg-red-100,
+html.dark .bg-rose-50,
+html.dark .bg-rose-100,
+html.dark .bg-rose-50\/70 {
+  background-color: rgb(190 24 93 / 0.16) !important;
+}
+
+html.dark .border-red-100,
+html.dark .border-red-200,
+html.dark .border-red-300,
+html.dark .border-rose-100,
+html.dark .border-rose-200,
+html.dark .border-rose-300 {
+  border-color: rgb(251 113 133 / 0.36) !important;
+}
+
+html.dark .text-red-600,
+html.dark .text-red-700,
+html.dark .text-red-800,
+html.dark .text-red-900,
+html.dark .text-rose-600,
+html.dark .text-rose-700,
+html.dark .text-rose-800,
+html.dark .text-rose-900,
+html.dark .text-rose-950 {
+  color: #fda4af !important;
+}
+
+html.dark .bg-orange-50,
+html.dark .bg-orange-100,
+html.dark .bg-amber-50,
+html.dark .bg-amber-100,
+html.dark .bg-yellow-50,
+html.dark .bg-yellow-100 {
+  background-color: rgb(217 119 6 / 0.15) !important;
+}
+
+html.dark .border-orange-100,
+html.dark .border-orange-200,
+html.dark .border-orange-300,
+html.dark .border-amber-100,
+html.dark .border-amber-200,
+html.dark .border-amber-300,
+html.dark .border-yellow-100,
+html.dark .border-yellow-200,
+html.dark .border-yellow-300 {
+  border-color: rgb(251 191 36 / 0.35) !important;
+}
+
+html.dark .text-orange-600,
+html.dark .text-orange-700,
+html.dark .text-orange-800,
+html.dark .text-orange-900,
+html.dark .text-amber-600,
+html.dark .text-amber-700,
+html.dark .text-amber-800,
+html.dark .text-amber-900,
+html.dark .text-yellow-600,
+html.dark .text-yellow-700,
+html.dark .text-yellow-800,
+html.dark .text-yellow-900 {
+  color: #fcd34d !important;
+}
+
+html.dark .bg-green-50,
+html.dark .bg-green-100,
+html.dark .bg-emerald-50,
+html.dark .bg-emerald-100,
+html.dark .bg-emerald-50\/35,
+html.dark .bg-emerald-50\/60,
+html.dark .bg-emerald-50\/70,
+html.dark .bg-teal-50,
+html.dark .bg-teal-100 {
+  background-color: rgb(16 185 129 / 0.14) !important;
+}
+
+html.dark .border-green-100,
+html.dark .border-green-200,
+html.dark .border-green-300,
+html.dark .border-emerald-100,
+html.dark .border-emerald-200,
+html.dark .border-emerald-300,
+html.dark .border-teal-100,
+html.dark .border-teal-200,
+html.dark .border-teal-300 {
+  border-color: rgb(52 211 153 / 0.34) !important;
+}
+
+html.dark .text-green-600,
+html.dark .text-green-700,
+html.dark .text-green-800,
+html.dark .text-green-900,
+html.dark .text-emerald-600,
+html.dark .text-emerald-700,
+html.dark .text-emerald-800,
+html.dark .text-emerald-900,
+html.dark .text-emerald-950,
+html.dark .text-teal-600,
+html.dark .text-teal-700,
+html.dark .text-teal-800,
+html.dark .text-teal-900,
+html.dark .text-teal-950 {
+  color: #6ee7b7 !important;
+}
+
+html.dark .bg-cyan-50,
+html.dark .bg-cyan-100,
+html.dark .bg-sky-50,
+html.dark .bg-sky-100,
+html.dark .bg-sky-50\/70,
+html.dark .bg-blue-50,
+html.dark .bg-blue-100 {
+  background-color: rgb(14 165 233 / 0.14) !important;
+}
+
+html.dark .border-cyan-100,
+html.dark .border-cyan-200,
+html.dark .border-cyan-300,
+html.dark .border-sky-100,
+html.dark .border-sky-200,
+html.dark .border-sky-300,
+html.dark .border-blue-100,
+html.dark .border-blue-200,
+html.dark .border-blue-300 {
+  border-color: rgb(56 189 248 / 0.34) !important;
+}
+
+html.dark .text-cyan-600,
+html.dark .text-cyan-700,
+html.dark .text-cyan-800,
+html.dark .text-cyan-900,
+html.dark .text-sky-600,
+html.dark .text-sky-700,
+html.dark .text-sky-800,
+html.dark .text-sky-900,
+html.dark .text-blue-600,
+html.dark .text-blue-700,
+html.dark .text-blue-800,
+html.dark .text-blue-900,
+html.dark .text-blue-950 {
+  color: #7dd3fc !important;
+}
+
+html.dark .bg-indigo-50,
+html.dark .bg-indigo-100,
+html.dark .bg-indigo-50\/70,
+html.dark .bg-violet-50,
+html.dark .bg-violet-100,
+html.dark .bg-purple-50,
+html.dark .bg-purple-100 {
+  background-color: rgb(124 58 237 / 0.15) !important;
+}
+
+html.dark .border-indigo-100,
+html.dark .border-indigo-200,
+html.dark .border-indigo-300,
+html.dark .border-violet-100,
+html.dark .border-violet-200,
+html.dark .border-violet-300,
+html.dark .border-purple-100,
+html.dark .border-purple-200,
+html.dark .border-purple-300 {
+  border-color: rgb(167 139 250 / 0.34) !important;
+}
+
+html.dark .text-indigo-600,
+html.dark .text-indigo-700,
+html.dark .text-indigo-800,
+html.dark .text-indigo-900,
+html.dark .text-violet-600,
+html.dark .text-violet-700,
+html.dark .text-violet-800,
+html.dark .text-violet-900,
+html.dark .text-purple-600,
+html.dark .text-purple-700,
+html.dark .text-purple-800,
+html.dark .text-purple-900 {
+  color: #c4b5fd !important;
+}
+
+/* Configurable brand tints must never resolve to their light, white-mixed values in dark mode. */
+html.dark[data-ui-theme-color] [class~="bg-[#FEF1F1]"],
+html.dark[data-ui-theme-color] [class~="bg-[#fff5f5]"],
+html.dark[data-ui-theme-color] [class~="bg-[#fff7f7]"],
+html.dark[data-ui-theme-color] [class~="bg-[#fdf2f2]"] {
+  background-color: rgb(var(--ui-accent-rgb) / 0.14) !important;
+}
+
+html.dark[data-ui-theme-color] [class~="hover:bg-[#FEF1F1]"]:hover,
+html.dark[data-ui-theme-color] [class~="hover:bg-[#fff5f5]"]:hover,
+html.dark[data-ui-theme-color] [class~="hover:bg-[#fff7f7]"]:hover {
+  background-color: rgb(var(--ui-accent-rgb) / 0.2) !important;
+}
+
+html.dark[data-ui-theme-color] [class~="border-[#F8BFBF]"],
+html.dark[data-ui-theme-color] [class~="border-[#F18E8E]"] {
+  border-color: rgb(var(--ui-accent-rgb) / 0.48) !important;
+}
+
+html.dark[data-ui-theme-color] [class~="text-[#D61E1E]"],
+html.dark[data-ui-theme-color] [class~="text-[#B41818]"],
+html.dark[data-ui-theme-color] [class~="hover:text-[#D61E1E]"]:hover,
+html.dark[data-ui-theme-color] [class~="hover:text-[#B41818]"]:hover {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+/* Teal utilities are the legacy application accent, so they follow the selected system color. */
+html.dark[data-ui-theme-color] .bg-teal-50,
+html.dark[data-ui-theme-color] .bg-teal-100 {
+  background-color: rgb(var(--ui-accent-rgb) / 0.14) !important;
+}
+
+html.dark[data-ui-theme-color] .bg-teal-200 {
+  background-color: rgb(var(--ui-accent-rgb) / 0.22) !important;
+}
+
+html.dark[data-ui-theme-color] .border-teal-100,
+html.dark[data-ui-theme-color] .border-teal-200,
+html.dark[data-ui-theme-color] .border-teal-300,
+html.dark[data-ui-theme-color] .border-teal-400,
+html.dark[data-ui-theme-color] .border-teal-500 {
+  border-color: rgb(var(--ui-accent-rgb) / 0.46) !important;
+}
+
+html.dark[data-ui-theme-color] .text-teal-600,
+html.dark[data-ui-theme-color] .text-teal-700,
+html.dark[data-ui-theme-color] .text-teal-800,
+html.dark[data-ui-theme-color] .text-teal-900,
+html.dark[data-ui-theme-color] .text-teal-950 {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+/*
+ * The `accent` scale (the OPCR and IPCR screens) gets the same dark treatment: its light tints and
+ * deep text shades would otherwise read as pale washes and low-contrast type on dark surfaces.
+ */
+html.dark .bg-accent-50,
+html.dark .bg-accent-100,
+html.dark .bg-accent-50\/40,
+html.dark .bg-accent-50\/50,
+html.dark .bg-accent-50\/60 {
+  background-color: rgb(var(--accent-600-rgb) / 0.14) !important;
+}
+
+html.dark .hover\:bg-accent-50\/40:hover,
+html.dark .hover\:bg-accent-50\/60:hover,
+html.dark .hover\:bg-accent-100:hover {
+  background-color: rgb(var(--accent-600-rgb) / 0.2) !important;
+}
+
+html.dark .border-accent-200,
+html.dark .border-accent-300 {
+  border-color: rgb(var(--accent-600-rgb) / 0.4) !important;
+}
+
+html.dark .text-accent-600,
+html.dark .text-accent-700,
+html.dark .text-accent-800 {
+  color: rgb(var(--accent-300-rgb)) !important;
+}
+
+html.dark[data-ui-theme-color] .admin-sidebar {
+  border-color: rgb(var(--ui-accent-rgb) / 0.3) !important;
+  background: linear-gradient(180deg, #070d18 0%, #0b1220 48%, #0f172a 100%) !important;
+  box-shadow: 18px 0 45px rgba(0, 0, 0, 0.18) !important;
+}
+
+html.dark[data-ui-theme-color] .admin-sidebar [class~="text-[#D61E1E]"],
+html.dark[data-ui-theme-color] .admin-sidebar [class~="hover:text-[#D61E1E]"]:hover {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark[data-ui-theme-color] .admin-sidebar .admin-sidebar-active-surface {
+  border: 1px solid rgb(var(--ui-accent-rgb) / 0.28) !important;
+  background: linear-gradient(135deg, rgb(var(--ui-accent-rgb) / 0.2), rgb(var(--ui-accent-rgb) / 0.08)) !important;
+}
+
+html.dark[data-ui-theme-color] .dashboard-welcome-banner {
+  border: 1px solid rgb(var(--ui-accent-rgb) / 0.24) !important;
+  background:
+    radial-gradient(circle at 88% 16%, rgb(var(--ui-accent-rgb) / 0.22), transparent 32%),
+    linear-gradient(135deg, #08101e 0%, #0f172a 54%, #111c30 100%) !important;
+  box-shadow: var(--app-shadow) !important;
+}
+
+html.dark[data-ui-theme-color] .dashboard-welcome-banner--clean {
+  background: #0f172a !important;
+}
+
+html.dark[data-ui-theme-color] .app-topbar-themed {
+  border-color: var(--app-border) !important;
+  background-color: rgb(7 13 24 / 0.94) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16) !important;
+  backdrop-filter: blur(16px);
+}
+
+html.dark .app-theme-toggle {
+  border-color: var(--app-border) !important;
+  background: linear-gradient(145deg, #172238, #0f172a) !important;
+  color: #fbbf24 !important;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 8px 20px rgb(0 0 0 / 0.2) !important;
+}
+
+html.dark .app-theme-toggle:hover {
+  border-color: #52617a !important;
+  background: #1e293b !important;
+}
+
+html.dark .app-theme-toggle:focus-visible {
+  --tw-ring-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.48) !important;
+  --tw-ring-offset-color: #07101f !important;
+}
+
+html[data-ui-theme-color] .app-theme-toggle:focus-visible {
+  --tw-ring-color: rgb(var(--ui-accent-rgb) / 0.4) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-trigger {
+  border-color: var(--app-border) !important;
+  background-color: #111b2e !important;
+  color: var(--app-text-soft) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-trigger:hover {
+  border-color: rgb(var(--ui-accent-rgb) / 0.42) !important;
+  background-color: #182338 !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu,
+html.dark .notification-bell-panel,
+html.dark .chat-bubble-panel {
+  border-color: var(--app-border) !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.5) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-banner {
+  background:
+    linear-gradient(135deg, rgb(var(--ui-accent-rgb) / 0.6), rgb(var(--ui-accent-rgb) / 0.18)),
+    #111827 !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-avatar {
+  border-color: #0f172a !important;
+  background-color: #182338 !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-action:hover {
+  background-color: rgb(var(--ui-accent-rgb) / 0.13) !important;
+  color: var(--app-text) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-action:hover .app-account-menu-action-icon,
+html.dark[data-ui-theme-color] .app-account-menu-action--logout .app-account-menu-action-icon {
+  background-color: rgb(var(--ui-accent-rgb) / 0.16) !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-action--logout {
+  color: #fda4af !important;
+}
+
+html.dark[data-ui-theme-color] .profile-header-card,
+html.dark[data-ui-theme-color] .profile-section-nav,
+html.dark[data-ui-theme-color] .profile-section-card,
+html.dark[data-ui-theme-color] .profile-section-card-header,
+html.dark[data-ui-theme-color] .profile-section-card-footer,
+html.dark[data-ui-theme-color] .profile-section-nav-actions {
+  border-color: var(--app-border) !important;
+}
+
+html.dark[data-ui-theme-color] .profile-section-card-icon {
+  border-color: rgb(var(--ui-accent-rgb) / 0.38) !important;
+  background-color: rgb(var(--ui-accent-rgb) / 0.14) !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark .app-card-title {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark .ring-offset-2,
+html.dark .focus\:ring-offset-2:focus,
+html.dark .focus-visible\:ring-offset-2:focus-visible {
+  --tw-ring-offset-color: #07101f !important;
+}
+
+/*
+ * Captcha answers and emailed verification codes are short, so SweetAlert's default full-width,
+ * left-aligned field gives them far more visual weight than they need. Compact centered controls
+ * keep each security prompt and its answer visually connected.
+ */
+.swal2-popup .swal2-input.security-check-answer-input,
+.swal2-popup .swal2-input.payroll-email-code-input {
+  display: block;
+  width: min(11rem, calc(100% - 2rem));
+  height: 3rem;
+  margin: 1.125rem auto 0.25rem;
+  padding: 0 0.875rem;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.625rem;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  caret-color: var(--ui-accent, var(--brand));
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  line-height: 3rem;
+  text-align: center;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.swal2-popup .swal2-input.security-check-answer-input::placeholder,
+.swal2-popup .swal2-input.payroll-email-code-input::placeholder {
+  color: #94a3b8;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: normal;
+}
+
+.swal2-popup .swal2-input.security-check-answer-input:hover,
+.swal2-popup .swal2-input.payroll-email-code-input:hover {
+  border-color: #94a3b8;
+}
+
+.swal2-popup .swal2-input.security-check-answer-input:focus,
+.swal2-popup .swal2-input.payroll-email-code-input:focus {
+  border-color: var(--ui-accent, var(--brand));
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.14);
+}
+
+/* Six digits need a little more breathing room than the one- or two-digit math answer. */
+.swal2-popup .swal2-input.payroll-email-code-input {
+  width: min(14rem, calc(100% - 2rem));
+  letter-spacing: 0.22em;
+}
+
+/*
+ * The congratulations card the dashboard shows an employee whose promotion the Regional Director
+ * just approved (usePromotionGreeting). Colours come from the app variables so the card follows
+ * the theme the way the rest of the SweetAlert portal does.
+ */
+.swal2-popup.promotion-greeting-popup {
+  border-radius: 1.25rem;
+  padding-bottom: 1.5rem;
+}
+
+.swal2-icon.promotion-greeting-icon {
+  width: 5.25rem;
+  height: 5.25rem;
+  margin: 1.75rem auto 0.75rem;
+  border: 0;
+  background: transparent;
+}
+
+.promotion-greeting-badge {
+  display: grid;
+  place-items: center;
+  width: 5.25rem;
+  height: 5.25rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #f59e0b 0%, #ef4444 55%, #db2777 100%);
+  box-shadow: 0 18px 40px rgba(239, 68, 68, 0.3), 0 0 0 8px rgba(245, 158, 11, 0.14);
+  color: #ffffff;
+  animation: promotion-greeting-pop 600ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes promotion-greeting-pop {
+  from {
+    transform: scale(0.4) rotate(-20deg);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+.swal2-title.promotion-greeting-title {
+  padding-top: 0;
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--app-text);
+}
+
+.swal2-html-container.promotion-greeting-body {
+  margin-top: 0.25rem;
+  text-align: center;
+  color: var(--app-text-soft);
+}
+
+.promotion-greeting-lead {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+.promotion-greeting-designation {
+  margin: 0.25rem 0 0;
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1.3;
+  color: #0f766e;
+}
+
+.promotion-greeting-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--app-text-soft);
+}
+
+.promotion-greeting-path-icon {
+  display: inline-flex;
+  color: #0f766e;
+}
+
+.promotion-greeting-details {
+  display: grid;
+  gap: 0;
+  margin: 1.1rem 0 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 0.875rem;
+  background: var(--app-surface-soft);
+  list-style: none;
+  text-align: left;
+}
+
+.promotion-greeting-row {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.875rem;
+  border-top: 1px solid var(--app-border);
+}
+
+.promotion-greeting-row:first-child {
+  border-top: 0;
+}
+
+.promotion-greeting-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.5rem;
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+}
+
+.promotion-greeting-row-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--app-text-muted);
+}
+
+.promotion-greeting-row-value {
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-align: right;
+  color: var(--app-text);
+}
+
+.promotion-greeting-footnote {
+  margin: 0.9rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--app-text-muted);
+}
+
+html.dark .promotion-greeting-designation,
+html.dark .promotion-greeting-path-icon,
+html.dark .promotion-greeting-row-icon {
+  color: #5eead4;
+}
+
+html.dark .promotion-greeting-row-icon {
+  background: rgba(94, 234, 212, 0.12);
+}
+
+/* SweetAlert and toast portals sit outside the page components, so they need a shared theme. */
+html.dark .swal2-popup {
+  border: 1px solid var(--app-border) !important;
+  background: #0f172a !important;
+  color: var(--app-text) !important;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55) !important;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input {
+  border-color: #475569;
+  background: #111b2e;
+  color: #f8fafc;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input::placeholder,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input::placeholder {
+  color: #94a3b8;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input:hover,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input:hover {
+  border-color: #64748b;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input:focus,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input:focus {
+  border-color: var(--ui-accent-on-dark, #f07171);
+  box-shadow: 0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.24);
+}
+
+html.dark .swal2-title,
+html.dark .swal2-html-container,
+html.dark .app-swal-copy,
+html.dark .swal2-close {
+  color: var(--app-text-soft) !important;
+}
+
+html.dark .swal2-title {
+  color: var(--app-text) !important;
+}
+
+html.dark .swal2-timer-progress-bar {
+  background: rgb(var(--ui-accent-rgb, 214 30 30) / 0.75) !important;
+}
+
+html.dark .swal2-loader {
+  border-color: var(--ui-accent-on-dark, #f07171) transparent var(--ui-accent-on-dark, #f07171) transparent !important;
+}
+
+html.dark .app-toast {
+  border: 1px solid var(--app-border) !important;
+  background: #111b2e !important;
+  color: var(--app-text) !important;
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.45) !important;
+}
+
+html.dark .calendar-activity-tone {
+  border-color: color-mix(in srgb, var(--activity-color) 42%, transparent) !important;
+  background-color: color-mix(in srgb, var(--activity-color) 16%, transparent) !important;
+  color: color-mix(in srgb, var(--activity-color) 45%, white) !important;
+}
+
+html.dark .recharts-cartesian-grid line {
+  stroke: #334155 !important;
+}
+
+html.dark .recharts-cartesian-axis-tick-value,
+html.dark .recharts-polar-angle-axis-tick-value,
+html.dark .recharts-polar-radius-axis-tick-value {
+  fill: #94a3b8 !important;
+}
+
+html.dark .recharts-default-tooltip,
+html.dark .apexcharts-tooltip,
+html.dark .apexcharts-xaxistooltip,
+html.dark .apexcharts-yaxistooltip {
+  border-color: var(--app-border) !important;
+  background: #0f172a !important;
+  color: var(--app-text) !important;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.4) !important;
+}
+
+html.dark .recharts-tooltip-label,
+html.dark .recharts-tooltip-item,
+html.dark .recharts-legend-item-text,
+html.dark .apexcharts-tooltip-text,
+html.dark .apexcharts-tooltip-title {
+  color: var(--app-text-soft) !important;
+}
+
+html.dark .apexcharts-tooltip-title {
+  border-color: var(--app-border) !important;
+  background: var(--app-surface-soft) !important;
+}
+
+html.dark .apexcharts-text,
+html.dark .apexcharts-text tspan {
+  fill: #94a3b8 !important;
+}
+
+/* Preview chrome follows the application theme; the official form nested inside stays paper-white. */
+html.dark .leave-form-preview,
+html.dark .travel-order-form-preview,
+html.dark .compensatory-form-preview,
+html.dark .pass-slip-form-preview {
+  background-color: var(--app-surface) !important;
+  color: var(--app-text) !important;
+}
+
+html.dark .leave-form-preview .bg-white,
+html.dark .travel-order-form-preview .bg-white,
+html.dark .compensatory-form-preview .bg-white,
+html.dark .pass-slip-form-preview .bg-white,
+html.dark .leave-form-preview .bg-white\/95,
+html.dark .travel-order-form-preview .bg-white\/95,
+html.dark .compensatory-form-preview .bg-white\/95,
+html.dark .pass-slip-form-preview .bg-white\/95 {
+  background-color: var(--app-surface) !important;
+}
+
+html.dark .leave-form-preview .bg-slate-50,
+html.dark .leave-form-preview .bg-slate-100,
+html.dark .travel-order-form-preview .bg-slate-50,
+html.dark .travel-order-form-preview .bg-slate-100,
+html.dark .compensatory-form-preview .bg-slate-50,
+html.dark .compensatory-form-preview .bg-slate-100,
+html.dark .pass-slip-form-preview .bg-slate-50,
+html.dark .pass-slip-form-preview .bg-slate-100 {
+  background-color: var(--app-surface-soft) !important;
+}
+
+html.dark .leave-form-preview .text-slate-950,
+html.dark .leave-form-preview .text-slate-900,
+html.dark .leave-form-preview .text-slate-800,
+html.dark .leave-form-preview .text-slate-700,
+html.dark .travel-order-form-preview .text-slate-950,
+html.dark .travel-order-form-preview .text-slate-900,
+html.dark .travel-order-form-preview .text-slate-800,
+html.dark .travel-order-form-preview .text-slate-700,
+html.dark .compensatory-form-preview .text-slate-950,
+html.dark .compensatory-form-preview .text-slate-900,
+html.dark .compensatory-form-preview .text-slate-800,
+html.dark .compensatory-form-preview .text-slate-700,
+html.dark .pass-slip-form-preview .text-slate-950,
+html.dark .pass-slip-form-preview .text-slate-900,
+html.dark .pass-slip-form-preview .text-slate-800,
+html.dark .pass-slip-form-preview .text-slate-700 {
+  color: var(--app-text) !important;
+}
+
+html.dark .leave-form-preview .text-slate-600,
+html.dark .leave-form-preview .text-slate-500,
+html.dark .travel-order-form-preview .text-slate-600,
+html.dark .travel-order-form-preview .text-slate-500,
+html.dark .compensatory-form-preview .text-slate-600,
+html.dark .compensatory-form-preview .text-slate-500,
+html.dark .pass-slip-form-preview .text-slate-600,
+html.dark .pass-slip-form-preview .text-slate-500 {
+  color: var(--app-text-muted) !important;
+}
+
+html.dark .leave-form-preview .border-slate-100,
+html.dark .leave-form-preview .border-slate-200,
+html.dark .leave-form-preview .border-slate-300,
+html.dark .travel-order-form-preview .border-slate-100,
+html.dark .travel-order-form-preview .border-slate-200,
+html.dark .travel-order-form-preview .border-slate-300,
+html.dark .compensatory-form-preview .border-slate-100,
+html.dark .compensatory-form-preview .border-slate-200,
+html.dark .compensatory-form-preview .border-slate-300,
+html.dark .pass-slip-form-preview .border-slate-100,
+html.dark .pass-slip-form-preview .border-slate-200,
+html.dark .pass-slip-form-preview .border-slate-300 {
+  border-color: var(--app-border) !important;
+}
+
+html.dark .leave-form-paper,
+html.dark .travel-order-form-paper,
+html.dark .compensatory-form-paper,
+html.dark .pass-slip-form-paper,
+html.dark .document-paper {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  color-scheme: light;
+}
+
+html.dark .document-preview-well {
+  background: #080f1d !important;
+}
+
+html.dark .document-paper thead,
+html.dark .document-paper tbody,
+html.dark .document-paper tr {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-paper .bg-white,
+html.dark .travel-order-form-paper .bg-white,
+html.dark .compensatory-form-paper .bg-white,
+html.dark .pass-slip-form-paper .bg-white,
+html.dark .document-paper .bg-white {
+  background-color: #ffffff !important;
+}
+
+html.dark .leave-form-paper .bg-slate-50,
+html.dark .leave-form-paper .bg-slate-100,
+html.dark .travel-order-form-paper .bg-slate-50,
+html.dark .travel-order-form-paper .bg-slate-100,
+html.dark .compensatory-form-paper .bg-slate-50,
+html.dark .compensatory-form-paper .bg-slate-100,
+html.dark .pass-slip-form-paper .bg-slate-50,
+html.dark .pass-slip-form-paper .bg-slate-100,
+html.dark .document-paper .bg-slate-50,
+html.dark .document-paper .bg-slate-100 {
+  background-color: #f8fafc !important;
+}
+
+html.dark .leave-form-paper .text-slate-950,
+html.dark .leave-form-paper .text-slate-900,
+html.dark .leave-form-paper .text-slate-800,
+html.dark .leave-form-paper .text-slate-700,
+html.dark .travel-order-form-paper .text-slate-950,
+html.dark .travel-order-form-paper .text-slate-900,
+html.dark .travel-order-form-paper .text-slate-800,
+html.dark .travel-order-form-paper .text-slate-700,
+html.dark .compensatory-form-paper .text-slate-950,
+html.dark .compensatory-form-paper .text-slate-900,
+html.dark .compensatory-form-paper .text-slate-800,
+html.dark .compensatory-form-paper .text-slate-700,
+html.dark .pass-slip-form-paper .text-slate-950,
+html.dark .pass-slip-form-paper .text-slate-900,
+html.dark .pass-slip-form-paper .text-slate-800,
+html.dark .pass-slip-form-paper .text-slate-700,
+html.dark .document-paper .text-slate-950,
+html.dark .document-paper .text-slate-900,
+html.dark .document-paper .text-slate-800,
+html.dark .document-paper .text-slate-700,
+html.dark .document-paper .text-black {
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-paper .text-slate-600,
+html.dark .leave-form-paper .text-slate-500,
+html.dark .travel-order-form-paper .text-slate-600,
+html.dark .travel-order-form-paper .text-slate-500,
+html.dark .compensatory-form-paper .text-slate-600,
+html.dark .compensatory-form-paper .text-slate-500,
+html.dark .pass-slip-form-paper .text-slate-600,
+html.dark .pass-slip-form-paper .text-slate-500,
+html.dark .document-paper .text-slate-600,
+html.dark .document-paper .text-slate-500 {
+  color: #475569 !important;
+}
+
+html.dark .document-paper input,
+html.dark .document-paper select,
+html.dark .document-paper textarea {
+  background-color: #ffffff !important;
+  border-color: #64748b !important;
+  color: #0f172a !important;
+  color-scheme: light;
+}
+
+/* Every visible input/select/textarea label in an application workspace receives the same
+   non-themeable required marker. Official printable form labels, search-only wrappers, hidden
+   labels, checkboxes, radio buttons, and file-upload buttons are intentionally excluded. */
+.app-workspace form label[for]:not(.sr-only):not(:has(.app-required-marker))::after,
+.app-workspace form label:not([for]):has(
+  > input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  > select,
+  > textarea
+) > span:first-of-type:not(:has(.app-required-marker)):not(:has(> span))::after {
+  margin-left: 0.125rem;
+  color: #D61E1E !important;
+  font-weight: 700;
+  content: "*";
+}
+
+.unsafe-text-validation-message {
+  display: block;
+  margin-top: 0.375rem;
+  color: #B91C1C !important;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+
+input[data-unsafe-text-invalid="true"],
+textarea[data-unsafe-text-invalid="true"] {
+  border-color: #E11D48 !important;
+  box-shadow: 0 0 0 2px rgb(225 29 72 / 0.12) !important;
+}
+
+[data-validation-field]:has(> div > input[data-unsafe-text-invalid="true"]) > div {
+  border-color: #E11D48 !important;
+  box-shadow: 0 0 0 2px rgb(225 29 72 / 0.12) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-theme-toggle,
+  .app-theme-toggle svg {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+ * Breadcrumbs follow the system theme colour picked in Settings, like the sidebar. Parent crumbs are
+ * a light tint of the accent; the selected module is the one solid crumb, with a soft accent glow
+ * standing in for the old offset ring (the page behind it is a gradient, so an offset ring had no
+ * single colour to match). The fallbacks are the default Crimson theme.
+ */
+.breadcrumb-crumb {
+  border-color: var(--ui-accent-border, #F3A5A5);
+  background-image: linear-gradient(135deg, #FFFFFF 0%, var(--ui-accent-tint, #FEF1F1) 100%);
+  color: var(--ui-accent-deep, #8D1414);
+  box-shadow: 0 1px 2px rgb(var(--ui-accent-rgb, 214 30 30) / 0.12);
+}
+
+.breadcrumb-crumb .breadcrumb-crumb__icon {
+  color: var(--ui-accent, #D61E1E);
+}
+
+button.breadcrumb-crumb:hover {
+  border-color: var(--ui-accent-border-hover, #EB8F8F);
+  color: var(--ui-accent, #D61E1E);
+  box-shadow: 0 6px 14px rgb(var(--ui-accent-rgb, 214 30 30) / 0.18);
+}
+
+.breadcrumb-crumb.breadcrumb-crumb--current {
+  border-color: var(--ui-accent-deep, #8D1414);
+  background-image: linear-gradient(135deg, var(--ui-accent, #D61E1E) 0%, var(--ui-accent-deep, #8D1414) 100%);
+  color: var(--ui-on-accent, #FFFFFF);
+  box-shadow:
+    0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.18),
+    0 10px 20px rgb(var(--ui-accent-rgb, 214 30 30) / 0.28);
+}
+
+.breadcrumb-crumb.breadcrumb-crumb--current .breadcrumb-crumb__icon {
+  color: inherit;
+}
+
+.breadcrumb-separator {
+  color: var(--ui-accent-border-hover, #EB8F8F);
+}
+
+html.dark .breadcrumb-crumb {
+  border-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.35);
+  background-image: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
+  color: var(--ui-accent-soft-on-dark, #EB8F8F);
+  box-shadow: none;
+}
+
+html.dark .breadcrumb-crumb .breadcrumb-crumb__icon {
+  color: var(--ui-accent-on-dark, #E26262);
+}
+
+html.dark button.breadcrumb-crumb:hover {
+  border-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.6);
+  color: var(--ui-accent-on-dark, #E26262);
+}
+
+html.dark .breadcrumb-crumb .breadcrumb-crumb__gloss {
+  opacity: 0;
+}
+
+html.dark .breadcrumb-crumb.breadcrumb-crumb--current {
+  border-color: var(--ui-accent, #D61E1E);
+  background-image: linear-gradient(135deg, var(--ui-accent, #D61E1E) 0%, var(--ui-accent-deep, #8D1414) 100%);
+  color: var(--ui-on-accent, #FFFFFF);
+  box-shadow: 0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.3);
+}
+
+html.dark .breadcrumb-separator {
+  color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.55);
+}
