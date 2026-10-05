@@ -15,6 +15,7 @@ if (is_file($hrisSmtpConfig)) {
 
 unset($hrisSmtpConfig);
 
+use PHPMailer\PHPMailer\Exception as PHPMailerException;
 use PHPMailer\PHPMailer\PHPMailer;
 
 function password_reset_smtp_config(): array
@@ -205,6 +206,11 @@ function password_reset_escape_html(string $value): string
 
 function password_reset_embed_logo(PHPMailer $mail): ?string
 {
+    // Brevo's API cannot carry a content-id image, so that transport links to the hosted copy instead.
+    if ($mail instanceof HrisBrevoMailer) {
+        return hosted_mail_logo_url();
+    }
+
     // A 120px copy of mgb.png. The full-size logo is 130 KB and was most of every message it rode in,
     // which on a six-digit code email makes a small, attachment-heavy message of the kind spam filters
     // look twice at. The template draws it at 60px either way.
@@ -242,10 +248,164 @@ function email_base_label(): string
     return $configuredSubject !== '' ? $configuredSubject : 'REGION X MGB';
 }
 
+/**
+ * Sends through Brevo's HTTPS API instead of SMTP.
+ *
+ * Railway disables outbound SMTP on its Free, Trial and Hobby plans, so Gmail cannot be reached from
+ * the container at all. PHPMailer hands a Mailer name it does not know to a method called
+ * <name>Send(), and that is the seam used here: callers build the message exactly as before --
+ * addAddress(), Subject, Body, AltBody -- and send() lands in brevoSend() rather than on a socket.
+ *
+ * Brevo's API has no content-id images, so inline parts are not sent: password_reset_embed_logo()
+ * gives this mailer the hosted logo's URL instead of embedding the file.
+ */
+final class HrisBrevoMailer extends PHPMailer
+{
+    private const ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
+
+    public function __construct(private string $apiKey)
+    {
+        parent::__construct(true);
+        $this->Mailer = 'brevo';
+    }
+
+    protected function brevoSend(string $header, string $body): bool
+    {
+        $contacts = static fn(array $addresses): array => array_map(
+            static fn(array $address): array => array_filter(
+                ['email' => (string)$address[0], 'name' => (string)($address[1] ?? '')],
+                static fn(string $value): bool => $value !== ''
+            ),
+            array_values($addresses)
+        );
+
+        // send() has already turned an HTML message with an AltBody into multipart/alternative, so
+        // ContentType alone no longer says text/html; an AltBody means Body is the HTML part.
+        $isHtml = $this->alternativeExists() || stripos($this->ContentType, 'html') !== false;
+        $payload = [
+            'sender' => array_filter(['email' => $this->From, 'name' => $this->FromName]),
+            'to' => $contacts($this->getToAddresses()),
+            'subject' => $this->Subject,
+            'htmlContent' => $isHtml ? $this->Body : nl2br(htmlspecialchars($this->Body, ENT_QUOTES, 'UTF-8')),
+        ];
+
+        $textContent = $isHtml ? $this->AltBody : $this->Body;
+
+        if (trim($textContent) !== '') {
+            $payload['textContent'] = $textContent;
+        }
+
+        foreach (['cc' => $this->getCcAddresses(), 'bcc' => $this->getBccAddresses()] as $field => $addresses) {
+            if ($addresses !== []) {
+                $payload[$field] = $contacts($addresses);
+            }
+        }
+
+        // Brevo rewrites a Gmail sender to its own domain, so replies need pointing back at the inbox.
+        $replyTo = $contacts($this->getReplyToAddresses())[0] ?? ['email' => $this->From];
+        $payload['replyTo'] = $replyTo;
+
+        foreach ($this->getAttachments() as $attachment) {
+            if (($attachment[6] ?? '') !== 'attachment') {
+                continue;
+            }
+
+            $content = !empty($attachment[5]) ? (string)$attachment[0] : (string)file_get_contents((string)$attachment[0]);
+            $payload['attachment'][] = ['name' => (string)$attachment[2], 'content' => base64_encode($content)];
+        }
+
+        $handle = curl_init(self::ENDPOINT);
+        curl_setopt_array($handle, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => [
+                'accept: application/json',
+                'content-type: application/json',
+                'api-key: ' . $this->apiKey,
+            ],
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 20,
+        ]);
+
+        $response = curl_exec($handle);
+        $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $transportError = curl_error($handle);
+
+        if ($response === false) {
+            throw new PHPMailerException('Could not reach the Brevo email API: ' . $transportError);
+        }
+
+        if ($status !== 201 && $status !== 202) {
+            $decoded = json_decode((string)$response, true);
+            $reason = is_array($decoded) ? trim((string)($decoded['message'] ?? '')) : '';
+
+            throw new PHPMailerException(
+                'Brevo refused the message (HTTP ' . $status . ')' . ($reason !== '' ? ': ' . $reason : '.')
+            );
+        }
+
+        return true;
+    }
+}
+
+/**
+ * The e-mail logo as a public URL, for a transport that cannot embed it. The React build serves
+ * public/mgb-email.png from the site root, which is the origin HRIS_LOGIN_URL points at.
+ */
+function hosted_mail_logo_url(): ?string
+{
+    $loginUrl = trim((string)(defined('HRIS_LOGIN_URL') ? HRIS_LOGIN_URL : (getenv('HRIS_LOGIN_URL') ?: '')));
+    $parts = parse_url($loginUrl);
+    $scheme = strtolower((string)(is_array($parts) ? ($parts['scheme'] ?? '') : ''));
+
+    if (!in_array($scheme, ['http', 'https'], true) || trim((string)($parts['host'] ?? '')) === '') {
+        return null;
+    }
+
+    $port = isset($parts['port']) ? ':' . (int)$parts['port'] : '';
+
+    return $scheme . '://' . $parts['host'] . $port . '/mgb-email.png';
+}
+
 function configured_mailer(): PHPMailer
 {
     $config = password_reset_smtp_config();
+    $brevoApiKey = trim((string)(defined('BREVO_API_KEY') ? BREVO_API_KEY : ''));
 
+    if ($brevoApiKey !== '') {
+        if ($config['from_email'] === '') {
+            throw new RuntimeException('BREVO_API_KEY is set but SMTP_FROM_EMAIL is not. Set it to the sender address verified in Brevo.');
+        }
+
+        $mail = new HrisBrevoMailer($brevoApiKey);
+    } else {
+        $mail = configured_smtp_mailer($config);
+    }
+
+    $mail->setFrom($config['from_email'], $config['from_name']);
+    $mail->CharSet = 'UTF-8';
+    $mail->isHTML(true);
+
+    /*
+     * Gmail's outbound filter refused a reset code to an employee as "suspicious". Two headers made
+     * the message read like a bulk script rather than a mail client: PHPMailer's own X-Mailer line,
+     * and a Message-ID ending in @localhost, taken from the Apache server name. The ID now carries the
+     * sender's domain, as a real client's does. Hostname also feeds HELO, which keeps the name it had.
+     */
+    $mail->XMailer = ' ';
+    $fromDomain = substr((string)strrchr($config['from_email'], '@'), 1);
+
+    if ($fromDomain !== '') {
+        $mail->Helo = (string)($_SERVER['SERVER_NAME'] ?? '') ?: (gethostname() ?: 'localhost');
+        $mail->Hostname = $fromDomain;
+    }
+
+    return $mail;
+}
+
+function configured_smtp_mailer(array $config): PHPMailer
+{
     if (
         $config['host'] === '' ||
         $config['username'] === '' ||
@@ -273,24 +433,6 @@ function configured_mailer(): PHPMailer
         $mail->SMTPAutoTLS = false;
     } else {
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-    }
-
-    $mail->setFrom($config['from_email'], $config['from_name']);
-    $mail->CharSet = 'UTF-8';
-    $mail->isHTML(true);
-
-    /*
-     * Gmail's outbound filter refused a reset code to an employee as "suspicious". Two headers made
-     * the message read like a bulk script rather than a mail client: PHPMailer's own X-Mailer line,
-     * and a Message-ID ending in @localhost, taken from the Apache server name. The ID now carries the
-     * sender's domain, as a real client's does. Hostname also feeds HELO, which keeps the name it had.
-     */
-    $mail->XMailer = ' ';
-    $fromDomain = substr((string)strrchr($config['from_email'], '@'), 1);
-
-    if ($fromDomain !== '') {
-        $mail->Helo = (string)($_SERVER['SERVER_NAME'] ?? '') ?: (gethostname() ?: 'localhost');
-        $mail->Hostname = $fromDomain;
     }
 
     return $mail;

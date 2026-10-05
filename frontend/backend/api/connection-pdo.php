@@ -326,6 +326,8 @@ $hrisSmtpEnvironment = [
     'SMTP_ENCRYPTION' => getenv('SMTP_ENCRYPTION'),
     'EMAIL_SUBJECT' => getenv('EMAIL_SUBJECT'),
     'CODE_EXPIRY_MINUTES' => getenv('CODE_EXPIRY_MINUTES'),
+    // Railway blocks SMTP on its smaller plans; with this set, mail goes through Brevo's HTTPS API.
+    'BREVO_API_KEY' => getenv('BREVO_API_KEY'),
 ];
 
 foreach ($hrisSmtpEnvironment as $constantName => $value) {
