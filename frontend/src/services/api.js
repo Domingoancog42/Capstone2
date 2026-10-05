@@ -58,7 +58,11 @@ const AUTH_EXEMPT_ENDPOINTS = [
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 20000,
+  // Aiven's free-tier database can take tens of seconds for authentication-heavy
+  // requests (login performs several security and audit queries). Keep the client
+  // alive long enough to receive the server's successful response instead of
+  // turning a slow login into a misleading network error.
+  timeout: 90000,
   withCredentials: true,
   headers: {
     "Content-Type": "application/json",
