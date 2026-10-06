@@ -2077,7 +2077,7 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
             : match ($status) {
                 'pending' => 'Leave request moved to leave balance verification.',
                 'endorsed' => 'Leave balance verified. The request is pending HR Head approval.',
-                'reviewed' => 'Leave request approved by the HR Head and sent for Chief Admin review.',
+                'reviewed' => 'Leave request approved by the HR Head and sent for Division Chief review.',
                 'chief_reviewed' => 'Leave request reviewed by the Chief Admin and sent to the Regional Director.',
                 'approved' => $isAdminApprovalOverride
                     ? 'Leave request received final approval through an Admin override.'
