@@ -87,9 +87,15 @@ export default function RoleWorkspacePage({
   modules,
   contentClassName,
 }) {
-  // With the base role left out, a custom role resolved to "/" and never matched its own
-  // profile route -- the page fell through to the placeholder card instead of the real profile.
-  const profilePath = getProfilePathForRole(user?.roleKey || user?.role, user?.baseRoleKey);
+  /*
+   * The workspace's own "profile" entry comes first because it shares the address space of
+   * `currentPath`: Chief Admin renders the Chief workspace with its URLs translated to /chief, so
+   * the role's /chiefadmin/profile never matched and the header's profile link showed the
+   * dashboard. With the base role left out, a custom role resolved to "/" and never matched its own
+   * profile route -- the page fell through to the placeholder card instead of the real profile.
+   */
+  const profilePath = navigationItems.find((item) => item?.key === "profile")?.path
+    || getProfilePathForRole(user?.roleKey || user?.role, user?.baseRoleKey);
   const isProfileView = currentPath === profilePath;
   /*
    * Used to pick somewhere safe to land — the fallback route and the Access Denied "Go Back"
