@@ -1,6 +1,6 @@
 import React from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide } from "lucide-react";
-import { faBan, faCheck, faEye, faFileLines, faPrint, faXmark } from "@fortawesome/free-solid-svg-icons";
+import { faBan, faCheck, faEye, faFileArrowDown, faFileLines, faPrint, faXmark } from "@fortawesome/free-solid-svg-icons";
 import ActionIconButton from "../UI/ActionIconButton";
 import ActionsMenu from "../UI/ActionsMenu";
 import RecordCards from "../UI/RecordCards";
@@ -90,7 +90,8 @@ export default function LeaveTable({
     /*
      * Monetization filings sit in this list as a leave type of their own, but they answer to
      * leave_monetization.php: the HR Head reviews first and only then may the Regional Director
-     * give the final approval. Once the Regional Director has signed, any viewer may print it.
+     * give the final approval. Once the Regional Director has signed, any viewer may print it or
+     * download it as a PDF.
      */
     if (row.isLeaveMonetization) {
       const monetizationActions = resolveMonetizationRowActions({
@@ -134,12 +135,21 @@ export default function LeaveTable({
             />
           ) : null}
           {isRegionalDirectorApproved(row) ? (
-            <ActionIconButton
-              label="Print leave monetization form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => onAction?.("print", row)}
-            />
+            <>
+              <ActionIconButton
+                label="Print leave monetization form"
+                icon={faPrint}
+                tone="print"
+                onClick={() => onAction?.("print", row)}
+              />
+              <ActionIconButton
+                label="Download leave monetization form as PDF"
+                text="Download PDF"
+                icon={faFileArrowDown}
+                tone="export"
+                onClick={() => onAction?.("download", row)}
+              />
+            </>
           ) : null}
           <ActionIconButton
             label="View leave monetization form"
@@ -208,14 +218,23 @@ export default function LeaveTable({
             ) : null}
           </>
         ) : null}
-        {/* The form is only worth printing once the Regional Director has signed it; then every role may. */}
+        {/* The form is only worth printing or saving once the Regional Director has signed it; then every role may. */}
         {isRegionalDirectorApproved(row) ? (
-          <ActionIconButton
-            label="Print leave form"
-            icon={faPrint}
-            tone="print"
-            onClick={() => onAction?.("print", row)}
-          />
+          <>
+            <ActionIconButton
+              label="Print leave form"
+              icon={faPrint}
+              tone="print"
+              onClick={() => onAction?.("print", row)}
+            />
+            <ActionIconButton
+              label="Download leave form as PDF"
+              text="Download PDF"
+              icon={faFileArrowDown}
+              tone="export"
+              onClick={() => onAction?.("download", row)}
+            />
+          </>
         ) : null}
         <ActionIconButton
           label={showOwnRegionalDirectorFormOnly ? "Leave Request Form" : "View leave form"}

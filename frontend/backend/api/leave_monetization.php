@@ -185,6 +185,7 @@ function monetization_base_select(): string
             COALESCE(lm.rejected_note, "") AS rejectedNote,
             lm.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
             COALESCE(NULLIF(TRIM(CONCAT(reviewed_employee.first_name, " ", COALESCE(reviewed_employee.middle_name, ""), " ", reviewed_employee.last_name)), ""), "") AS reviewedByName,
+            COALESCE(NULLIF(TRIM(reviewed_employee.designation), ""), reviewed_designation.name, "") AS reviewedByPosition,
             lm.reviewed_at AS reviewedAt,
             lm.approved_by_employee_id AS approvedByEmployeeRecordId,
             COALESCE(NULLIF(TRIM(CONCAT(approved_employee.first_name, " ", COALESCE(approved_employee.middle_name, ""), " ", approved_employee.last_name)), ""), "") AS approvedByName,
@@ -198,6 +199,7 @@ function monetization_base_select(): string
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id
          LEFT JOIN employees reviewed_employee ON reviewed_employee.id = lm.reviewed_by_employee_id
+         LEFT JOIN designations reviewed_designation ON reviewed_designation.id = reviewed_employee.designation_id
          LEFT JOIN employees approved_employee ON approved_employee.id = lm.approved_by_employee_id';
 }
 
@@ -216,6 +218,7 @@ function monetization_normalize_record(array $record): array
         ? (int)$record['reviewedByEmployeeRecordId']
         : null;
     $record['reviewedByName'] = monetization_text($record['reviewedByName'] ?? '');
+    $record['reviewedByPosition'] = monetization_text($record['reviewedByPosition'] ?? '');
     $record['approvedByEmployeeRecordId'] = $record['approvedByEmployeeRecordId'] !== null
         ? (int)$record['approvedByEmployeeRecordId']
         : null;
@@ -244,7 +247,51 @@ function fetch_leave_monetization(PDO $pdo, int $id, ?int $employeeScopeId = nul
     $statement->execute($params);
     $record = $statement->fetch();
 
-    return $record ? monetization_normalize_record($record) : null;
+    if (!$record) {
+        return null;
+    }
+
+    $record = monetization_normalize_record($record);
+    $record['hrHeadPosition'] = monetization_current_hr_head_title($pdo);
+
+    return $record;
+}
+
+/*
+ * The form captions 7.A with the signing HR Head's designation (reviewedByPosition), as the leave
+ * request form does; until someone signs, the blank line names the title of whoever holds the HR
+ * Head desk now. This is the lookup leave_request.php makes for its own form's blank line.
+ */
+function monetization_current_hr_head_title(PDO $pdo): string
+{
+    static $title = null;
+
+    if ($title !== null) {
+        return $title;
+    }
+
+    $statement = $pdo->query(
+        'SELECT
+            COALESCE(des.name, "") AS position,
+            e.designation
+         FROM users u
+         INNER JOIN roles r ON r.id = u.role_id
+         INNER JOIN employees e
+            ON e.email COLLATE utf8mb4_unicode_ci = u.email COLLATE utf8mb4_unicode_ci
+           AND e.is_archived = 0
+         LEFT JOIN designations des ON des.id = e.designation_id
+         WHERE u.is_archived = 0
+           AND LOWER(REPLACE(r.name, " ", "")) = "hrhead"
+           AND LOWER(u.status) = "active"
+         ORDER BY u.id ASC
+         LIMIT 1'
+    );
+    $holder = $statement->fetch();
+    $title = $holder
+        ? monetization_text(employee_signatory_title($holder['position'] ?? '', $holder['designation'] ?? ''))
+        : '';
+
+    return $title;
 }
 
 function resolve_monetization_session_employee_id(PDO $pdo, array $sessionUser): int

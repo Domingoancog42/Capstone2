@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardList, Clock3, FilePenLine, Filter, Plane, Plus, Search, UserRound } from "lucide-react";
-import { faBan, faBoxArchive, faCheck, faFileLines, faPrint, faRotateLeft, faWallet, faXmark } from "@fortawesome/free-solid-svg-icons";
+import { faBan, faBoxArchive, faCheck, faFileArrowDown, faFileLines, faPrint, faRotateLeft, faWallet, faXmark } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
@@ -287,7 +287,7 @@ function LeaveRequestManagementPanel({
         isOwnRecord: matchesUserRecordScope(request, user),
       });
 
-      /* The sheet is only worth printing once the Regional Director has signed it. */
+      /* The sheet is only worth printing or saving once the Regional Director has signed it. */
       const showMonetizationPrintAction = isRegionalDirectorApproved(request);
 
       if (archiveView) {
@@ -295,12 +295,21 @@ function LeaveRequestManagementPanel({
           <ViewFormActions viewLabel="View leave monetization form" onView={() => onAction?.("view", request)}>
             {balancesAction}
             {showMonetizationPrintAction ? (
-              <ActionIconButton
-                label="Print leave monetization form"
-                icon={faPrint}
-                tone="print"
-                onClick={() => onAction?.("print", request)}
-              />
+              <>
+                <ActionIconButton
+                  label="Print leave monetization form"
+                  icon={faPrint}
+                  tone="print"
+                  onClick={() => onAction?.("print", request)}
+                />
+                <ActionIconButton
+                  label="Download leave monetization form as PDF"
+                  text="Download PDF"
+                  icon={faFileArrowDown}
+                  tone="export"
+                  onClick={() => onAction?.("download", request)}
+                />
+              </>
             ) : null}
             {canArchiveMonetization ? (
               <ActionIconButton
@@ -350,12 +359,21 @@ function LeaveRequestManagementPanel({
             />
           ) : null}
           {showMonetizationPrintAction ? (
-            <ActionIconButton
-              label="Print leave monetization form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => onAction?.("print", request)}
-            />
+            <>
+              <ActionIconButton
+                label="Print leave monetization form"
+                icon={faPrint}
+                tone="print"
+                onClick={() => onAction?.("print", request)}
+              />
+              <ActionIconButton
+                label="Download leave monetization form as PDF"
+                text="Download PDF"
+                icon={faFileArrowDown}
+                tone="export"
+                onClick={() => onAction?.("download", request)}
+              />
+            </>
           ) : null}
           {canArchiveMonetization ? (
             <ActionIconButton
@@ -371,7 +389,7 @@ function LeaveRequestManagementPanel({
 
     const normalizedStatus = normalizeLeaveStatus(request.status);
     const showOwnCancelAction = canCancelOwnLeaveRequest(user, request);
-    /* The form is only worth printing once the Regional Director has signed it; then every role may. */
+    /* The form is only worth printing or saving once the Regional Director has signed it; then every role may. */
     const showPrintAction = isRegionalDirectorApproved(request);
     /* Chiefs use the same full action menu; the API only hands them their own division's requests. */
     const allowRowManagement = canManageLeaveRequestRow(user, request);
@@ -394,12 +412,21 @@ function LeaveRequestManagementPanel({
         <ViewFormActions viewLabel="View leave form" onView={() => onAction?.("view", request)}>
           {balancesAction}
           {showPrintAction ? (
-            <ActionIconButton
-              label="Print leave form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => onAction?.("print", request)}
-            />
+            <>
+              <ActionIconButton
+                label="Print leave form"
+                icon={faPrint}
+                tone="print"
+                onClick={() => onAction?.("print", request)}
+              />
+              <ActionIconButton
+                label="Download leave form as PDF"
+                text="Download PDF"
+                icon={faFileArrowDown}
+                tone="export"
+                onClick={() => onAction?.("download", request)}
+              />
+            </>
           ) : null}
           {canArchive && !isChief ? (
             <ActionIconButton
@@ -459,12 +486,21 @@ function LeaveRequestManagementPanel({
           />
         ) : null}
         {showPrintAction ? (
-          <ActionIconButton
-            label="Print leave form"
-            icon={faPrint}
-            tone="print"
-            onClick={() => onAction?.("print", request)}
-          />
+          <>
+            <ActionIconButton
+              label="Print leave form"
+              icon={faPrint}
+              tone="print"
+              onClick={() => onAction?.("print", request)}
+            />
+            <ActionIconButton
+              label="Download leave form as PDF"
+              text="Download PDF"
+              icon={faFileArrowDown}
+              tone="export"
+              onClick={() => onAction?.("download", request)}
+            />
+          </>
         ) : null}
         {canArchive ? (
           <ActionIconButton
@@ -839,6 +875,7 @@ export default function LeaveDashboard({
   const [monetizationRecords, setMonetizationRecords] = useState([]);
   const [selectedMonetization, setSelectedMonetization] = useState(null);
   const [printMonetization, setPrintMonetization] = useState(false);
+  const [downloadMonetization, setDownloadMonetization] = useState(false);
   const [modulePendingCounts, setModulePendingCounts] = useState(initialModulePendingCounts);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -852,6 +889,7 @@ export default function LeaveDashboard({
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [balanceSnapshotRequest, setBalanceSnapshotRequest] = useState(null);
   const [printRequest, setPrintRequest] = useState(false);
+  const [downloadRequest, setDownloadRequest] = useState(false);
   const [leaveArchiveView, setLeaveArchiveView] = useState(false);
   const [showMyLeaveRequests, setShowMyLeaveRequests] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -1335,10 +1373,11 @@ export default function LeaveDashboard({
      * reads that field to decide which certification row the days come off.
      *
      * Print opens the same sheet, which prints itself once loaded and closes again -- the leave
-     * request form's print action works exactly this way.
+     * request form's print action works exactly this way. Download PDF does the same but saves it.
      */
-    if (actionType === "view" || actionType === "review" || actionType === "print") {
+    if (["view", "review", "print", "download"].includes(actionType)) {
       setPrintMonetization(actionType === "print");
+      setDownloadMonetization(actionType === "download");
       setSelectedMonetization({
         ...record,
         leaveType: record.monetizedLeaveType || record.leaveType,
@@ -1489,13 +1528,23 @@ export default function LeaveDashboard({
 
     if (actionType === "view") {
       setPrintRequest(false);
+      setDownloadRequest(false);
       setSelectedRequest(request);
       return;
     }
 
     /* The form modal is the print source: it opens, prints itself once loaded, and closes again. */
     if (actionType === "print") {
+      setDownloadRequest(false);
       setPrintRequest(true);
+      setSelectedRequest(request);
+      return;
+    }
+
+    /* Download works like Print: the form opens, saves itself as a PDF once loaded, and closes. */
+    if (actionType === "download") {
+      setPrintRequest(false);
+      setDownloadRequest(true);
       setSelectedRequest(request);
       return;
     }
@@ -1994,9 +2043,11 @@ export default function LeaveDashboard({
         reviewer={user}
         showRegionalDirectorApproverSignature={roleKey === "regionaldirector"}
         autoPrint={printRequest}
+        autoDownload={downloadRequest}
         onClose={() => {
           setSelectedRequest(null);
           setPrintRequest(false);
+          setDownloadRequest(false);
         }}
       />
 
@@ -2015,9 +2066,11 @@ export default function LeaveDashboard({
         showHrmoReviewerSignature={roleKey === "hrhead"}
         showRegionalDirectorApproverSignature={isRegionalDirector}
         autoPrint={printMonetization}
+        autoDownload={downloadMonetization}
         onClose={() => {
           setSelectedMonetization(null);
           setPrintMonetization(false);
+          setDownloadMonetization(false);
         }}
       />
 

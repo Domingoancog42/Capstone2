@@ -7,6 +7,7 @@ import {
 import {
   faBan,
   faBoxArchive,
+  faFileArrowDown,
   faPrint,
   faRotateLeft,
 } from "@fortawesome/free-solid-svg-icons";
@@ -71,7 +72,9 @@ export default function EmployeeLeaveWorkspace({ user }) {
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [selectedMonetization, setSelectedMonetization] = useState(null);
   const [printMonetization, setPrintMonetization] = useState(false);
+  const [downloadMonetization, setDownloadMonetization] = useState(false);
   const [printRequest, setPrintRequest] = useState(false);
+  const [downloadRequest, setDownloadRequest] = useState(false);
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [query, setQuery] = useState("");
@@ -402,59 +405,60 @@ export default function EmployeeLeaveWorkspace({ user }) {
   };
 
   /*
+   * Opens the request's form to read ("view"), or to print or save as a PDF ("print", "download"):
+   * the form modal is the source for both, doing the job once loaded and closing again.
+   */
+  const openRequestForm = (request, mode = "view") => {
+    if (request.isLeaveMonetization) {
+      /*
+       * The row renamed `leaveType` to the filing itself, so the credit it draws from is put
+       * back for the form, which reads that field to fill the certification of credits.
+       */
+      setPrintMonetization(mode === "print");
+      setDownloadMonetization(mode === "download");
+      setSelectedMonetization({
+        ...request,
+        leaveType: request.monetizedLeaveType || request.leaveType,
+      });
+      return;
+    }
+
+    setPrintRequest(mode === "print");
+    setDownloadRequest(mode === "download");
+    setSelectedRequest(request);
+  };
+
+  /*
    * Viewing is always offered — the CSC Form No. 6 is the record of what was filed, and an employee
-   * should be able to read their own back at any status. Printing waits for the Regional Director's
-   * approval, since an unsigned form is not a document worth handing anyone. Cancelling is only
-   * theirs to do while the request is still pending; completed requests can move to the archive
-   * and requests archived by this employee can be restored. Defined once so the table and the
-   * narrow-screen cards agree.
+   * should be able to read their own back at any status. Printing and downloading wait for the
+   * Regional Director's approval, since an unsigned form is not a document worth handing anyone.
+   * Cancelling is only theirs to do while the request is still pending; completed requests can move
+   * to the archive and requests archived by this employee can be restored. Defined once so the
+   * table and the narrow-screen cards agree.
    */
   const renderRequestActions = (request) => (
     <ViewFormActions
       viewLabel={request.isLeaveMonetization ? "View leave monetization form" : "View leave form"}
-      onView={() => {
-        if (request.isLeaveMonetization) {
-          /*
-           * The row renamed `leaveType` to the filing itself, so the credit it draws from is put
-           * back for the form, which reads that field to fill the certification of credits.
-           */
-          setPrintMonetization(false);
-          setSelectedMonetization({
-            ...request,
-            leaveType: request.monetizedLeaveType || request.leaveType,
-          });
-          return;
-        }
-
-        setPrintRequest(false);
-        setSelectedRequest(request);
-      }}
+      onView={() => openRequestForm(request)}
     >
-      {/* The form modal is the print source: it opens, prints itself once loaded, and closes again. */}
-      {request.isLeaveMonetization && isRegionalDirectorApproved(request) ? (
-        <ActionIconButton
-          label="Print leave monetization form"
-          icon={faPrint}
-          tone="print"
-          onClick={() => {
-            setPrintMonetization(true);
-            setSelectedMonetization({
-              ...request,
-              leaveType: request.monetizedLeaveType || request.leaveType,
-            });
-          }}
-        />
-      ) : null}
-      {!request.isLeaveMonetization && isRegionalDirectorApproved(request) ? (
-        <ActionIconButton
-          label="Print leave form"
-          icon={faPrint}
-          tone="print"
-          onClick={() => {
-            setPrintRequest(true);
-            setSelectedRequest(request);
-          }}
-        />
+      {isRegionalDirectorApproved(request) ? (
+        <>
+          <ActionIconButton
+            label={request.isLeaveMonetization ? "Print leave monetization form" : "Print leave form"}
+            icon={faPrint}
+            tone="print"
+            onClick={() => openRequestForm(request, "print")}
+          />
+          <ActionIconButton
+            label={request.isLeaveMonetization
+              ? "Download leave monetization form as PDF"
+              : "Download leave form as PDF"}
+            text="Download PDF"
+            icon={faFileArrowDown}
+            tone="export"
+            onClick={() => openRequestForm(request, "download")}
+          />
+        </>
       ) : null}
       {archiveView && String(request.archivedByUserId || "") === String(user?.id || "") ? (
         <ActionIconButton
@@ -740,20 +744,24 @@ export default function EmployeeLeaveWorkspace({ user }) {
         open={Boolean(selectedRequest)}
         request={selectedRequest}
         autoPrint={printRequest}
+        autoDownload={downloadRequest}
         onClose={() => {
           setSelectedRequest(null);
           setPrintRequest(false);
+          setDownloadRequest(false);
         }}
       />
 
-      {/* The monetization filing's copy of the same CSC Form No. 6, printed the same way. */}
+      {/* The monetization filing's copy of the same CSC Form No. 6, printed and saved the same way. */}
       <LeaveMonetizationFormModal
         open={Boolean(selectedMonetization)}
         record={selectedMonetization}
         autoPrint={printMonetization}
+        autoDownload={downloadMonetization}
         onClose={() => {
           setSelectedMonetization(null);
           setPrintMonetization(false);
+          setDownloadMonetization(false);
         }}
       />
     </div>

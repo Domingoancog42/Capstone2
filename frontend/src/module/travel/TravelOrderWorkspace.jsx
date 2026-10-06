@@ -8,7 +8,16 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { faBan, faBoxArchive, faCheck, faFileSignature, faPrint, faRotateLeft, faXmark } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBan,
+  faBoxArchive,
+  faCheck,
+  faFileArrowDown,
+  faFileSignature,
+  faPrint,
+  faRotateLeft,
+  faXmark,
+} from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
@@ -53,6 +62,7 @@ import {
 import { buildTravelOrderQrPayload } from "../../utils/formQrCode";
 import useAutoPrint from "../../hooks/useAutoPrint";
 import { fitSheetToPrintArea, PRINT_AREA_WIDTH_MM, PRINT_PAGE_MARGIN_MM } from "../../utils/printSheetFit";
+import { downloadFormSheetPdf } from "../../utils/formSheetPdf";
 import { getEmployeeSignature } from "../../services/api";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
@@ -603,21 +613,30 @@ function TravelPreviewSelectionBox({ checked = false }) {
   );
 }
 
-function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
+function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = false, onClose }) {
   const [visible, setVisible] = useState(false);
   const [employeeSignature, setEmployeeSignature] = useState("");
   const [recommendedBySignature, setRecommendedBySignature] = useState("");
   const [approvedBySignature, setApprovedBySignature] = useState("");
   const printRef = useRef(null);
   /*
-   * Opened from the Print action in the table rather than by a reader: print the order once the
-   * signatures below have landed, then hand back to the caller so it does not linger on screen.
-   * `handlePrint` is only called from inside the frame callback, well after it is initialised.
+   * Opened from the Print or Download PDF action in the table rather than by a reader: print or
+   * save the order once the signatures below have landed, then hand back to the caller so it does
+   * not linger on screen. `handlePrint` and `handleDownloadPdf` are only called from inside the
+   * frame callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: Boolean(request) && autoPrint,
-    onPrint: () => handlePrint(),
-    onDone: onClose,
+    active: Boolean(request) && (autoPrint || autoDownload),
+    /* The PDF is saved asynchronously, so a download closes the order only once the file is out. */
+    onPrint: () => {
+      if (autoDownload) {
+        void handleDownloadPdf().finally(() => onClose?.());
+        return;
+      }
+
+      handlePrint();
+    },
+    onDone: autoDownload ? undefined : onClose,
   });
 
   useEffect(() => {
@@ -841,6 +860,25 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
     });
   };
 
+  /* The Download PDF row action: the order Print would send to the printer, saved as a file instead. */
+  const handleDownloadPdf = async () => {
+    const toastId = toast.loading("Preparing the travel order PDF...");
+    const employeeName = String(request.employeeName || "")
+      .trim()
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+    try {
+      await downloadFormSheetPdf(printRef.current, {
+        fileName: `Travel-Order-${employeeName || "Employee"}-${travelOrderNumber}.pdf`,
+        printCss: TRAVEL_ORDER_PRINT_CSS,
+      });
+      toast.success("Travel order PDF downloaded.", { id: toastId });
+    } catch (error) {
+      toast.error(error?.message || "Unable to download the travel order PDF.", { id: toastId });
+    }
+  };
+
   // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
   return createPortal((
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
@@ -863,7 +901,7 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
             <h2 className="m-0 text-lg font-semibold text-slate-950">Travel Order Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted travel order.</p>
           </div>
-          {/* Printing is a row action in the table now, so the preview only offers Close. */}
+          {/* Print and Download PDF are row actions in the table, so the preview only offers Close. */}
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
@@ -1383,6 +1421,7 @@ export default function TravelOrderWorkspace({
   const [submitting, setSubmitting] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [printRequest, setPrintRequest] = useState(false);
+  const [downloadRequest, setDownloadRequest] = useState(false);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState(defaultStatus);
   const [dateFilter, setDateFilter] = useState("");
@@ -1762,13 +1801,18 @@ export default function TravelOrderWorkspace({
   const handleAction = async (actionType, request) => {
     if (actionType === "view" || actionType === "review") {
       setPrintRequest(false);
+      setDownloadRequest(false);
       setSelectedRequest(request);
       return;
     }
 
-    /* The preview is the print source: it opens, prints itself once loaded, and closes again. */
-    if (actionType === "print") {
-      setPrintRequest(true);
+    /*
+     * The preview is the print source: it opens, prints itself once loaded, and closes again.
+     * Download PDF works the same way, saving the order as a file instead.
+     */
+    if (actionType === "print" || actionType === "download") {
+      setPrintRequest(actionType === "print");
+      setDownloadRequest(actionType === "download");
       setSelectedRequest(request);
       return;
     }
@@ -2045,18 +2089,29 @@ export default function TravelOrderWorkspace({
      * changes the stored status to Approved, no desk receives a Print action.
      */
     const showPrintAction = requestStatus === "Approved" && Boolean(request.employeeAuthorizedAt);
+    // Download PDF saves the same completed order, so it is offered exactly when Print is.
+    const printActions = showPrintAction ? (
+      <>
+        <ActionIconButton
+          label="Print travel order form"
+          icon={faPrint}
+          tone="print"
+          onClick={() => handleAction("print", request)}
+        />
+        <ActionIconButton
+          label="Download travel order form as PDF"
+          text="Download PDF"
+          icon={faFileArrowDown}
+          tone="export"
+          onClick={() => handleAction("download", request)}
+        />
+      </>
+    ) : null;
 
     if (archiveView) {
       return (
         <ViewFormActions viewLabel="View travel order form" onView={() => handleAction("view", request)}>
-          {showPrintAction ? (
-            <ActionIconButton
-              label="Print travel order form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => handleAction("print", request)}
-            />
-          ) : null}
+          {printActions}
           <ActionIconButton
             label="Restore travel order"
             icon={faRotateLeft}
@@ -2069,14 +2124,7 @@ export default function TravelOrderWorkspace({
 
     return (
       <ViewFormActions viewLabel="View travel order form" onView={() => handleAction("view", request)}>
-        {showPrintAction ? (
-          <ActionIconButton
-            label="Print travel order form"
-            icon={faPrint}
-            tone="print"
-            onClick={() => handleAction("print", request)}
-          />
-        ) : null}
+        {printActions}
         {showAuthorizeAction ? (
           <ActionIconButton
             label="Accept the travel authorization"
@@ -2391,9 +2439,11 @@ export default function TravelOrderWorkspace({
       <TravelOrderPreviewModal
         request={selectedRequest}
         autoPrint={printRequest}
+        autoDownload={downloadRequest}
         onClose={() => {
           setSelectedRequest(null);
           setPrintRequest(false);
+          setDownloadRequest(false);
         }}
       />
     </div>

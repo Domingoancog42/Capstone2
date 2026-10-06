@@ -11,7 +11,15 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { faBan, faBoxArchive, faCheck, faPrint, faRotateLeft, faXmark } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBan,
+  faBoxArchive,
+  faCheck,
+  faFileArrowDown,
+  faPrint,
+  faRotateLeft,
+  faXmark,
+} from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
@@ -23,6 +31,7 @@ import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
 import SelectionCheckbox from "../../components/UI/SelectionCheckbox";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import { downloadFormSheetPdf } from "../../utils/formSheetPdf";
 import { getEmployeeSignature } from "../../services/api";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
@@ -664,10 +673,44 @@ function EmployeeSearchSelect({
   );
 }
 
+/* The CTO form's print window styles; the Download PDF copy is laid out with them too. */
+const CTO_PRINT_CSS = `
+  @page {
+    size: auto;
+    margin: 10mm;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  body {
+    font-family: Arial, sans-serif;
+    color: #000000;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-shell {
+    width: 100%;
+    max-width: 190mm;
+    margin: 0 auto;
+  }
+`;
+
 function CompensatoryPreviewModal({
   record,
   employees = [],
   autoPrint = false,
+  autoDownload = false,
   onClose,
 }) {
   const [visible, setVisible] = useState(false);
@@ -677,14 +720,23 @@ function CompensatoryPreviewModal({
   const [authorizedOfficialSignature, setAuthorizedOfficialSignature] = useState("");
   const printRef = useRef(null);
   /*
-   * Opened from the Print action in the table rather than by a reader: print the form once the
-   * signatures below have landed, then hand back to the caller so it does not linger on screen.
-   * `handlePrint` is only called from inside the frame callback, well after it is initialised.
+   * Opened from the Print or Download PDF action in the table rather than by a reader: print or
+   * save the form once the signatures below have landed, then hand back to the caller so it does
+   * not linger on screen. `handlePrint` and `handleDownloadPdf` are only called from inside the
+   * frame callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: Boolean(record) && autoPrint,
-    onPrint: () => handlePrint(),
-    onDone: onClose,
+    active: Boolean(record) && (autoPrint || autoDownload),
+    /* The PDF is saved asynchronously, so a download closes the form only once the file is out. */
+    onPrint: () => {
+      if (autoDownload) {
+        void handleDownloadPdf().finally(() => onClose?.());
+        return;
+      }
+
+      handlePrint();
+    },
+    onDone: autoDownload ? undefined : onClose,
   });
 
   useEffect(() => {
@@ -930,37 +982,7 @@ function CompensatoryPreviewModal({
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <title>Compensatory Time Off Form</title>
-          <style>
-            @page {
-              size: auto;
-              margin: 10mm;
-            }
-
-            html, body {
-              margin: 0;
-              padding: 0;
-              background: #ffffff;
-            }
-
-            body {
-              font-family: Arial, sans-serif;
-              color: #000000;
-            }
-
-            *,
-            *::before,
-            *::after {
-              box-sizing: border-box;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-
-            .print-shell {
-              width: 100%;
-              max-width: 190mm;
-              margin: 0 auto;
-            }
-          </style>
+          <style>${CTO_PRINT_CSS}</style>
         </head>
         <body>
           <div class="print-shell">${formClone.outerHTML}</div>
@@ -1003,6 +1025,24 @@ function CompensatoryPreviewModal({
     });
   };
 
+  /* The Download PDF row action: the form Print would send to the printer, saved as a file instead. */
+  const handleDownloadPdf = async () => {
+    const toastId = toast.loading("Preparing the compensatory time off form PDF...");
+    const employeeName = applicantName
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+    try {
+      await downloadFormSheetPdf(printRef.current, {
+        fileName: `CTO-Form-${employeeName || "Employee"}-${record.id || "request"}.pdf`,
+        printCss: CTO_PRINT_CSS,
+      });
+      toast.success("Compensatory time off form PDF downloaded.", { id: toastId });
+    } catch (error) {
+      toast.error(error?.message || "Unable to download the compensatory time off form PDF.", { id: toastId });
+    }
+  };
+
   // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
   return createPortal((
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
@@ -1025,7 +1065,7 @@ function CompensatoryPreviewModal({
             <h2 className="m-0 text-lg font-semibold text-slate-950">Compensatory Time Off Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted CTO request.</p>
           </div>
-          {/* Printing is a row action in the table now, so the preview only offers Close. */}
+          {/* Print and Download PDF are row actions in the table, so the preview only offers Close. */}
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
@@ -1604,6 +1644,7 @@ export default function CompensatoryWorkspace({
   const [submitting, setSubmitting] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [printRecord, setPrintRecord] = useState(false);
+  const [downloadRecord, setDownloadRecord] = useState(false);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState(defaultStatusFilter);
   const [rowsPerPage, setRowsPerPage] = useState("10");
@@ -1815,12 +1856,21 @@ export default function CompensatoryWorkspace({
 
   const handleOpenPreview = (record) => {
     setPrintRecord(false);
+    setDownloadRecord(false);
     setSelectedRecord(record);
   };
 
   /* The preview is the print source: it opens, prints itself once loaded, and closes again. */
   const handlePrintRecord = (record) => {
+    setDownloadRecord(false);
     setPrintRecord(true);
+    setSelectedRecord(record);
+  };
+
+  /* Download PDF works like Print: the form opens, saves itself as a PDF once loaded, and closes. */
+  const handleDownloadRecord = (record) => {
+    setPrintRecord(false);
+    setDownloadRecord(true);
     setSelectedRecord(record);
   };
 
@@ -2039,18 +2089,29 @@ export default function CompensatoryWorkspace({
     )?.desk;
     /* The form is only worth printing once the Regional Director has given final approval. */
     const showPrintAction = isRegionalDirectorApproved(record);
+    // Download PDF saves the same approved form, so it is offered exactly when Print is.
+    const printActions = showPrintAction ? (
+      <>
+        <ActionIconButton
+          label="Print compensatory form"
+          icon={faPrint}
+          tone="print"
+          onClick={() => handlePrintRecord(record)}
+        />
+        <ActionIconButton
+          label="Download compensatory form as PDF"
+          text="Download PDF"
+          icon={faFileArrowDown}
+          tone="export"
+          onClick={() => handleDownloadRecord(record)}
+        />
+      </>
+    ) : null;
 
     if (archiveView) {
       return (
         <ViewFormActions viewLabel="View compensatory form" onView={() => handleOpenPreview(record)}>
-          {showPrintAction ? (
-            <ActionIconButton
-              label="Print compensatory form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => handlePrintRecord(record)}
-            />
-          ) : null}
+          {printActions}
           <ActionIconButton
             label="Restore compensatory request"
             icon={faRotateLeft}
@@ -2063,14 +2124,7 @@ export default function CompensatoryWorkspace({
 
     return (
       <ViewFormActions viewLabel="View compensatory form" onView={() => handleOpenPreview(record)}>
-        {showPrintAction ? (
-          <ActionIconButton
-            label="Print compensatory form"
-            icon={faPrint}
-            tone="print"
-            onClick={() => handlePrintRecord(record)}
-          />
-        ) : null}
+        {printActions}
         {canDecide ? (
           <>
             <ActionIconButton
@@ -2383,9 +2437,11 @@ export default function CompensatoryWorkspace({
         record={selectedRecord}
         employees={employees}
         autoPrint={printRecord}
+        autoDownload={downloadRecord}
         onClose={() => {
           setSelectedRecord(null);
           setPrintRecord(false);
+          setDownloadRecord(false);
         }}
       />
     </div>
