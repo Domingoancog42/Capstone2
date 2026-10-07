@@ -42,7 +42,7 @@ import AdminStatCard from "./AdminStatCard";
 import { fetchDashboardAnalytics } from "../../services/analyticsService";
 import { subscribeAutoRefresh } from "../auto/autorefreshconfig";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
-import { getRoleBadgeClass, getRoleLabel } from "../../utils/roleRoutes";
+import { getRoleBadgeClass, getRoleLabel, resolveUserRoleKey } from "../../utils/roleRoutes";
 import {
   formatDateDisplay,
   normalizeLeaveStatus,
@@ -92,6 +92,8 @@ const ACTIVITY_SLOTS = {
   "Travel Order": 3,
   "Pass Slip": 4,
 };
+
+const GENERAL_REQUEST_SUMMARY_ROLE_KEYS = new Set(["hrhead", "hrstaff", "regionaldirector"]);
 
 function resolveFirstName(user) {
   const rawName = String(user?.full_name || user?.username || "Admin").trim();
@@ -693,6 +695,7 @@ export default function AdminAnalyticsOverview({
   showWelcomeAssignmentCards = true,
   showEmployeesByDivisionCard = true,
 }) {
+  const usesGeneralRequestSummaryLabels = GENERAL_REQUEST_SUMMARY_ROLE_KEYS.has(resolveUserRoleKey(user));
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [dashboardSnapshot, setDashboardSnapshot] = useState(null);
   const [analyticsError, setAnalyticsError] = useState("");
@@ -930,7 +933,7 @@ export default function AdminAnalyticsOverview({
       onClick: openEmployeeSummary,
     },
     {
-      label: "Pending Leave Requests",
+      label: usesGeneralRequestSummaryLabels ? "Pending Requests" : "Pending Leave Requests",
       value: numberFormatter.format(pendingLeaveCount),
       icon: CalendarRange,
       accent: "from-amber-400 via-amber-500 to-orange-500",
@@ -939,7 +942,7 @@ export default function AdminAnalyticsOverview({
       onClick: () => setPendingRequestsOpen(true),
     },
     {
-      label: "Approved Leaves",
+      label: usesGeneralRequestSummaryLabels ? "Approved" : "Approved Leaves",
       value: numberFormatter.format(approvedLeaveCount),
       icon: BadgeCheck,
       accent: "from-emerald-500 via-emerald-600 to-lime-500",

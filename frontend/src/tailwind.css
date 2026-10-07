@@ -216,70 +216,64 @@ html.dark .dashboard-welcome-banner .bg-white\/5 {
   background-color: rgba(255, 255, 255, 0.06) !important;
 }
 
-/* Dashboard welcome card backdrop. Purely decorative layers (wash, fading dot grid, soft orbs, top
-   hairline) sit under the whole card, and an SVG mountain ridge sits behind the content column.
-   The accent follows the chosen system theme colour via --ui-accent-rgb and falls back to the
-   card's blue when none is set. */
+/* Dashboard welcome backdrop supplied as a panoramic image. It remains decorative and slightly
+   softened so the live text, assignment cards, and calendar stay legible above it. */
 .dashboard-welcome-banner {
   --welcome-accent-rgb: var(--ui-accent-rgb, 37 99 235);
-  --welcome-sky-rgb: 14 165 233;
 }
 
-.dashboard-welcome-backdrop__art {
-  color: rgb(var(--welcome-accent-rgb));
+.dashboard-welcome-backdrop {
+  background: #eaf5ff;
 }
 
-.dashboard-welcome-backdrop__wash {
-  background:
-    radial-gradient(circle at 86% -12%, rgb(var(--welcome-accent-rgb) / 0.16), transparent 46%),
-    radial-gradient(circle at 4% 108%, rgb(var(--welcome-sky-rgb) / 0.1), transparent 42%),
-    linear-gradient(120deg, rgb(var(--welcome-accent-rgb) / 0.07) 0%, transparent 44%);
+html.dark .dashboard-welcome-backdrop {
+  background: #0f172a;
 }
 
-.dashboard-welcome-backdrop__grid {
-  background-image: radial-gradient(circle, rgb(15 23 42 / 0.09) 1px, transparent 1.4px);
-  background-size: 22px 22px;
-  -webkit-mask-image: radial-gradient(ellipse 70% 85% at 82% 0%, #000 0%, transparent 100%);
-  mask-image: radial-gradient(ellipse 70% 85% at 82% 0%, #000 0%, transparent 100%);
+.dashboard-welcome-backdrop__image {
+  opacity: 0.86;
+  filter: saturate(0.96) contrast(0.98);
+  object-position: 50% top;
 }
 
-.dashboard-welcome-backdrop__orb--accent {
-  background: rgb(var(--welcome-accent-rgb) / 0.18);
-}
-
-.dashboard-welcome-backdrop__orb--sky {
-  background: rgb(var(--welcome-sky-rgb) / 0.14);
+.dashboard-welcome-backdrop__image-overlay {
+  background: linear-gradient(90deg, rgb(255 255 255 / 0.16) 0%, transparent 48%, rgb(255 255 255 / 0.08) 100%);
 }
 
 .dashboard-welcome-backdrop__hairline {
   background: linear-gradient(90deg, transparent 0%, rgb(var(--welcome-accent-rgb) / 0.45) 50%, transparent 100%);
 }
 
-html.dark .dashboard-welcome-backdrop__wash {
-  background:
-    radial-gradient(circle at 86% -12%, rgb(var(--welcome-accent-rgb) / 0.24), transparent 46%),
-    radial-gradient(circle at 4% 108%, rgb(var(--welcome-sky-rgb) / 0.12), transparent 42%),
-    linear-gradient(120deg, rgb(var(--welcome-accent-rgb) / 0.08) 0%, transparent 44%);
+html.dark .dashboard-welcome-backdrop__image {
+  opacity: 0.3;
+  filter: saturate(0.72) brightness(0.72);
 }
 
-html.dark .dashboard-welcome-backdrop__grid {
-  background-image: radial-gradient(circle, rgb(255 255 255 / 0.07) 1px, transparent 1.4px);
-}
-
-html.dark .dashboard-welcome-backdrop__orb--accent {
-  background: rgb(var(--welcome-accent-rgb) / 0.22);
-}
-
-html.dark .dashboard-welcome-backdrop__orb--sky {
-  background: rgb(var(--welcome-sky-rgb) / 0.12);
-}
-
-html.dark .dashboard-welcome-backdrop__art {
-  color: var(--ui-accent-on-dark, #60a5fa);
+html.dark .dashboard-welcome-backdrop__image-overlay {
+  background: rgb(15 23 42 / 0.34);
 }
 
 html.dark .dashboard-welcome-backdrop__hairline {
   background: linear-gradient(90deg, transparent 0%, rgb(var(--welcome-accent-rgb) / 0.55) 50%, transparent 100%);
+}
+
+/* Below the two-column desktop layout the card becomes much taller. Keep the artwork in a
+   dedicated top area instead of enlarging it to the full stacked-card height. The focal point
+   follows the people in the source image and the fade blends into the card on narrow screens. */
+@media (max-width: 1535px) {
+  .dashboard-welcome-backdrop__image {
+    height: clamp(20rem, 45vw, 30rem);
+    object-position: 36% top;
+    -webkit-mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
+  }
+}
+
+@media (max-width: 639px) {
+  .dashboard-welcome-backdrop__image {
+    height: 21rem;
+    object-position: 35% top;
+  }
 }
 
 html.dark .analytics-card-shell .analytics-dataset-toggle[data-active="true"] {

@@ -1107,11 +1107,16 @@ function refresh_session_user(array $user): ?array
  * `$allowAnonymous` is reserved for session.php's identity probe. It performs the same expiry,
  * database, and account-status checks but returns null instead of emitting a 401, allowing that one
  * endpoint to describe both authenticated and anonymous states with a stable JSON response.
+ *
+ * `$allowPasswordChangeRequired` is deliberately true only for session.php and
+ * force_change_password.php. A temporary-password session may identify its user and replace that
+ * password, but it must not use any ordinary authenticated API until the requirement is cleared.
  */
 function require_session_user(
     bool $extendSession = false,
     bool $keepSessionOpen = false,
-    bool $allowAnonymous = false
+    bool $allowAnonymous = false,
+    bool $allowPasswordChangeRequired = false
 ): ?array
 {
     global $pdo;
@@ -1201,6 +1206,22 @@ function require_session_user(
             'reason' => 'account_inactive',
             'message' => 'Your account has been set to inactive. Please contact your administrator.',
         ], 401);
+    }
+
+    if (!$allowPasswordChangeRequired && !empty($refreshedUser['must_change_password'])) {
+        // Retain the fresh database flag in the session so session.php and the next page reload both
+        // continue to show the mandatory password-change screen.
+        $_SESSION['user'] = $refreshedUser;
+
+        if (!$keepSessionOpen) {
+            session_write_close();
+        }
+
+        json_response([
+            'success' => false,
+            'reason' => 'password_change_required',
+            'message' => 'You must change your temporary password before accessing the dashboard.',
+        ], 403);
     }
 
     $_SESSION['user'] = $refreshedUser;

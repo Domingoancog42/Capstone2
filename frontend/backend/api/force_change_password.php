@@ -7,7 +7,10 @@ require_method('POST');
 ensure_user_security_columns($pdo);
 
 // Keeps the session open: a successful change destroys the session so the user signs in again.
-$sessionUser = require_session_user(keepSessionOpen: true);
+$sessionUser = require_session_user(
+    keepSessionOpen: true,
+    allowPasswordChangeRequired: true
+);
 $userId = (int)($sessionUser['id'] ?? 0);
 $body = read_json_body();
 $currentPassword = (string)($body['currentPassword'] ?? '');

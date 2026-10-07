@@ -354,9 +354,11 @@ function getBalanceHealth(balance) {
   const total = Number(balance?.total) || 0;
 
   if (remaining <= 0) {
+    const leaveCode = String(balance?.code || "").trim().toUpperCase();
+
     return {
       tone: "depleted",
-      label: "Depleted",
+      label: ["VL", "SL"].includes(leaveCode) ? "Insufficient" : "Depleted",
       amountClass: "border-rose-200 bg-rose-50 text-rose-700",
       badgeClass: "bg-rose-600 text-white",
     };

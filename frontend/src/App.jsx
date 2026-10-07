@@ -117,6 +117,7 @@ function AppContent() {
   // out from under it. See the session-expired listener below.
   const inactiveNoticeRef = useRef(false);
   const userId = user?.id ?? null;
+  const requiresPasswordChange = Boolean(user?.must_change_password);
 
   /*
    * A page with unsaved work (see utils/navigationGuard.js) is asked first. Only a move the person
@@ -141,6 +142,12 @@ function AppContent() {
   const handleLogin = (nextUser) => {
     const normalizedUser = setAuthenticatedUser(nextUser);
     initializeTheme();
+
+    if (normalizedUser?.must_change_password) {
+      navigate("/login", { replace: true });
+      return;
+    }
+
     navigate(
       getDefaultPathForRole(normalizedUser?.roleKey, normalizedUser?.baseRoleKey),
       { replace: true }
@@ -489,6 +496,15 @@ function AppContent() {
       return;
     }
 
+    // A first-login session is authenticated only far enough to replace its temporary password.
+    // Keep every reload and pasted dashboard URL on the required password-change screen.
+    if (requiresPasswordChange) {
+      if (currentPath !== "/login") {
+        navigate("/login", { replace: true });
+      }
+      return;
+    }
+
     // A custom role is admitted through the built-in role it was based on, since that
     // is the dashboard and route prefix it actually uses.
     const routingRole = resolveRoutingRole(user.roleKey || user.role, user.baseRoleKey);
@@ -512,7 +528,7 @@ function AppContent() {
     if (!isPathAllowedForRole(currentPath, user.roleKey, user.baseRoleKey)) {
       navigate(getDefaultPathForRole(user.roleKey, user.baseRoleKey), { replace: true });
     }
-  }, [currentPath, handleLogout, isAuthLoading, navigate, user]);
+  }, [currentPath, handleLogout, isAuthLoading, navigate, requiresPasswordChange, user]);
 
   /*
    * The change feed only makes sense for a signed-in browser: it needs a session to authorise the
@@ -520,14 +536,14 @@ function AppContent() {
    * `userId` also means signing out tears the parked request down rather than leaving it to 401.
    */
   useEffect(() => {
-    if (!userId || currentPath === PASS_SLIP_SCANNER_PATH) {
+    if (!userId || requiresPasswordChange || currentPath === PASS_SLIP_SCANNER_PATH) {
       return undefined;
     }
 
     startLiveUpdates();
 
     return () => stopLiveUpdates();
-  }, [currentPath, userId]);
+  }, [currentPath, requiresPasswordChange, userId]);
 
   /*
    * Permissions are read from the session, so a revoked module only takes effect once the session is
@@ -538,7 +554,7 @@ function AppContent() {
    * have updated shared localStorage while this tab still displays the old grants.
    */
   const refreshPermissions = useCallback(async () => {
-    if (!userId) {
+    if (!userId || requiresPasswordChange) {
       return;
     }
 
@@ -548,7 +564,7 @@ function AppContent() {
     } catch {
       // A failed poll changes nothing; a genuinely dead session is handled by the 401 interceptor.
     }
-  }, [setAuthenticatedUser, userId]);
+  }, [requiresPasswordChange, setAuthenticatedUser, userId]);
 
   /*
    * `settings` is here because the admin screen saves the permission matrix through settings.php,
@@ -556,7 +572,7 @@ function AppContent() {
    * permissions.php endpoint.
    */
   useAutoRefreshOnChange(refreshPermissions, {
-    enabled: Boolean(userId) && currentPath !== PASS_SLIP_SCANNER_PATH,
+    enabled: Boolean(userId) && !requiresPasswordChange && currentPath !== PASS_SLIP_SCANNER_PATH,
     topics: ["permissions", "settings", "user", "roles"],
     refreshOnMount: false,
   });
@@ -584,12 +600,20 @@ function AppContent() {
       </div>
     );
   } else if (!user && (currentPath === "/login" || currentPath === "/")) {
-    content = <Login onLogin={handleLogin} />;
+    content = <Login onLogin={handleLogin} onForcePasswordSessionEnd={handleLogout} />;
   } else if (!user) {
     content = (
       <div className="grid min-h-screen place-items-center bg-white px-4 text-center text-slate-900">
         <div className="h-10 w-10 animate-spin rounded-full border-2 border-slate-200 border-t-[#D61E1E]" role="status" aria-label="Opening login page" />
       </div>
+    );
+  } else if (requiresPasswordChange) {
+    content = (
+      <Login
+        initialForcePasswordUser={user}
+        onForcePasswordSessionEnd={handleLogout}
+        onLogin={handleLogin}
+      />
     );
   } else if (isPathAllowedForRole(currentPath, user.roleKey, user.baseRoleKey)) {
     // Custom roles render their base role's dashboard; the module checklist decides
@@ -715,6 +739,5 @@ function AppContent() {
     </>
   );
 }
-
 
 

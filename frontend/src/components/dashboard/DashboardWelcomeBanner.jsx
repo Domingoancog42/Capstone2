@@ -9,6 +9,7 @@ import {
   UserRound,
 } from "lucide-react";
 import DashboardMonthlyCalendar from "./DashboardMonthlyCalendar";
+import welcomeBackground from "../../assets/dashboard-welcome-background.png";
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   weekday: "long",
@@ -62,19 +63,6 @@ function DetailCard({ icon: Icon, label, value, helper, secondary, tone }) {
           </dd>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-/* Decorative mountain ridge along the bottom of the welcome card content column, filled in the
-   accent colour via currentColor. */
-function WelcomeBackdropArt() {
-  return (
-    <div className="dashboard-welcome-backdrop__art pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
-      <svg className="absolute inset-x-0 bottom-0 h-24 w-full" viewBox="0 0 640 96" preserveAspectRatio="none" fill="currentColor">
-        <path d="M0 96V70L54 46L102 66L168 28L236 60L298 40L362 72L426 44L490 68L548 36L640 62V96Z" opacity="0.06" />
-        <path d="M0 96V82L70 66L140 78L210 56L280 74L350 62L420 82L500 60L570 76L640 58V96Z" opacity="0.1" />
-      </svg>
     </div>
   );
 }
@@ -199,18 +187,19 @@ export default function DashboardWelcomeBanner({
       transition={{ duration: 0.4 }}
       className={`dashboard-welcome-banner dashboard-welcome-banner--clean ${variant === "employee" ? "dashboard-welcome-banner--employee" : ""} relative overflow-hidden rounded-[24px] border border-slate-200/80 bg-white text-slate-900 shadow-[0_18px_50px_rgba(15,23,42,0.08)] dark:border-slate-700/80 dark:bg-slate-900 dark:text-slate-100 ${className}`.trim()}
     >
-      {/* Decorative backdrop only: every layer is pointer-events-none and sits under the relative content grid. */}
+      {/* The supplied artwork is decorative only and stays beneath all dashboard content. */}
       <div className="dashboard-welcome-backdrop pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-        <div className="dashboard-welcome-backdrop__wash absolute inset-0" />
-        <div className="dashboard-welcome-backdrop__grid absolute inset-0" />
-        <div className="dashboard-welcome-backdrop__orb--accent absolute -right-20 -top-28 h-80 w-80 rounded-full blur-3xl" />
-        <div className="dashboard-welcome-backdrop__orb--sky absolute -bottom-36 -left-20 h-72 w-72 rounded-full blur-3xl" />
+        <img
+          src={welcomeBackground}
+          alt=""
+          className="dashboard-welcome-backdrop__image absolute inset-x-0 top-0 h-full w-full object-cover"
+        />
+        <div className="dashboard-welcome-backdrop__image-overlay absolute inset-0" />
         <div className="dashboard-welcome-backdrop__hairline absolute inset-x-0 top-0 h-px" />
       </div>
 
       <div className={`relative grid ${showCalendar ? "2xl:grid-cols-[minmax(500px,1.02fr)_minmax(560px,0.98fr)]" : ""}`}>
         <div className="relative isolate flex min-w-0 flex-col p-5 sm:p-6 lg:p-7">
-          <WelcomeBackdropArt />
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-4">
               <div className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-full border border-blue-100 bg-gradient-to-br from-blue-50 to-blue-100 text-blue-700 shadow-sm dark:border-blue-900/70 dark:from-blue-950 dark:to-slate-900 dark:text-blue-300 sm:h-[72px] sm:w-[72px]">

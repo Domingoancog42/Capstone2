@@ -1999,9 +1999,44 @@ function buildContractualRow(record = {}) {
   };
 }
 
+function sanitizePayrollAmountDraft(value) {
+  const numericText = String(value ?? "").replace(/[^\d.]/g, "");
+  const decimalIndex = numericText.indexOf(".");
+
+  if (decimalIndex < 0) {
+    return numericText;
+  }
+
+  const wholePart = numericText.slice(0, decimalIndex) || "0";
+  const decimalPart = numericText
+    .slice(decimalIndex + 1)
+    .replace(/\./g, "")
+    .slice(0, 2);
+
+  return `${wholePart}.${decimalPart}`;
+}
+
+function payrollAmountKeyIsAllowed(event) {
+  if (event.ctrlKey || event.metaKey) {
+    return true;
+  }
+
+  // Navigation, editing, modifier, and function keys have names longer than one character. Only
+  // printable characters need filtering; pasted and mobile-keyboard input is sanitized on change.
+  if (event.key.length > 1) {
+    return true;
+  }
+
+  if (/^\d$/.test(event.key)) {
+    return true;
+  }
+
+  return event.key === "." && !event.currentTarget.value.includes(".");
+}
+
 /*
  * One amount in a register that can be typed over: a button showing the formatted amount until it
- * is clicked, then a number input that saves the row on blur or Enter. Shared by the deduction
+ * is clicked, then a numeric-only amount input that saves the row on blur or Enter. Shared by the deduction
  * columns of both registers and by the hand-entered earnings columns of a bonus register, so a
  * bonus amount is filled in exactly the way a deduction already is.
  */
@@ -2028,17 +2063,22 @@ function EditableAmountValue({
     return (
       <input
         autoFocus
-        type="number"
-        min="0"
-        step="0.01"
+        type="text"
+        inputMode="decimal"
+        pattern="[0-9]*[.]?[0-9]{0,2}"
         value={draftValue ?? String(parseAmount(amount))}
         disabled={saving}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => onChange(sanitizePayrollAmountDraft(event.currentTarget.value))}
         onBlur={onSave}
         onFocus={(event) => event.currentTarget.select()}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
             event.currentTarget.blur();
+            return;
+          }
+
+          if (!payrollAmountKeyIsAllowed(event)) {
+            event.preventDefault();
           }
         }}
         className="h-8 w-28 rounded-md border border-slate-300 bg-white px-2 text-right text-xs font-semibold tabular-nums text-slate-800 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15 disabled:bg-slate-100 disabled:text-slate-500"

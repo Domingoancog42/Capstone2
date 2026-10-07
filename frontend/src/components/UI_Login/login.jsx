@@ -1148,7 +1148,11 @@ function ForcePasswordChangeCard({
   );
 }
 
-export default function Login({ onLogin }) {
+export default function Login({
+  initialForcePasswordUser = null,
+  onForcePasswordSessionEnd,
+  onLogin,
+}) {
   const rememberedEmail = readRememberedEmail();
   const [form, setForm] = useState({ email: rememberedEmail, password: "" });
   const [captchaChallenge, setCaptchaChallenge] = useState(null);
@@ -1179,8 +1183,18 @@ export default function Login({ onLogin }) {
   // Empty until public settings say otherwise, and empty is what draws no Google button.
   const [googleClientId, setGoogleClientId] = useState("");
   const [twoFactorChallenge, setTwoFactorChallenge] = useState(null);
-  const [forcePasswordUser, setForcePasswordUser] = useState(null);
+  const [forcePasswordUser, setForcePasswordUser] = useState(() => (
+    initialForcePasswordUser?.must_change_password ? initialForcePasswordUser : null
+  ));
   const [forcePasswordLoading, setForcePasswordLoading] = useState(false);
+
+  // Session restoration supplies the required-change user after a reload. Preserve that server
+  // decision in this screen instead of falling back to the ordinary sign-in form or dashboard.
+  useEffect(() => {
+    if (initialForcePasswordUser?.must_change_password) {
+      setForcePasswordUser(initialForcePasswordUser);
+    }
+  }, [initialForcePasswordUser]);
 
   /*
    * One request at a time. Two things ask for a challenge — the effect below, and every path that has
@@ -2016,6 +2030,9 @@ export default function Login({ onLogin }) {
       setShowPassword(false);
       setSuccessMessage(result?.message || "Password changed successfully. Sign in with your new password to continue.");
       resetCaptchaChallenge();
+      // force_change_password.php has destroyed the temporary-password session. Clear the matching
+      // client identity immediately as well, before the success toast's timer finishes.
+      onForcePasswordSessionEnd?.();
       await showLoginToast({
         icon: "success",
         title: "Password Changed",
@@ -2026,7 +2043,7 @@ export default function Login({ onLogin }) {
     }
   };
 
-  const handleForcePasswordCancel = () => {
+  const handleForcePasswordCancel = async () => {
     setForcePasswordUser(null);
     setForm((current) => ({
       ...current,
@@ -2034,7 +2051,14 @@ export default function Login({ onLogin }) {
     }));
     setShowPassword(false);
     refreshCaptcha();
-    logout().catch(() => {});
+
+    try {
+      await logout();
+    } catch {
+      // Client authentication is still cleared below if the sign-out request cannot be completed.
+    } finally {
+      onForcePasswordSessionEnd?.();
+    }
   };
 
   return (

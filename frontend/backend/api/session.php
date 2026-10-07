@@ -8,7 +8,11 @@ require_method('GET');
 // Background callers use this endpoint to re-read permissions without manufacturing activity.
 // App.jsx adds `extend=1` only for real browser activity or an explicit "Stay Logged In".
 $extendSession = filter_var($_GET['extend'] ?? false, FILTER_VALIDATE_BOOL);
-$user = require_session_user($extendSession, false, true);
+$user = require_session_user(
+    extendSession: $extendSession,
+    allowAnonymous: true,
+    allowPasswordChangeRequired: true
+);
 
 json_response([
     'authenticated' => $user !== null,
