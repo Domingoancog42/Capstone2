@@ -67,7 +67,7 @@ function leave_status_to_database(mixed $status): string
         'submitted' => 'submitted',
         'pending', 'pending leave balance verification' => 'pending',
         'endorsed', 'pending hr head approval' => 'endorsed',
-        'reviewed', 'pending chief admin review' => 'reviewed',
+        'reviewed', 'pending chief admin review', 'pending division chief review' => 'reviewed',
         'chief_reviewed', 'chief reviewed', 'chiefreviewed', 'pending regional director approval' => 'chief_reviewed',
         'approved' => 'approved',
         'rejected' => 'rejected',
@@ -195,7 +195,7 @@ function leave_stage_role_label(string $status): string
         'submitted' => 'HR Staff for leave balance verification',
         'pending' => 'HR Staff for leave balance verification',
         'endorsed' => 'HR Head',
-        'reviewed' => 'Chief Admin',
+        'reviewed' => 'Division Chief',
         'chief_reviewed' => 'Regional Director',
         default => 'an authorized approver',
     };
@@ -2004,7 +2004,7 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
                 'pending' => 'Leave Balance Verification Started',
                 'endorsed' => 'Leave Balance Verified',
                 'reviewed' => 'Leave Request Approved by HR Head',
-                'chief_reviewed' => 'Leave Request Reviewed by Chief Admin',
+                'chief_reviewed' => 'Leave Request Reviewed by Division Chief',
                 'approved' => 'Leave Request Approved',
                 'rejected' => 'Leave Request Rejected',
                 default => 'Leave Request Updated',
@@ -2012,8 +2012,8 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
             $notificationMessage = match ($status) {
                 'pending' => sprintf('Your %s leave request is pending leave balance verification.', (string)($notificationRequest['leaveType'] ?? 'leave')),
                 'endorsed' => sprintf('Your %s leave balance was verified. The request is pending HR Head approval.', (string)($notificationRequest['leaveType'] ?? 'leave')),
-                'reviewed' => sprintf('Your %s leave request was approved by the HR Head and is pending Chief Admin review.', (string)($notificationRequest['leaveType'] ?? 'leave')),
-                'chief_reviewed' => sprintf('Your %s leave request was reviewed by the Chief Admin and is pending Regional Director approval.', (string)($notificationRequest['leaveType'] ?? 'leave')),
+                'reviewed' => sprintf('Your %s leave request was approved by the HR Head and is pending Division Chief review.', (string)($notificationRequest['leaveType'] ?? 'leave')),
+                'chief_reviewed' => sprintf('Your %s leave request was reviewed by the Division Chief and is pending Regional Director approval.', (string)($notificationRequest['leaveType'] ?? 'leave')),
                 'approved' => sprintf(
                     'Your %s leave request for %s to %s has been approved.',
                     (string)($notificationRequest['leaveType'] ?? 'leave'),
@@ -2042,14 +2042,14 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
                     (string)$id
                 );
             } elseif ($status === 'reviewed') {
-                notify_roles($pdo, ['admin'], 'Leave Request Pending Chief Admin Review', (string)($notificationRequest['employeeName'] ?? 'An employee') . ' has an HR Head-approved leave request pending Chief Admin review.', 'leave_request_submitted', (string)$id);
-                notify_users($pdo, leave_chief_user_ids_for_employee($pdo, (int)($currentRequest['employee_id'] ?? 0)), 'Leave Request Pending Chief Admin Review', (string)($notificationRequest['employeeName'] ?? 'An employee') . ' has an HR Head-approved leave request pending Chief Admin review.', 'leave_request_submitted', (string)$id);
+                notify_roles($pdo, ['admin'], 'Leave Request Pending Division Chief Review', (string)($notificationRequest['employeeName'] ?? 'An employee') . ' has an HR Head-approved leave request pending Division Chief review.', 'leave_request_submitted', (string)$id);
+                notify_users($pdo, leave_chief_user_ids_for_employee($pdo, (int)($currentRequest['employee_id'] ?? 0)), 'Leave Request Pending Division Chief Review', (string)($notificationRequest['employeeName'] ?? 'An employee') . ' has an HR Head-approved leave request pending Division Chief review.', 'leave_request_submitted', (string)$id);
             } elseif ($status === 'chief_reviewed') {
                 notify_roles(
                     $pdo,
                     ['admin', 'regionaldirector'],
                     'Leave Request Pending Regional Director Approval',
-                    (string)($notificationRequest['employeeName'] ?? 'An employee') . ' has a Chief Admin-reviewed leave request pending Regional Director approval.',
+                    (string)($notificationRequest['employeeName'] ?? 'An employee') . ' has a Division Chief-reviewed leave request pending Regional Director approval.',
                     'leave_request_submitted',
                     (string)$id
                 );
@@ -2078,7 +2078,7 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
                 'pending' => 'Leave request moved to leave balance verification.',
                 'endorsed' => 'Leave balance verified. The request is pending HR Head approval.',
                 'reviewed' => 'Leave request approved by the HR Head and sent for Division Chief review.',
-                'chief_reviewed' => 'Leave request reviewed by the Chief Admin and sent to the Regional Director.',
+                'chief_reviewed' => 'Leave request reviewed by the Division Chief and sent to the Regional Director.',
                 'approved' => $isAdminApprovalOverride
                     ? 'Leave request received final approval through an Admin override.'
                     : 'Leave request received final approval from the Regional Director.',

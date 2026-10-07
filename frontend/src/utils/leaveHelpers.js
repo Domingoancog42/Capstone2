@@ -63,6 +63,7 @@ export function normalizeLeaveStatus(status) {
       return "Endorsed";
     case "reviewed":
     case "pending chief admin review":
+    case "pending division chief review":
       return "Reviewed";
     case "chief_reviewed":
     case "chief reviewed":
@@ -95,7 +96,7 @@ export function getRequestTableStatusLabel(status) {
     case "Endorsed":
       return "Pending HR Head Approval";
     case "Reviewed":
-      return "Pending Chief Admin Review";
+      return "Pending Division Chief Review";
     case "Chief Reviewed":
       return "Pending Regional Director Approval";
     default:

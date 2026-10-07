@@ -227,7 +227,7 @@ export default function LeaveCards({
     },
     {
       key: "reviewed",
-      title: "Pending Chief Admin Review",
+      title: "Pending Division Chief Review",
       value: summary.reviewed || 0,
       helper: "HR Head approved",
       icon: LoaderCircle,
@@ -237,7 +237,7 @@ export default function LeaveCards({
       key: "chiefReviewed",
       title: "Pending Regional Director Approval",
       value: summary.chiefReviewed || 0,
-      helper: "Chief Admin reviewed",
+      helper: "Division Chief reviewed",
       icon: LoaderCircle,
       gradient: "bg-gradient-to-br from-violet-500 to-indigo-500",
     },

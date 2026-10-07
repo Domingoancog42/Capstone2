@@ -192,7 +192,7 @@ export default function LeaveTable({
                   : normalizedStatus === "Pending"
                       ? "Verify leave balance"
                       : normalizedStatus === "Reviewed"
-                        ? "Complete Chief Admin review"
+                        ? "Complete Division Chief review"
                         : "Approve leave request"}
                 icon={faCheck}
                 tone="approve"

@@ -115,7 +115,7 @@ const initialModulePendingCounts = {
 const LEAVE_FILTER_STATUSES = [
   "Pending Leave Balance Verification",
   "Pending HR Head Approval",
-  "Pending Chief Admin Review",
+  "Pending Division Chief Review",
   "Pending Regional Director Approval",
   "Approved",
   "Disapproved",
@@ -461,7 +461,7 @@ function LeaveRequestManagementPanel({
               : normalizedStatus === "Pending"
                   ? "Verify leave balance"
                   : normalizedStatus === "Reviewed"
-                    ? "Complete Chief Admin review"
+                    ? "Complete Division Chief review"
                     : "Approve leave request"}
             icon={faCheck}
             tone="approve"
@@ -1573,7 +1573,7 @@ export default function LeaveDashboard({
     const labelMap = {
       markEndorsed: "approve",
       markReviewed: "approve",
-      markChiefReviewed: "complete the Chief Admin review for",
+      markChiefReviewed: "complete the Division Chief review for",
       approve: isRegionalDirector ? "final approve" : "approve",
       reject: "disapprove",
       cancel: "cancel",
@@ -1618,7 +1618,7 @@ export default function LeaveDashboard({
     const titleMap = {
       markEndorsed: "Approve Leave Request?",
       markReviewed: "Approve Leave Request?",
-      markChiefReviewed: "Complete Chief Admin Review?",
+      markChiefReviewed: "Complete Division Chief Review?",
       approve: isRegionalDirector ? "Final Approve Leave Request?" : "Approve Leave Request?",
       reject: "Disapprove Leave Request?",
       cancel: "Cancel Leave Request?",

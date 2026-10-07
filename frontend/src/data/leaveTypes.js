@@ -94,7 +94,7 @@ export const LEAVE_STATUSES = [
   "Submitted",
   "Pending Leave Balance Verification",
   "Pending HR Head Approval",
-  "Pending Chief Admin Review",
+  "Pending Division Chief Review",
   "Pending Regional Director Approval",
   "Approved",
   "Disapproved",

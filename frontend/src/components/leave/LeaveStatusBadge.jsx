@@ -26,7 +26,7 @@ export function getLeaveStatusDisplayLabel(status, rejectedByRole = "") {
   }
 
   if (normalizedStatus === "Reviewed") {
-    return "Pending Chief Admin Review";
+    return "Pending Division Chief Review";
   }
 
   if (normalizedStatus === "Chief Reviewed") {
@@ -56,7 +56,7 @@ export function getLeaveManagementStatusLabel(
   }
 
   if (normalizedStatus === "Reviewed") {
-    return "Pending Chief Admin Review";
+    return "Pending Division Chief Review";
   }
 
   if (normalizedStatus === "Chief Reviewed") {
