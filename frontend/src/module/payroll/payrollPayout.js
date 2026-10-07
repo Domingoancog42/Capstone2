@@ -13,7 +13,7 @@ export function payrollPayoutAmounts(record = {}) {
 }
 
 // An en dash, escaped so an editor that saves in a legacy code page cannot turn it into "?".
-const DASH = "–";
+const DASH = "\u2013";
 
 export function payrollPayoutLabels(record = {}) {
   const start = new Date(String(record.startDate || record.endDate || "").slice(0, 10) + "T00:00:00");
