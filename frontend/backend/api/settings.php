@@ -555,10 +555,11 @@ function default_role_permission_access(): array
             'promotions',
             'attendance',
             'leave',
+            // Runtime access is limited to the Chief assigned to FAD/FAM.
+            'payroll',
             'reports',
         ],
-        // Chief Admin works the Division Chief's desk and, unlike the chief, holds the second payroll
-        // approval: HR Head -> Chief Admin -> Regional Director.
+        // Chief Admin no longer participates in payroll; the FAD Division Chief owns that stage.
         'chiefadmin' => [
             'dashboard',
             'profile',
@@ -569,11 +570,10 @@ function default_role_permission_access(): array
             'promotions',
             'attendance',
             'leave',
-            'payroll',
             'reports',
         ],
-        // A planning officer works the same division-scoped desk a chief does. Neither takes part in
-        // payroll -- the approval chain there runs HR Head -> Chief Admin -> Regional Director.
+        // A planning officer works the same division-scoped desk a chief does, but never inherits
+        // the FAD Chief's organization-wide payroll approval desk.
         'planningofficer' => [
             'dashboard',
             'profile',
@@ -625,10 +625,9 @@ function default_role_permission_access(): array
 
 /*
  * Where a role's default actions in a module are narrower than the module's own defaults. An
- * employee's Promotions is My Promotion, a read-only page of their own approved promotions, so it
- * must not open with the drafting and signing actions ticked; a chief drafts and cancels but never
- * signs, so approve and reject stay off. Chief Admin approves or returns payroll but never prepares
- * it. Mirrors rolePermissionActionOverrides in frontend/src/page/settings/permission.jsx.
+ * employee's Promotions is My Promotion, a read-only page of their own approved promotions. The
+ * FAD Chief approves or returns payroll but never prepares it; runtime division checks keep every
+ * other Chief out. Mirrors rolePermissionActionOverrides in frontend/src/page/settings/permission.jsx.
  */
 function default_role_permission_action_overrides(): array
 {
@@ -638,10 +637,10 @@ function default_role_permission_action_overrides(): array
         ],
         'chief' => [
             'promotions' => ['view', 'create', 'edit', 'cancel', 'archive', 'restore', 'export', 'print'],
+            'payroll' => ['view', 'approve', 'return', 'archive', 'restore'],
         ],
         'chiefadmin' => [
             'promotions' => ['view', 'create', 'edit', 'cancel', 'archive', 'restore', 'export', 'print'],
-            'payroll' => ['view', 'approve', 'return', 'archive', 'restore'],
         ],
     ];
 }
@@ -920,51 +919,48 @@ function migrate_non_admin_payslip_permission(PDO $pdo, array $templates): array
 }
 
 /*
- * The second payroll approval moved from the Division Chief to the Chief Admin. A stored template can
- * still open Payroll for the chief, and Chief Admin often has no template of its own, so it inherits
- * the chief's. Once: give Chief Admin a copy of the chief's template if it has none, switch Payroll on
- * there, and switch it off for the chief. Later RBAC edits are left alone.
+ * Payroll's second approval now belongs to the FAD/FAM Division Chief. Existing installations may
+ * still carry the preceding migration's Chief Admin grant, so move that module back to the Chief
+ * template once. Runtime payroll checks and ChiefDashboard then limit the shared Chief template to
+ * the one account assigned to FAD/FAM; all other Division Chiefs remain without a payroll surface.
  */
-function migrate_chief_admin_payroll_permission(PDO $pdo, array $templates): array
+function migrate_fad_chief_payroll_permission(PDO $pdo, array $templates): array
 {
-    $migrationKey = 'permission_migration_chief_admin_payroll_v1';
+    $migrationKey = 'permission_migration_fad_chief_payroll_v1';
 
     if (get_boolean_application_setting($pdo, $migrationKey, false)) {
         return $templates;
     }
 
-    $chiefTemplate = isset($templates['chief']) && is_array($templates['chief']) ? $templates['chief'] : null;
-    $chiefAdminTemplate = isset($templates['chiefadmin']) && is_array($templates['chiefadmin'])
-        ? $templates['chiefadmin']
-        : $chiefTemplate;
-
-    if ($chiefAdminTemplate !== null) {
-        $modules = isset($chiefAdminTemplate['modules']) && is_array($chiefAdminTemplate['modules'])
-            ? $chiefAdminTemplate['modules']
+    $changed = false;
+    if (isset($templates['chief']) && is_array($templates['chief'])) {
+        $modules = isset($templates['chief']['modules']) && is_array($templates['chief']['modules'])
+            ? $templates['chief']['modules']
             : [];
         $modules['payroll'] = [
             'enabled' => true,
-            'actions' => default_role_permission_action_overrides()['chiefadmin']['payroll'],
+            'actions' => default_role_permission_action_overrides()['chief']['payroll'],
         ];
-        $chiefAdminTemplate['modules'] = $modules;
-        $templates['chiefadmin'] = $chiefAdminTemplate;
+        $templates['chief']['modules'] = $modules;
+        $changed = true;
     }
 
-    if ($chiefTemplate !== null) {
-        $modules = isset($chiefTemplate['modules']) && is_array($chiefTemplate['modules'])
-            ? $chiefTemplate['modules']
+    if (isset($templates['chiefadmin']) && is_array($templates['chiefadmin'])) {
+        $modules = isset($templates['chiefadmin']['modules']) && is_array($templates['chiefadmin']['modules'])
+            ? $templates['chiefadmin']['modules']
             : [];
         $modules['payroll'] = [
             'enabled' => false,
             'actions' => [],
         ];
-        $templates['chief']['modules'] = $modules;
+        $templates['chiefadmin']['modules'] = $modules;
+        $changed = true;
     }
 
-    if ($chiefAdminTemplate !== null) {
+    if ($changed) {
         $encodedTemplates = json_encode($templates, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         if ($encodedTemplates === false) {
-            throw new RuntimeException('Unable to migrate the Chief Admin payroll permission.');
+            throw new RuntimeException('Unable to migrate the FAD Division Chief payroll permission.');
         }
 
         store_application_setting($pdo, 'role_permissions', $encodedTemplates);
@@ -988,7 +984,7 @@ function permission_templates(PDO $pdo): array
     $permissions = migrate_employee_promotions_permission($pdo, $permissions);
     $permissions = migrate_chief_promotions_permission($pdo, $permissions);
     $permissions = migrate_non_admin_payslip_permission($pdo, $permissions);
-    $permissions = migrate_chief_admin_payroll_permission($pdo, $permissions);
+    $permissions = migrate_fad_chief_payroll_permission($pdo, $permissions);
 
     return normalize_permission_templates($permissions, $pdo);
 }

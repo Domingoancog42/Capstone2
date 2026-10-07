@@ -40,7 +40,7 @@ import {
   resolveRoleKey,
   todayDateInputValue,
 } from "../../utils/leaveHelpers";
-import { getRoleLabel } from "../../utils/roleRoutes";
+import { getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
 import { formatSignatureTimestamp } from "../../utils/signatureTimestamp";
 import { formatRecordDivision } from "../../utils/divisionDisplay";
 import {
@@ -1410,6 +1410,7 @@ export default function TravelOrderWorkspace({
   onPendingCountChange,
 }) {
   const roleKey = resolveRoleKey(user);
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
   /*
    * Reviewed is an internal handoff stage rather than a user-facing filter. The Regional Director
    * therefore opens on all statuses so orders routed from the Planning Officer remain visible.
@@ -1429,7 +1430,9 @@ export default function TravelOrderWorkspace({
   const [currentPage, setCurrentPage] = useState(1);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const canArchive = canArchiveModule(roleKey, "travel");
+  // Chief Admin inherits the Chief workspace but owns this archive desk under its exact role.
+  const archiveRoleKey = exactRoleKey === "chiefadmin" ? exactRoleKey : roleKey;
+  const canArchive = canArchiveModule(archiveRoleKey, "travel");
   /*
    * Employees and cashiers tidy their own settled orders into the archive; the desks that sign may
    * archive any. The same rule travel_order.php enforces, so the button is never a dead end.
@@ -2449,5 +2452,4 @@ export default function TravelOrderWorkspace({
     </div>
   );
 }
-
 

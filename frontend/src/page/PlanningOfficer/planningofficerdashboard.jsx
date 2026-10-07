@@ -21,7 +21,7 @@ import { isLeaveDivisionDesk } from "../../utils/leaveHelpers";
 /*
  * A planning officer works much the same desk a chief does: the same analytics, the same leave and
  * attendance review screens. Two things are deliberately absent from this sidebar. Payroll -- the
- * approval chain runs HR Head -> Chief Admin -> Regional Director and a planning officer is not one
+ * approval chain runs HR Head -> FAD Division Chief -> Regional Director and a planning officer is not one
  * of its desks. And the Team/Division Employee roster -- the planning officer is an organization-wide
  * desk rather than one division's, so the dashboard's employee list (every division) covers it.
  * Nothing else about the two workspaces is meant to drift apart.

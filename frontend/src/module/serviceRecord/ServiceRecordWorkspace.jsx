@@ -993,7 +993,7 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
             />
             <SettingsSelect
               name="stClassification"
-              label={requiredFieldLabel("S&T classification")}
+              label={requiredFieldLabel("SNT classification")}
               value={form.stClassification}
               onChange={updateField("stClassification")}
               options={stClassifications}

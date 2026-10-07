@@ -316,18 +316,24 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
 
   /* ── Form derivations ──────────────────────────────────────────────────────── */
 
-  /* The employees this desk may pick: everyone the API listed, except a scoped Chief's division. */
+  /*
+   * The employees this desk may pick: the API already omits the preparer's own record. Comparing
+   * employee codes here as well keeps a Chief's own name out if older option data is still cached.
+   */
   const promotableEmployees = useMemo(() => {
-    if (!isPreparerDivisionScoped) {
-      return options.employees;
-    }
-
+    const ownEmployeeId = String(user?.employee_id || "").trim().toLowerCase();
     const target = preparerDivision.toLowerCase();
+    const scopedEmployees = !isPreparerDivisionScoped
+      ? options.employees
+      : target
+        ? options.employees.filter((employee) => String(employee.division || "").trim().toLowerCase() === target)
+        : [];
 
-    return target
-      ? options.employees.filter((employee) => String(employee.division || "").trim().toLowerCase() === target)
-      : [];
-  }, [isPreparerDivisionScoped, options.employees, preparerDivision]);
+    return scopedEmployees.filter((employee) => (
+      ownEmployeeId === ""
+      || String(employee.employeeId || "").trim().toLowerCase() !== ownEmployeeId
+    ));
+  }, [isPreparerDivisionScoped, options.employees, preparerDivision, user?.employee_id]);
 
   const selectedEmployee = useMemo(
     () => promotableEmployees.find((employee) => String(employee.employeeRecordId) === String(form.employeeRecordId)) || null,
@@ -661,9 +667,9 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
    * The stage decides which actions a row offers, not the role alone: the HR Head sees Recommend
    * (HR Staff, Approve) only on a pending row, the Director sees Approve only on a recommended
    * one. The shared table folds these into its row-actions menu, and the details dialog lists the
-   * same set in full.
+   * same supporting actions while Recommend/Reject stay in the row menu to avoid duplicate controls.
    */
-  const rowActions = (promotion, { includeView = true } = {}) => {
+  const rowActions = (promotion, { includeView = true, includeRecommendReject = true } = {}) => {
     const busy = busyId === promotion.id;
     const actions = includeView
       ? [
@@ -693,7 +699,7 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
       return actions;
     }
 
-    if (promotion.statusKey === "pending" && canRecommend) {
+    if (includeRecommendReject && promotion.statusKey === "pending" && canRecommend) {
       actions.push(
         <ActionIconButton
           key="recommend"
@@ -720,7 +726,8 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
       );
     }
 
-    if ((promotion.statusKey === "pending" && canRecommend) || (promotion.statusKey === "recommended" && canApprove)) {
+    if (includeRecommendReject
+      && ((promotion.statusKey === "pending" && canRecommend) || (promotion.statusKey === "recommended" && canApprove))) {
       actions.push(
         <ActionIconButton
           key="reject"
@@ -1160,7 +1167,7 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
 
             {!archiveView ? (
               <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 pt-4">
-                {rowActions(selectedPromotion, { includeView: false })}
+                {rowActions(selectedPromotion, { includeView: false, includeRecommendReject: false })}
               </div>
             ) : null}
           </div>

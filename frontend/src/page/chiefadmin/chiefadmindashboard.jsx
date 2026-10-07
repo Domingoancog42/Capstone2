@@ -3,11 +3,8 @@ import ChiefDashboard from "../Chief/chiefdashboard";
 
 const CHIEF_ROUTE_PREFIX = "/chief";
 const CHIEF_ADMIN_ROUTE_PREFIX = "/chiefadmin";
-/*
- * Replaces the Division Chief's set, so Payroll stays: Chief Admin gives the second payroll approval
- * (HR Head -> Chief Admin -> Regional Director), which a Division Chief does not.
- */
-const CHIEF_ADMIN_HIDDEN_NAVIGATION_KEYS = ["employees"];
+/* Payroll now belongs to the FAD Division Chief, not the Chief Admin. */
+const CHIEF_ADMIN_HIDDEN_NAVIGATION_KEYS = ["employees", "payroll", "archivedPayroll"];
 const CHIEF_ADMIN_DASHBOARD_OVERVIEW_PROPS = {
   showTeamDivisionSection: false,
   showTravelLeaveSection: false,

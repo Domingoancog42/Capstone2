@@ -51,7 +51,7 @@ import {
   resolveRoleKey,
 } from "../../utils/leaveHelpers";
 import { filterNavigationItemsByPermissions } from "../../utils/permissions";
-import { getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
+import { getRoleLabel, isFadDivisionChiefUser, normalizeRole } from "../../utils/roleRoutes";
 
 const defaultNavigationItems = [
   { type: "section", label: "Main" },
@@ -162,13 +162,13 @@ const PAYROLL_PENDING_STATUSES = [
  * approval chain, so a batch is theirs once the Regional Director has signed it and it is waiting
  * to be released. It still fits the rule the badges follow -- "these are waiting for you to act".
  *
- * The second rung belongs to the Chief Admin (looked up by its exact key, like the overtime and CTO
- * desks); a Division Chief has no payroll desk. The rung is still stored as "Pending Chief".
+ * The second rung belongs only to the Division Chief assigned to FAD/FAM. The rung remains stored
+ * as "Pending Chief" for database compatibility.
  */
 const PAYROLL_APPROVAL_STAGES_BY_ROLE = {
   admin: PAYROLL_PENDING_STATUSES,
   hrhead: [PAYROLL_HR_HEAD_STATUS],
-  chiefadmin: [PAYROLL_CHIEF_STATUS],
+  chief: [PAYROLL_CHIEF_STATUS],
   regionaldirector: [PAYROLL_DIRECTOR_STATUS],
   cashier: ["Approved"],
 };
@@ -569,7 +569,7 @@ export default function Sidebar({
   const [expandedItems, setExpandedItems] = useState({});
   const roleKey = resolveRoleKey(user);
   const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
-  /* Chief Admin is based on Chief, but it has CTO, overtime and payroll approval desks of its own. */
+  /* Chief Admin is based on Chief but keeps distinct CTO and overtime desks. */
   const deskRoleKey = exactRoleKey === "chiefadmin" ? exactRoleKey : roleKey;
   /*
    * Leave uses the same role-aware Pending definition in the sidebar and management table. For
@@ -583,7 +583,8 @@ export default function Sidebar({
   const canActOnOvertime = Boolean(OVERTIME_DESK_STATUSES_BY_ROLE[deskRoleKey]);
   const canActOnTravelOrders = hasTravelOrderDesk(roleKey);
   const tracksPendingCompensatoryRequests = hasCompensatoryDesk(deskRoleKey);
-  const canActOnPayrollApprovals = Boolean(PAYROLL_APPROVAL_STAGES_BY_ROLE[deskRoleKey]?.length);
+  const payrollDeskRoleKey = roleKey === "chief" && !isFadDivisionChiefUser(user) ? "" : deskRoleKey;
+  const canActOnPayrollApprovals = Boolean(PAYROLL_APPROVAL_STAGES_BY_ROLE[payrollDeskRoleKey]?.length);
   /*
    * Leave monetization is filed as a leave type and reviewed in the leave list, so its pending
    * filings count towards the Leave badge rather than a payroll one.
@@ -616,7 +617,13 @@ export default function Sidebar({
     [permittedNavigationItems]
   );
   const hasPayrollNavigationItem = useMemo(
-    () => permittedNavigationItems.some((item) => item.key === "payroll" && !item.hidden),
+    () => permittedNavigationItems.some((item) => (
+      !item.hidden
+      && (
+        ["payroll", "payrollGenerate"].includes(item.key)
+        || item.children?.some((child) => child.key === "payrollGenerate" && !child.hidden)
+      )
+    )),
     [permittedNavigationItems]
   );
   /* The IPCR entry is a child of the Performance Reviews group on every role that has it. */
@@ -759,7 +766,7 @@ export default function Sidebar({
       return pendingAttendanceCount;
     }
 
-    if (item.key === "payroll") {
+    if (["payroll", "payrollGenerate"].includes(item.key)) {
       return pendingPayrollCount;
     }
 
@@ -926,7 +933,7 @@ export default function Sidebar({
             ? payrollResult.records
             : [];
         const nextPendingCounts = {
-          payrollGenerate: countPendingPayrollRegistries(payrollRecords, deskRoleKey),
+          payrollGenerate: countPendingPayrollRegistries(payrollRecords, payrollDeskRoleKey),
           payrollLoan: 0,
         };
         const totalPendingPayrollCount = Object.values(nextPendingCounts).reduce(
@@ -963,7 +970,7 @@ export default function Sidebar({
     };
   }, [
     canActOnPayrollApprovals,
-    deskRoleKey,
+    payrollDeskRoleKey,
     hasPayrollNavigationItem,
     showsPayrollPendingBadges,
   ]);

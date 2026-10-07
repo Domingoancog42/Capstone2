@@ -275,10 +275,11 @@ const rolePermissionAccess = {
     "promotions",
     "attendance",
     "leave",
+    // Runtime access is limited to the Chief assigned to FAD/FAM.
+    "payroll",
     "reports",
   ],
-  // The chief's desk plus payroll: Chief Admin gives the second payroll approval
-  // (HR Head -> Chief Admin -> Regional Director), which a Division Chief does not.
+  // Chief Admin no longer participates in payroll; the FAD Division Chief owns that stage.
   chiefadmin: [
     "dashboard",
     "profile",
@@ -289,10 +290,9 @@ const rolePermissionAccess = {
     "promotions",
     "attendance",
     "leave",
-    "payroll",
     "reports",
   ],
-  // Mirrors the chief: same division-scoped desk, no part in the payroll approval chain.
+  // Same division-scoped operational desk as a chief, but never the FAD payroll approval desk.
   // Keep this in step with default_role_permission_access() in backend/api/settings.php.
   planningofficer: [
     "dashboard",
@@ -349,14 +349,14 @@ const rolePermissionActionOverrides = {
   employee: {
     promotions: ["view", "print"],
   },
-  // A chief drafts and cancels but never signs, so approve and reject stay off.
+  // The FAD Chief approves or returns payroll but never prepares it. Other chiefs never receive the
+  // module in their workspace even though they share this role template.
   chief: {
     promotions: ["view", "create", "edit", "cancel", "archive", "restore", "export", "print"],
+    payroll: ["view", "approve", "return", "archive", "restore"],
   },
-  // Chief Admin approves or returns payroll but never prepares it.
   chiefadmin: {
     promotions: ["view", "create", "edit", "cancel", "archive", "restore", "export", "print"],
-    payroll: ["view", "approve", "return", "archive", "restore"],
   },
 };
 

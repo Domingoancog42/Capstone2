@@ -653,18 +653,26 @@ function get_promotion_options(PDO $pdo, array $user): void
     $divisionScopeId = promotion_division_scope_id($pdo, $user);
     $employeeScopeSql = '';
     $employeeScopeParams = [];
+    $ownEmployeeRecordId = session_employee_record_id($pdo, $user);
+
+    // A preparer cannot promote themselves, so do not offer their record in the employee picker.
+    if ($ownEmployeeRecordId !== null && $ownEmployeeRecordId > 0) {
+        $employeeScopeSql .= ' AND e.id <> :own_employee_record_id';
+        $employeeScopeParams[':own_employee_record_id'] = $ownEmployeeRecordId;
+    }
+
     // A scoped desk promotes within its division, so it is offered that division's designations only.
     $designationScopeSql = '';
     $designationScopeParams = [];
 
     if ($divisionScopeId !== null) {
         if ($divisionScopeId > 0) {
-            $employeeScopeSql = ' AND e.division_id = :division_scope_id';
+            $employeeScopeSql .= ' AND e.division_id = :division_scope_id';
             $employeeScopeParams[':division_scope_id'] = $divisionScopeId;
             $designationScopeSql = ' AND des.division_id = :division_scope_id';
             $designationScopeParams[':division_scope_id'] = $divisionScopeId;
         } else {
-            $employeeScopeSql = ' AND 1 = 0';
+            $employeeScopeSql .= ' AND 1 = 0';
             $designationScopeSql = ' AND 1 = 0';
         }
     }

@@ -12,12 +12,15 @@ $sessionUser = require_session_user();
 $roleKey = user_role_key($sessionUser);
 $exactRoleKey = user_exact_role_key($sessionUser);
 $workflowRoleKey = payroll_workflow_role_key($sessionUser);
+$isFadDivisionChief = payroll_is_fad_division_chief($sessionUser);
 
 /*
- * A Division Chief has no payroll desk -- the second approval belongs to the Chief Admin -- so the
- * chief is refused here the way the Planning Officer is. Their own payslip comes from payslip.php.
+ * Payroll's second approval belongs only to the built-in Division Chief assigned to FAD/FAM. The
+ * Chief role is otherwise refused, as are Chief Admin and Planning Officer; personal payslips still
+ * come from payslip.php.
  */
-if (!in_array($workflowRoleKey, ['admin', 'hrhead', 'hrstaff', 'chiefadmin', 'regionaldirector', 'employee', 'cashier', 'finance'], true)) {
+if (!in_array($workflowRoleKey, ['admin', 'hrhead', 'hrstaff', 'chief', 'regionaldirector', 'employee', 'cashier', 'finance'], true)
+    || ($workflowRoleKey === 'chief' && !$isFadDivisionChief)) {
     json_response([
         'success' => false,
         'message' => 'You are not allowed to access payroll records.',
@@ -55,7 +58,7 @@ const PAYROLL_ALLOWED_TYPES = [
     'Transportation Allowance (TA)',
 ];
 
-const PAYROLL_APPROVAL_ROLES = ['admin', 'hrhead', 'chiefadmin', 'regionaldirector'];
+const PAYROLL_APPROVAL_ROLES = ['admin', 'hrhead', 'chief', 'regionaldirector'];
 const PAYROLL_STAFF_ROLES = ['admin', 'hrhead', 'hrstaff', 'regionaldirector'];
 /*
  * Approving is the chain's job; releasing the money is the payout desk's step. Two roles sit at
@@ -67,30 +70,25 @@ const PAYROLL_STAFF_ROLES = ['admin', 'hrhead', 'hrstaff', 'regionaldirector'];
 const PAYROLL_PAYOUT_ROLES = ['admin', 'finance', 'cashier'];
 /*
  * Every desk the register passes through may file a settled batch away and bring it back: HR
- * prepares it, the Chief Admin and the Regional Director sign it, and the payout desk releases it.
- * The Chief Admin and the payout desk are matched on their exact keys ('chiefadmin', 'cashier',
- * 'finance'), the way PAYROLL_PAYOUT_ROLES is, because $workflowRoleKey carries the exact key for
- * those desks. Exporting stays with HR: archiving is housekeeping on a register these desks already
+ * prepares it, the FAD Division Chief and the Regional Director sign it, and the payout desk
+ * releases it. Exporting stays with HR: archiving is housekeeping on a register these desks already
  * handled, not a new way to take its contents out of the system.
  */
-const PAYROLL_ARCHIVE_ROLES = ['admin', 'hrhead', 'hrstaff', 'chiefadmin', 'regionaldirector', 'cashier', 'finance'];
+const PAYROLL_ARCHIVE_ROLES = ['admin', 'hrhead', 'hrstaff', 'chief', 'regionaldirector', 'cashier', 'finance'];
 /*
- * The desks confined to their own division. In practice none is: a Division Chief is refused at the
- * top of this file, and the Chief Admin -- built on Chief -- resolves to 'chiefadmin' through
- * payroll_workflow_role_key() and approves for every division. Mirrors
- * DIVISION_SCOPED_PAYROLL_ROLE_KEYS in PayrollManagementWorkspace.jsx.
+ * The FAD Chief approves one organization-wide register, so no payroll desk is division-scoped.
+ * Mirrors DIVISION_SCOPED_PAYROLL_ROLE_KEYS in PayrollManagementWorkspace.jsx.
  */
-const PAYROLL_DIVISION_SCOPED_ROLES = ['chief'];
+const PAYROLL_DIVISION_SCOPED_ROLES = [];
 const PAYROLL_EDITABLE_STATUSES = ['Draft', 'Rejected'];
 
 /*
- * A submitted payroll climbs three desks before the money moves: HR Head, then the Chief Admin,
- * then the Regional Director who gives final approval. Each rung is its own status so a role only
+ * A submitted payroll climbs three desks before the money moves: HR Head, then the FAD Division
+ * Chief, then the Regional Director who gives final approval. Each rung is its own status so a role only
  * ever sees -- and can only ever act on -- the batches actually sitting with it.
  *
  * `payroll.status` is a varchar(20), which is why these are abbreviated. The second rung keeps the
- * stored value "Pending Chief" from when the Division Chief held it, so older rows and their approval
- * history still read correctly; the frontend shows it as "Pending Chief Admin".
+ * stored value "Pending Chief" for compatibility with existing rows and approval history.
  */
 const PAYROLL_HR_HEAD_STATUS = 'Pending Approval';
 const PAYROLL_CHIEF_STATUS = 'Pending Chief';
@@ -107,7 +105,7 @@ const PAYROLL_APPROVAL_CHAIN = [
 /* Which pending status each approver owns. Admin stands in for every desk. */
 const PAYROLL_ROLE_APPROVAL_STAGES = [
     'hrhead' => [PAYROLL_HR_HEAD_STATUS],
-    'chiefadmin' => [PAYROLL_CHIEF_STATUS],
+    'chief' => [PAYROLL_CHIEF_STATUS],
     'regionaldirector' => [PAYROLL_DIRECTOR_STATUS],
     'admin' => PAYROLL_PENDING_STATUSES,
 ];
@@ -221,6 +219,56 @@ const PAYROLL_DEDUCTION_FIELD_ALIASES = [
     'otherdeductions' => 'otherDeductions',
 ];
 
+/** Whether a division identifier names the Finance and Administrative Division/Management. */
+function payroll_is_fad_division(mixed $code, mixed $name = null): bool
+{
+    $divisionCode = strtoupper(trim((string)($code ?? '')));
+    $divisionName = preg_replace('/[^a-z]/', '', strtolower((string)($name ?? $code ?? ''))) ?? '';
+
+    return in_array($divisionCode, ['FAD', 'FAM'], true)
+        || in_array($divisionName, [
+            'financeadministrativedivision',
+            'financeandadministrativedivision',
+            'financeadministrativemanagement',
+            'financeandadministrativemanagement',
+            'financialandadministrativedivision',
+        ], true);
+}
+
+/** The built-in Chief assigned to FAD/FAM is the sole Division Chief with a payroll desk. */
+function payroll_is_fad_division_chief(array $user): bool
+{
+    return user_exact_role_key($user) === 'chief'
+        && payroll_is_fad_division($user['division'] ?? '', $user['division'] ?? '');
+}
+
+/** Active user accounts for the FAD/FAM Division Chief role, used for targeted payroll notices. */
+function payroll_fad_division_chief_user_ids(PDO $pdo): array
+{
+    ensure_role_columns($pdo);
+    $statement = $pdo->query(
+        'SELECT DISTINCT u.id, COALESCE(d.code, "") AS division_code, COALESCE(d.name, "") AS division_name
+         FROM users u
+         INNER JOIN roles r ON r.id = u.role_id
+         INNER JOIN employees e
+            ON e.email COLLATE utf8mb4_unicode_ci = u.email COLLATE utf8mb4_unicode_ci
+           AND e.is_archived = 0
+         INNER JOIN divisions d ON d.id = e.division_id AND d.is_archived = 0
+         WHERE u.is_archived = 0
+           AND LOWER(REPLACE(r.name, " ", "")) = "chief"
+         ORDER BY u.id ASC'
+    );
+
+    $userIds = [];
+    foreach ($statement->fetchAll() as $row) {
+        if (payroll_is_fad_division($row['division_code'] ?? '', $row['division_name'] ?? '')) {
+            $userIds[] = (int)$row['id'];
+        }
+    }
+
+    return array_values(array_unique(array_filter($userIds, static fn (int $id): bool => $id > 0)));
+}
+
 function payroll_normalize_status(mixed $value): string
 {
     $text = trim((string)($value ?? ''));
@@ -228,7 +276,8 @@ function payroll_normalize_status(mixed $value): string
 
     return match ($token) {
         'pending', 'pendingapproval', 'pendinghrhead', 'pendinghrheadapproval' => PAYROLL_HR_HEAD_STATUS,
-        'pendingchief', 'pendingchiefapproval', 'pendingchiefadmin', 'pendingchiefadminapproval' => PAYROLL_CHIEF_STATUS,
+        'pendingchief', 'pendingchiefapproval', 'pendingchiefadmin', 'pendingchiefadminapproval',
+        'pendingdivisionchief', 'pendingdivisionchiefapproval', 'pendingfadchief', 'pendingfaddivisionchief' => PAYROLL_CHIEF_STATUS,
         'pendingdirector', 'pendingregionaldirector', 'pendingfinalapproval' => PAYROLL_DIRECTOR_STATUS,
         'approved' => 'Approved',
         'rejected' => 'Rejected',
@@ -241,23 +290,22 @@ function payroll_normalize_status(mixed $value): string
 
 /**
  * The full wording of a status, for messages. The stored values are abbreviated to fit
- * `payroll.status`, so "Pending Chief" has to read back as "Pending Chief Admin Approval".
+ * `payroll.status`, so "Pending Chief" has to read back as "Pending FAD Division Chief Approval".
  */
 function payroll_status_label(string $status): string
 {
     return match (payroll_normalize_status($status)) {
         PAYROLL_HR_HEAD_STATUS => 'Pending HR Head Approval',
-        PAYROLL_CHIEF_STATUS => 'Pending Chief Admin Approval',
+        PAYROLL_CHIEF_STATUS => 'Pending FAD Division Chief Approval',
         PAYROLL_DIRECTOR_STATUS => 'Pending Regional Director Approval',
         default => payroll_normalize_status($status),
     };
 }
 
 /**
- * The desk `$user` works in the payroll chain: their base role, except for the two desks a role built
- * on another one owns outright. Finance is built on HR Head but works the payout desk, and Chief Admin
- * is built on Chief but gives the second approval, which a Division Chief does not. Mirrors
- * workflowRoleKey in PayrollManagementWorkspace.jsx.
+ * The desk `$user` works in the payroll chain: their base role, except Finance, which is built on HR
+ * Head but works the payout desk. Chief Admin deliberately resolves to its exact, non-chain key so it
+ * cannot inherit the FAD Chief stage. Mirrors workflowRoleKey in PayrollManagementWorkspace.jsx.
  */
 function payroll_workflow_role_key(array $user): string
 {
@@ -337,7 +385,7 @@ function payroll_require_approval_role(string $roleKey): void
     if (!payroll_is_approval_role($roleKey)) {
         json_response([
             'success' => false,
-            'message' => 'Only administrators, HR Head, Chief Admin, and Regional Director can approve or return payroll records.',
+            'message' => 'Only administrators, HR Head, the FAD Division Chief, and Regional Director can approve or return payroll records.',
         ], 403);
     }
 }
@@ -2911,9 +2959,9 @@ function payroll_fetch_record(PDO $pdo, int $payrollId): ?array
 /**
  * Which division a caller's payroll view is confined to.
  *
- * A chief is the second desk in the approval chain, but only for their division: their registry
- * lists that division's batches and nothing else, and acting on another division is refused.
- * HR Staff and every other management, approval, and payout desk work organization-wide (null).
+ * Every payroll workflow desk is organization-wide. In particular, the FAD Chief approves the
+ * complete registry generated across all divisions rather than only the FAD employee rows.
+ * All management, approval, and payout desks therefore return null here.
  * Employees are still restricted to their
  * own payroll through `$employeeRecordId` in the GET handler, so this scope never broadens payslip
  * access.
@@ -3092,30 +3140,35 @@ function payroll_stage_notice(string $status): array
             'summary' => 'is awaiting HR Head approval',
             'approvers' => ['admin', 'hrhead'],
             'observers' => ['hrstaff'],
+            'notifyFadChief' => false,
         ],
         PAYROLL_CHIEF_STATUS => [
-            'title' => 'Payroll Awaiting Chief Admin Approval',
-            'summary' => 'was approved by the HR Head and is awaiting Chief Admin approval',
-            'approvers' => ['chiefadmin'],
+            'title' => 'Payroll Awaiting FAD Division Chief Approval',
+            'summary' => 'was approved by the HR Head and is awaiting FAD Division Chief approval',
+            'approvers' => [],
             'observers' => ['admin', 'hrhead', 'hrstaff'],
+            'notifyFadChief' => true,
         ],
         PAYROLL_DIRECTOR_STATUS => [
             'title' => 'Payroll Awaiting Final Approval',
-            'summary' => 'was approved by the Chief Admin and is awaiting Regional Director final approval',
+            'summary' => 'was approved by the FAD Division Chief and is awaiting Regional Director final approval',
             'approvers' => ['regionaldirector'],
-            'observers' => ['admin', 'hrhead', 'hrstaff', 'chiefadmin'],
+            'observers' => ['admin', 'hrhead', 'hrstaff'],
+            'notifyFadChief' => true,
         ],
         'Approved' => [
             'title' => 'Payroll Approved',
             'summary' => 'has received final approval from the Regional Director',
             'approvers' => ['admin', 'finance', 'cashier'],
-            'observers' => ['chiefadmin', 'regionaldirector'],
+            'observers' => ['regionaldirector'],
+            'notifyFadChief' => true,
         ],
         default => [
             'title' => 'Payroll Updated',
             'summary' => 'was updated',
             'approvers' => ['admin', 'hrhead', 'hrstaff'],
             'observers' => [],
+            'notifyFadChief' => false,
         ],
     };
 }
@@ -3132,7 +3185,7 @@ function payroll_is_chain_action(string $action): bool
 
 /**
  * The one payroll notice an employee receives: their pay has gone out. The approval chain
- * (submitted, awaiting chief admin, final approval, approved) is HR's business and stays with the
+ * (submitted, awaiting the FAD Chief, final approval, approved) is HR's business and stays with the
  * roles in payroll_stage_notice(); the employee only needs to know when the money is there.
  */
 function payroll_notify_employee_paid(PDO $pdo, array $record): void
@@ -3200,6 +3253,10 @@ function payroll_notify_status_change(PDO $pdo, array $record, string $action, ?
 
                 if ($stage['observers'] !== []) {
                     notify_roles($pdo, $stage['observers'], $title, $message, $type, (string)$payrollId);
+                }
+
+                if ($stage['notifyFadChief'] ?? false) {
+                    notify_users($pdo, payroll_fad_division_chief_user_ids($pdo), $title, $message, $type, (string)$payrollId);
                 }
             } else {
                 notify_roles($pdo, ['admin', 'hrhead', 'hrstaff'], $title, $message, $type, (string)$payrollId);
@@ -3325,6 +3382,10 @@ function payroll_notify_bulk_status_change(PDO $pdo, array $records, string $act
             if ($stage['observers'] !== []) {
                 notify_roles($pdo, $stage['observers'], $title, $message, $type, $registryId);
             }
+
+            if ($stage['notifyFadChief'] ?? false) {
+                notify_users($pdo, payroll_fad_division_chief_user_ids($pdo), $title, $message, $type, $registryId);
+            }
         } else {
             notify_roles($pdo, ['admin', 'hrhead', 'hrstaff'], $title, $message, $type, $registryId);
         }
@@ -3382,7 +3443,7 @@ function payroll_transition_status(
 
     if (!in_array($currentStatus, $allowedStatuses, true)) {
         // Naming the status the record is actually in, rather than the ones this actor handles:
-        // an approver told "payroll must be Pending Chief Admin Approval" cannot tell whether the batch
+        // an approver told "payroll must be Pending FAD Division Chief Approval" cannot tell whether the batch
         // has not reached them yet or has already moved past them.
         return [
             'success' => false,
@@ -3479,7 +3540,7 @@ function payroll_transition_status(
         'message' => match (true) {
             $action === 'Submitted' => 'Payroll submitted to the HR Head for approval.',
             $action === 'Approved' => match ($targetStatus) {
-                PAYROLL_CHIEF_STATUS => 'Payroll approved and forwarded to the Chief Admin.',
+                PAYROLL_CHIEF_STATUS => 'Payroll approved and forwarded to the FAD Division Chief.',
                 PAYROLL_DIRECTOR_STATUS => 'Payroll approved and forwarded to the Regional Director for final approval.',
                 default => 'Payroll approved successfully.',
             },

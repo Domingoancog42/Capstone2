@@ -118,6 +118,24 @@ export function normalizeRole(value) {
   }
 }
 
+const FAD_DIVISION_KEYS = new Set([
+  "fad",
+  "fam",
+  "financeadministrativedivision",
+  "financeandadministrativedivision",
+  "financeadministrativemanagement",
+  "financeandadministrativemanagement",
+  "financialandadministrativedivision",
+]);
+
+/** Only the built-in Division Chief assigned to FAD/FAM owns the payroll approval desk. */
+export function isFadDivisionChiefUser(user = {}) {
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  const divisionKey = normalizeToken(user?.division || user?.department);
+
+  return exactRoleKey === "chief" && FAD_DIVISION_KEYS.has(divisionKey);
+}
+
 export function normalizeStatus(value) {
   const token = normalizeToken(value);
 
@@ -266,12 +284,8 @@ const MANAGER_ROUTE_SEGMENTS = [
   "payroll/generate",
   "payroll/payslip",
 ];
-/*
- * The Division Chief and the Planning Officer work the same division desk and take no part in the
- * payroll chain (HR Head -> Chief Admin -> Regional Director), so none of the payroll addresses are
- * theirs. Any `/chief/payroll/...` or `/planningofficer/payroll/...` URL is therefore an unknown
- * path. Chief Admin keeps them: it works the Chief workspace but gives the second payroll approval.
- */
+/* Planning Officers and ordinary Division Chiefs have no payroll route. ChiefDashboard exposes the
+ * two Chief routes below only when the signed-in built-in Chief belongs to FAD/FAM. */
 const DIVISION_DESK_ROUTE_SEGMENTS = MANAGER_ROUTE_SEGMENTS.filter(
   (segment) => !segment.startsWith("payroll/")
 );
@@ -349,6 +363,8 @@ const KNOWN_APP_PATHS = new Set([
   ...prefixedPaths("admin", REPORT_ROUTE_SEGMENTS.map((segment) => `reports/${segment}`)),
   ...prefixedPaths("chief", [
     ...DIVISION_DESK_ROUTE_SEGMENTS,
+    "payroll/generate",
+    "payroll/archived",
     "employees",
     "team",
     "promotions",
@@ -358,11 +374,9 @@ const KNOWN_APP_PATHS = new Set([
     ...SELF_SERVICE_ROUTE_SEGMENTS,
   ]),
   ...prefixedPaths("chiefadmin", [
-    ...MANAGER_ROUTE_SEGMENTS,
+    ...DIVISION_DESK_ROUTE_SEGMENTS,
     "employees",
     "team",
-    "payroll/loan",
-    "payroll/archived",
     "promotions",
     "rewards-recognition/nomination",
     "masterfiles/performance-management/opcr",

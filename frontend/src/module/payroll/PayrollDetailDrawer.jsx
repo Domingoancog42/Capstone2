@@ -82,9 +82,9 @@ function buildPeriodLabel(record = {}) {
 }
 
 /*
- * The three rungs of the payroll approval chain -- HR Head, then Chief Admin, then Regional
+ * The three rungs of the payroll approval chain -- HR Head, then the FAD Division Chief, then Regional
  * Director. Kept in step with PAYROLL_APPROVAL_CHAIN in backend/api/payroll.php, where the stored
- * values are abbreviated to fit `payroll.status` (varchar(20)); the Chief Admin's rung is still
+ * values are abbreviated to fit `payroll.status` (varchar(20)); the FAD Chief's rung is still
  * stored as "Pending Chief".
  */
 const HR_HEAD_STATUS = "Pending Approval";
@@ -93,7 +93,7 @@ const DIRECTOR_STATUS = "Pending Director";
 
 const STATUS_DISPLAY_LABELS = {
   [HR_HEAD_STATUS]: "Pending HR Head",
-  [CHIEF_STATUS]: "Pending Chief Admin",
+  [CHIEF_STATUS]: "Pending FAD Division Chief",
   [DIRECTOR_STATUS]: "Pending Director",
   Rejected: "Returned for Correction",
 };

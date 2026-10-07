@@ -268,7 +268,7 @@ const ARCHIVE_MANAGER_ROLES = {
     "planningofficer",
     "regionaldirector",
   ],
-  travel: ["admin", "cashier", "employee", "hrhead", "hrstaff", "regionaldirector", "planningofficer"],
+  travel: ["admin", "cashier", "chiefadmin", "employee", "hrhead", "hrstaff", "regionaldirector", "planningofficer"],
   cto: ["admin", "cashier", "employee", "hrhead", "hrstaff", "regionaldirector", "chief", "planningofficer"],
   passSlip: [
     "admin",

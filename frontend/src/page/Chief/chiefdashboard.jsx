@@ -26,6 +26,7 @@ import AwardCyclesWorkspace from "../../module/rewards/AwardCyclesWorkspace";
 
 import BubbleChat from "../../components/bubble_chat/bubble_chat";
 import { getEmployees } from "../../services/api";
+import { isFadDivisionChiefUser } from "../../utils/roleRoutes";
 import TeamOverview, { scopeEmployeesToChiefDivision } from "./teamoverview";
 
 function useChiefEmployees(errorMessage) {
@@ -91,13 +92,7 @@ function ChiefOvertimeWorkspace({ user }) {
   );
 }
 
-/*
- * The Chief Admin's payroll desk, the second in the approval chain: batches the HR Head has approved
- * wait here before going on to the Regional Director for final approval. Only Chief Admin opens it;
- * a Division Chief has no payroll desk (see DIVISION_CHIEF_HIDDEN_NAVIGATION_KEYS). The workspace is
- * the same one HR uses, and it decides which buttons the desk gets from the role -- approve or return
- * for correction on batches sitting at its stage, and nothing on batches waiting elsewhere.
- */
+/* The FAD Division Chief's organization-wide payroll desk, between HR Head and Regional Director. */
 function ChiefPayrollWorkspace({ user, view = "generate", onNavigate }) {
   const { employees, error } = useChiefEmployees("Unable to load employee options for payroll.");
 
@@ -246,12 +241,7 @@ const navigationItems = [
       { key: "overtime", label: "Overtime", path: "/chief/attendance/overtime" },
     ],
   },
-  /*
-   * Chief Admin's payroll desk; the Division Chief's own workspace leaves this and Archived Payroll
-   * out. The desk only ever approves batches sitting at it -- payslips and loans are HR/Admin
-   * workflows -- so this stays a single entry rather than a group with one live child. The key stays
-   * "payroll" because the sidebar's pending badge keys off it.
-   */
+  /* FAD's Chief sees this desk; ChiefDashboard removes it for every other Division Chief. */
   { key: "payroll", label: "Payroll", icon: FileText, path: "/chief/payroll/generate" },
   /* Reached from the Archive toggle on the registry, not from the sidebar. */
   { key: "archivedPayroll", label: "Archived Payroll", path: "/chief/payroll/archived", hidden: true },
@@ -407,11 +397,7 @@ const modules = {
   ...SELF_SERVICE_MODULES,
 };
 
-/*
- * A Division Chief has no payroll desk -- the Chief Admin gives the second payroll approval -- so the
- * chief's own workspace leaves both payroll entries out, and roleRoutes.js no longer lists their
- * addresses. Chief Admin passes its own set.
- */
+/* Payroll is assigned to the FAD/FAM Division Chief only. */
 const DIVISION_CHIEF_HIDDEN_NAVIGATION_KEYS = ["payroll", "archivedPayroll"];
 /*
  * The Division Chief's own dashboard leaves out the request charts, the Travel & Leave list, and
@@ -428,16 +414,19 @@ const DEFAULT_DASHBOARD_OVERVIEW_PROPS = {
 
 export default function ChiefDashboard({
   portalLabel = "Chief Workspace",
-  hiddenNavigationKeys = DIVISION_CHIEF_HIDDEN_NAVIGATION_KEYS,
+  hiddenNavigationKeys,
   dashboardOverviewProps = DEFAULT_DASHBOARD_OVERVIEW_PROPS,
   ...props
 }) {
+  const isFadDivisionChief = isFadDivisionChiefUser(props.user);
   const configuredNavigationItems = useMemo(() => {
-    const hiddenKeys = new Set(hiddenNavigationKeys);
+    const resolvedHiddenNavigationKeys = hiddenNavigationKeys
+      ?? (isFadDivisionChief ? [] : DIVISION_CHIEF_HIDDEN_NAVIGATION_KEYS);
+    const hiddenKeys = new Set(resolvedHiddenNavigationKeys);
     return hiddenKeys.size
       ? navigationItems.filter((item) => !item.key || !hiddenKeys.has(item.key))
       : navigationItems;
-  }, [hiddenNavigationKeys]);
+  }, [hiddenNavigationKeys, isFadDivisionChief]);
 
   const configuredModules = useMemo(() => ({
     ...modules,

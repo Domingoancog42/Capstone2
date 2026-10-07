@@ -33,8 +33,8 @@ const SERVICE_RECORD_EMPLOYMENT_STATUSES = [
  * other.
  */
 const SERVICE_RECORD_ST_CLASSIFICATIONS = [
-    'S&T',
-    'Non-S&T',
+    'SNT',
+    'Non-SNT',
 ];
 
 function service_record_text(mixed $value): string
@@ -42,18 +42,14 @@ function service_record_text(mixed $value): string
     return trim((string)($value ?? ''));
 }
 
-/** The listed spelling of an S&T classification, or '' for a blank or unlisted value. */
+/** The listed spelling of an SNT classification, including legacy S&T values. */
 function service_record_st_classification(mixed $value): string
 {
-    $value = service_record_text($value);
-
-    foreach (SERVICE_RECORD_ST_CLASSIFICATIONS as $classification) {
-        if (strcasecmp($value, $classification) === 0) {
-            return $classification;
-        }
-    }
-
-    return '';
+    return match (strtolower(service_record_text($value))) {
+        'snt', 's&t' => 'SNT',
+        'non-snt', 'non-s&t' => 'Non-SNT',
+        default => '',
+    };
 }
 
 function service_record_role_key(array $user): string
@@ -355,7 +351,7 @@ function service_record_format_row(array $row, array $lwopRows): array
         'serviceTo' => $row['service_to'],
         'designationTitle' => service_record_text($row['designation_title']),
         'employmentStatus' => service_record_text($row['employment_status']),
-        'stClassification' => service_record_text($row['st_classification'] ?? ''),
+        'stClassification' => service_record_st_classification($row['st_classification'] ?? ''),
         'monthlySalary' => $row['monthly_salary'],
         'salaryGrade' => service_record_text($row['salary_grade']),
         'stepIncrement' => service_record_text($row['step_increment']),

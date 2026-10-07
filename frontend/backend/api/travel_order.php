@@ -165,6 +165,7 @@ function travel_can_archive(array $user): bool
 {
     $roleKey = travel_role_key($user);
     return in_array($roleKey, ['admin', 'hrhead', 'hrstaff', 'regionaldirector', 'planningofficer'], true)
+        || user_exact_role_key($user) === 'chiefadmin'
         || travel_is_self_service_role($user);
 }
 

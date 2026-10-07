@@ -32,7 +32,7 @@ import Pagination from "../../components/UI/Pagination";
 import { RequiredFieldMarker } from "../../components/UI/RequiredFieldLabel";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
-import { normalizeRole, resolveUserRoleKey } from "../../utils/roleRoutes";
+import { isFadDivisionChiefUser, normalizeRole, resolveUserRoleKey } from "../../utils/roleRoutes";
 import PayrollDetailDrawer from "./PayrollDetailDrawer";
 import { promptPayrollWorkflowStepUp } from "./payrollWorkflowStepUp";
 import {
@@ -114,29 +114,27 @@ export function requiredBiometricPayPeriods(payPeriod) {
   return PAY_PERIOD_OPTIONS.includes(payPeriod) ? [payPeriod] : [];
 }
 /*
- * Who sees only their own division's batches in the registry. In practice nobody does: a Division
- * Chief has no payroll desk any more, and the Chief Admin -- built on Chief -- works the chain
- * organization-wide under its own key, like HR Staff, the Regional Director, HR Head and Cashier.
+ * Who sees only their own division's batches in the registry. The FAD Division Chief is the one
+ * designated payroll approver and reviews the organization-wide registry, so nobody is scoped here.
  * Mirrors payroll_division_scope_id() in payroll.php, which enforces the same scope on the API.
  * Employee payroll remains self-only in the API/Payslip workspace.
  */
-const DIVISION_SCOPED_PAYROLL_ROLE_KEYS = new Set(["chief"]);
+const DIVISION_SCOPED_PAYROLL_ROLE_KEYS = new Set();
 
 /*
- * Chief Admin works the Chief workspace but owns the second payroll desk itself, so -- like the
- * payout desk -- it is matched on its exact key rather than the base role. Mirrors
- * payroll_workflow_role_key() in payroll.php.
+ * Chief Admin is built on Chief. Keeping its exact key prevents it from inheriting the FAD Chief's
+ * payroll stage if an old direct payroll URL is opened.
  */
 const CHIEF_ADMIN_ROLE_KEY = "chiefadmin";
 
 /*
- * A submitted payroll climbs three desks before it can be paid: HR Head, then the Chief Admin, then
- * the Regional Director for final approval. Each rung is its own status, so an approver only ever
+ * A submitted payroll climbs three desks before it can be paid: HR Head, the FAD Division Chief,
+ * then the Regional Director for final approval. Each rung is its own status, so an approver only ever
  * sees the Approve / Return buttons on the batches actually sitting with them.
  *
  * The stored values are abbreviated because `payroll.status` is a varchar(20); STATUS_DISPLAY_LABELS
- * below spells them out for the badge. The Chief Admin's rung keeps the stored value "Pending Chief"
- * from when the Division Chief held it.
+ * below spells them out for the badge. The FAD Chief's rung keeps the stored value "Pending Chief"
+ * for database compatibility.
  */
 const HR_HEAD_STATUS = "Pending Approval";
 const CHIEF_STATUS = "Pending Chief";
@@ -153,7 +151,7 @@ const APPROVAL_CHAIN = {
 /* Which pending status each approver owns. Admin stands in for every desk. */
 const ROLE_APPROVAL_STAGES = {
   hrhead: [HR_HEAD_STATUS],
-  [CHIEF_ADMIN_ROLE_KEY]: [CHIEF_STATUS],
+  chief: [CHIEF_STATUS],
   regionaldirector: [DIRECTOR_STATUS],
   admin: PENDING_STATUSES,
 };
@@ -161,7 +159,7 @@ const ROLE_APPROVAL_STAGES = {
 const STATUS_DISPLAY_LABELS = {
   Draft: "Created",
   [HR_HEAD_STATUS]: "Pending HR Head",
-  [CHIEF_STATUS]: "Pending Chief Admin",
+  [CHIEF_STATUS]: "Pending FAD Division Chief",
   [DIRECTOR_STATUS]: "Pending Director",
   Rejected: "Returned for Correction",
 };
@@ -215,7 +213,7 @@ function statusesFromStage(status) {
 
 /*
  * A register can only be exported once the batch has cleared the whole chain -- HR Head, then the
- * Chief Admin, then the Regional Director. Up to that point any desk can still send it back
+ * FAD Division Chief, then the Regional Director. Up to that point any desk can still send it back
  * for correction and the figures can still change, so an exported file would be an official-looking
  * copy of numbers nobody has signed yet, circulating with no way to tell it from the final one.
  *
@@ -877,10 +875,10 @@ const PAYOUT_DESK_ROLE_KEYS = ["finance", "cashier"];
 
 /*
  * The desks that archive and restore a settled register, matched on the workflow role key (the
- * resolved base role, or the exact key for Chief Admin); the payout desk is matched separately on its
- * exact key. Mirrors PAYROLL_ARCHIVE_ROLES in payroll.php.
+ * resolved workflow role); the payout desk is matched separately on its exact key. Mirrors
+ * PAYROLL_ARCHIVE_ROLES in payroll.php.
  */
-const PAYROLL_ARCHIVE_ROLE_KEYS = new Set(["admin", "hrhead", "hrstaff", CHIEF_ADMIN_ROLE_KEY, "regionaldirector"]);
+const PAYROLL_ARCHIVE_ROLE_KEYS = new Set(["admin", "hrhead", "hrstaff", "chief", "regionaldirector"]);
 
 export function payrollRoleUsesDivisionScope(roleKey, exactRoleKey = roleKey) {
   return !PAYOUT_DESK_ROLE_KEYS.includes(exactRoleKey)
@@ -1147,7 +1145,7 @@ function getRegistryId(entry = {}) {
  * Payroll type and employment type are part of the key. Regular and Contract of Service employees
  * in the same period are separate registers, just as salary and bonus runs are. Division is not:
  * Generate New Payroll covers every division at once, so one run is one register for the whole
- * organization, and the Chief Admin approves it whole.
+ * organization, and the FAD Division Chief approves it whole.
  */
 function getRegistryGroupKey(record = {}) {
   return [
@@ -1796,11 +1794,11 @@ export function buildRegularDeductionColumns(deductionColumns = []) {
   return columns;
 }
 
-// Series, Employee No., Employee Name, the earnings breakdown, the gross column, every deduction,
-// Due Date, Total Deductions, the net column, and the two payout halves. The earnings breakdown is
-// counted rather than fixed at three because each payroll type names its own earnings columns.
+// Employee No., Employee Name, the earnings breakdown, the gross column, every deduction, Due Date,
+// Total Deductions, the net column, and the two payout halves. The earnings breakdown is counted
+// rather than fixed at three because each payroll type names its own earnings columns.
 function regularColumnCount(deductionColumnCount, earningsColumnCount = 3) {
-  return 3 + earningsColumnCount + 1 + deductionColumnCount + 3 + 2;
+  return 2 + earningsColumnCount + 1 + deductionColumnCount + 3 + 2;
 }
 
 const REGULAR_HEADER_CELL_CLASS =
@@ -2771,9 +2769,21 @@ function PayrollRegistryDetailsModal({
                   </tbody>
                   <tfoot>
                     <tr className="text-slate-900">
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3" colSpan={regularColumnTotal - 4}>Overall Total</td>
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-slate-950 whitespace-nowrap">{formatCurrency(registryTotals.totalDeductions)}</td>
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-slate-950 whitespace-nowrap">{formatCurrency(registryTotals.totalNetPay)}</td>
+                      <td
+                        className="border-t border-slate-200 bg-slate-50 px-4 py-3 font-semibold"
+                        colSpan={2 + earningsColumns.length}
+                      >
+                        Overall Total
+                      </td>
+                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-right font-bold tabular-nums text-slate-950 whitespace-nowrap">
+                        {formatCurrency(registryTotals.totalGrossPay)}
+                      </td>
+                      <td
+                        className="border-t border-slate-200 bg-slate-50 px-4 py-3"
+                        colSpan={regularDeductionColumns.length + 1}
+                      ></td>
+                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-right font-bold tabular-nums text-slate-950 whitespace-nowrap">{formatCurrency(registryTotals.totalDeductions)}</td>
+                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-right font-bold tabular-nums text-slate-950 whitespace-nowrap">{formatCurrency(registryTotals.totalNetPay)}</td>
                       <td className="border-t border-slate-200 bg-slate-50 px-4 py-3"></td>
                       <td className="border-t border-slate-200 bg-slate-50 px-4 py-3"></td>
                     </tr>
@@ -2890,11 +2900,14 @@ export default function PayrollManagementWorkspace({
   const roleKey = normalizeRoleKey(user);
   const userDivision = String(user?.division || user?.department || "").trim();
   const userExactRoleKey = exactRoleKey(user);
+  const isFadDivisionChief = isFadDivisionChiefUser(user);
   const isPayoutDeskRole = PAYOUT_DESK_ROLE_KEYS.includes(userExactRoleKey);
   const isDivisionScopedRegistryRole = payrollRoleUsesDivisionScope(roleKey, userExactRoleKey);
-  const workflowRoleKey = isPayoutDeskRole || userExactRoleKey === CHIEF_ADMIN_ROLE_KEY
+  const workflowRoleKey = isPayoutDeskRole
     ? userExactRoleKey
-    : roleKey;
+    : userExactRoleKey === CHIEF_ADMIN_ROLE_KEY || (roleKey === "chief" && !isFadDivisionChief)
+      ? ""
+      : roleKey;
   const usesAutomaticPayPeriodDates = AUTOMATIC_PAY_PERIOD_ROLE_KEYS.has(roleKey);
   const canCreatePayroll = !isPayoutDeskRole && ["admin", "hrstaff"].includes(roleKey);
   const canSubmitPayroll = !isPayoutDeskRole && roleKey === "hrstaff";
@@ -2971,8 +2984,8 @@ export default function PayrollManagementWorkspace({
   const [registryActionLoading, setRegistryActionLoading] = useState(false);
   const [exportingRegistry, setExportingRegistry] = useState(false);
   const [archiveActionLoading, setArchiveActionLoading] = useState(false);
-  // The `chief` entries serve Chief Admin, whose base role is Chief; its workspace wrapper moves these
-  // /chief addresses to /chiefadmin. A Division Chief has no payroll pages.
+  // Only the FAD Division Chief reaches the Chief payroll addresses; every other Chief has them
+  // removed from navigation by ChiefDashboard.
   const archivePayrollPath = ({
     admin: "/admin/payroll/archived",
     hrhead: "/hrhead/payroll/archived",
@@ -3801,7 +3814,7 @@ export default function PayrollManagementWorkspace({
         `Division: ${entry.division || "Unassigned"}`,
         `Total Employees: ${numberFormatter.format(submitIds.length)}`,
         `Total Net Pay: ${formatCurrency(entry.totalNetPay)}`,
-        "It then goes to the Chief Admin and the Regional Director for final approval.",
+        "It then goes to the FAD Division Chief and the Regional Director for final approval.",
       ].join("\n"),
       icon: "question",
       showCancelButton: true,
