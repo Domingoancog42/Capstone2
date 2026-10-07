@@ -1637,7 +1637,8 @@ export default function CompensatoryWorkspace({
   const roleKey = resolveRoleKey(user);
   const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
   const approvalRoleKey = exactRoleKey === "chiefadmin" ? exactRoleKey : roleKey;
-  const defaultStatusFilter = ["employee", "cashier"].includes(roleKey) ? "" : "Pending";
+  const ownRequestsOnly = ["hrhead", "cashier", "hrstaff", "planningofficer"].includes(roleKey);
+  const defaultStatusFilter = ownRequestsOnly || roleKey === "employee" ? "" : "Pending";
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1651,15 +1652,15 @@ export default function CompensatoryWorkspace({
   const [currentPage, setCurrentPage] = useState(1);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const managePermission = canManageLeave(user) || ["chief", "planningofficer"].includes(roleKey);
-  const viewAllPermission = canViewAllLeaves(user) && roleKey !== "cashier";
+  const managePermission = !ownRequestsOnly && canManageLeave(user);
+  const viewAllPermission = !ownRequestsOnly && canViewAllLeaves(user);
   const allowEmployeeSelection = roleKey === "admin";
   const canArchive = canArchiveModule(roleKey, "cto");
   /*
-   * Employees and cashiers tidy their own settled requests into the archive; the desks that decide
+   * Applicants tidy their own settled requests into the archive; the desks that decide
    * may archive any. The same rule compensatory.php enforces, so the button is never a dead end.
    */
-  const archivesOwnSettledOnly = ["employee", "cashier"].includes(roleKey);
+  const archivesOwnSettledOnly = ownRequestsOnly || roleKey === "employee";
   const canArchiveRecord = useCallback((record) => (
     canArchive
     && (!archivesOwnSettledOnly || ["Approved", "Rejected", "Cancelled"].includes(normalizeLeaveStatus(record?.status)))
@@ -2172,14 +2173,14 @@ export default function CompensatoryWorkspace({
               <h3 className="m-0 text-base font-semibold text-slate-950">
                 {archiveView
                   ? "Archived Compensatory Requests"
-                  : myView
+                  : ownRequestsOnly || myView
                     ? "My CTO Requests"
                     : title}
               </h3>
               <p className="m-0 mt-1 text-sm text-slate-500">
                 {archiveView
                   ? "Compensatory requests moved to archive. Restore one to put it back in the list."
-                  : myView
+                  : ownRequestsOnly || myView
                     ? "Follow the compensatory time off requests filed under your employee account and see whose desk each one is on."
                     : description}
               </p>

@@ -1,3 +1,4 @@
+import { payrollPayoutAmounts, payrollPayoutLabels } from "./payrollPayout";
 import React, { useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
@@ -569,9 +570,9 @@ export default function PayrollDetailDrawer({
             <dl className="mt-4 grid gap-3 md:grid-cols-2">
               <DetailRow label="Due Date" value={formatDate(record.dueDate)} />
               <DetailRow label="Total Deductions" value={formatCurrency(record.totalDeduction)} />
-              <DetailRow label="Net Amount Due" value={formatCurrency(record.netPay)} />
-              <DetailRow label="March 1-15, 2026" value={formatCurrency(record.marchFirstHalf)} />
-              <DetailRow label="March 16-31, 2026" value={formatCurrency(record.marchSecondHalf)} />
+              <DetailRow label="Net Pay" value={formatCurrency(record.netPay)} />
+              <DetailRow label={payrollPayoutLabels(record)[0]} value={formatCurrency(payrollPayoutAmounts(record)[0])} />
+              <DetailRow label={payrollPayoutLabels(record)[1]} value={formatCurrency(payrollPayoutAmounts(record)[1])} />
             </dl>
           </section>
 

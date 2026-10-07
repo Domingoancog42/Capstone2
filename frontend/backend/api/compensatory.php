@@ -68,18 +68,18 @@ function compensatory_role_key(array $user): string
 
 function compensatory_can_manage(array $user): bool
 {
-    return in_array(compensatory_role_key($user), ['admin', 'hrhead', 'hrstaff', 'regionaldirector', 'chief', 'planningofficer'], true);
+    return in_array(compensatory_role_key($user), ['admin', 'regionaldirector', 'chief'], true);
 }
 
 function compensatory_can_view_all(array $user): bool
 {
-    return !in_array(compensatory_role_key($user), ['employee', 'cashier'], true);
+    return !compensatory_is_self_service_role($user);
 }
 
 /** The roles that only ever see their own filings. */
 function compensatory_is_self_service_role(array $user): bool
 {
-    return in_array(compensatory_role_key($user), ['employee', 'cashier'], true);
+    return in_array(compensatory_role_key($user), ['employee', 'cashier', 'hrhead', 'hrstaff', 'planningofficer'], true);
 }
 
 /*
@@ -683,9 +683,8 @@ function compensatory_session_division_id(PDO $pdo, array $user): int
 }
 
 /**
- * Employees and Cashiers receive only their own filings. A Division Chief remains division-scoped,
- * while Chief Admin and the Regional Director are organization-wide CTO approval desks. HR users
- * have no CTO approval stage and only follow their own filing through the personal view.
+ * Applicants receive only their own filings. A Division Chief remains division-scoped,
+ * while Chief Admin and the Regional Director are organization-wide CTO approval desks.
  */
 function compensatory_read_scopes(PDO $pdo, array $sessionUser): array
 {
@@ -694,15 +693,15 @@ function compensatory_read_scopes(PDO $pdo, array $sessionUser): array
     }
 
     return match (compensatory_role_key($sessionUser)) {
-        'employee', 'cashier' => [
+        'employee', 'cashier', 'hrhead', 'hrstaff', 'planningofficer' => [
             'employeeId' => resolve_compensatory_session_employee_id($pdo, $sessionUser),
             'divisionId' => null,
         ],
-        'hrhead', 'hrstaff', 'regionaldirector' => [
+        'regionaldirector' => [
             'employeeId' => null,
             'divisionId' => null,
         ],
-        'chief', 'planningofficer' => [
+        'chief' => [
             'employeeId' => null,
             'divisionId' => compensatory_session_division_id($pdo, $sessionUser),
         ],
@@ -1015,8 +1014,8 @@ function list_compensatory(PDO $pdo, array $sessionUser): void
         $params[':division_scope_id'] = $divisionScopeId;
     }
 
-    /* Direct-route filings bypass the ordinary Chief/Planning division desk. */
-    if ($exactRoleKey !== 'chiefadmin' && in_array($roleKey, ['chief', 'planningofficer'], true)) {
+    /* Direct-route filings bypass the ordinary Division Chief desk. */
+    if ($exactRoleKey !== 'chiefadmin' && $roleKey === 'chief') {
         $sql .= ' AND c.approval_route <> :chief_admin_route';
         $params[':chief_admin_route'] = COMPENSATORY_APPROVAL_ROUTE_CHIEF_ADMIN;
     }

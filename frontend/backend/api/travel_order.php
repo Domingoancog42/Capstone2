@@ -171,8 +171,7 @@ function travel_can_archive(array $user): bool
 
 /*
  * The roles that only ever see their own orders. They may tidy those into the archive as well --
- * archiving is not a decision -- but only once an order is settled, so one still moving through the
- * desks cannot be hidden from them.
+ * archiving is not a decision. Request-only roles may archive their own orders at any stage.
  */
 function travel_is_self_service_role(array $user): bool
 {
@@ -203,6 +202,10 @@ function travel_can_chief_review(PDO $pdo, array $user, int $travellerEmployeeId
 {
     $roleKey = travel_role_key($user);
 
+    if (user_exact_role_key($user) === 'chiefadmin') {
+        return false;
+    }
+
     if ($roleKey === 'admin') {
         return true;
     }
@@ -213,8 +216,10 @@ function travel_can_chief_review(PDO $pdo, array $user, int $travellerEmployeeId
 
     $statement = $pdo->prepare('SELECT division_id FROM employees WHERE id = :id LIMIT 1');
     $statement->execute([':id' => $travellerEmployeeId]);
+    $travellerDivisionId = (int)$statement->fetchColumn();
 
-    return (int)$statement->fetchColumn() === travel_session_division_id($pdo, $user);
+    return travel_request_routes_to_all_chiefs($pdo, $travellerEmployeeId)
+        || $travellerDivisionId === travel_session_division_id($pdo, $user);
 }
 
 /** The Regional Director's desk: the only one whose approval finishes a travel order. */
@@ -223,48 +228,85 @@ function travel_can_give_final_approval(array $user): bool
     return in_array(travel_role_key($user), ['admin', 'regionaldirector'], true);
 }
 
-/**
- * Whether the traveller's division has a Chief who can sign the Chief stage: an active Chief (or a
- * role built on Chief, such as Chief Admin) in that division other than the traveller. A division
- * without one -- the Office of the Regional Director, say, or a Chief travelling with no second
- * Chief beside them -- would otherwise leave the order on a desk nobody sits at.
- */
-function travel_division_has_chief_reviewer(PDO $pdo, int $travellerEmployeeId): bool
+/** Request-only roles whose travel orders are reviewed by every Division Chief. */
+function travel_request_routes_to_all_chiefs(PDO $pdo, int $travellerEmployeeId): bool
 {
-    ensure_role_columns($pdo);
     $statement = $pdo->prepare(
-        'SELECT 1
-         FROM employees traveller
-         INNER JOIN employees chief_employee
-            ON chief_employee.division_id = traveller.division_id
-           AND chief_employee.is_archived = 0
-           AND chief_employee.id <> traveller.id
-         INNER JOIN users chief_user
-            ON chief_user.email COLLATE utf8mb4_unicode_ci = chief_employee.email COLLATE utf8mb4_unicode_ci
-           AND chief_user.is_archived = 0
-           AND LOWER(chief_user.status) = "active"
-         INNER JOIN roles chief_role ON chief_role.id = chief_user.role_id
-         WHERE traveller.id = :employee_id
-           AND (
-                LOWER(REPLACE(chief_role.name, " ", "")) = "chief"
-                OR LOWER(REPLACE(COALESCE(chief_role.base_role, ""), " ", "")) = "chief"
-           )
+        'SELECT ' . employee_role_name_subselect('e') . ' AS employeeRole
+         FROM employees e
+         WHERE e.id = :employee_id
+           AND e.is_archived = 0
          LIMIT 1'
     );
     $statement->execute([':employee_id' => $travellerEmployeeId]);
 
-    return $statement->fetchColumn() !== false;
+    return in_array(
+        normalize_role($statement->fetchColumn() ?: ''),
+        ['hrhead', 'hrstaff', 'chiefadmin', 'cashier'],
+        true
+    );
 }
 
-/** Where a recommended order goes next: the Chief's desk, or straight on when there is no Chief. */
+/** SQL counterpart used by the Chief's list and single-record scope queries. */
+function travel_request_routes_to_all_chiefs_sql(string $employeeAlias = 'e'): string
+{
+    return 'LOWER(REPLACE(COALESCE(' . employee_role_name_subselect($employeeAlias) . ', ""), " ", ""))
+            IN ("hrhead", "hrstaff", "chiefadmin", "cashier")';
+}
+
+/**
+ * Every Planning Officer recommendation goes to the traveller's Division Chief before the
+ * Director. Individual filings from HR Head, HR Staff, Chief Admin, and Cashier are organization-
+ * wide Chief work and do not require one assigned division. Ordinary employee filings do: refuse
+ * their handoff rather than creating a Reviewed row no Chief can see in a division-scoped table.
+ */
 function travel_status_after_recommendation(PDO $pdo, int $travellerEmployeeId): string
 {
-    return travel_division_has_chief_reviewer($pdo, $travellerEmployeeId) ? 'reviewed' : 'chief_reviewed';
+    $statement = $pdo->prepare(
+        'SELECT division_id
+         FROM employees
+         WHERE id = :employee_id
+           AND is_archived = 0
+         LIMIT 1'
+    );
+    $statement->execute([':employee_id' => $travellerEmployeeId]);
+
+    if (
+        (int)$statement->fetchColumn() <= 0
+        && !travel_request_routes_to_all_chiefs($pdo, $travellerEmployeeId)
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'The employee must be assigned to a division before the travel order can be sent to a Division Chief.',
+        ], 422);
+    }
+
+    return 'reviewed';
+}
+
+/**
+ * Put open orders that used the former no-Chief shortcut back on the Division Chief's desk. A row
+ * already signed by the Regional Director remains where it is while the employee authorizes it.
+ */
+function repair_travel_orders_skipping_chief_review(PDO $pdo): void
+{
+    $pdo->exec(
+        "UPDATE travel_orders
+         SET status = 'reviewed'
+         WHERE status = 'chief_reviewed'
+           AND recommended_by_employee_id IS NOT NULL
+           AND chief_reviewed_by_employee_id IS NULL
+           AND approved_by_employee_id IS NULL"
+    );
 }
 
 function travel_can_view_all(array $user): bool
 {
-    return !in_array(travel_role_key($user), ['employee', 'cashier'], true);
+    if (user_exact_role_key($user) === 'chiefadmin') {
+        return false;
+    }
+
+    return !in_array(travel_role_key($user), ['employee', 'cashier', 'hrhead', 'hrstaff'], true);
 }
 
 /** The statuses a travel order can still be acted on from. */
@@ -464,18 +506,27 @@ function travel_session_division_id(PDO $pdo, array $user): int
 }
 
 /**
- * Employees and Cashiers receive only their own orders. The Planning Officer and Regional Director are the
- * organization-wide dispatch and final-approval desks, so routed orders reach both roles regardless
- * of division. HR Head uses Travel Order as a personal record screen and therefore receives only
- * their own orders. HR Staff work organization-wide. The Chief is division-scoped and additionally
- * keeps access to orders they personally filed, so cross-division orders filed before filing was restricted to
- * the Chief's own division (see assert_travel_employee_in_chief_division()) stay visible to them.
+ * Employees, Cashiers, HR Head, and HR Staff receive only their own orders. The Planning Officer
+ * and Regional Director are the organization-wide dispatch and final-approval desks, so routed
+ * orders reach both roles regardless of division. A Chief normally sees travellers from their own
+ * division only. Individual requests belonging to HR Head, HR Staff, Chief Admin, and Cashier are
+ * the exception: those organization-wide roles appear on every Division Chief's approval desk.
+ * The list endpoint separately withholds those rows from the Chief until the Planning Officer has
+ * recorded a recommendation; Pending filings belong only to the Planning Officer's first-stage desk.
  * Administrators retain organization-wide oversight.
  */
 function travel_read_scopes(PDO $pdo, array $sessionUser): array
 {
+    if (user_exact_role_key($sessionUser) === 'chiefadmin') {
+        return [
+            'employeeId' => resolve_session_employee_id($pdo, $sessionUser),
+            'divisionId' => null,
+            'filedByEmployeeId' => null,
+        ];
+    }
+
     return match (travel_role_key($sessionUser)) {
-        'employee', 'cashier', 'hrhead' => [
+        'employee', 'cashier', 'hrhead', 'hrstaff' => [
             'employeeId' => resolve_session_employee_id($pdo, $sessionUser),
             'divisionId' => null,
             'filedByEmployeeId' => null,
@@ -483,14 +534,9 @@ function travel_read_scopes(PDO $pdo, array $sessionUser): array
         'chief' => [
             'employeeId' => null,
             'divisionId' => travel_session_division_id($pdo, $sessionUser),
-            'filedByEmployeeId' => resolve_session_employee_id($pdo, $sessionUser),
-        ],
-        'planningofficer', 'regionaldirector' => [
-            'employeeId' => null,
-            'divisionId' => null,
             'filedByEmployeeId' => null,
         ],
-        'hrstaff' => [
+        'planningofficer', 'regionaldirector' => [
             'employeeId' => null,
             'divisionId' => null,
             'filedByEmployeeId' => null,
@@ -625,9 +671,12 @@ function fetch_travel_order(
     }
 
     if ($divisionScopeId !== null && $filedByEmployeeScopeId !== null) {
-        $sql .= ' AND (e.division_id = :division_scope_id OR t.filed_by_employee_id = :filed_by_employee_scope_id)';
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR t.filed_by_employee_id = :filed_by_employee_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
     } elseif ($divisionScopeId !== null) {
-        $sql .= ' AND e.division_id = :division_scope_id';
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
     } elseif ($filedByEmployeeScopeId !== null) {
         $sql .= ' AND t.filed_by_employee_id = :filed_by_employee_scope_id';
     }
@@ -747,6 +796,7 @@ function send_travel_rejection_notification(PDO $pdo, int $id): ?string
 
 function list_travel_orders(PDO $pdo, array $sessionUser): void
 {
+    $viewerEmployeeId = session_employee_record_id($pdo, $sessionUser);
     $scopes = travel_read_scopes($pdo, $sessionUser);
     $employeeScopeId = $scopes['employeeId'];
     $divisionScopeId = $scopes['divisionId'];
@@ -802,15 +852,29 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
         $params[':employee_scope_id'] = $employeeScopeId;
     }
     if ($divisionScopeId !== null && $filedByEmployeeScopeId !== null) {
-        $sql .= ' AND (e.division_id = :division_scope_id OR t.filed_by_employee_id = :filed_by_employee_scope_id)';
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR t.filed_by_employee_id = :filed_by_employee_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
         $params[':division_scope_id'] = $divisionScopeId;
         $params[':filed_by_employee_scope_id'] = $filedByEmployeeScopeId;
     } elseif ($divisionScopeId !== null) {
-        $sql .= ' AND e.division_id = :division_scope_id';
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
         $params[':division_scope_id'] = $divisionScopeId;
     } elseif ($filedByEmployeeScopeId !== null) {
         $sql .= ' AND t.filed_by_employee_id = :filed_by_employee_scope_id';
         $params[':filed_by_employee_scope_id'] = $filedByEmployeeScopeId;
+    }
+
+    /*
+     * A newly filed employee order is the Planning Officer's work, not yet the Division Chief's.
+     * Use the recorded recommendation instead of only the public status: this also keeps an order
+     * rejected at the Planning Officer stage off the Chief's list. Once the Chief approves it, the
+     * open row belongs to the Regional Director and leaves the Chief's table.
+     */
+    if (travel_role_key($sessionUser) === 'chief' && user_exact_role_key($sessionUser) !== 'chiefadmin') {
+        $sql .= " AND t.recommended_by_employee_id IS NOT NULL
+                  AND NOT (t.status = 'chief_reviewed' AND t.approved_by_employee_id IS NULL)";
     }
 
     $sql .= ' ORDER BY t.created_at DESC, t.travel_order_id DESC';
@@ -821,6 +885,9 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
 
     foreach ($requests as &$request) {
         $request = travel_normalize_request($pdo, $request);
+        $request['isOwnTravelOrder'] = $viewerEmployeeId !== null
+            && $viewerEmployeeId > 0
+            && (int)$request['employeeRecordId'] === $viewerEmployeeId;
     }
     unset($request);
 
@@ -896,9 +963,8 @@ function create_travel_order(PDO $pdo, array $body, array $sessionUser): void
     $recommendedByEmployeeId = resolve_travel_recommender_id($pdo, $sessionUser, $employeeId);
     $filedByEmployeeId = session_employee_record_id($pdo, $sessionUser);
     /*
-     * A planning officer filing has already made the recommendation, so their order skips to the
-     * Division Chief (or the Regional Director, when the division has no Chief to sign). Everyone
-     * else's starts at `pending` and waits for the Planning Officer.
+     * A planning officer filing has already made the recommendation, so their order starts on the
+     * Division Chief's desk. Everyone else's starts at `pending` and waits for the Planning Officer.
      */
     $initialStatus = $recommendedByEmployeeId !== null
         ? travel_status_after_recommendation($pdo, $employeeId)
@@ -1313,17 +1379,6 @@ function archive_travel_order(PDO $pdo, array $body, array $sessionUser, bool $a
         ], 404);
     }
 
-    if (
-        $archived
-        && travel_is_self_service_role($sessionUser)
-        && travel_status_is_open(travel_status_to_database($request['status'] ?? ''))
-    ) {
-        json_response([
-            'success' => false,
-            'message' => 'Only approved, rejected, or cancelled travel orders can be archived.',
-        ], 422);
-    }
-
     set_record_archived(
         $pdo,
         'travel_orders',
@@ -1356,6 +1411,7 @@ try {
     ensure_travel_order_employee_authorized_column($pdo);
     ensure_travel_order_chief_reviewed_columns($pdo);
     ensure_travel_order_workflow_statuses($pdo);
+    repair_travel_orders_skipping_chief_review($pdo);
     ensure_archive_columns($pdo, 'travel_orders');
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';

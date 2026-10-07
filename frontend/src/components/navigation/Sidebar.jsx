@@ -47,6 +47,7 @@ import { performanceFormKey } from "../../module/performance/performanceFormGrou
 import {
   canManageLeave,
   matchesLeaveManagementStatus,
+  matchesUserRecordScope,
   normalizeLeaveStatus,
   resolveRoleKey,
 } from "../../utils/leaveHelpers";
@@ -566,6 +567,7 @@ export default function Sidebar({
   const [pendingIpcrCount, setPendingIpcrCount] = useState(0);
   const [pendingPromotionCount, setPendingPromotionCount] = useState(0);
   const [hasUnviewedPromotionBadge, setHasUnviewedPromotionBadge] = useState(false);
+  const [hasTravelAuthorization, setHasTravelAuthorization] = useState(false);
   const [expandedItems, setExpandedItems] = useState({});
   const roleKey = resolveRoleKey(user);
   const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
@@ -616,6 +618,41 @@ export default function Sidebar({
     () => permittedNavigationItems.some((item) => item.key === "leave" && !item.hidden),
     [permittedNavigationItems]
   );
+  const tracksTravelAuthorization = ["employee", "hrhead", "hrstaff", "chiefadmin", "cashier"].includes(exactRoleKey)
+    && permittedNavigationItems.some((item) => !item.hidden
+      && (item.key === "travel" || item.children?.some((child) => child.key === "travel" && !child.hidden)));
+
+  useEffect(() => {
+    setHasTravelAuthorization(false);
+    if (!tracksTravelAuthorization) return undefined;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await fetchTravelOrders();
+        if (active) {
+          setHasTravelAuthorization((result.requests || []).some((request) => request.awaitingAuthorization
+            && (typeof request.isOwnTravelOrder === "boolean"
+              ? request.isOwnTravelOrder
+              : matchesUserRecordScope(request, user))));
+        }
+      } catch {
+        if (active) setHasTravelAuthorization(false);
+      }
+    };
+    void refresh();
+    window.addEventListener(LEAVE_REQUESTS_CHANGED_EVENT, refresh);
+    window.addEventListener("focus", refresh);
+    const unsubscribe = subscribeAutoRefresh(refresh, { topics: ["travel_order"] });
+    const interval = window.setInterval(refresh, scalePollInterval(30000));
+    return () => {
+      active = false;
+      window.removeEventListener(LEAVE_REQUESTS_CHANGED_EVENT, refresh);
+      window.removeEventListener("focus", refresh);
+      unsubscribe();
+      window.clearInterval(interval);
+    };
+  }, [tracksTravelAuthorization, user]);
+
   const hasPayrollNavigationItem = useMemo(
     () => permittedNavigationItems.some((item) => (
       !item.hidden
@@ -1210,9 +1247,13 @@ export default function Sidebar({
           const isActive = hasActiveChild || (activePath ? matchesNavigationItem(item) : activeModule === item.key);
           const parentPendingCount = getParentPendingCount(item);
           const hasEmployeePromotionBadge = item.key === "promotions" && hasUnviewedPromotionBadge;
-          const notificationCount = hasEmployeePromotionBadge ? 1 : parentPendingCount;
-          const notificationLabel = hasEmployeePromotionBadge ? "!" : undefined;
-          const notificationTitle = hasEmployeePromotionBadge
+          const hasTravelBadge = hasTravelAuthorization && (item.key === "travel"
+            || item.children?.some((child) => child.key === "travel"));
+          const notificationCount = hasEmployeePromotionBadge || hasTravelBadge ? 1 : parentPendingCount;
+          const notificationLabel = hasEmployeePromotionBadge || hasTravelBadge ? "!" : undefined;
+          const notificationTitle = hasTravelBadge
+            ? "Travel Order: accept your travel authorization"
+            : hasEmployeePromotionBadge
             ? `${item.label}: new promotion`
             : `${item.label} (${parentPendingCount} pending)`;
           const showPendingBadge = notificationCount > 0;
@@ -1345,9 +1386,10 @@ export default function Sidebar({
                               <span className={`relative z-[1] truncate ${HOVER_SHIFT_CLASS}`}>
                                 {child.label}
                               </span>
-                              {!["passSlip", "payrollLoan"].includes(child.key) && childPendingCount > 0 ? (
+                              {!["passSlip", "payrollLoan"].includes(child.key) && (childPendingCount > 0 || (child.key === "travel" && hasTravelAuthorization)) ? (
                                 <NotificationBadge
-                                  count={childPendingCount}
+                                  count={child.key === "travel" && hasTravelAuthorization ? 1 : childPendingCount}
+                                  label={child.key === "travel" && hasTravelAuthorization ? "!" : undefined}
                                   inline
                                   className={`relative z-[1] ${childIsActive ? "ring-white/70" : ""}`}
                                 />

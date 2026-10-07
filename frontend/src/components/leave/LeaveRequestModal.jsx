@@ -423,6 +423,7 @@ export default function LeaveRequestModal({
 
     if (!form.employeeName.trim()) nextErrors.employeeName = "Employee name is required.";
     if (!form.leaveType) nextErrors.leaveType = "Leave type is required.";
+    if (!form.reason.trim()) nextErrors.reason = "Reason / Supporting Details is required.";
     if (form.leaveDays.length === 0) {
       nextErrors.leaveDays = "Select at least one leave date.";
     }
@@ -823,9 +824,12 @@ export default function LeaveRequestModal({
             <label className="sm:col-span-2">
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">
                 {isMonetizationFiling ? "Purpose" : "Reason / Supporting Details"}
+                {!isMonetizationFiling || monetizationRequiresPurpose ? <span className="text-rose-600"> *</span> : null}
               </span>
               <textarea
                 rows={4}
+                required={!isMonetizationFiling || monetizationRequiresPurpose}
+                aria-invalid={Boolean(errors.reason)}
                 value={form.reason}
                 onChange={handleChange("reason")}
                 placeholder={
@@ -833,7 +837,7 @@ export default function LeaveRequestModal({
                     ? (monetizationRequiresPurpose
                       ? "State the valid and justifiable reason for monetizing half or more of the credits"
                       : "Reason for monetizing the leave credits")
-                    : "Provide any additional reason or supporting details."
+                    : "Enter your reason for requesting leave or supporting details."
                 }
                 className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
               />

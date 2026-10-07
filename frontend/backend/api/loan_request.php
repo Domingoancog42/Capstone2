@@ -211,7 +211,7 @@ function loan_can_file_for_others(array $user): bool
 
 function loan_can_review(array $user): bool
 {
-    return in_array(loan_role_key($user), ['admin', 'hrhead', 'hrstaff', 'regionaldirector'], true);
+    return loan_role_key($user) === 'hrhead';
 }
 
 function loan_can_manage_records(array $user): bool
@@ -906,7 +906,7 @@ function update_loan_request_status(PDO $pdo, array $body, array $sessionUser): 
     if (!loan_can_review($sessionUser)) {
         json_response([
             'success' => false,
-            'message' => 'Only Admin, HR users, or Regional Directors can approve or reject loan applications.',
+            'message' => 'Only the HR Head can approve or reject loan applications.',
         ], 403);
     }
 

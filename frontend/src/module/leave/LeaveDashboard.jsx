@@ -62,7 +62,7 @@ import {
   resolveRoleKey,
 } from "../../utils/leaveHelpers";
 import { getLeaveReasonDisplay } from "../../utils/leaveRequestDetails";
-import { getRoleBadgeClass, getRoleLabel } from "../../utils/roleRoutes";
+import { getRoleBadgeClass, getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
 import { formatRecordDivision } from "../../utils/divisionDisplay";
 import {
   formatMonetizationDays,
@@ -135,7 +135,7 @@ const MY_LEAVE_VIEW_ROLES = new Set([
  * Officer's filing enters the chain at a different stage from an Employee's. Their own "My Leave"
  * list is all one person, so the column is left off there.
  */
-const ROLE_COLUMN_VIEWER_ROLES = new Set(["hrhead", "chief", "regionaldirector"]);
+const ROLE_COLUMN_VIEWER_ROLES = new Set(["admin", "hrhead", "hrstaff", "chief", "regionaldirector"]);
 
 function LeaveRoleBadge({ role }) {
   const label = String(role || "").trim();
@@ -865,6 +865,7 @@ export default function LeaveDashboard({
   showOnlyOwnLeaveRequests = false,
 }) {
   const normalizedActiveView = requestTabs.some((tab) => tab.key === activeView) ? activeView : "leave";
+  const defaultLeaveStatus = resolveRoleKey(user) === "hrhead" ? "Pending HR Head Approval" : defaultFilterState.status;
   const [activeTab, setActiveTab] = useState(normalizedActiveView);
   const [requests, setRequests] = useState([]);
   /*
@@ -882,7 +883,7 @@ export default function LeaveDashboard({
   const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
   const [filters, setFilters] = useState(() => ({
     ...defaultFilterState,
-    ...(showOnlyOwnLeaveRequests ? { status: "" } : {}),
+    status: showOnlyOwnLeaveRequests ? "" : defaultLeaveStatus,
   }));
   const [currentPage, setCurrentPage] = useState(1);
   const [reviewRequest, setReviewRequest] = useState(null);
@@ -906,6 +907,9 @@ export default function LeaveDashboard({
   const managePermission = canManageLeaveRequests(user);
   const viewAllPermission = canViewAllLeaves(user);
   const roleKey = resolveRoleKey(user);
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  const travelRequestOnly = ["cashier", "hrhead", "hrstaff"].includes(roleKey)
+    || exactRoleKey === "chiefadmin";
   const isRegionalDirector = roleKey === "regionaldirector";
   /*
    * The balances button shows the signed-in user their own leave credits. The Admin account is not
@@ -1268,7 +1272,7 @@ export default function LeaveDashboard({
   const handleClearFilters = () => {
     setFilters({
       ...defaultFilterState,
-      ...(scopeToOwnLeaveRequests ? { status: "" } : {}),
+      status: scopeToOwnLeaveRequests || leaveArchiveView ? "" : defaultLeaveStatus,
     });
     setCurrentPage(1);
   };
@@ -1281,7 +1285,7 @@ export default function LeaveDashboard({
     setLeaveArchiveView(false);
     setFilters({
       ...defaultFilterState,
-      status: shouldShowMyLeave || showOnlyOwnLeaveRequests ? "" : defaultFilterState.status,
+      status: shouldShowMyLeave || showOnlyOwnLeaveRequests ? "" : defaultLeaveStatus,
     });
     setCurrentPage(1);
   };
@@ -1873,7 +1877,7 @@ export default function LeaveDashboard({
               setLeaveArchiveView(next);
               setFilters((current) => ({
                 ...current,
-                status: next || myLeaveView || showOnlyOwnLeaveRequests ? "" : defaultFilterState.status,
+                status: next || myLeaveView || showOnlyOwnLeaveRequests ? "" : defaultLeaveStatus,
               }));
               setCurrentPage(1);
             }}
@@ -1958,8 +1962,10 @@ export default function LeaveDashboard({
         <TravelOrderWorkspace
           user={user}
           employees={employees}
-          title="Travel Order Management"
-          description="Review submitted travel orders, filter by employee or status, and update request outcomes."
+          title={travelRequestOnly ? "Travel Order Request" : "Travel Order Management"}
+          description={travelRequestOnly
+            ? "File and monitor travel orders under your employee account."
+            : "Review submitted travel orders, filter by employee or status, and update request outcomes."}
           submitLabel="Request Travel Order"
           showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("travel", count)}

@@ -26,14 +26,20 @@ import AwardCyclesWorkspace from "../../module/rewards/AwardCyclesWorkspace";
 
 import BubbleChat from "../../components/bubble_chat/bubble_chat";
 import { getEmployees } from "../../services/api";
-import { isFadDivisionChiefUser } from "../../utils/roleRoutes";
+import { isFadDivisionChiefUser, normalizeRole } from "../../utils/roleRoutes";
 import TeamOverview, { scopeEmployeesToChiefDivision } from "./teamoverview";
 
-function useChiefEmployees(errorMessage) {
+function useChiefEmployees(errorMessage, enabled = true) {
   const [employees, setEmployees] = useState([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!enabled) {
+      setEmployees([]);
+      setError("");
+      return undefined;
+    }
+
     let active = true;
 
     const loadEmployees = async () => {
@@ -58,7 +64,7 @@ function useChiefEmployees(errorMessage) {
     return () => {
       active = false;
     };
-  }, [errorMessage]);
+  }, [enabled, errorMessage]);
 
   return { employees, error };
 }
@@ -173,7 +179,11 @@ function ChiefNominationWorkspace({ user }) {
 // The travel order form lets a chief pick the employees travelling, so this view needs the
 // employee directory that the other chief LeaveDashboard views do not load.
 function ChiefTravelWorkspace({ user }) {
-  const { employees, error } = useChiefEmployees("Unable to load employee options for travel orders.");
+  const isChiefAdmin = normalizeRole(user?.roleKey || user?.role) === "chiefadmin";
+  const { employees, error } = useChiefEmployees(
+    "Unable to load employee options for travel orders.",
+    !isChiefAdmin
+  );
 
   return (
     <div className="space-y-4">
@@ -419,17 +429,40 @@ export default function ChiefDashboard({
   ...props
 }) {
   const isFadDivisionChief = isFadDivisionChiefUser(props.user);
+  const isChiefAdmin = normalizeRole(props.user?.roleKey || props.user?.role) === "chiefadmin";
   const configuredNavigationItems = useMemo(() => {
     const resolvedHiddenNavigationKeys = hiddenNavigationKeys
       ?? (isFadDivisionChief ? [] : DIVISION_CHIEF_HIDDEN_NAVIGATION_KEYS);
     const hiddenKeys = new Set(resolvedHiddenNavigationKeys);
-    return hiddenKeys.size
+    const visibleItems = hiddenKeys.size
       ? navigationItems.filter((item) => !item.key || !hiddenKeys.has(item.key))
       : navigationItems;
-  }, [hiddenNavigationKeys, isFadDivisionChief]);
+
+    if (!isChiefAdmin) {
+      return visibleItems;
+    }
+
+    return visibleItems.map((item) => (
+      item.key === "leave"
+        ? {
+          ...item,
+          children: item.children?.map((child) => (
+            child.key === "travel" ? { ...child, label: "Travel Order Request" } : child
+          )),
+        }
+        : item
+    ));
+  }, [hiddenNavigationKeys, isChiefAdmin, isFadDivisionChief]);
 
   const configuredModules = useMemo(() => ({
     ...modules,
+    travel: isChiefAdmin
+      ? {
+        ...modules.travel,
+        title: "Travel Order Request",
+        description: "File and monitor travel orders under your employee account.",
+      }
+      : modules.travel,
     dashboard: {
       ...modules.dashboard,
       render: ({ user, onNavigate }) => (
@@ -441,7 +474,7 @@ export default function ChiefDashboard({
         />
       ),
     },
-  }), [dashboardOverviewProps]);
+  }), [dashboardOverviewProps, isChiefAdmin]);
 
   return (
     <RoleWorkspacePage

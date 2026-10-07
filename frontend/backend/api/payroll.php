@@ -576,6 +576,13 @@ function payroll_normalize_type(mixed $value): string
     return $text;
 }
 
+function payroll_pera_amount(mixed $payrollType, mixed $amount): float
+{
+    return in_array(payroll_normalize_type($payrollType), [
+        'Mid-Year Bonus', 'Year-End Bonus', 'Performance-Based Bonus (PBB)',
+    ], true) ? 0.0 : payroll_decimal($amount);
+}
+
 function payroll_type_allows_employment_type(string $payrollType, string $employmentType): bool
 {
     if (!in_array($payrollType, PAYROLL_TYPE_REGULAR_ONLY, true)) {
@@ -1445,7 +1452,7 @@ function payroll_apply_recurring_deductions(PDO $pdo, array $payload, array $emp
     $grossPreview = round(
         $basicSalary
         + $payload['overtimePay']
-        + $payload['pera']
+        + payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])
         + $payload['travelAllowance']
         + $payload['salaryAdjustment']
         + $payload['otherAllowances']
@@ -1841,7 +1848,7 @@ function payroll_payload(PDO $pdo, array $body): array
         'overtimeHours' => $overtimeHours,
         'overtimeRate' => $overtimeRate,
         'overtimePay' => $overtimePay,
-        'pera' => payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT),
+        'pera' => payroll_pera_amount($body['payrollType'] ?? '', payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT)),
         'travelAllowance' => payroll_decimal($body['travelAllowance'] ?? 0),
         'salaryAdjustment' => payroll_decimal($body['salaryAdjustment'] ?? 0),
         'otherAllowances' => payroll_decimal($body['otherAllowances'] ?? 0),
@@ -1967,7 +1974,7 @@ function payroll_calculate_totals(array $payload, array $employee): array
     $basicSalary = payroll_decimal($employee['basicSalary'] ?? 0);
     $totalAllowance = round(
         $payload['overtimePay']
-        + $payload['pera']
+        + payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])
         + $payload['travelAllowance']
         + $payload['salaryAdjustment']
         + $payload['otherAllowances']
@@ -2003,6 +2010,7 @@ function payroll_calculate_totals(array $payload, array $employee): array
 
 function payroll_apply_automatic_calculations(PDO $pdo, array $payload, array $employee): array
 {
+    $payload['pera'] = payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'] ?? 0);
     $basicSalary = payroll_decimal($employee['basicSalary'] ?? 0);
     $employeeRecordId = (int)($employee['id'] ?? $payload['employeeRecordId'] ?? 0);
     $hourlyRate = payroll_monthly_hourly_rate($basicSalary);
@@ -2281,7 +2289,7 @@ function payroll_allowance_items(array $payload): array
 {
     return [
         ['name' => 'Overtime Pay', 'amount' => $payload['overtimePay']],
-        ['name' => 'PERA', 'amount' => $payload['pera']],
+        ['name' => 'PERA', 'amount' => payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])],
         ['name' => 'Travel Allowance', 'amount' => $payload['travelAllowance']],
         ['name' => 'Salary Adjustment', 'amount' => $payload['salaryAdjustment']],
         ['name' => 'Other Allowances', 'amount' => $payload['otherAllowances']],
@@ -2781,6 +2789,15 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
 
     $grossPay = payroll_decimal($baseRow['grossPay'] ?? 0);
     $totalAllowance = payroll_decimal($baseRow['totalAllowance'] ?? 0);
+    // Older bonus records included PERA. Exclude it consistently when reading their totals.
+    $storedPera = payroll_decimal($allowanceFieldValues['pera'] ?? 0);
+    $allowanceFieldValues['pera'] = payroll_pera_amount($payrollType, $storedPera);
+    $excludedPera = round($storedPera - $allowanceFieldValues['pera'], 2);
+    $grossPay = round($grossPay - $excludedPera, 2);
+    $totalAllowance = round($totalAllowance - $excludedPera, 2);
+    if ($excludedPera != 0.0) {
+        $allowances = array_values(array_filter($allowances, static fn (array $item): bool => ($item['name'] ?? '') !== 'PERA'));
+    }
     $additionalDeductionTotal = 0.0;
     foreach ($deductions as $deduction) {
         $name = (string)($deduction['name'] ?? '');
@@ -2809,7 +2826,7 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
         : payroll_decimal($baseRow['totalDeduction'] ?? $computedTotalDeduction);
     $netPay = $hasAttendanceCoverage
         ? round($grossPay - $totalDeduction, 2)
-        : payroll_decimal($baseRow['netPay'] ?? ($grossPay - $totalDeduction));
+        : round(payroll_decimal($baseRow['netPay'] ?? ($grossPay + $excludedPera - $totalDeduction)) - $excludedPera, 2);
     $deductionItems = array_map(
         static fn (array $item): array => [
             'name' => $item['name'],
@@ -4370,7 +4387,7 @@ function payroll_preview(PDO $pdo, array $body): void
             'overtimeHours' => 0.0,
             'overtimeRate' => 0.0,
             'overtimePay' => 0.0,
-            'pera' => payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT),
+            'pera' => payroll_pera_amount($body['payrollType'] ?? '', payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT)),
             'travelAllowance' => 0.0,
             'salaryAdjustment' => 0.0,
             'otherAllowances' => 0.0,

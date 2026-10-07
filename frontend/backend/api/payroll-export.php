@@ -840,6 +840,23 @@ function payroll_export_salary_period_label(mixed $startDate, mixed $endDate): s
 }
 
 /** Mirrors buildPayoutHalfColumnLabels(): both halves, dated from the period the payroll carries. */
+function payroll_export_payout_amounts(array $record): array
+{
+    $netPay = payroll_export_amount($record['netPay'] ?? 0);
+    $period = strtolower(trim((string)($record['payPeriod'] ?? '')));
+    if ($period === '1st half') {
+        return [$netPay, 0.0];
+    }
+    if ($period === '2nd half') {
+        return [0.0, $netPay];
+    }
+    if ($period === 'monthly') {
+        $firstHalf = floor($netPay / 2 * 100 + 0.5) / 100;
+        return [$firstHalf, round($netPay - $firstHalf, 2)];
+    }
+    return [0.0, 0.0];
+}
+
 function payroll_export_payout_half_labels(mixed $startDate, mixed $endDate): array
 {
     $start = payroll_export_date($startDate);
@@ -1049,7 +1066,7 @@ function payroll_export_type_labels(mixed $payrollType): array
                 ['label' => 'Step Increment', 'field' => 'stepIncrement', 'kind' => 'step'],
             ],
             'grossLabel' => 'Gross Amount Earned',
-            'netLabel' => 'Net Amount Due',
+            'netLabel' => 'Net Pay',
         ],
         'Mid-Year Bonus' => [
             'groupLabel' => 'Mid-Year Bonus',
@@ -1059,7 +1076,7 @@ function payroll_export_type_labels(mixed $payrollType): array
                 ['label' => 'Other Adjustment', 'field' => 'salaryAdjustment'],
             ],
             'grossLabel' => 'Total Bonus Earned',
-            'netLabel' => 'Net Bonus Due',
+            'netLabel' => 'Net Pay',
         ],
         'Year-End Bonus' => [
             'groupLabel' => 'Year-End Bonus',
@@ -1069,7 +1086,7 @@ function payroll_export_type_labels(mixed $payrollType): array
                 ['label' => 'Cash Gift', 'field' => 'otherAllowances'],
             ],
             'grossLabel' => 'Total Year-End Benefit',
-            'netLabel' => 'Net Amount Due',
+            'netLabel' => 'Net Pay',
         ],
         'Performance-Based Bonus (PBB)' => [
             'groupLabel' => 'Performance-Based Bonus',
@@ -1266,8 +1283,8 @@ function payroll_export_regular_rows(
         );
         $row[$deductionStart + $deductionCount + 1] = payroll_xlsx_number(payroll_export_amount($record['totalDeduction'] ?? 0), $money);
         $row[$deductionStart + $deductionCount + 2] = payroll_xlsx_number(payroll_export_amount($record['netPay'] ?? 0), $money);
-        $row[$deductionStart + $deductionCount + 3] = payroll_xlsx_number(payroll_export_amount($record['marchFirstHalf'] ?? 0), $money);
-        $row[$deductionStart + $deductionCount + 4] = payroll_xlsx_number(payroll_export_amount($record['marchSecondHalf'] ?? 0), $money);
+        $row[$deductionStart + $deductionCount + 3] = payroll_xlsx_number(payroll_export_payout_amounts($record)[0], $money);
+        $row[$deductionStart + $deductionCount + 4] = payroll_xlsx_number(payroll_export_payout_amounts($record)[1], $money);
         ksort($row);
         $rows[] = $row;
     }

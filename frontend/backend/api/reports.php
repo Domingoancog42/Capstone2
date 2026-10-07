@@ -1058,7 +1058,6 @@ function reports_definitions(): array
         'orderBy' => 'lr.requested_at DESC, employeeName ASC',
         'filters' => $leaveFilters,
         'includeRowNumber' => true,
-        'keepStatus' => true,
     ];
 
     $definitions['leave-monetization'] = [
@@ -1111,7 +1110,6 @@ function reports_definitions(): array
             'status' => 'CASE WHEN LOWER(lm.status) IN ("pending", "reviewed") THEN "pending" ELSE LOWER(lm.status) END',
         ],
         'includeRowNumber' => true,
-        'keepStatus' => true,
     ];
 
     $definitions['leave-balance'] = [
@@ -1440,7 +1438,6 @@ function reports_definitions(): array
             'status' => 'CASE WHEN LOWER(t.status) IN ("pending", "reviewed", "chief_reviewed") THEN "pending" ELSE LOWER(t.status) END',
         ],
         'includeRowNumber' => true,
-        'keepStatus' => true,
     ];
 
     // ---------------------------------------------------------------
@@ -1495,7 +1492,6 @@ function reports_definitions(): array
             'status' => 'CASE WHEN c.status IN ("Pending", "Endorsed", "Reviewed") THEN "pending" ELSE LOWER(c.status) END',
         ],
         'includeRowNumber' => true,
-        'keepStatus' => true,
     ];
 
     // ---------------------------------------------------------------

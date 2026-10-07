@@ -554,8 +554,9 @@ export default function FileLoan({
 
   const roleKey = resolveUserRoleKey(user);
   const canManage = ["admin", "hrhead", "hrstaff"].includes(roleKey);
-  const canReview = ["admin", "hrhead", "hrstaff", "regionaldirector"].includes(roleKey);
-  const canRecordPayments = ["admin", "hrhead", "hrstaff", "cashier"].includes(roleKey);
+  const canManageDetails = roleKey === "admin";
+  const canReview = roleKey === "hrhead";
+  const canRecordPayments = ["admin", "cashier"].includes(roleKey);
   const canFileForOthers = canManage;
   const canCreate = canManage || Boolean(roleKey);
   const employeeOptions = useMemo(
@@ -1161,8 +1162,8 @@ export default function FileLoan({
         footer={viewingRecord ? (
           <div className="flex w-full flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap gap-2">
-              {canManage ? <Button variant="secondary" icon={Pencil} onClick={() => { const record = viewingRecord; setViewingRecord(null); openEditForm(record); }}>Edit</Button> : null}
-              {canManage && !archiveView ? <Button variant="danger" icon={Archive} onClick={() => handleArchive()}>Archive</Button> : null}
+              {canManageDetails ? <Button variant="secondary" icon={Pencil} onClick={() => { const record = viewingRecord; setViewingRecord(null); openEditForm(record); }}>Edit</Button> : null}
+              {canManageDetails && !archiveView ? <Button variant="danger" icon={Archive} onClick={() => handleArchive()}>Archive</Button> : null}
             </div>
             <div className="flex flex-wrap justify-end gap-2">
               {canReview && viewingRecord.status === "Pending" ? (
@@ -1248,13 +1249,13 @@ export default function FileLoan({
               </div>
               {payrollCollection(viewingRecord) === "manual" ? (
                 <p className="m-0 mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                  Payroll only deducts loans of Regular employees, and this employee is {viewingRecord.employmentStatus}. Record this loan's payments with the Pay button.
+                  Payroll only deducts loans of Regular employees, and this employee is {viewingRecord.employmentStatus}.{canRecordPayments ? " Record this loan's payments with the Pay button." : " This loan requires manual payment recording by an Admin or Cashier."}
                 </p>
               ) : null}
               <div className="max-h-[330px] overflow-auto rounded-xl border border-slate-200 dark:border-slate-700">
                 <table className="w-full min-w-[760px] border-collapse text-left text-xs">
                   <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                    <tr>{["#", "Due Date", "Principal", "Amount Due", "Balance", "Status", "Action"].map((label) => <th key={label} className="border-b border-slate-200 px-3 py-2.5 font-semibold dark:border-slate-700">{label}</th>)}</tr>
+                    <tr>{["#", "Due Date", "Principal", "Amount Due", "Balance", "Status", ...(canRecordPayments ? ["Action"] : [])].map((label) => <th key={label} className="border-b border-slate-200 px-3 py-2.5 font-semibold dark:border-slate-700">{label}</th>)}</tr>
                   </thead>
                   <tbody>
                     {viewSchedule.map((installment) => (
@@ -1265,11 +1266,11 @@ export default function FileLoan({
                         <td className="px-3 py-2.5 font-medium text-slate-900 dark:text-white">{formatCurrency(installment.amountDue)}</td>
                         <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{formatCurrency(installment.balance)}</td>
                         <td className="px-3 py-2.5"><span className={`whitespace-nowrap rounded-md border px-2 py-1 font-semibold ${INSTALLMENT_STATUS_BADGES[installment.status] || PRODUCT_BADGES.Other}`}>{installment.status}</span></td>
-                        <td className="px-3 py-2.5">
+                        {canRecordPayments ? <td className="px-3 py-2.5">
                           {canRecordPayments && viewStatus === "Active" && installment.remainingDue > 0.01 ? (
                             <button type="button" onClick={() => startPayment(installment)} className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"><Banknote size={12} /> Pay</button>
                           ) : installment.status === "Paid" ? <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400"><Check size={12} /> Paid</span> : "—"}
-                        </td>
+                        </td> : null}
                       </tr>
                     ))}
                   </tbody>

@@ -40,7 +40,7 @@ import {
   resolveRoleKey,
   todayDateInputValue,
 } from "../../utils/leaveHelpers";
-import { getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
+import { getRoleBadgeClass, getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
 import { formatSignatureTimestamp } from "../../utils/signatureTimestamp";
 import { formatRecordDivision } from "../../utils/divisionDisplay";
 import {
@@ -89,11 +89,33 @@ const TRAVEL_AUTHORIZATION_TEXT = "I hereby authorize the Accountant to deduct t
 const TRAVEL_RECOMMENDER_ROLES = new Set(["planningofficer", "admin"]);
 const TRAVEL_CHIEF_REVIEWER_ROLES = new Set(["chief", "admin"]);
 const TRAVEL_FINAL_APPROVER_ROLES = new Set(["regionaldirector", "admin"]);
+// These request-only roles are not tied to one Chief's approval desk. Once recommended by the
+// Planning Officer, their orders appear for every ordinary Division Chief as "All Divisions".
+const TRAVEL_ALL_CHIEF_REQUESTER_ROLES = new Set(["hrhead", "hrstaff", "chiefadmin", "cashier"]);
 // The HR desk reads travel orders and archives them, but signs nothing on the form.
 const TRAVEL_REVIEW_ONLY_ROLES = new Set(["hrstaff", "hrhead"]);
 // Statuses a travel order can still be acted on from.
 const TRAVEL_OPEN_STATUSES = new Set(["Pending", "Reviewed", "Chief Reviewed"]);
 const travelRowKey = (request) => request?.id;
+
+function TravelRequesterRoleBadge({ role }) {
+  const label = String(role || "").trim();
+  if (!label) return <span className="text-xs font-medium text-slate-400">Unassigned</span>;
+
+  return (
+    <span className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${getRoleBadgeClass(label)}`}>
+      {getRoleLabel(label)}
+    </span>
+  );
+}
+
+// The API resolves ownership from the signed-in account's linked employee record for every role.
+// Older responses and freshly updated rows retain the existing employee-code/name fallback.
+function isOwnTravelOrder(request, user) {
+  return typeof request?.isOwnTravelOrder === "boolean"
+    ? request.isOwnTravelOrder
+    : matchesUserRecordScope(request, user);
+}
 
 /**
  * Whether the signed-in user is the desk that filed this order.
@@ -114,11 +136,15 @@ function isRequestFiledBy(request, user) {
 }
 
 /*
- * A Chief signs only for their own division. Their list also carries orders they filed, which
- * before filing was restricted could be for another division, so the row's division is checked
- * here as travel_order.php checks it. Compared by name, as the employee picker does.
+ * A Chief normally signs for their own division. Requests from the organization-wide request-only
+ * roles are intentionally routed to every Division Chief, matching travel_order.php. Division
+ * names are compared as the employee picker supplies them.
  */
 function isChiefOfRequestDivision(request, user) {
+  if (TRAVEL_ALL_CHIEF_REQUESTER_ROLES.has(normalizeRole(request?.employeeRole))) {
+    return true;
+  }
+
   const chiefDivision = String(user?.division || "").trim().toLowerCase();
 
   return chiefDivision !== "" && String(request?.division || "").trim().toLowerCase() === chiefDivision;
@@ -1100,12 +1126,10 @@ function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = fa
                   value={qrPayload}
                   size={124}
                   align="left"
-                  reference={`TO-${travelOrderNumber}`}
-                  caption="Scan to view travel details"
+                  caption=""
                   logoSrc="/MGB-Logo-remove-background.png"
                   logoAspectRatio={204 / 189}
                 />
-                <div style={travelFormStyles.footerCode}>MGB-X-FAD-FO-033</div>
               </div>
               <div style={travelFormStyles.footerText}>
                 "MINING SHALL BE PRO-PEOPLE AND PRO-ENVIRONMENT
@@ -1411,11 +1435,14 @@ export default function TravelOrderWorkspace({
 }) {
   const roleKey = resolveRoleKey(user);
   const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  const isChiefAdmin = exactRoleKey === "chiefadmin";
+  const isSelfServiceTravelRole = ["employee", "cashier", "hrhead", "hrstaff"].includes(roleKey)
+    || isChiefAdmin;
   /*
    * Reviewed is an internal handoff stage rather than a user-facing filter. The Regional Director
    * therefore opens on all statuses so orders routed from the Planning Officer remain visible.
    */
-  const defaultStatus = ["employee", "cashier", "hrhead", "regionaldirector"].includes(roleKey) ? "" : "Pending";
+  const defaultStatus = isSelfServiceTravelRole || roleKey === "regionaldirector" ? "" : "Pending";
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1434,25 +1461,36 @@ export default function TravelOrderWorkspace({
   const archiveRoleKey = exactRoleKey === "chiefadmin" ? exactRoleKey : roleKey;
   const canArchive = canArchiveModule(archiveRoleKey, "travel");
   /*
-   * Employees and cashiers tidy their own settled orders into the archive; the desks that sign may
-   * archive any. The same rule travel_order.php enforces, so the button is never a dead end.
+   * Request-only roles may archive their own orders at any stage.
+   * Keep this aligned with travel_order.php so row and bulk archive actions are available together.
    */
-  const archivesOwnSettledOnly = ["employee", "cashier"].includes(roleKey);
-  const canArchiveRequest = useCallback((request) => (
-    canArchive
-    && (!archivesOwnSettledOnly || ["Approved", "Rejected", "Cancelled"].includes(normalizeLeaveStatus(request?.status)))
-  ), [archivesOwnSettledOnly, canArchive]);
+  const canArchiveRequest = useCallback(() => canArchive, [canArchive]);
   const [archiveView, setArchiveView] = useState(false);
   const viewAllPermission = canViewAllLeaves(user);
-  const showOnlyOwnTravelOrders = ["cashier", "hrhead"].includes(roleKey);
+  const showOnlyOwnTravelOrders = ["cashier", "hrhead", "hrstaff"].includes(roleKey) || isChiefAdmin;
   // Every signed-in employee can file their own order. Admins and chiefs can additionally file on
   // an employee's behalf, and the filer is recorded so they can still call the trip off.
   const isAdmin = roleKey === "admin";
   const isChief = roleKey === "chief";
+  const isDivisionChief = isChief && !isChiefAdmin;
   const isPlanningOfficer = roleKey === "planningofficer";
-  const allowEmployeeSelection = isAdmin || isChief;
+  const showRequesterRole = isPlanningOfficer || isDivisionChief || roleKey === "regionaldirector";
+  const chiefDivisionKey = isDivisionChief ? String(user?.division || "").trim().toLowerCase() : "";
+  const isVisibleToChief = useCallback((request) => {
+    if (!isDivisionChief) return true;
+
+    const wasRecommended = Number(request?.recommendedByEmployeeRecordId) > 0;
+    const isWaitingForRegionalDirector = normalizeLeaveStatus(request?.status) === "Chief Reviewed"
+      && !request?.awaitingAuthorization;
+    const routesToAllChiefs = TRAVEL_ALL_CHIEF_REQUESTER_ROLES.has(normalizeRole(request?.employeeRole));
+    const belongsToChiefDivision = routesToAllChiefs
+      || (chiefDivisionKey !== ""
+        && String(request?.division || "").trim().toLowerCase() === chiefDivisionKey);
+
+    return belongsToChiefDivision && wasRecommended && !isWaitingForRegionalDirector;
+  }, [chiefDivisionKey, isDivisionChief]);
+  const allowEmployeeSelection = isAdmin || isDivisionChief;
   // The name the session carries; employees are matched on the same name, as TeamOverview does.
-  const chiefDivisionKey = isChief ? String(user?.division || "").trim().toLowerCase() : "";
   const canCreateTravelOrder = allowCreate;
   /*
    * Same split as Leave Requests and CTO. The organization-wide list is for orders the viewer acts
@@ -1468,7 +1506,7 @@ export default function TravelOrderWorkspace({
     && !showOnlyOwnTravelOrders
     && !["admin", "hrstaff"].includes(roleKey);
   const isViewerOrder = useCallback(
-    (request) => matchesUserRecordScope(request, user) || (!isChief && isRequestFiledBy(request, user)),
+    (request) => isOwnTravelOrder(request, user) || (!isChief && isRequestFiledBy(request, user)),
     [isChief, user]
   );
 
@@ -1476,10 +1514,15 @@ export default function TravelOrderWorkspace({
     setLoading(!background);
     try {
       const result = await fetchTravelOrders({ archived: archiveView });
-      const nextRequests = result.requests || [];
+      /*
+       * Pending employee filings belong exclusively to the Planning Officer, and orders the Chief
+       * approved belong to the Regional Director. The API applies both rules; this client-side guard
+       * also prevents a stale/cached response from briefly rendering a row outside the Chief's desk.
+       */
+      const nextRequests = (result.requests || []).filter(isVisibleToChief);
       setRequests(
         showOnlyOwnTravelOrders || !viewAllPermission
-          ? nextRequests.filter((request) => matchesUserRecordScope(request, user))
+          ? nextRequests.filter((request) => isOwnTravelOrder(request, user))
           : nextRequests
       );
     } catch (error) {
@@ -1489,7 +1532,7 @@ export default function TravelOrderWorkspace({
     } finally {
       setLoading(false);
     }
-  }, [archiveView, showOnlyOwnTravelOrders, user, viewAllPermission]);
+  }, [archiveView, isVisibleToChief, showOnlyOwnTravelOrders, user, viewAllPermission]);
 
   /*
    * The organization-wide list never carries the viewer's own orders; "View My Travel Orders"
@@ -1595,7 +1638,7 @@ export default function TravelOrderWorkspace({
 
     const awaitingRequests = requests.filter((request) => (
       request.awaitingAuthorization
-      && matchesUserRecordScope(request, user)
+      && isOwnTravelOrder(request, user)
       && !deferredAuthorizationsRef.current.has(request.id)
     ));
 
@@ -1648,14 +1691,14 @@ export default function TravelOrderWorkspace({
       // anyone else. An admin files purely on behalf of others, so only the admin's own record is
       // removed.
       .filter((employee) => (
-        !isChief || String(employee.division || "").trim().toLowerCase() === chiefDivisionKey
+        !isDivisionChief || String(employee.division || "").trim().toLowerCase() === chiefDivisionKey
       ))
       .filter((employee) => !(isAdmin && matchesUserEmployeeOption(employee, user)))
       .sort((left, right) => (
         String(left.division || "").localeCompare(String(right.division || ""))
         || left.employeeName.localeCompare(right.employeeName)
       )),
-    [chiefDivisionKey, employees, isAdmin, isChief, user]
+    [chiefDivisionKey, employees, isAdmin, isDivisionChief, user]
   );
 
   const resolvedEmployee = useMemo(() => {
@@ -1727,8 +1770,10 @@ export default function TravelOrderWorkspace({
   const selection = useRowSelection(filteredRequests, travelRowKey);
 
   const canBulkApproveRequest = useCallback((request) => (
-    !matchesUserRecordScope(request, user) && Boolean(travelDecisionStage(request, roleKey, user))
-  ), [roleKey, user]);
+    !isChiefAdmin
+    && !isOwnTravelOrder(request, user)
+    && Boolean(travelDecisionStage(request, roleKey, user))
+  ), [isChiefAdmin, roleKey, user]);
   const bulkApprovableRequests = selection.selectedRows.filter(canBulkApproveRequest);
   const bulkArchivableRequests = canArchive && !archiveView ? selection.selectedRows.filter(canArchiveRequest) : [];
   const selectablePageRequests = !archiveView
@@ -1780,7 +1825,14 @@ export default function TravelOrderWorkspace({
       }
 
       if (createdRequests.length > 0) {
-        setRequests((current) => [...createdRequests.slice().reverse(), ...current]);
+        /*
+         * A Chief's newly filed order is returned by the POST before the list endpoint is queried
+         * again. Apply the same Planning Officer gate here so it never flashes in the Chief table.
+         */
+        const visibleCreatedRequests = createdRequests.filter(isVisibleToChief);
+        if (visibleCreatedRequests.length > 0) {
+          setRequests((current) => [...visibleCreatedRequests.slice().reverse(), ...current]);
+        }
         setModalOpen(false);
         toast.success(
           createdRequests.length === 1
@@ -1825,7 +1877,7 @@ export default function TravelOrderWorkspace({
      * action, so an employee who dismissed the prompt on an earlier visit can still come back to it.
      */
     if (actionType === "authorize") {
-      if (!request.awaitingAuthorization || !matchesUserRecordScope(request, user)) {
+      if (!request.awaitingAuthorization || !isOwnTravelOrder(request, user)) {
         return;
       }
 
@@ -1862,8 +1914,8 @@ export default function TravelOrderWorkspace({
     }
 
     const requestStatus = normalizeLeaveStatus(request.status);
-    const isOwnRequest = matchesUserRecordScope(request, user);
-    const decisionStage = travelDecisionStage(request, roleKey, user);
+    const isOwnRequest = isOwnTravelOrder(request, user);
+    const decisionStage = isChiefAdmin ? "" : travelDecisionStage(request, roleKey, user);
     // The traveller or filer may cancel only before the Regional Director has signed.
     const isSelfCancellation = actionType === "cancel"
       && (isOwnRequest || isRequestFiledBy(request, user))
@@ -1976,9 +2028,13 @@ export default function TravelOrderWorkspace({
       });
 
       const result = await updateTravelOrderStatus(request.id, nextStatus, rejectedNote, captcha);
-      setRequests((current) =>
-        current.map((item) => (item.id === result.request.id ? result.request : item))
-      );
+      setRequests((current) => {
+        if (!isVisibleToChief(result.request)) {
+          return current.filter((item) => item.id !== result.request.id);
+        }
+
+        return current.map((item) => (item.id === result.request.id ? result.request : item));
+      });
       await Swal.fire({
         title: result.emailNotification === "warning" ? "Updated with warning" : "Updated",
         text: result.message || `Travel order ${nextStatusWord}.`,
@@ -2069,8 +2125,8 @@ export default function TravelOrderWorkspace({
 
   const renderRequestActions = (request) => {
     const requestStatus = normalizeLeaveStatus(request.status);
-    const isOwnRequest = matchesUserRecordScope(request, user);
-    const decisionStage = travelDecisionStage(request, roleKey, user);
+    const isOwnRequest = isOwnTravelOrder(request, user);
+    const decisionStage = isChiefAdmin ? "" : travelDecisionStage(request, roleKey, user);
     const isOpen = TRAVEL_OPEN_STATUSES.has(requestStatus);
     /*
      * The desk that owns the trip may call it off: the traveller, or the Chief who filed it on an
@@ -2339,6 +2395,7 @@ export default function TravelOrderWorkspace({
             ) : null,
             fields: [
               { label: "Employee", value: request.employeeName },
+              ...(showRequesterRole ? [{ label: "Role", value: <TravelRequesterRoleBadge role={request.employeeRole} /> }] : []),
               { label: "Division", value: formatRecordDivision(request) },
               { label: "Date Filed", value: formatDateDisplay(request.dateFiled) },
               { label: "Purpose", value: request.purpose || "No purpose provided", full: true },
@@ -2362,7 +2419,7 @@ export default function TravelOrderWorkspace({
                       />
                     ) : null}
                   </th>
-                  {["Employee", "Division", "Status", "Date Filed", "Actions"].map((header) => (
+                  {["Employee", ...(showRequesterRole ? ["Role"] : []), "Division", "Status", "Date Filed", "Actions"].map((header) => (
                     <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
                       {header}
                     </th>
@@ -2373,14 +2430,14 @@ export default function TravelOrderWorkspace({
                 {loading ? (
                   Array.from({ length: 4 }).map((_, index) => (
                     <tr key={index} className="animate-pulse border-b border-slate-100">
-                      <td colSpan={6} className="px-3 py-3">
+                      <td colSpan={showRequesterRole ? 7 : 6} className="px-3 py-3">
                         <div className="h-5 rounded bg-slate-200" />
                       </td>
                     </tr>
                   ))
                 ) : paginatedRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-12 text-center">
+                    <td colSpan={showRequesterRole ? 7 : 6} className="px-4 py-12 text-center">
                       <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
                         <Filter size={20} />
                       </div>
@@ -2404,6 +2461,9 @@ export default function TravelOrderWorkspace({
                         <td className="px-3 py-3 text-sm text-slate-800">
                           <div className="font-semibold text-slate-900">{request.employeeName}</div>
                         </td>
+                        {showRequesterRole ? (
+                          <td className="px-3 py-3 text-sm text-slate-600"><TravelRequesterRoleBadge role={request.employeeRole} /></td>
+                        ) : null}
                         <td className="px-3 py-3 text-sm text-slate-600">{formatRecordDivision(request)}</td>
                         <td className="px-3 py-3">{renderStatusBadge(request)}</td>
                         <td className="px-3 py-3 text-sm text-slate-600">{formatDateDisplay(request.dateFiled)}</td>
@@ -2452,4 +2512,3 @@ export default function TravelOrderWorkspace({
     </div>
   );
 }
-

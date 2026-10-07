@@ -14,6 +14,7 @@ export const ORGANIZATION_WIDE_ROLES = new Set([
   "regionaldirector",
   "planningofficer",
   "cashier",
+  "chiefadmin",
 ]);
 
 export function isOrganizationWideRole(role) {

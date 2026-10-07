@@ -34,6 +34,7 @@ import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalis
 import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
 import { isFadDivisionChiefUser, normalizeRole, resolveUserRoleKey } from "../../utils/roleRoutes";
 import PayrollDetailDrawer from "./PayrollDetailDrawer";
+import { payrollPayoutAmounts } from "./payrollPayout";
 import { promptPayrollWorkflowStepUp } from "./payrollWorkflowStepUp";
 import {
   approvePayroll,
@@ -260,8 +261,8 @@ const ACTION_STATUS_VERIFY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 10000
  *
  * `fixedPeriod` marks a type released on one date every year rather than on a chosen pay period --
  * the mid-year bonus in May and the year-end bonus in November. Picking one of those replaces the
- * pay period picker with its schedule and fills the dates in, so the period cannot be set to a month
- * the benefit is never released in.
+ * pay period picker with its default schedule and fills the dates in. HR can edit those dates when
+ * the bonus is processed in a different period.
  */
 const PAYROLL_TYPE_SALARY = "Salary";
 
@@ -278,7 +279,7 @@ const PAYROLL_TYPE_DEFINITIONS = [
       { key: "stepIncrement", label: "Step Increment", field: "stepIncrement", kind: "step" },
     ],
     grossLabel: "Gross Amount Earned",
-    netLabel: "Net Amount Due",
+    netLabel: "Net Pay",
     tone: "border-emerald-200 bg-emerald-50 text-emerald-700",
   },
   {
@@ -301,7 +302,7 @@ const PAYROLL_TYPE_DEFINITIONS = [
       { key: "adjustment", label: "Other Adjustment", field: "salaryAdjustment", editable: true },
     ],
     grossLabel: "Total Bonus Earned",
-    netLabel: "Net Bonus Due",
+    netLabel: "Net Pay",
     tone: "border-violet-200 bg-violet-50 text-violet-700",
   },
   {
@@ -324,7 +325,7 @@ const PAYROLL_TYPE_DEFINITIONS = [
       { key: "cashGift", label: "Cash Gift", field: "otherAllowances", editable: true },
     ],
     grossLabel: "Total Year-End Benefit",
-    netLabel: "Net Amount Due",
+    netLabel: "Net Pay",
     tone: "border-indigo-200 bg-indigo-50 text-indigo-700",
   },
   {
@@ -429,18 +430,18 @@ function constrainDateRangeToWindow(range, minimumDate = "", maximumDate = "") {
     : { ...range, startDate: "", endDate: "" };
 }
 
-/* Fixed benefits are only selectable when their annual schedule intersects today's month. */
-function getFixedPeriodDateRange(fixedPeriod, referenceDate, minimumDate = "", maximumDate = "") {
+/* Preserve the annual benefit period even when processing is delayed to a later month. */
+function getFixedPeriodDateRange(fixedPeriod, referenceDate) {
   if (!fixedPeriod) {
     return {};
   }
 
   const { year } = getReferenceMonth(referenceDate);
-  return constrainDateRangeToWindow({
+  return {
     payPeriod: fixedPeriod.payPeriod,
     startDate: formatDateInput(year, fixedPeriod.startMonthIndex, fixedPeriod.startDay),
     endDate: formatDateInput(year, fixedPeriod.endMonthIndex, fixedPeriod.endDay),
-  }, minimumDate, maximumDate);
+  };
 }
 
 function wait(ms) {
@@ -460,6 +461,12 @@ function emptyGeneratedPayrollState() {
     search: "",
     employmentType: "",
   };
+}
+
+function payrollPeraAmount(payrollType, value) {
+  return ["Mid-Year Bonus", "Year-End Bonus", "Performance-Based Bonus (PBB)"].includes(normalizePayrollType(payrollType))
+    ? 0
+    : resolvePeraAmount(value);
 }
 
 function resolvePeraAmount(value) {
@@ -570,7 +577,7 @@ export function getPayPeriodDateRange(period, referenceDate, minimumDate = "", m
  * A pay period can only be generated while the calendar is inside it: the 1st Half from the 1st
  * to the 15th, and the 2nd Half or the whole month from the 16th to the last day of the month.
  * Otherwise a registry raised on, say, the 5th would pay the 2nd Half for days nobody has worked.
- * Fixed-schedule benefits (mid-year and year-end bonuses) keep their own release windows and are
+ * Fixed-schedule benefits retain their annual periods and allow delayed processing, so they are
  * not checked here.
  */
 export function payPeriodGenerationStatus(period, referenceDate = getCurrentDateInput()) {
@@ -921,7 +928,7 @@ function buildFormState(record, defaults = {}) {
     overtimeHours: formatAmountInput(record.overtimeHours),
     overtimeRate: formatAmountInput(record.overtimeRate),
     overtimePay: formatAmountInput(record.overtimePay),
-    pera: formatAmountInput(peraAmount),
+    pera: formatAmountInput(payrollPeraAmount(record.payrollType, peraAmount)),
     travelAllowance: formatAmountInput(record.travelAllowance),
     salaryAdjustment: formatAmountInput(record.salaryAdjustment),
     otherAllowances: formatAmountInput(record.otherAllowances),
@@ -947,7 +954,7 @@ function computeSummary(form) {
   const overtimePay = parseAmount(form.overtimePay);
   const totalAllowance =
     overtimePay
-    + parseAmount(form.pera)
+    + payrollPeraAmount(form.payrollType, parseAmount(form.pera))
     + parseAmount(form.travelAllowance)
     + parseAmount(form.salaryAdjustment)
     + parseAmount(form.otherAllowances)
@@ -986,7 +993,7 @@ function buildPayload(form) {
     endDate: form.endDate,
     overtimeHours: parseAmount(form.overtimeHours),
     overtimeRate: parseAmount(form.overtimeRate),
-    pera: resolvePeraAmount(form.pera),
+    pera: payrollPeraAmount(form.payrollType, form.pera),
     travelAllowance: parseAmount(form.travelAllowance),
     salaryAdjustment: parseAmount(form.salaryAdjustment),
     otherAllowances: parseAmount(form.otherAllowances),
@@ -1017,7 +1024,7 @@ function buildGeneratedPayrollPayload(employee, generatedPayroll, defaults = {})
     overtimeHours: 0,
     overtimeRate: 0,
     overtimePay: 0,
-    pera: resolvePeraAmount(defaults.pera),
+    pera: payrollPeraAmount(generatedPayroll.payrollType, defaults.pera),
     travelAllowance: 0,
     salaryAdjustment: 0,
     otherAllowances: 0,
@@ -1471,7 +1478,7 @@ function updatePayrollRecordEarningAmount(record = {}, column = {}, amount = 0) 
     return record;
   }
 
-  const nextRecord = { ...record, [field]: roundAmount(amount) };
+  const nextRecord = { ...record, [field]: roundAmount(amount), pera: payrollPeraAmount(record.payrollType, parseAmount(record.pera)) };
   const totalAllowance = roundAmount(
     parseAmount(nextRecord.overtimePay)
     + parseAmount(nextRecord.pera)
@@ -1505,7 +1512,7 @@ function buildRecordUpdatePayload(record = {}) {
     endDate: record.endDate,
     overtimeHours: parseAmount(record.overtimeHours),
     overtimeRate: parseAmount(record.overtimeRate),
-    pera: parseAmount(record.pera),
+    pera: payrollPeraAmount(record.payrollType, parseAmount(record.pera)),
     travelAllowance: parseAmount(record.travelAllowance),
     salaryAdjustment: parseAmount(record.salaryAdjustment),
     otherAllowances: parseAmount(record.otherAllowances),
@@ -2056,7 +2063,7 @@ function EditableAmountValue({
   const displayAmount = formatCurrency(amount);
 
   if (!editable) {
-    return displayAmount;
+    return <span className="ml-auto block h-8 w-28 border border-transparent px-2 text-right leading-8 tabular-nums">{displayAmount}</span>;
   }
 
   if (active) {
@@ -2081,7 +2088,7 @@ function EditableAmountValue({
             event.preventDefault();
           }
         }}
-        className="h-8 w-28 rounded-md border border-slate-300 bg-white px-2 text-right text-xs font-semibold tabular-nums text-slate-800 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15 disabled:bg-slate-100 disabled:text-slate-500"
+        className="ml-auto block h-8 w-28 rounded-md border border-slate-300 bg-white px-2 text-right text-xs font-semibold tabular-nums text-slate-800 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15 disabled:bg-slate-100 disabled:text-slate-500"
         aria-label={`${label} for ${employeeName || "employee"}`}
       />
     );
@@ -2092,7 +2099,7 @@ function EditableAmountValue({
       type="button"
       disabled={saving}
       onClick={onActivate}
-      className={`${buttonClassName} block h-8 w-28 rounded-md border border-transparent px-2 text-right text-xs font-semibold tabular-nums text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 focus:border-[#D61E1E] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/15 disabled:cursor-wait disabled:bg-slate-100 disabled:text-slate-500`.trim()}
+      className={`${buttonClassName} ml-auto block h-8 w-28 rounded-md border border-transparent px-2 text-right text-xs font-semibold tabular-nums text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 focus:border-[#D61E1E] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/15 disabled:cursor-wait disabled:bg-slate-100 disabled:text-slate-500`.trim()}
       title={`Edit ${label}`}
     >
       {displayAmount}
@@ -2712,8 +2719,8 @@ function PayrollRegistryDetailsModal({
                         {payrollTypeDefinition.earningsGroupLabel}
                       </th>
                       <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>{payrollTypeDefinition.grossLabel}</th>
-                      <th colSpan={regularDeductionColumns.length} className={`${REGULAR_HEADER_CELL_CLASS} tracking-[0.3em]`}>
-                        Deductions
+                      <th colSpan={regularDeductionColumns.length} className={`${REGULAR_HEADER_CELL_CLASS} !text-left`}>
+                        <span className="sticky left-4 inline-block">Deductions</span>
                       </th>
                       <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>Due Date</th>
                       <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>Total Deductions</th>
@@ -2795,8 +2802,8 @@ function PayrollRegistryDetailsModal({
                         <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{formatDisplayDate(record.dueDate || record.endDate)}</td>
                         <td className="bg-slate-50 px-4 py-3 tabular-nums font-semibold text-slate-950 whitespace-nowrap">{formatCurrency(record.totalDeduction)}</td>
                         <td className="bg-slate-50 px-4 py-3 tabular-nums font-bold text-slate-950 whitespace-nowrap">{formatCurrency(record.netPay)}</td>
-                        <td className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">{formatCurrency(record.marchFirstHalf)}</td>
-                        <td className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">{formatCurrency(record.marchSecondHalf)}</td>
+                        <td className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">{formatCurrency(payrollPayoutAmounts(record)[0])}</td>
+                        <td className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">{formatCurrency(payrollPayoutAmounts(record)[1])}</td>
                       </tr>
                       );
                     }) : (
@@ -5419,9 +5426,7 @@ export default function PayrollManagementWorkspace({
     const nextPeriodState = fixedPeriod
       ? getFixedPeriodDateRange(
           fixedPeriod,
-          minimumGeneratedPayrollDate,
-          minimumGeneratedPayrollDate,
-          maximumGeneratedPayrollDate
+          getCurrentDateInput()
         )
       : {
           payPeriod: "",
@@ -5631,13 +5636,17 @@ export default function PayrollManagementWorkspace({
     }
 
     if (!generatedPayroll.startDate || !generatedPayroll.endDate) {
-      toast.error(usesAutomaticPayPeriodDates ? "Select a pay period first." : "Select the payroll start and end dates first.");
+      toast.error(usesAutomaticPayPeriodDates && !generatedPayrollFixedPeriod
+        ? "Select a pay period first."
+        : "Select the payroll start and end dates first.");
       return;
     }
 
     if (
-      generatedPayroll.startDate < minimumGeneratedPayrollDate
-      || generatedPayroll.endDate < minimumGeneratedPayrollDate
+      !generatedPayrollFixedPeriod && (
+        generatedPayroll.startDate < minimumGeneratedPayrollDate
+        || generatedPayroll.endDate < minimumGeneratedPayrollDate
+      )
     ) {
       toast.error(
         usesAutomaticPayPeriodDates
@@ -5648,8 +5657,10 @@ export default function PayrollManagementWorkspace({
     }
 
     if (
-      generatedPayroll.startDate > maximumGeneratedPayrollDate
-      || generatedPayroll.endDate > maximumGeneratedPayrollDate
+      !generatedPayrollFixedPeriod && (
+        generatedPayroll.startDate > maximumGeneratedPayrollDate
+        || generatedPayroll.endDate > maximumGeneratedPayrollDate
+      )
     ) {
       toast.error("Pay period dates must be within the current month.");
       return;
@@ -6360,18 +6371,15 @@ export default function PayrollManagementWorkspace({
           </div>
 
           {/*
-            * A benefit released on a fixed date every year has no pay period to choose, so the
-            * picker gives way to the schedule the dates below were filled in from.
+            * Annual bonuses start with their scheduled dates, which HR can edit below.
             */}
           {generatedPayrollFixedPeriod ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
               <p className="m-0 text-sm font-semibold text-slate-700">
-                Pay Period: {generatedPayrollFixedPeriod.label}
+                Default Bonus Period: {generatedPayrollFixedPeriod.label}
               </p>
               <p className="m-0 mt-0.5 text-xs text-slate-500">
-                {generatedPayroll.startDate && generatedPayroll.endDate
-                  ? `${generatedPayroll.payrollType} is released on a fixed schedule, so the available dates were set automatically.`
-                  : `${generatedPayroll.payrollType} cannot be generated now because its fixed schedule is outside the current month.`}
+                Adjust the start and end dates below if the bonus is processed in a different period, including delayed processing.
               </p>
             </div>
           ) : (
@@ -6424,7 +6432,7 @@ export default function PayrollManagementWorkspace({
             </div>
           )}
 
-          {usesAutomaticPayPeriodDates ? (
+          {usesAutomaticPayPeriodDates && !generatedPayrollFixedPeriod ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
               <p className="m-0 text-sm font-semibold text-slate-700">Automatic pay period dates</p>
               <p className="m-0 mt-0.5 text-xs text-slate-500">
@@ -6439,8 +6447,8 @@ export default function PayrollManagementWorkspace({
                 label="Pay Period Start *"
                 name="generatedPayrollStart"
                 type="date"
-                min={minimumGeneratedPayrollDate}
-                max={maximumGeneratedPayrollDate}
+                min={generatedPayrollFixedPeriod ? undefined : minimumGeneratedPayrollDate}
+                max={generatedPayrollFixedPeriod ? undefined : maximumGeneratedPayrollDate}
                 required
                 value={generatedPayroll.startDate}
                 onChange={(event) => {
@@ -6456,8 +6464,8 @@ export default function PayrollManagementWorkspace({
                 label="Pay Period End *"
                 name="generatedPayrollEnd"
                 type="date"
-                min={minimumGeneratedPayrollEndDate}
-                max={maximumGeneratedPayrollDate}
+                min={generatedPayrollFixedPeriod ? generatedPayroll.startDate || undefined : minimumGeneratedPayrollEndDate}
+                max={generatedPayrollFixedPeriod ? undefined : maximumGeneratedPayrollDate}
                 required
                 value={generatedPayroll.endDate}
                 onChange={(event) => setGeneratedPayroll((current) => ({ ...current, endDate: event.target.value }))}

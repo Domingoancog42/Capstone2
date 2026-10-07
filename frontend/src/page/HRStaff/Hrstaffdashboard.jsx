@@ -444,7 +444,7 @@ const navigationItems = [
     path: "/hrstaff/leave",
     children: [
       { key: "leave", label: "Leave Request", path: "/hrstaff/leave", exact: true },
-      { key: "travel", label: "Travel Order", path: "/hrstaff/leave/travel-order" },
+      { key: "travel", label: "Travel Order Request", path: "/hrstaff/leave/travel-order" },
       { key: "cto", label: "Compensatory Time Off", path: "/hrstaff/leave/compensatory-time-off" },
       { key: "passSlip", label: "Pass Slips", path: "/hrstaff/leave/pass-slips" },
     ],
@@ -526,8 +526,8 @@ const modules = {
     ),
   },
   travel: {
-    title: "Travel Order",
-    description: "Review submitted travel orders and update request outcomes from the HR staff workspace.",
+    title: "Travel Order Request",
+    description: "File and monitor travel orders under your employee account.",
     hidePageIntro: true,
     render: ({ user }) => (
       <LeaveDashboard

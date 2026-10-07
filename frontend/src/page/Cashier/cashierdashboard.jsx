@@ -100,7 +100,7 @@ const navigationItems = [
     path: "/cashier/leave",
     children: [
       { key: "leave", label: "Leave Request", path: "/cashier/leave", exact: true },
-      { key: "travel", label: "Travel Order", path: "/cashier/leave/travel-order" },
+      { key: "travel", label: "Travel Order Request", path: "/cashier/leave/travel-order" },
       { key: "passSlip", label: "Pass Slips", path: "/cashier/leave/pass-slips" },
       { key: "cto", label: "Compensatory Time Off", path: "/cashier/leave/compensatory-time-off" },
     ],
@@ -144,13 +144,13 @@ const modules = {
     ),
   },
   travel: {
-    title: "Travel Order",
+    title: "Travel Order Request",
     description: "File and monitor travel orders under your employee account.",
     hidePageIntro: true,
     render: ({ user }) => (
       <TravelOrderWorkspace
         user={user}
-        title="My Travel Orders"
+        title="Travel Order Request"
         description="File and monitor travel orders under your employee account."
         allowCreate
       />

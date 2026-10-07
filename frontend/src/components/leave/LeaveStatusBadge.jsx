@@ -56,7 +56,7 @@ export function getLeaveManagementStatusLabel(
   }
 
   if (normalizedStatus === "Reviewed") {
-    return "Pending Division Chief Review";
+    return "Pending Division Chief Approval";
   }
 
   if (normalizedStatus === "Chief Reviewed") {
@@ -64,6 +64,17 @@ export function getLeaveManagementStatusLabel(
   }
 
   return getLeaveStatusDisplayLabel(status, rejectedByRole);
+}
+
+/** Only the initial leave stage needs an explanatory line in management tables. */
+export function getLeaveManagementStatusRoleHint(status, isLeaveMonetization = false) {
+  const normalizedStatus = normalizeLeaveStatus(status);
+
+  if (normalizedStatus === "Pending" && !isLeaveMonetization) {
+    return "For HR Staff verification";
+  }
+
+  return "";
 }
 
 export function isApprovedLeaveActive(status, startDate, endDate, targetDate = new Date()) {
@@ -92,8 +103,11 @@ export default function LeaveStatusBadge({
   const badgeStatus = simplified || pendingByRole
     ? getRequestTableStatusLabel(status)
     : status;
+  const roleHint = pendingByRole
+    ? getLeaveManagementStatusRoleHint(status, isLeaveMonetization)
+    : "";
 
-  return (
+  const badge = (
     <span
       className={`inline-flex min-h-7 items-center rounded-full px-2.5 text-xs font-semibold ${getStatusBadgeClasses(
         badgeStatus
@@ -102,6 +116,17 @@ export default function LeaveStatusBadge({
       {isOnLeave
         ? "On Leave"
         : displayLabel}
+    </span>
+  );
+
+  if (!roleHint || isOnLeave) {
+    return badge;
+  }
+
+  return (
+    <span className="inline-flex flex-col items-start gap-1">
+      {badge}
+      <span className="pl-1 text-[11px] italic leading-4 text-slate-500">{roleHint}</span>
     </span>
   );
 }

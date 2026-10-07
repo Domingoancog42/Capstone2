@@ -1349,8 +1349,8 @@ function formatPayrollPeriodRange(start, end) {
 /**
  * The month cards, newest first. The API lists only months that have payroll, so the office's
  * current month is added even when empty: this month's run shows as in progress before its first
- * payslip exists. A month is Completed once it has ended and every payroll record in it is paid;
- * anything still in Draft or awaiting approval keeps it In Progress, as more payslips are to come.
+ * payslip exists. The badge describes the available payslips, which come only from paid payroll.
+ * Unpaid payroll is counted separately so it does not change the status of released payslips.
  */
 function buildPayslipPeriods(apiPeriods, currentMonth) {
   const periodMap = new Map();
@@ -1384,9 +1384,7 @@ function buildPayslipPeriods(apiPeriods, currentMonth) {
     .map((period) => ({
       ...period,
       pendingCount: Math.max(period.payrollCount - period.paidCount, 0),
-      completed: period.payrollCount > 0
-        && period.paidCount === period.payrollCount
-        && period.month < currentMonth,
+      isPaid: period.paidCount > 0,
     }));
 }
 
@@ -1398,17 +1396,17 @@ function pickDefaultMonth(periods, currentMonth) {
     || "";
 }
 
-function PayslipMonthStatus({ completed, showIcon = false }) {
+function PayslipMonthStatus({ isPaid, showIcon = false }) {
   return (
     <span
       className={`inline-flex min-h-6 items-center gap-1 rounded-full px-2.5 text-xs font-semibold ${
-        completed
+        isPaid
           ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
           : "bg-teal-50 text-teal-700"
       }`}
     >
-      {showIcon && completed ? <CheckCircle2 size={13} /> : null}
-      {completed ? "Completed" : "In Progress"}
+      {showIcon && isPaid ? <CheckCircle2 size={13} /> : null}
+      {isPaid ? "Paid" : "In Progress"}
     </span>
   );
 }
@@ -1432,7 +1430,7 @@ function PayslipMonthCard({ period, selected, onSelect }) {
         <div className="min-w-0">
           <h4 className="m-0 truncate text-sm font-bold text-slate-900">{label}</h4>
           <div className="mt-1.5">
-            <PayslipMonthStatus completed={period.completed} />
+            <PayslipMonthStatus isPaid={period.isPaid} />
           </div>
         </div>
       </div>
@@ -2361,7 +2359,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
                     <h3 className="m-0 text-lg font-bold text-slate-950">
                       {selectedMonthLabel ? `Employee Payslips - ${selectedMonthLabel}` : "Employee Payslips"}
                     </h3>
-                    {selectedMonth ? <PayslipMonthStatus completed={Boolean(selectedPeriod?.completed)} showIcon /> : null}
+                    {selectedMonth ? <PayslipMonthStatus isPaid={Boolean(selectedPeriod?.isPaid)} showIcon /> : null}
                   </div>
                   <p className="m-0 mt-1 text-sm text-slate-500">
                     {selectedMonthLabel
