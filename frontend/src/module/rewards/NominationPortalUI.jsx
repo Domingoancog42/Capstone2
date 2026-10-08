@@ -341,7 +341,7 @@ export function CycleCard({
               disabled={toggleDisabled}
               title={toggleTitle || undefined}
             >
-              {cycle.status === "closed" ? "Reopen" : cycle.phase === "voting" ? "Close voting" : "Close cycle"}
+              {cycle.status === "closed" ? "Reopen" : cycle.phase === "voting" ? "Close voting" : "Close nomination"}
             </PortalButton>
           ) : null}
         </div>

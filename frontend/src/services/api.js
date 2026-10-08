@@ -1029,6 +1029,20 @@ export const getReportData = async (params = {}) => {
 };
 
 export const exportReportData = async (params = {}) => {
+  if (String(params.exportAs || params.export || "").toLowerCase() === "pdf") {
+    const reportParams = { ...params };
+    delete reportParams.exportAs;
+    delete reportParams.export;
+    const result = await getReportData(reportParams);
+    const report = result.report;
+    if (!report) throw new Error("Unable to load the report for PDF export.");
+    const { buildReportPdf } = await import("../utils/reportPdf");
+    const pdf = await buildReportPdf(report);
+    const label = String(report.label || "HRIS Report").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
+    await logReportAction({ reportType: report.key, action: "exported", format: "pdf", records: report.rows?.length || 0,
+      dateRangeLabel: report.dateRange?.label, summary: `Exported "${report.label}" as PDF.` }).catch(() => {});
+    return { blob: pdf.output("blob"), filename: `${label}-${new Date().toISOString().slice(0, 10)}.pdf` };
+  }
   const response = await api.get("/reports.php", {
     params,
     responseType: "blob",

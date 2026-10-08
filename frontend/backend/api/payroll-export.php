@@ -751,7 +751,8 @@ function payroll_export_contractual_row(array $record): array
     $calculatedPremiumRate = $basicSalary > 0 ? round(($premiumTotal / $basicSalary) * 100, 2) : 0.0;
     $premiumRate = $calculatedPremiumRate > 0 ? $calculatedPremiumRate : 0.20;
     $additionalSalary = payroll_export_amount($record['totalAllowance'] ?? 0);
-    $salaryTotal = round($basicSalary + $additionalSalary, 2);
+    $earnedBasicSalary = payroll_export_amount($record['periodBasicSalary'] ?? (payroll_export_amount($record['grossPay'] ?? 0) - $additionalSalary));
+    $salaryTotal = round($earnedBasicSalary + $additionalSalary, 2);
 
     // Pass slips only become their own deduction when attendance did not already cover the period.
     $undertimeDeduction = payroll_export_amount($record['undertimeDeduction'] ?? 0);
@@ -772,7 +773,7 @@ function payroll_export_contractual_row(array $record): array
         'premiumRate' => $premiumRate,
         'premiumTotal' => $premiumTotal,
         'rateWithPremium' => round($dailyRate * (1 + $premiumRate / 100), 2),
-        'periodSalary' => $basicSalary,
+        'periodSalary' => $earnedBasicSalary,
         'additionalSalary' => $additionalSalary,
         'salaryTotal' => $salaryTotal,
         'previousPayrollDeduction' => $previousPayrollDeduction,
@@ -1061,7 +1062,7 @@ function payroll_export_type_labels(mixed $payrollType): array
         'Salary' => [
             'groupLabel' => '',
             'earnings' => [
-                ['label' => 'Basic', 'field' => 'basicSalary'],
+                ['label' => 'Basic', 'field' => 'periodBasicSalary'],
                 ['label' => 'PERA', 'field' => 'pera'],
                 ['label' => 'Step Increment', 'field' => 'stepIncrement', 'kind' => 'step'],
             ],

@@ -35,6 +35,70 @@ if (!payslip_scope_is_self()
     ], 403);
 }
 
+function payslip_can_archive(string $roleKey): bool
+{
+    return !payslip_scope_is_self() && in_array($roleKey, ['admin', 'hrhead', 'hrstaff', 'regionaldirector', 'cashier'], true);
+}
+
+function payslip_archive_view(): int
+{
+    return payslip_scope_is_self() ? 0 : (int)(($_GET['archived'] ?? '') === '1');
+}
+
+function payslip_ensure_archive_schema(PDO $pdo): void
+{
+    if (!database_column_exists($pdo, 'payroll', 'payslip_is_archived')) {
+        $pdo->exec('ALTER TABLE payroll ADD payslip_is_archived TINYINT(1) NOT NULL DEFAULT 0');
+    }
+}
+
+function payslip_set_archived(PDO $pdo, array $ids, bool $archived): int
+{
+    $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        throw new InvalidArgumentException('Select at least one payslip.');
+    }
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $pdo->beginTransaction();
+    try {
+        $check = $pdo->prepare("SELECT payroll_id FROM payroll WHERE status = 'Paid' AND payroll_id IN ($placeholders) FOR UPDATE");
+        $check->execute($ids);
+        if (count($check->fetchAll()) !== count($ids)) {
+            throw new InvalidArgumentException('One or more paid payslips could not be found. Refresh the list.');
+        }
+        $statement = $pdo->prepare("UPDATE payroll SET payslip_is_archived = ? WHERE payroll_id IN ($placeholders)");
+        $statement->execute(array_merge([(int)$archived], $ids));
+        $changed = $statement->rowCount();
+        $pdo->commit();
+        return $changed;
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+}
+
+payslip_ensure_archive_schema($pdo);
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    if (!payslip_can_archive($roleKey)) {
+        json_response(['success' => false, 'message' => 'You are not allowed to archive payslips.'], 403);
+    }
+    $body = read_json_body();
+    $archiveAction = $body['action'] ?? '';
+    if (!in_array($archiveAction, ['archive', 'restore'], true)) {
+        json_response(['success' => false, 'message' => 'Invalid payslip action.'], 422);
+    }
+    try {
+        $changed = payslip_set_archived($pdo, is_array($body['ids'] ?? null) ? $body['ids'] : [], $archiveAction === 'archive');
+        json_response(['success' => true, 'changed' => $changed]);
+    } catch (InvalidArgumentException $exception) {
+        json_response(['success' => false, 'message' => $exception->getMessage()], 422);
+    } catch (Throwable $exception) {
+        error_log('Payslip archive error: ' . $exception->getMessage());
+        json_response(['success' => false, 'message' => 'Unable to update payslip archive.'], 500);
+    }
+}
 require_method('GET');
 
 const PAYSLIP_DEFAULT_PERA_AMOUNT = 2000.0;
@@ -844,7 +908,7 @@ function payslip_fetch_employees(
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id
          ' . $payrollJoinSql . '
-         WHERE e.is_archived = 0' . $employeeScopeSql . '
+         WHERE e.is_archived = 0 AND paid.payslip_is_archived = ' . payslip_archive_view() . $employeeScopeSql . '
          ' . $orderBySql
     );
     $statement->execute($params);
@@ -997,7 +1061,7 @@ function payslip_fetch_periods(PDO $pdo, string $roleKey, array $sessionUser): a
          FROM payroll p
          INNER JOIN employees e ON e.id = p.employee_id AND e.is_archived = 0
          WHERE p.payroll_date IS NOT NULL
-           AND p.status <> "Archived"' . $employeeScopeSql . '
+           AND p.status <> "Archived" AND p.payslip_is_archived = ' . payslip_archive_view() . $employeeScopeSql . '
          GROUP BY month
          ORDER BY month DESC'
     );
@@ -1579,6 +1643,7 @@ if ($action === 'bulk_zip') {
 json_response([
     'success' => true,
     'employees' => $employees,
+    'canArchive' => payslip_can_archive($roleKey),
     'summary' => payslip_summary($employees),
     'defaults' => [
         'pera' => payslip_decimal_string($peraAmount),

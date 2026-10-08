@@ -2536,9 +2536,9 @@ function list_employees(PDO $pdo, bool $archived = false): void
 /**
  * The designations the employee form offers to pick from, so the same assignment is spelled the same
  * way on every record (typing a new one is still allowed). Designations are free text with no catalog
- * behind them, so the list is what is already in use, plus the designation halves of the old combined
- * catalog names ("Engineer IV / Chief, Mineral Land Survey Section"), which
- * employee_designation_split_combined_titles() archived.
+ * behind them, so the list is what is already in use, plus the designation halves of combined
+ * catalog names ("Engineer IV / Chief, Mineral Land Survey Section"). Include both active and
+ * archived titles: imported databases may have the designation column before the title split ran.
  *
  * Each carries the division it was seen in, so the form can list the employee's own division first.
  * A designation used in two divisions is listed under both.
@@ -2570,8 +2570,7 @@ function employee_designation_suggestions(PDO $pdo): array
         'SELECT des.name, COALESCE(d.name, "") AS division
          FROM designations des
          LEFT JOIN divisions d ON d.id = des.division_id
-         WHERE des.is_archived = 1
-           AND des.name LIKE "% / %"'
+         WHERE des.name LIKE "% / %"'
     )->fetchAll() as $row) {
         $parts = employee_designation_split_title((string)$row['name']);
 

@@ -2292,17 +2292,17 @@ function rewards_set_status(PDO $pdo, array $user): void
         // Reopened into whichever phase the clock now puts it in; reopened past the deadline, that is voting.
         $message = rewards_cycle_phase(rewards_require_cycle($pdo, $cycleId)) === 'voting'
             ? 'Voting is open again.'
-            : 'The cycle is open for nominations and voting again.';
+            : 'The nomination is open for submissions and voting again.';
     } elseif ($certificate === null) {
-        $message = 'The cycle is now closed. No approved nominee received a vote, so no certificate was issued.';
+        $message = 'The nomination is now closed. No approved nominee received a vote, so no certificate was issued.';
     } elseif ($certificate['isNew']) {
         $message = sprintf(
-            'The cycle is now closed. Certificate %s was issued to %s and they have been notified.',
+            'The nomination is now closed. Certificate %s was issued to %s and they have been notified.',
             $certificate['certificateNumber'],
             $certificate['employeeName']
         );
     } else {
-        $message = sprintf('The cycle is now closed. %s already holds certificate %s.', $certificate['employeeName'], $certificate['certificateNumber']);
+        $message = sprintf('The nomination is now closed. %s already holds certificate %s.', $certificate['employeeName'], $certificate['certificateNumber']);
     }
 
     json_response([
@@ -2389,7 +2389,7 @@ function rewards_submit_nomination(PDO $pdo, array $user): void
 
     // Archived cycles are off the list, but a stale tab could still post to one.
     if ((int)($cycle['isArchived'] ?? 0) === 1) {
-        json_response(['success' => false, 'message' => 'That nomination cycle has been archived.'], 409);
+        json_response(['success' => false, 'message' => 'That nomination has been archived.'], 409);
     }
 
     if (($cycle['status'] ?? 'ongoing') === 'closed') {
@@ -2557,7 +2557,7 @@ function rewards_review_nomination(PDO $pdo, array $user): void
     $cycle = rewards_require_cycle($pdo, (int)$nomination['cycle_id']);
 
     if ((int)($cycle['isArchived'] ?? 0) === 1) {
-        json_response(['success' => false, 'message' => 'That nomination cycle has been archived.'], 409);
+        json_response(['success' => false, 'message' => 'That nomination has been archived.'], 409);
     }
 
     $alreadyReviewed = ['success' => false, 'message' => 'This nomination has already been reviewed.'];

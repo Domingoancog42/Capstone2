@@ -1258,7 +1258,7 @@ export default function CreateEmployee({
 
         <Section
           icon={HeartPulse}
-          title="Additional Personal Details (Optional)"
+          title="Additional Personal Details"
           description="Supplemental employee profile information."
         >
           <SelectField label="PWD" name="pwd" value={form.pwd} onChange={updateField("pwd")}>
@@ -1297,7 +1297,7 @@ export default function CreateEmployee({
 
         <Section
           icon={IdCard}
-          title="Government IDs (Optional)"
+          title="Government IDs"
           description="Contribution and tax identification numbers."
         >
           {isRegularEmploymentStatus(form.employmentStatus) ? (

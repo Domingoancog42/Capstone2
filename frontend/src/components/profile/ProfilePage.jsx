@@ -262,7 +262,7 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
   const [options, setOptions] = useState({ divisions: [], designations: [] });
   const [errors, setErrors] = useState({});
   const [savingSection, setSavingSection] = useState("");
-  const [downloadingPds, setDownloadingPds] = useState(false);
+  const [downloadingPdsFormat, setDownloadingPdsFormat] = useState("");
   const [pdsProfile, setPdsProfile] = useState(createEmptyPdsProfile);
   const [twoFactorProfile, setTwoFactorProfile] = useState(null);
   const [passwordExpiry, setPasswordExpiry] = useState(null);
@@ -892,21 +892,21 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
     };
   }, [readOnly]);
 
-  const handleDownloadPds = async () => {
-    if (downloadingPds) {
+  const handleDownloadPds = async (format = "xlsx") => {
+    if (downloadingPdsFormat) {
       return;
     }
 
-    setDownloadingPds(true);
-    const toastId = toast.loading("Preparing your Personal Data Sheet...");
+    setDownloadingPdsFormat(format);
+    const toastId = toast.loading(format === "pdf" ? "Preparing your Personal Data Sheet PDF..." : "Preparing your Personal Data Sheet...");
 
     try {
-      await downloadPersonalDataSheet(resolvedProfile || profile);
-      toast.success("Personal Data Sheet downloaded.", { id: toastId });
+      await downloadPersonalDataSheet(resolvedProfile || profile, { format });
+      toast.success(format === "pdf" ? "Personal Data Sheet PDF downloaded." : "Personal Data Sheet downloaded.", { id: toastId });
     } catch (error) {
       toast.error(error?.message || "Unable to download your Personal Data Sheet.", { id: toastId });
     } finally {
-      setDownloadingPds(false);
+      setDownloadingPdsFormat("");
     }
   };
 
@@ -1087,8 +1087,10 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
           onCancel={handleCancelEditing}
           saving={savingSection === "all"}
           onChangePhoto={() => !readOnly && setProfileImageOpen(true)}
-          onDownloadPds={handleDownloadPds}
-          downloadingPds={downloadingPds}
+          onDownloadPds={() => handleDownloadPds("xlsx")}
+          downloadingPds={downloadingPdsFormat === "xlsx"}
+          onDownloadPdsPdf={() => handleDownloadPds("pdf")}
+          downloadingPdsPdf={downloadingPdsFormat === "pdf"}
           salaryGradeRecord={currentSalaryGradeRecord}
           salaryGradeLoading={serviceRecordLoading}
           salaryGradeError={serviceRecordError}

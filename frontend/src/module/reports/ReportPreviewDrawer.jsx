@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { FileSpreadsheet, FileText, Printer, X } from "lucide-react";
 import { formatNumber } from "./reportsTheme";
 import { statusBadgeClasses } from "./ReportsDataTable";
+import { ORGANIZATION_NAME, ORGANIZATION_SUBTITLE, ORGANIZATION_LOGO } from "./reportDocument";
 
 const PREVIEW_ROW_LIMIT = 200;
 
@@ -12,9 +13,6 @@ const PREVIEW_ROW_LIMIT = 200;
  * order — so a printed report is recognisably from the same office as the rest of the paperwork. The
  * seal lives in `public/`, which means it survives the print dialog without needing to be inlined.
  */
-const ORGANIZATION_NAME = "Mines and Geosciences Bureau - 10";
-const ORGANIZATION_SUBTITLE = "DENR Region X, Macabalan, Cagayan de Oro City";
-const ORGANIZATION_LOGO = "/mgb.png";
 
 /**
  * Centred masthead: seal, office, then the report's own title.
@@ -80,7 +78,7 @@ export default function ReportPreviewDrawer({
 
   const columns = report?.columns || [];
   const rows = report?.rows || [];
-  const previewRows = rows.slice(0, PREVIEW_ROW_LIMIT);
+  const previewRows = printOnly ? rows : rows.slice(0, PREVIEW_ROW_LIMIT);
   /*
    * Status stays on screen and comes off the printed sheet, matching what the PDF, Excel and CSV
    * writers do (see reports_export_columns() in reports.php). The report is filtered to a status
@@ -253,7 +251,7 @@ export default function ReportPreviewDrawer({
                 <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                   <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3.5">
                     <h2 className="m-0 text-sm font-semibold text-slate-900">Report Data</h2>
-                    {rows.length > PREVIEW_ROW_LIMIT ? (
+                    {!printOnly && rows.length > PREVIEW_ROW_LIMIT ? (
                       <p className="m-0 text-xs text-slate-500">
                         {`Previewing the first ${PREVIEW_ROW_LIMIT} of ${formatNumber(rows.length)} records — exports include all rows.`}
                       </p>

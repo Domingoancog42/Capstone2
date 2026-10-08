@@ -231,7 +231,6 @@ function deduction_seed_defaults(PDO $pdo): void
         ],
         'PHIC' => [
             'PHIC',
-            'PhilHealth',
         ],
         'Attendance Deductions' => [
             'Late Deduction',
@@ -239,7 +238,6 @@ function deduction_seed_defaults(PDO $pdo): void
             'Undertime Deduction',
         ],
         'Other Deductions' => [
-            'SSS',
             'Manual Cash Advance Adjustment',
             'Laptop Loan',
             'Other Deductions',
@@ -548,7 +546,14 @@ function deduction_list_definition_types(PDO $pdo, string $groupKey = ''): array
             'categoryId' => $type['categoryId'],
             'definitionKey' => $type['categoryCode'] . ':' . $type['id'],
         ],
-        deduction_catalog_types($pdo, $filters)
+        array_values(array_filter(
+            deduction_catalog_types($pdo, $filters),
+            // Retired PHIC alternatives remain resolvable in historical snapshots.
+            static fn (array $type): bool => !(
+                ($type['categoryCode'] === 'phic' && in_array($type['code'], ['philhealth', 'philhealth_differential'], true))
+                || ($type['categoryCode'] === 'other' && $type['code'] === 'sss')
+            )
+        ))
     );
 }
 
@@ -1366,4 +1371,3 @@ try {
         'message' => 'Unable to process deduction request.',
     ], 500);
 }
-

@@ -1,5 +1,10 @@
 import api from "./api";
 
+export async function setPayslipsArchived(ids, archived = true) {
+  const response = await api.post("/payslip.php", { action: archived ? "archive" : "restore", ids });
+  return response.data;
+}
+
 export async function fetchPayslipData(params = {}) {
   const response = await api.get("/payslip.php", { params });
   return response.data;

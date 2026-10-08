@@ -299,6 +299,12 @@ function StandardAdminReports({ showSummary = true, user, category = "" }) {
     }
   }, [activeCategory, reportTypeInCategory]);
 
+  useEffect(() => {
+    if (filters.reportType === "payroll-deductions") {
+      setFilters((current) => ({ ...current, dateRange: "thismonth" }));
+    }
+  }, [filters.reportType]);
+
   /** Nothing is fetched until a category is picked and its report is the one selected. */
   const canLoadReport = Boolean(category) && reportTypeInCategory;
 
@@ -737,6 +743,8 @@ function StandardAdminReports({ showSummary = true, user, category = "" }) {
             </div>
           ) : (
             <ReportsDataTable
+              alwaysTable={report?.key === "payroll-deductions"}
+              minWidth={report?.key === "payroll-deductions" ? (report.columns?.length || 42) * 160 : 900}
               columns={columns}
               rows={rows}
               loading={reportLoading && !hasLoadedReport}

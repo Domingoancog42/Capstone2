@@ -274,7 +274,7 @@ const PAYROLL_TYPE_DEFINITIONS = [
     employmentTypes: ["Regular", "Contract of Service"],
     earningsGroupLabel: "",
     earningsColumns: [
-      { key: "basic", label: "Basic", field: "basicSalary" },
+      { key: "basic", label: "Basic", field: "periodBasicSalary" },
       { key: "pera", label: "PERA", field: "pera" },
       { key: "stepIncrement", label: "Step Increment", field: "stepIncrement", kind: "step" },
     ],
@@ -949,8 +949,17 @@ function buildFormState(record, defaults = {}) {
   };
 }
 
+function periodBasicSalary(monthlySalary, payPeriod, payrollType = "Salary") {
+  const monthly = parseAmount(monthlySalary);
+  if (normalizePayrollType(payrollType) === "Salary" && ["1st Half", "2nd Half"].includes(payPeriod)) {
+    const firstHalf = roundAmount(monthly / 2);
+    return payPeriod === "1st Half" ? firstHalf : roundAmount(monthly - firstHalf);
+  }
+  return roundAmount(monthly);
+}
+
 function computeSummary(form) {
-  const basicSalary = parseAmount(form.basicSalary);
+  const basicSalary = periodBasicSalary(form.basicSalary, form.payPeriod, form.payrollType);
   const overtimePay = parseAmount(form.overtimePay);
   const totalAllowance =
     overtimePay
@@ -1489,7 +1498,8 @@ function updatePayrollRecordEarningAmount(record = {}, column = {}, amount = 0) 
   );
 
   nextRecord.totalAllowance = totalAllowance;
-  nextRecord.grossPay = roundAmount(parseAmount(nextRecord.basicSalary) + totalAllowance);
+  const earnedBasicSalary = parseAmount(record.periodBasicSalary ?? (parseAmount(record.grossPay) - parseAmount(record.totalAllowance)));
+  nextRecord.grossPay = roundAmount(earnedBasicSalary + totalAllowance);
   nextRecord.netPay = roundAmount(nextRecord.grossPay - parseAmount(nextRecord.totalDeduction));
 
   return nextRecord;
@@ -1965,7 +1975,8 @@ function buildContractualRow(record = {}) {
   const calculatedPremiumRate = basicSalary > 0 ? roundAmount((premiumTotal / basicSalary) * 100) : 0;
   const premiumRate = calculatedPremiumRate > 0 ? calculatedPremiumRate : 0.20;
   const additionalSalary = parseAmount(record.totalAllowance);
-  const salaryTotal = roundAmount(basicSalary + additionalSalary);
+  const earnedBasicSalary = parseAmount(record.periodBasicSalary ?? (parseAmount(record.grossPay) - additionalSalary));
+  const salaryTotal = roundAmount(earnedBasicSalary + additionalSalary);
 
   // Pass slips only become their own deduction when attendance did not already cover the period,
   // so the two columns together always add up to the stored tardy plus undertime deduction.
@@ -1987,7 +1998,7 @@ function buildContractualRow(record = {}) {
     premiumRate,
     premiumTotal,
     rateWithPremium: roundAmount(dailyRate * (1 + premiumRate / 100)),
-    periodSalary: basicSalary,
+    periodSalary: earnedBasicSalary,
     additionalSalary,
     salaryTotal,
     previousPayrollDeduction,
@@ -6794,7 +6805,7 @@ export default function PayrollManagementWorkspace({
             <InputField
               label="Basic Salary"
               name="basicSalaryPreview"
-              value={form.basicSalary ? formatCurrency(form.basicSalary) : formatCurrency(0)}
+              value={formatCurrency(summary.basicSalary)}
               readOnly
             />
           </div>

@@ -473,7 +473,7 @@ export default function AwardCyclesWorkspace({
   const tabs = useMemo(() => {
     if (portalRole === "hr") {
       return [
-        { value: "cycles", label: "Cycles" },
+        { value: "cycles", label: "Nominations" },
         { value: "pending", label: "Pending", badge: pendingItems.length || null },
         { value: "recognized", label: "Recognized" },
         { value: "tally", label: "Tally" },
@@ -482,14 +482,14 @@ export default function AwardCyclesWorkspace({
 
     if (portalRole === "chief") {
       return [
-        { value: "open", label: "Open Cycles" },
+        { value: "open", label: "Open Nominations" },
         { value: "mine", label: "My Nominations" },
         { value: "tally", label: "Tally" },
       ];
     }
 
     return [
-      { value: "cycles", label: "Cycles" },
+      { value: "cycles", label: "Nominations" },
       { value: "recognized", label: "Recognized" },
       { value: "tally", label: "Tally" },
     ];
@@ -503,7 +503,7 @@ export default function AwardCyclesWorkspace({
       const mine = countNominations(myItems.map(({ nomination }) => nomination));
 
       return [
-        { label: "Open cycles", value: openCount },
+        { label: "Open nominations", value: openCount },
         { label: "My nominations", value: mine.total },
         { label: "Pending review", value: mine.pending },
         { label: "Approved", value: mine.approved },
@@ -511,7 +511,7 @@ export default function AwardCyclesWorkspace({
     }
 
     return [
-      { label: "Open cycles", value: openCount, hint: `${cycles.length} total` },
+      { label: "Open nominations", value: openCount, hint: `${cycles.length} total` },
       { label: "Pending review", value: pendingItems.length },
       { label: "Approved", value: recognizedItems.length },
       { label: "Total nominations", value: allNominations.length },
@@ -521,7 +521,7 @@ export default function AwardCyclesWorkspace({
   const banner = {
     hr: {
       heading: "Rewards & Recognition Overview",
-      intro: "Create monthly cycles and review the Division Chiefs' nominations. Every nominee you approve goes straight into the Winners Tally for the employees to vote on.",
+      intro: "Open monthly nominations and review the Division Chiefs' submissions. Every nominee you approve goes straight into the Winners Tally for the employees to vote on.",
     },
     chief: {
       heading: "Division Nomination Workspace",
@@ -533,7 +533,7 @@ export default function AwardCyclesWorkspace({
     },
     observer: {
       heading: "Rewards & Recognition",
-      intro: "Follow each award cycle, the recognized employees, and the winners tally.",
+      intro: "Follow each award nomination, the recognized employees, and the winners tally.",
     },
   }[portalRole];
 
@@ -694,7 +694,7 @@ export default function AwardCyclesWorkspace({
 
     void runMutation(
       () => setAwardCycleStatus({ cycleId: cycle.id, status }),
-      "Unable to change the cycle status.",
+      "Unable to change the nomination status.",
     );
   };
 
@@ -928,7 +928,7 @@ export default function AwardCyclesWorkspace({
     return {
       onToggleStatus: () => handleToggleStatus(cycle),
       toggleDisabled: tied || saving,
-      toggleTitle: tied ? "The tally is tied — one nominee must be ahead before the cycle can close" : "",
+      toggleTitle: tied ? "The tally is tied — one nominee must be ahead before the nomination can close" : "",
     };
   };
 
@@ -999,7 +999,7 @@ export default function AwardCyclesWorkspace({
       {/* Every archived card reads "Archived", so a status filter there would act on a value the card no longer shows. */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <label className="block w-full sm:max-w-xs">
-          <span className="sr-only">Search cycles</span>
+          <span className="sr-only">Search nominations</span>
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -1025,7 +1025,7 @@ export default function AwardCyclesWorkspace({
       {loading ? cycleSkeletons : filteredCycles.length === 0 ? (
         hasActiveFilters ? (
           <PortalEmptyState
-            title={archiveView ? "No archived nominations match your filters" : "No cycles match your filters"}
+            title={archiveView ? "No archived nominations match your filters" : "No nominations match your filters"}
             description="Try a different search term or status."
           />
         ) : archiveView ? (
@@ -1035,13 +1035,13 @@ export default function AwardCyclesWorkspace({
           />
         ) : (
           <PortalEmptyState
-            title="No nomination cycles yet"
+            title="No nominations yet"
             description={canManage
-              ? "Create your first monthly nomination cycle to start collecting submissions from division chiefs."
-              : "Nomination cycles will appear here as soon as the HR Head opens them."}
+              ? "Create your first monthly nomination to start collecting submissions from division chiefs."
+              : "Nominations will appear here as soon as the HR Head opens them."}
             action={canManage ? (
               <PortalButton onClick={openCreate}>
-                Create cycle
+                Create nomination
               </PortalButton>
             ) : null}
           />
@@ -1055,7 +1055,7 @@ export default function AwardCyclesWorkspace({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="m-0 text-sm text-slate-500">
                 Showing {(safePage - 1) * CYCLES_PER_PAGE + 1}
-                {" "}to {Math.min(safePage * CYCLES_PER_PAGE, filteredCycles.length)} of {filteredCycles.length} cycles
+                {" "}to {Math.min(safePage * CYCLES_PER_PAGE, filteredCycles.length)} of {filteredCycles.length} nominations
               </p>
               <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setCurrentPage} />
             </div>
@@ -1069,8 +1069,8 @@ export default function AwardCyclesWorkspace({
     cycles: cyclesTab,
     open: loading ? cycleSkeletons : openCycles.length === 0 ? (
       <PortalEmptyState
-        title="No open nomination cycles"
-        description="The HR Head hasn't opened any nomination cycles yet. Check back soon or reach out to HR."
+        title="No open nominations"
+        description="The HR Head hasn't opened any nominations yet. Check back soon or reach out to HR."
       />
     ) : (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{openCycles.map(renderCycleCard)}</div>
@@ -1084,7 +1084,7 @@ export default function AwardCyclesWorkspace({
     recognized: loading ? listSkeletons : recognizedItems.length === 0 ? (
       <PortalEmptyState
         title="No recognized employees yet"
-        description="Approved nominations from any cycle will be celebrated here."
+        description="Approved nominees will be celebrated here."
       />
     ) : renderNominationList(recognizedItems),
     mine: loading ? listSkeletons : myItems.length === 0 ? (
@@ -1132,7 +1132,7 @@ export default function AwardCyclesWorkspace({
           </h2>
           <p className="m-0 text-sm text-slate-500">
             {awardsView
-              ? "Awards you have won. A certificate is issued automatically when a nomination cycle you won closes."
+              ? "Awards you have won. A certificate is issued automatically when nominations close and you have won."
               : archiveView
                 ? "Archived nominations and their records. Restore a nomination to return it to the active list."
                 : banner.intro}
@@ -1225,7 +1225,7 @@ export default function AwardCyclesWorkspace({
             setDetailsOpen(false);
           }
         }}
-        title={detailsCycle?.category || "Nomination cycle"}
+        title={detailsCycle?.category || "Nomination"}
         subtitle={detailsCycle
           ? [formatCycleMonth(detailsCycle.opensOn), `Created ${formatDate(detailsCycle.createdAt) || "—"}`].filter(Boolean).join(" · ")
           : undefined}
@@ -1258,8 +1258,8 @@ export default function AwardCyclesWorkspace({
               <PortalEmptyState
                 title="No nominations yet"
                 description={portalRole === "chief"
-                  ? "You haven't submitted any nominations for this cycle yet."
-                  : "Division Chiefs haven't submitted any nominations for this cycle."}
+                  ? "You haven't submitted any nominees for this award yet."
+                  : "Division Chiefs haven't submitted any nominees for this award."}
                 className="py-12"
               />
             ) : (
@@ -1282,9 +1282,9 @@ export default function AwardCyclesWorkspace({
         title={approving ? "Approve nomination" : "Reject nomination"}
         subtitle={approving
           ? reviewCycle?.phase === "closed"
-            ? "This cycle has closed, so the approval is recorded but the employees can no longer vote for them."
+            ? "This nomination has closed, so the approval is recorded but the employees can no longer vote for them."
             : "Approving puts this employee in the Winners Tally right away, and the employees can start voting for them."
-          : "Rejecting will remove this nomination from the running for this cycle."}
+          : "Rejecting will remove this nominee from the running for this award."}
         maxWidth="max-w-[520px]"
       >
         {reviewNomination ? (
@@ -1379,7 +1379,7 @@ export default function AwardCyclesWorkspace({
                   </p>
                 ) : alreadyNominated.size > 0 ? (
                   <p className="m-0 text-xs text-slate-500">
-                    {alreadyNominated.size} employee{alreadyNominated.size === 1 ? "" : "s"} already nominated this cycle.
+                    {alreadyNominated.size} employee{alreadyNominated.size === 1 ? "" : "s"} already nominated for this award.
                   </p>
                 ) : null}
               </div>

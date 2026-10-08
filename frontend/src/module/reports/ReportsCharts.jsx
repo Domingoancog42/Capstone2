@@ -826,7 +826,7 @@ function DeductionDistributionCard({ charts, theme, loading, refreshing, classNa
   return (
     <ChartCard
       title="Deduction Distribution"
-      description="Every deduction line the payslip prints, with the total withheld against it."
+      description="Payroll deduction totals in the same order as the Payroll Deductions report."
       loading={loading}
       refreshing={refreshing}
       isEmpty={data.length === 0}

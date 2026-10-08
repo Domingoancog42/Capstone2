@@ -1450,7 +1450,7 @@ function payroll_apply_recurring_deductions(PDO $pdo, array $payload, array $emp
 
     $employeeRecordId = (int)($employee['id'] ?? $payload['employeeRecordId'] ?? 0);
     $grossPreview = round(
-        $basicSalary
+        payroll_period_basic_salary($basicSalary, $payload['payPeriod'] ?? 'Monthly', $payload['payrollType'] ?? 'Salary')
         + $payload['overtimePay']
         + payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])
         + $payload['travelAllowance']
@@ -1969,9 +1969,23 @@ function payroll_validate_payload(PDO $pdo, array $payload, bool $allowArchivedS
     return $employee;
 }
 
+function payroll_period_basic_salary(float $monthlySalary, string $payPeriod, string $payrollType): float
+{
+    if (payroll_normalize_type($payrollType) === 'Salary' && in_array($payPeriod, ['1st Half', '2nd Half'], true)) {
+        $firstHalf = round($monthlySalary / 2, 2);
+        return $payPeriod === '1st Half' ? $firstHalf : round($monthlySalary - $firstHalf, 2);
+    }
+
+    return round($monthlySalary, 2);
+}
+
 function payroll_calculate_totals(array $payload, array $employee): array
 {
-    $basicSalary = payroll_decimal($employee['basicSalary'] ?? 0);
+    $basicSalary = payroll_period_basic_salary(
+        payroll_decimal($employee['basicSalary'] ?? 0),
+        $payload['payPeriod'] ?? 'Monthly',
+        $payload['payrollType'] ?? 'Salary'
+    );
     $totalAllowance = round(
         $payload['overtimePay']
         + payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])
@@ -2515,7 +2529,9 @@ function payroll_rebuild_deduction_columns(PDO $pdo, int $payrollId): void
     $params = [':payroll_id' => $payrollId];
 
     foreach ($columns as $column => $deductionId) {
-        $placeholder = ':amount_' . $deductionId;
+        // Several legacy columns can map to one deduction type. Native PDO requires
+        // a distinct placeholder for every assignment, even when amounts are equal.
+        $placeholder = ':amount_' . count($assignments);
         $assignments[] = sprintf('`%s` = %s', $column, $placeholder);
         $params[$placeholder] = payroll_decimal_string($amounts[$deductionId] ?? 0.0);
     }
@@ -2883,6 +2899,7 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
         'employmentType' => $employmentType,
         'profileImage' => $profileImage,
         'basicSalary' => $basicSalary,
+        'periodBasicSalary' => payroll_decimal($meta['periodBasicSalary'] ?? ($grossPay - $totalAllowance)),
         'stepIncrement' => payroll_service_record_step(
             $pdo,
             (int)($baseRow['employeeRecordId'] ?? 0),
@@ -3074,6 +3091,7 @@ function payroll_meta_payload(array $payload, array $employee, array $totals): a
         'employmentType' => $employee['employmentType'] ?? null,
         'profileImage' => $employee['profileImage'] ?? null,
         'basicSalary' => payroll_decimal($employee['basicSalary'] ?? 0),
+        'periodBasicSalary' => $totals['basicSalary'],
         'salaryRate' => $employee['salaryRate'] ?? null,
         'payrollType' => payroll_normalize_type($payload['payrollType'] ?? ''),
         'payPeriod' => $payload['payPeriod'],
@@ -4423,6 +4441,7 @@ function payroll_preview(PDO $pdo, array $body): void
                 'position' => $employee['position'] ?? null,
                 'division' => $employee['division'] ?? null,
                 'basicSalary' => payroll_decimal($employee['basicSalary'] ?? 0),
+                'periodBasicSalary' => $totals['basicSalary'],
                 'grossPay' => $totals['grossPay'],
                 'totalDeduction' => $totals['totalDeduction'],
                 'netPay' => $totals['netPay'],

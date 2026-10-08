@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
 import {
+  Archive,
   Banknote,
   CalendarDays,
   CheckCircle2,
@@ -14,7 +15,7 @@ import {
   Search,
   Users,
 } from "lucide-react";
-import { faDownload, faEye, faPrint } from "@fortawesome/free-solid-svg-icons";
+import { faArchive, faDownload, faEye, faPrint, faRotateLeft } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import ActionIconButton from "../../components/UI/ActionIconButton";
 import ActionsMenu from "../../components/UI/ActionsMenu";
@@ -28,7 +29,7 @@ import Card, {
 } from "../../components/UI/card";
 import Modal from "../../components/UI/modal";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
-import { fetchPayslipData, fetchPayslipPeriods, fetchPayslipRecord } from "../../services/payslipService";
+import { fetchPayslipData, fetchPayslipPeriods, fetchPayslipRecord, setPayslipsArchived } from "../../services/payslipService";
 import { useOrganizationFilterOptions } from "../../hooks/useFilterOptions";
 
 const DEFAULT_PERA_AMOUNT = 2000;
@@ -49,7 +50,6 @@ const CONTRACT_SERVICE_PREMIUM_RATE = 20;
 const CONTRACT_SERVICE_PREMIUM_ALLOWANCE_NAMES = ["Premium", "Premium Pay", "Premium Percentage"];
 const CONTRACT_SERVICE_HIDDEN_ALLOWANCE_NAMES = ["PERA", ...CONTRACT_SERVICE_PREMIUM_ALLOWANCE_NAMES];
 const CONTRACT_SERVICE_DEDUCTION_ROWS = [
-  { label: "Overpayment", aliases: ["Overpayment", "Deduction from Previous Payroll", "DEDUCTION PREVIOUS PAYROLL"] },
   { label: "Late/UT", aliases: ["Late Deduction", "Tardy/Undertime", "Tardy/ Undertime", "Late/UT"] },
   { label: "Pass Slip", aliases: ["Pass Slip", "Pass Slip Deduction"] },
   { label: "Tax", aliases: ["Withholding Tax", "W-TAX", "Tax"] },
@@ -61,7 +61,7 @@ const CONTRACT_SERVICE_DEDUCTION_ROWS = [
   { label: "MGB Coop Loan", aliases: ["MGB Coop Loan", "MGB COOP LOAN", "MGB Cooperative Loan"] },
 ];
 
-const PAYSLIP_DEDUCTION_ROWS = [
+const PAYSLIP_ALL_DEDUCTION_ROWS = [
   { label: "GSIS Premium", aliases: ["GSIS", "GSIS Premium"] },
   { label: "PAG-IBIG Premium", aliases: ["HDMF", "Pag-IBIG", "PAG-IBIG", "PAG-IBIG Premium"] },
   { label: "PAG-IBIG MP2", aliases: ["PAG-IBIG MP2", "Pag-IBIG MP2", "MP2"] },
@@ -97,6 +97,23 @@ const PAYSLIP_DEDUCTION_ROWS = [
   { label: "MGBEA-X", aliases: ["MGBEA-X", "MGBBEA- X", "MG BEA - 10", "MG BEA", "MGBEA"] },
   { label: "Family Support (w/ Court Order)", aliases: ["Family Support (w/ Court Order)", "FAMILY SUPPORT(W/ COURT ORDER)"] },
 ];
+
+// Keep aliases for omitted lines so charged items do not reappear as extra rows.
+const OMITTED_PAYSLIP_DEDUCTION_LABELS = new Set([
+  "Deduction from Previous Payroll",
+  "Additional Withholding Tax (PBB 2020)",
+  "GSIS Consolidated Loan",
+  "GSIS UOLI 1",
+  "GSIS UOLI 2",
+  "GSIS UOLI 1 Loan",
+  "GSIS UOLI 2 Loan",
+  "GSIS Educational Loan",
+  "PAG-IBIG Housing Loan",
+  "GSIS Computer Loan",
+]);
+const PAYSLIP_DEDUCTION_ROWS = PAYSLIP_ALL_DEDUCTION_ROWS.filter(
+  (row) => !OMITTED_PAYSLIP_DEDUCTION_LABELS.has(row.label)
+);
 
 const moneyFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
@@ -373,7 +390,7 @@ function relabelPassSlipDeductionItems(employee = {}) {
 
 function buildPayslipDeductions(employee = {}) {
   const standardKeys = new Set();
-  PAYSLIP_DEDUCTION_ROWS.forEach((row) => {
+  PAYSLIP_ALL_DEDUCTION_ROWS.forEach((row) => {
     row.aliases.forEach((alias) => standardKeys.add(normalizeKey(alias)));
   });
 
@@ -1114,6 +1131,19 @@ function PayslipSummaryCard({ summary }) {
   );
 }
 
+function EmploymentTypeBadge({ value }) {
+  const colors = value === "Regular"
+    ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+    : value === CONTRACT_SERVICE_EMPLOYMENT_TYPE
+      ? "border-amber-200 bg-amber-50 text-amber-600"
+      : "border-slate-200 bg-slate-50 text-slate-600";
+  return (
+    <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium leading-tight ${colors}`}>
+      {value || "N/A"}
+    </span>
+  );
+}
+
 function PayslipDeductionCell({ employee, expanded, onToggle }) {
   const deductions = getPayslipDetailDeductionItems(employee);
   const totalDeductions = getPayslipDetailDeductionTotal(employee);
@@ -1195,7 +1225,7 @@ function PayslipViewModal({ employee, peraAmount, signatory, onClose }) {
     .filter((item) => !contractService || !CONTRACT_SERVICE_HIDDEN_ALLOWANCE_NAMES.map(normalizeKey).includes(normalizeKey(item?.name)));
   const earningsSalary = contractService
     ? data.periodSalary
-    : employee?.paidBasicSalary || employee?.basicSalary;
+    : data.earnings[0].value;
   const earningsGross = contractService ? data.grossPay : employee?.paidGrossPay;
 
   return (
@@ -1599,6 +1629,10 @@ function PayslipMonthStat({ icon: Icon, label, value, tone = "accent", loading =
 
 export default function PayslipWorkspace({ mode = "admin" }) {
   const isEmployeeMode = mode === "employee";
+  const [showArchived, setShowArchived] = useState(false);
+  const [canArchive, setCanArchive] = useState(false);
+  const [selectedPayslips, setSelectedPayslips] = useState(() => new Set());
+  const [archiving, setArchiving] = useState(false);
   const [apiEmployees, setApiEmployees] = useState([]);
   const [peraAmount, setPeraAmount] = useState(DEFAULT_PERA_AMOUNT);
   const [signatory, setSignatory] = useState(DEFAULT_PAYSLIP_SIGNATORY);
@@ -1632,13 +1666,14 @@ export default function PayslipWorkspace({ mode = "admin" }) {
     }
 
     try {
-      const result = await fetchPayslipData(isEmployeeMode ? { scope: "self" } : { month });
+      const result = await fetchPayslipData(isEmployeeMode ? { scope: "self" } : { month, archived: showArchived ? 1 : 0 });
 
       if (rowsRequestRef.current !== requestId) {
         return;
       }
 
       setApiEmployees(Array.isArray(result.employees) ? result.employees : []);
+      setCanArchive(Boolean(result.canArchive) && !isEmployeeMode);
       setPeraAmount(parseAmount(result.defaults?.pera || DEFAULT_PERA_AMOUNT));
       setSignatory({
         name: String(result.defaults?.signatory?.name || ""),
@@ -1654,7 +1689,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
         setLoading(false);
       }
     }
-  }, [isEmployeeMode]);
+  }, [isEmployeeMode, showArchived]);
 
   const loadPayslipData = useCallback(async ({ background = false } = {}) => {
     if (isEmployeeMode) {
@@ -1663,7 +1698,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
     }
 
     try {
-      const result = await fetchPayslipPeriods();
+      const result = await fetchPayslipPeriods({ archived: showArchived ? 1 : 0 });
       const currentMonth = MONTH_KEY_PATTERN.test(String(result.currentMonth ?? ""))
         ? String(result.currentMonth)
         : monthKeyFromDate(new Date());
@@ -1692,10 +1727,10 @@ export default function PayslipWorkspace({ mode = "admin" }) {
     }
 
     await loadRows(selectedMonthRef.current, { background });
-  }, [isEmployeeMode, loadRows]);
+  }, [isEmployeeMode, loadRows, showArchived]);
 
   /** Attendance is included because the payslip's days-worked summary is refreshed from the DTR. */
-  useAutoRefreshOnChange(loadPayslipData, { topics: ["payslip", "payroll", "employee", "attendance"] });
+  useAutoRefreshOnChange(loadPayslipData, { topics: ["payslip", "payroll", "employee", "attendance"], refreshOnMount: false });
 
   const payslipRows = useMemo(() => (
     apiEmployees
@@ -1811,6 +1846,76 @@ export default function PayslipWorkspace({ mode = "admin" }) {
   );
 
   useEffect(() => {
+    setSelectedPayslips(new Set());
+    setExpandedRows(new Set());
+    setCurrentPage(1);
+    setViewedEmployee(null);
+    setApiEmployees([]);
+    loadPayslipData();
+  }, [showArchived, loadPayslipData]);
+
+  const togglePayslipSelection = (employee) => {
+    const key = getEmployeeKey(employee);
+    setSelectedPayslips((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const allPageSelected = paginatedRows.length > 0
+    && paginatedRows.every((employee) => selectedPayslips.has(getEmployeeKey(employee)));
+  const togglePageSelection = () => {
+    setSelectedPayslips((current) => {
+      const next = new Set(current);
+      paginatedRows.forEach((employee) => {
+        const key = getEmployeeKey(employee);
+        if (allPageSelected) next.delete(key);
+        else next.add(key);
+      });
+      return next;
+    });
+  };
+
+  const handleArchivePayslips = async (ids) => {
+    if (archiving || !canArchive || ids.length === 0) return;
+    setArchiving(true);
+    try {
+      await setPayslipsArchived(ids, !showArchived);
+      setSelectedPayslips(new Set());
+      setViewedEmployee(null);
+      toast.success(`${ids.length} payslip${ids.length === 1 ? "" : "s"} ${showArchived ? "restored" : "archived"}.`);
+      await loadPayslipData({ background: true });
+    } catch (archiveError) {
+      toast.error(archiveError.response?.data?.message || "Unable to update payslip archive.");
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const renderArchiveAction = (employee) => canArchive ? (
+    <ActionIconButton
+      label={showArchived ? "Restore payslip" : "Archive payslip"}
+      icon={showArchived ? faRotateLeft : faArchive}
+      tone={showArchived ? "restore" : "archive"}
+      text={showArchived ? "Restore" : "Archive"}
+      disabled={archiving}
+      onClick={() => handleArchivePayslips([getEmployeeKey(employee)])}
+    />
+  ) : null;
+
+  const renderPayslipCheckbox = (employee) => (
+    <input
+      type="checkbox"
+      aria-label={`Select payslip for ${employee.fullName || employee.employeeId}, ${employee.periodLabel || formatDate(employee.paidPayrollDate)}`}
+      checked={selectedPayslips.has(getEmployeeKey(employee))}
+      disabled={archiving}
+      onChange={() => togglePayslipSelection(employee)}
+    />
+  );
+
+  useEffect(() => {
     setCurrentPage(1);
   }, [filters, rowsPerPage]);
 
@@ -1837,6 +1942,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
     setSelectedMonth(month);
     // Cleared so the last month's rows never show under the new month's heading while it loads.
     setApiEmployees([]);
+    setSelectedPayslips(new Set());
     setExpandedRows(new Set());
     // A cut-off picked in one month may not exist in the next.
     setFilters((current) => ({ ...current, payPeriod: "" }));
@@ -1866,7 +1972,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
 
     const result = await fetchPayslipRecord(
       payrollId,
-      isEmployeeMode ? { scope: "self" } : {}
+      isEmployeeMode ? { scope: "self" } : { archived: showArchived ? 1 : 0 }
     );
     const currentEmployee = Array.isArray(result.employees) ? result.employees[0] : null;
     if (!currentEmployee) {
@@ -1878,7 +1984,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
     )));
 
     return normalizeEmployee(currentEmployee);
-  }, [isEmployeeMode]);
+  }, [isEmployeeMode, showArchived]);
 
   const handleViewPayslip = async (employee) => {
     const key = getEmployeeKey(employee);
@@ -2011,7 +2117,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
 
     return (
       <div
-        className={`mt-5 grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-3 ${
+        className={`mt-5 grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-3 ${
           showCutOff
             ? "xl:grid-cols-[minmax(200px,1.4fr)_repeat(4,minmax(130px,1fr))_minmax(110px,0.6fr)_auto]"
             : "xl:grid-cols-[minmax(220px,1.5fr)_repeat(3,minmax(150px,1fr))_minmax(110px,0.6fr)_auto]"
@@ -2078,7 +2184,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
           type="button"
           onClick={handleResetFilters}
           disabled={filtersAreDefault}
-          className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 xl:w-auto"
+          className="mt-[26px] inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 xl:w-auto"
         >
           <RotateCcw size={15} />
           Reset
@@ -2091,7 +2197,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
     if (loading) {
       return Array.from({ length: 4 }).map((_, index) => (
         <tr key={index} className="animate-pulse border-b border-slate-100">
-          <td colSpan={9} className="px-3 py-3">
+          <td colSpan={canArchive ? 11 : 10} className="px-3 py-3">
             <div className="h-5 rounded bg-slate-200" />
           </td>
         </tr>
@@ -2101,7 +2207,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
     if (paginatedRows.length === 0) {
       return (
         <tr>
-          <td colSpan={9} className="px-4 py-12 text-center">
+          <td colSpan={canArchive ? 11 : 10} className="px-4 py-12 text-center">
             <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
               <FileText size={20} />
             </div>
@@ -2120,6 +2226,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
 
       return [
         <tr key={key} className="border-b border-slate-100 transition hover:bg-slate-50">
+          {canArchive ? <td className="px-3 py-3">{renderPayslipCheckbox(employee)}</td> : null}
           <td className="px-3 py-3 text-sm text-slate-600">{employee.employeeId || "N/A"}</td>
           <td className="px-3 py-3 text-sm text-slate-800">
             <div className="font-semibold text-slate-900">{employee.fullName || "Employee"}</div>
@@ -2129,6 +2236,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
           </td>
           <td className="px-3 py-3 text-sm text-slate-600">{employee.department || "Unassigned"}</td>
           <td className="px-3 py-3 text-sm text-slate-600">{employee.position || "N/A"}</td>
+          <td className="px-3 py-3"><EmploymentTypeBadge value={employee.employmentType} /></td>
           <td className="px-3 py-3 text-sm text-slate-600">
             <PayslipDeductionCell
               employee={employee}
@@ -2145,6 +2253,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
           </td>
           <td className="px-3 py-3">
             <ActionsMenu>
+              {renderArchiveAction(employee)}
               <ActionIconButton
                 label="View payslip"
                 icon={faEye}
@@ -2172,7 +2281,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
         </tr>,
         expanded ? (
           <tr key={`${key}-deductions`} className="border-b border-slate-100">
-            <td colSpan={9} className="bg-white px-3 py-3">
+            <td colSpan={canArchive ? 11 : 10} className="bg-white px-3 py-3">
               <PayslipDeductionBreakdown employee={employee} />
             </td>
           </tr>
@@ -2197,6 +2306,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
 
     return {
       title: employee.periodLabel || formatDate(employee.paidPayrollDate),
+      selection: canArchive ? renderPayslipCheckbox(employee) : null,
       subtitle: isEmployeeMode
         ? employee.position || "N/A"
         : `${employee.fullName || "Employee"} - ${employee.employeeId || "No ID"}`,
@@ -2209,6 +2319,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
         ...(isEmployeeMode ? [] : [
           { label: "Division", value: employee.department || "Unassigned" },
           { label: "Position", value: employee.position || "N/A" },
+          { label: "Employment Type", value: <EmploymentTypeBadge value={employee.employmentType} /> },
         ]),
         { label: "Gross Pay", value: formatCurrency(employee.paidGrossPay) },
         {
@@ -2236,6 +2347,7 @@ export default function PayslipWorkspace({ mode = "admin" }) {
       ],
       actions: (
         <ActionsMenu>
+          {renderArchiveAction(employee)}
           <ActionIconButton
             label="View payslip"
             icon={faEye}
@@ -2265,6 +2377,17 @@ export default function PayslipWorkspace({ mode = "admin" }) {
 
   const renderResults = () => (
     <>
+      {canArchive ? (
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={allPageSelected} disabled={archiving || loading || paginatedRows.length === 0} onChange={togglePageSelection} />
+            Select this page
+          </label>
+          <button type="button" className="rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={archiving || loading || selectedPayslips.size === 0} onClick={() => handleArchivePayslips([...selectedPayslips])}>
+            {archiving ? "Saving..." : `${showArchived ? "Restore" : "Archive"} Selected (${selectedPayslips.size})`}
+          </button>
+        </div>
+      ) : null}
       <RecordCards
         className="mt-4 xl:hidden"
         /* One column: the deduction breakdown opens inside a card and needs the width. */
@@ -2282,11 +2405,17 @@ export default function PayslipWorkspace({ mode = "admin" }) {
           <table className="min-w-[1180px] w-full border-collapse">
             <thead className="bg-slate-50">
               <tr>
+                {canArchive ? (
+                  <th className="border-b border-slate-200 px-3 py-3">
+                    <input type="checkbox" aria-label="Select all payslips on this page" checked={allPageSelected} disabled={archiving || loading || paginatedRows.length === 0} onChange={togglePageSelection} />
+                  </th>
+                ) : null}
                 {[
                   "Employee ID",
                   "Full Name",
                   "Division",
                   "Position",
+                  "Employment Type",
                   "Total Deductions",
                   "Gross Pay",
                   "Net Pay",
@@ -2331,15 +2460,31 @@ export default function PayslipWorkspace({ mode = "admin" }) {
       ) : (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-            <div className="flex min-w-0 flex-nowrap items-start gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-3">
               <CalendarDays className="mt-0.5 shrink-0 text-teal-600" size={22} />
               <div className="min-w-0">
-                <h3 className="m-0 text-lg font-bold text-slate-950">Payslip Records</h3>
+                <h3 className="m-0 text-lg font-bold text-slate-950">{showArchived ? "Archived Payslip Records" : "Payslip Records"}</h3>
                 <p className="m-0 mt-1 text-sm text-slate-500">
                   View and manage generated payslips by month. Select a period to see the list of employees.
                 </p>
                 {periodsError ? <p className="m-0 mt-2 text-sm font-semibold text-rose-700">{periodsError}</p> : null}
               </div>
+              </div>
+              {canArchive ? (
+                <button
+                  type="button"
+                  className="ml-auto inline-flex h-8 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-blue-200 bg-white px-3 text-xs font-medium text-blue-600 transition hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:opacity-50"
+                  disabled={archiving || loading}
+                  onClick={() => {
+                    rowsRequestRef.current += 1;
+                    setShowArchived((current) => !current);
+                  }}
+                >
+                  <Archive size={14} aria-hidden="true" />
+                  {showArchived ? "Back to Payslips" : "Archived Payslips"}
+                </button>
+              ) : null}
             </div>
 
             <PayslipMonthRail

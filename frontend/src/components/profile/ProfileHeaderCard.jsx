@@ -17,6 +17,8 @@ export default function ProfileHeaderCard({
   onChangePhoto,
   onDownloadPds,
   downloadingPds = false,
+  onDownloadPdsPdf,
+  downloadingPdsPdf = false,
   onOpenSalaryGradeHistory,
   salaryGradeRecord = null,
   salaryGradeLoading = false,
@@ -135,16 +137,33 @@ export default function ProfileHeaderCard({
             Change Photo
           </Button>
         ) : null}
-        {onDownloadPds ? (
-          <Button
-            variant="secondary"
-            icon={Download}
-            loading={downloadingPds}
-            fullWidth
-            onClick={onDownloadPds}
-          >
-            Download PDS
-          </Button>
+        {onDownloadPds || onDownloadPdsPdf ? (
+          <div className="col-span-full grid gap-2">
+            {onDownloadPds ? (
+              <Button
+                variant="secondary"
+                icon={Download}
+                loading={downloadingPds}
+                disabled={downloadingPds || downloadingPdsPdf}
+                fullWidth
+                onClick={onDownloadPds}
+              >
+                Export PDS Excel
+              </Button>
+            ) : null}
+            {onDownloadPdsPdf ? (
+              <Button
+                variant="secondary"
+                icon={Download}
+                loading={downloadingPdsPdf}
+                disabled={downloadingPds || downloadingPdsPdf}
+                fullWidth
+                onClick={onDownloadPdsPdf}
+              >
+                Download PDS PDF
+              </Button>
+            ) : null}
+          </div>
         ) : null}
       </div>
 

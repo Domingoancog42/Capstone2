@@ -442,7 +442,7 @@ export default function PayrollDetailDrawer({
               <DetailRow label="Employee ID" value={record.employeeId} />
               <DetailRow label="Position" value={record.position} />
               <DetailRow label="Division" value={record.division} />
-              <DetailRow label="Basic Salary" value={formatCurrency(record.basicSalary)} />
+              <DetailRow label="Basic Salary" value={formatCurrency(record.periodBasicSalary ?? (Number(record.grossPay || 0) - Number(record.totalAllowance || 0)))} />
               <DetailRow label="PERA" value={formatCurrency(record.pera)} />
               {/* The salary step from the service record -- a number, not an amount. */}
               <DetailRow label="Step Increment" value={record.stepIncrement ? String(record.stepIncrement) : ""} />

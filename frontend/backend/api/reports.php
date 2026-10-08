@@ -3,9 +3,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/deduction-catalog.php';
-// The Deduction Distribution chart lists the payslip's own deduction lines, so it reads the roster
-// the payslip prints from rather than keeping a second idea of what a deduction is called.
+// Normalizes historical deduction names; the report and chart share an ordered catalog roster.
 require_once __DIR__ . '/payslip-deductions.php';
+require_once __DIR__ . '/report-payroll-deductions.php';
 
 $sessionUser = require_session_user();
 $roleKey = user_role_key($sessionUser);
@@ -911,20 +911,18 @@ function reports_definitions(): array
 
     $definitions['payroll-deductions'] = [
         'label' => 'Payroll Deductions',
-        'description' => 'Itemised deductions applied to payroll runs, grouped by deduction type.',
+        'description' => 'Employee deductions saved on paid payroll records for the selected period.',
         'category' => 'payroll',
         'requiredTables' => ['payroll'],
-        'dateExpression' => null,
+        'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [],
-        'columns' => reports_columns([
-            ['deductionName', 'Deduction'],
-            ['category', 'Category'],
-            ['records', 'Records'],
-            ['totalAmount', 'Total Amount'],
-        ]),
+        'columns' => reports_columns(array_merge(
+            [['employeeId', 'Employee ID'], ['employeeName', 'Employee Name'], ['payrollId', 'Payroll ID'], ['payrollDate', 'Payroll Date']],
+            array_map(static fn (array $deduction): array => ['amount_' . $deduction[0], $deduction[1]], REPORT_PAYROLL_DEDUCTIONS)
+        )),
         'sql' => '',
         'fetchRows' => 'reports_fetch_payroll_deduction_rows',
-        'isAggregate' => true,
+        'isAggregate' => false,
         // Honoured inside the fetcher rather than by SQL injection like the others.
         'filters' => ['divisionId' => 'e.division_id'],
     ];
@@ -1910,7 +1908,7 @@ function reports_sql_has_outer_where(string $sql): bool
     return false;
 }
 
-/** Aggregate itemised deduction JSON without requiring a child table. */
+/** Read each employee's saved deductions from paid payroll records. */
 function reports_fetch_payroll_deduction_rows(
     PDO $pdo,
     array $dateWindow,
@@ -1931,16 +1929,21 @@ function reports_fetch_payroll_deduction_rows(
     }
 
     $statement = $pdo->prepare(
-        'SELECT p.payroll_id, p.deduction_items_json
+        'SELECT p.payroll_id, p.payroll_date, p.deduction_items_json,
+                e.employee_id AS employeeId,
+                TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName
          FROM payroll p
+         INNER JOIN employees e ON e.id = p.employee_id
          WHERE DATE(p.payroll_date) BETWEEN :start_date AND :end_date
+           AND p.status = "Paid"
            AND p.deduction_items_json IS NOT NULL
-           AND TRIM(p.deduction_items_json) <> ""' . $divisionScope
+           AND TRIM(p.deduction_items_json) <> ""' . $divisionScope . '
+         ORDER BY e.last_name, e.first_name, p.payroll_date, p.payroll_id'
     );
     $statement->execute($params);
 
     $types = deduction_catalog_type_map($pdo);
-    $groups = [];
+    $rows = [];
 
     foreach ($statement as $payroll) {
         $payrollId = (int)($payroll['payroll_id'] ?? 0);
@@ -1951,37 +1954,19 @@ function reports_fetch_payroll_deduction_rows(
             $types
         );
 
-        foreach ($items as $item) {
-            $name = reports_text($item['name'] ?? '');
-            $category = reports_text($item['category'] ?? '');
-            if ($name === '') {
-                continue;
-            }
-
-            if ($search !== '' && !str_contains(strtolower($name . ' ' . $category), strtolower($search))) {
-                continue;
-            }
-
-            $key = strtolower($name . "\0" . $category);
-            $groups[$key] ??= [
-                'deductionName' => $name,
-                'category' => $category,
-                'records' => 0,
-                'totalAmount' => 0.0,
-            ];
-            $groups[$key]['records'] += 1;
-            $groups[$key]['totalAmount'] = round(
-                (float)$groups[$key]['totalAmount'] + (float)($item['amount'] ?? 0),
-                2
-            );
-        }
+        if ($items === []) continue;
+        $searchable = $payroll['employeeId'] . ' ' . $payroll['employeeName'] . ' ' . $payrollId . ' '
+            . implode(' ', array_column($items, 'name'));
+        if ($search !== '' && !str_contains(strtolower($searchable), strtolower($search))) continue;
+        $row = report_payroll_deduction_totals($items);
+        unset($row['summaryLabel']);
+        $row['id'] = $payrollId;
+        $row['employeeId'] = $payroll['employeeId'];
+        $row['employeeName'] = $payroll['employeeName'];
+        $row['payrollId'] = 'PR-' . str_pad((string)$payrollId, 4, '0', STR_PAD_LEFT);
+        $row['payrollDate'] = $payroll['payroll_date'];
+        $rows[] = $row;
     }
-
-    $rows = array_values($groups);
-    usort($rows, static fn (array $left, array $right): int =>
-        ((float)$right['totalAmount'] <=> (float)$left['totalAmount'])
-        ?: strcmp((string)$left['deductionName'], (string)$right['deductionName'])
-    );
 
     return $rows;
 }
@@ -2875,11 +2860,11 @@ function reports_monthly_headcount_growth(PDO $pdo, ?int $divisionId, array $dat
 function reports_deduction_distribution(PDO $pdo): array
 {
     $types = deduction_catalog_type_map($pdo);
-    $totals = [];
+    $reportItems = [];
     $statement = $pdo->query(
         'SELECT payroll_id, deduction_items_json
          FROM payroll
-         WHERE deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
+         WHERE status = "Paid" AND deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
     );
 
     foreach ($statement as $payroll) {
@@ -2893,28 +2878,18 @@ function reports_deduction_distribution(PDO $pdo): array
         foreach ($items as $item) {
             $name = reports_text($item['name'] ?? '');
             if ($name !== '') {
-                $totals[$name] = round(($totals[$name] ?? 0.0) + (float)($item['amount'] ?? 0), 2);
+                $reportItems[] = $item;
             }
         }
     }
 
-    $rows = [];
-    foreach ($totals as $name => $amount) {
-        $rows[] = ['name' => $name, 'amount' => $amount];
-    }
-
-    if ($rows === []) {
-        return [];
-    }
-
-    $lines = payslip_deduction_lines($rows);
-
-    // usort is stable in PHP 8, so equal amounts keep the payslip order they came in with.
-    usort($lines, static fn (array $left, array $right): int => $right['value'] <=> $left['value']);
-
+    $totals = report_payroll_deduction_totals($reportItems);
     return array_map(
-        static fn (array $line): array => ['label' => $line['label'], 'value' => (float)$line['value']],
-        $lines
+        static fn (array $deduction): array => [
+            'label' => $deduction[1],
+            'value' => $totals['amount_' . $deduction[0]],
+        ],
+        REPORT_PAYROLL_DEDUCTIONS
     );
 }
 

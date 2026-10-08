@@ -90,7 +90,6 @@ const EMPTY_FORM = {
   salaryGrade: "",
   stepIncrement: "",
   toSalary: "",
-  effectiveDate: "",
   justification: "",
 };
 
@@ -388,7 +387,7 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
   const stepOptions = useMemo(() => getStepOptions(form.salaryGrade), [form.salaryGrade]);
 
   const openForm = () => {
-    setForm({ ...EMPTY_FORM, effectiveDate: todayDateInputValue() });
+    setForm({ ...EMPTY_FORM });
     setFormErrors({});
     setFormOpen(true);
   };
@@ -474,12 +473,6 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
       errors.toSalary = `The new salary cannot be lower than the current ${formatCurrency(currentSalary)}.`;
     }
 
-    if (!form.effectiveDate) {
-      errors.effectiveDate = "The effective date is required.";
-    } else if (selectedEmployee?.dateHired && form.effectiveDate < String(selectedEmployee.dateHired).slice(0, 10)) {
-      errors.effectiveDate = "The effective date cannot be earlier than the date hired.";
-    }
-
     return errors;
   };
 
@@ -500,7 +493,7 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
         toSalary: Number(form.toSalary),
         salaryGrade: form.salaryGrade,
         stepIncrement: form.stepIncrement,
-        effectiveDate: form.effectiveDate,
+        effectiveDate: todayDateInputValue(),
         justification: form.justification.trim(),
       });
 
@@ -1059,16 +1052,6 @@ export default function PromotionWorkspace({ user, mode = "manage" }) {
               error={formErrors.toSalary}
             />
           </div>
-
-          <InputField
-            id="promotionEffectiveDate"
-            label="Effective Date"
-            type="date"
-            value={form.effectiveDate}
-            min={selectedEmployee?.dateHired ? String(selectedEmployee.dateHired).slice(0, 10) : undefined}
-            onChange={(event) => updateForm({ effectiveDate: event.target.value })}
-            error={formErrors.effectiveDate}
-          />
 
           <div>
             <label htmlFor="promotionJustification" className="mb-1.5 block text-sm font-semibold text-slate-700">
