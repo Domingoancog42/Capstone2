@@ -1072,7 +1072,7 @@ function buildAttendanceSummaryRows(employee = {}) {
     ["Leave Days", employee.attendanceLeaveDays],
     ["Absent Days", employee.absenceDays],
     ["Late Minutes", employee.attendanceLateMinutes],
-    ["Pass Slips", employee.passSlipCount],
+    ...(isContractServiceEmployee(employee) ? [["Pass Slips", employee.passSlipCount]] : []),
     ["Overtime Hours", employee.overtimeHours],
   ];
 }

@@ -1307,6 +1307,9 @@ function TravelOrderFormModal({
             <div className="md:col-span-2">
               <span className={fieldLabelClasses}>
                 {canSelectEmployee ? "Employees" : "Employee"}
+                {canSelectEmployee ? (
+                  <span className="app-required-marker ml-1 font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+                ) : null}
               </span>
               {canSelectEmployee ? (
                 <>
@@ -1334,7 +1337,9 @@ function TravelOrderFormModal({
             </div>
 
             <label className="md:col-span-2">
-              <span className={fieldLabelClasses}>Destination</span>
+              <span className={fieldLabelClasses}>
+                Destination <span className="app-required-marker ml-1 font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+              </span>
               <input
                 value={form.destination}
                 onChange={updateField("destination")}
@@ -1358,6 +1363,7 @@ function TravelOrderFormModal({
               <span className={`${fieldLabelClasses} gap-1`}>
                 <CalendarDays size={15} />
                 Travel Dates
+                <span className="app-required-marker font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
               </span>
               <MultiDatePicker
                 value={form.selectedDates}

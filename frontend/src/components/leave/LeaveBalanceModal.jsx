@@ -199,7 +199,7 @@ export function LeaveBalanceButton({ onClick }) {
       className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
     >
       <Wallet size={16} aria-hidden="true" />
-      View Leave/COC Balances
+      View Leave Balances
     </button>
   );
 }

@@ -316,6 +316,27 @@ function rewards_send_due_voting_notices(PDO $pdo): void
 
 function ensure_rewards_tables(PDO $pdo): void
 {
+    // Some imported schemas lost the nomination primary key and AUTO_INCREMENT,
+    // leaving new submissions with id 0, which the review endpoint cannot accept.
+    $nominationIdColumn = $pdo->query(
+        'SELECT COLUMN_KEY, EXTRA
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = "reward_cycle_votes"
+           AND COLUMN_NAME = "id"'
+    )->fetch();
+
+    if ($nominationIdColumn && !str_contains((string)$nominationIdColumn['EXTRA'], 'auto_increment')) {
+        $nextId = (int)$pdo->query('SELECT COALESCE(MAX(id), 0) + 1 FROM reward_cycle_votes')->fetchColumn();
+        $repairId = $pdo->prepare('UPDATE reward_cycle_votes SET id = :id WHERE id = 0 LIMIT 1');
+        do {
+            $repairId->execute([':id' => $nextId++]);
+        } while ($repairId->rowCount() > 0);
+
+        $primaryKey = $nominationIdColumn['COLUMN_KEY'] === 'PRI' ? '' : ', ADD PRIMARY KEY (id)';
+        $pdo->exec('ALTER TABLE reward_cycle_votes MODIFY id INT UNSIGNED NOT NULL AUTO_INCREMENT' . $primaryKey);
+    }
+
     /*
      * Installs predating the archive column still need it added; the schema in
      * database/hris.sql already carries it. Cheap enough to check on every request.
@@ -2607,7 +2628,7 @@ function rewards_review_nomination(PDO $pdo, array $user): void
         defer(static fn () => rewards_send_due_voting_notices($pdo));
     }
 
-    notify_users(
+    defer(static fn () => notify_users(
         $pdo,
         [(int)$nomination['voter_user_id']],
         ($status === 'approved' ? 'Nomination approved: ' : 'Nomination rejected: ') . $category,
@@ -2621,7 +2642,7 @@ function rewards_review_nomination(PDO $pdo, array $user): void
         ),
         'award_nomination_reviewed',
         (string)$nomination['cycle_id']
-    );
+    ));
 
     json_response([
         'success' => true,

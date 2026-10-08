@@ -2457,6 +2457,34 @@ function user_id_for_employee_record(PDO $pdo, int $employeeRecordId): ?int
     return $userId > 0 ? $userId : null;
 }
 
+function ensure_notification_ids(PDO $pdo): void
+{
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+
+    $idColumn = $pdo->query(
+        'SELECT COLUMN_KEY, EXTRA FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "notifications" AND COLUMN_NAME = "id"'
+    )->fetch();
+
+    if ($idColumn && !str_contains((string)$idColumn['EXTRA'], 'auto_increment')) {
+        // Preserve imported notifications stored with id 0, one at a time: without a key there can be several.
+        $nextId = (int)$pdo->query('SELECT COALESCE(MAX(id), 0) + 1 FROM notifications')->fetchColumn();
+        $repair = $pdo->prepare('UPDATE notifications SET id = :id WHERE id = 0 LIMIT 1');
+        do {
+            $repair->execute([':id' => $nextId++]);
+        } while ($repair->rowCount() > 0);
+
+        // AUTO_INCREMENT needs the column to be a key, and an interrupted import can lose the primary key too.
+        $primaryKey = $idColumn['COLUMN_KEY'] === 'PRI' ? '' : ', ADD PRIMARY KEY (id)';
+        $pdo->exec('ALTER TABLE notifications MODIFY id INT UNSIGNED NOT NULL AUTO_INCREMENT' . $primaryKey);
+    }
+
+    $ensured = true;
+}
+
 function notification_insert(PDO $pdo, int $userId, string $title, string $message, string $type, ?string $referenceId = null): ?int
 {
     $userId = (int)$userId;
@@ -2468,6 +2496,8 @@ function notification_insert(PDO $pdo, int $userId, string $title, string $messa
     if ($userId <= 0 || $title === '' || $message === '' || $type === '') {
         return null;
     }
+
+    ensure_notification_ids($pdo);
 
     $duplicateStatement = $pdo->prepare(
         'SELECT id

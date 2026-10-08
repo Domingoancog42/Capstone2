@@ -1576,7 +1576,7 @@ function CompensatoryModal({
             <div>
               <span className="mb-1.5 flex items-center gap-1 text-sm font-semibold text-slate-700">
                 <CalendarDays size={15} />
-                Inclusive Dates *
+                Inclusive Dates <span className="app-required-marker font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
               </span>
               {/*
                 * No lower bound, and no rolling past-date check either. Compensatory time off is
