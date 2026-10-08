@@ -1096,7 +1096,7 @@ function reports_definitions(): array
                 lm.estimated_amount AS computedAmount,
                 lm.approved_at AS approvalDate,
                 CASE
-                    WHEN LOWER(lm.status) IN ("pending", "reviewed") THEN "Pending"
+                    WHEN LOWER(lm.status) IN ("pending", "endorsed", "reviewed", "chief_reviewed") THEN "Pending"
                     ELSE CONCAT(UPPER(LEFT(lm.status, 1)), LOWER(SUBSTRING(lm.status, 2)))
                 END AS status
             FROM leave_monetization_requests lm
@@ -1107,7 +1107,7 @@ function reports_definitions(): array
         'filters' => [
             'employeeId' => 'e.id',
             'divisionId' => 'e.division_id',
-            'status' => 'CASE WHEN LOWER(lm.status) IN ("pending", "reviewed") THEN "pending" ELSE LOWER(lm.status) END',
+            'status' => 'CASE WHEN LOWER(lm.status) IN ("pending", "endorsed", "reviewed", "chief_reviewed") THEN "pending" ELSE LOWER(lm.status) END',
         ],
         'includeRowNumber' => true,
     ];

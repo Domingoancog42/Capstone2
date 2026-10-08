@@ -105,33 +105,24 @@ export function toLeaveRequestRow(request) {
   return { ...request, rowKey: `leave-${request.id}` };
 }
 
-/**
- * Which decisions a monetization row offers, following leave_monetization.php rather than the leave
- * request chain: the HR Head reviews a pending filing and the Regional Director gives the final
- * approval only once that review exists.
- */
+/** Monetization follows the same approval desks as a leave application. */
 export function resolveMonetizationRowActions({ roleKey, record, isOwnRecord }) {
-  const normalizedRoleKey = String(roleKey || "").trim().toLowerCase();
+  const role = String(roleKey || "").trim().toLowerCase();
   const status = normalizeLeaveStatus(record?.status);
-  const isHrHead = normalizedRoleKey === "hrhead";
-  const isRegionalDirector = normalizedRoleKey === "regionaldirector";
-  const allowRowManagement = !isOwnRecord;
-  const isOpenStatus = status === "Pending" || status === "Reviewed";
-
-  const showReject = allowRowManagement && (
-    (isHrHead && status === "Pending")
-    || (isRegionalDirector && status === "Reviewed")
-    || (!isHrHead && !isRegionalDirector && isOpenStatus)
-  );
-
+  const stages = {
+    Pending: { role: "hrstaff", next: "Endorsed" },
+    Endorsed: { role: "hrhead", next: "Reviewed" },
+    Reviewed: { role: "chief", next: "Chief Reviewed" },
+    "Chief Reviewed": { role: "regionaldirector", next: "Approved" },
+  };
+  const stage = stages[status];
+  const canAct = !isOwnRecord && Boolean(stage) && (role === "admin" || role === stage.role);
   return {
-    showReview: allowRowManagement && isHrHead && status === "Pending",
-    showApprove: allowRowManagement && (
-      (isRegionalDirector && status === "Reviewed")
-      || (!isHrHead && !isRegionalDirector && isOpenStatus)
-    ),
-    showReject,
-    showCancel: showReject,
+    showReview: false,
+    showApprove: canAct,
+    showReject: canAct,
+    showCancel: !isOwnRecord && role === "admin" && Boolean(stage),
     showOwnCancel: isOwnRecord && status === "Pending",
+    nextStatus: stage?.next || "",
   };
 }

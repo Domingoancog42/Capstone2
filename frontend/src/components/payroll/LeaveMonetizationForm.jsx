@@ -138,7 +138,7 @@ function buildFormData(record, leaveCreditSnapshot = null, availableLeaveTypes =
     slEarned: sickRow.earned,
     slLess: sickRow.less,
     slBalance: sickRow.balance,
-    recommendation: isRejected ? "disapproved" : (isApproved ? "approved" : ""),
+    recommendation: isRejected ? "disapproved" : (record?.chiefReviewedByEmployeeRecordId ? "approved" : ""),
     disapprovalReason: isRejected ? rejectedNote : "",
     approvedDaysPay: isApproved ? formatCreditValue(monetizedDays) : "",
     approvedDaysNoPay: "",
@@ -164,6 +164,7 @@ export default function LeaveMonetizationFormModal({
   const [employeeSignature, setEmployeeSignature] = useState("");
   const [reviewerSignature, setReviewerSignature] = useState("");
   const [savedHrmoSignature, setSavedHrmoSignature] = useState("");
+  const [savedChiefSignature, setSavedChiefSignature] = useState("");
   const [savedRegionalDirectorSignature, setSavedRegionalDirectorSignature] = useState("");
   const [leaveCredits, setLeaveCredits] = useState(null);
   const [configuredLeaveTypes, setConfiguredLeaveTypes] = useState([]);
@@ -323,6 +324,24 @@ export default function LeaveMonetizationFormModal({
       mounted = false;
     };
   }, [open, resolvedRecord?.reviewedByEmployeeRecordId, trackLoad]);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadChiefSignature = async () => {
+      if (!open || !resolvedRecord?.chiefReviewedByEmployeeRecordId) {
+        setSavedChiefSignature("");
+        return;
+      }
+      try {
+        const result = await getEmployeeSignature(resolvedRecord.chiefReviewedByEmployeeRecordId);
+        if (mounted) setSavedChiefSignature(String(result?.employee?.signatureDataUrl || ""));
+      } catch {
+        if (mounted) setSavedChiefSignature("");
+      }
+    };
+    void trackLoad(loadChiefSignature);
+    return () => { mounted = false; };
+  }, [open, resolvedRecord?.chiefReviewedByEmployeeRecordId, trackLoad]);
 
   useEffect(() => {
     let mounted = true;
@@ -598,8 +617,13 @@ export default function LeaveMonetizationFormModal({
                 name: hrmoName,
                 caption: hrmoCaption,
               }}
-              // A monetization goes from the HR Head straight to the Regional Director: 7.B stays unsigned.
-              chief={{ signed: false, caption: "Division Chief" }}
+              chief={{
+                signed: Boolean(resolvedRecord?.chiefReviewedByEmployeeRecordId),
+                signatureDataUrl: savedChiefSignature,
+                fallbackText: formatSignatureTimestamp(resolvedRecord?.chiefReviewedAt),
+                name: resolvedRecord?.chiefReviewedByName || "",
+                caption: "Division Chief",
+              }}
               regionalDirector={{
                 signed: hasRegionalDirectorSignatureBlock,
                 signatureDataUrl: regionalDirectorSignature,

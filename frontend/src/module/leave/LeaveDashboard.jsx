@@ -276,13 +276,11 @@ function LeaveRequestManagementPanel({
     ) : null;
 
     /*
-     * A monetization filing follows leave_monetization.php's own chain — HR Head review first, then
-     * the Regional Director's final approval — so its row decides its own actions. Its form carries
-     * a Print button of its own, and the archive is the leave archive either way.
+     * Monetization follows the same approval desks as leave applications and shares the archive.
      */
     if (request.isLeaveMonetization) {
       const monetizationActions = resolveMonetizationRowActions({
-        roleKey: normalizedRoleKey,
+        roleKey: isDivisionDesk ? "chief" : normalizedRoleKey,
         record: request,
         isOwnRecord: matchesUserRecordScope(request, user),
       });
@@ -326,7 +324,7 @@ function LeaveRequestManagementPanel({
       return (
         <ViewFormActions viewLabel="View leave monetization form" onView={() => onAction?.("view", request)}>
           {balancesAction}
-          {canManage && !isHrStaff && monetizationActions.showReview ? (
+          {canManage && monetizationActions.showReview ? (
             <ActionIconButton
               label="Approve leave monetization"
               icon={faCheck}
@@ -334,15 +332,15 @@ function LeaveRequestManagementPanel({
               onClick={() => onAction?.("markReviewed", request)}
             />
           ) : null}
-          {canManage && !isHrStaff && monetizationActions.showApprove ? (
+          {canManage && monetizationActions.showApprove ? (
             <ActionIconButton
-              label={isRegionalDirector ? "Final approve leave monetization" : "Approve leave monetization"}
+              label={isHrStaff ? "Verify leave credits" : (isRegionalDirector ? "Final approve leave monetization" : "Approve leave monetization")}
               icon={faCheck}
               tone="approve"
               onClick={() => onAction?.("approve", request)}
             />
           ) : null}
-          {canManage && !isHrStaff && monetizationActions.showReject ? (
+          {canManage && monetizationActions.showReject ? (
             <ActionIconButton
               label="Reject leave monetization"
               icon={faXmark}
@@ -350,7 +348,7 @@ function LeaveRequestManagementPanel({
               onClick={() => onAction?.("reject", request)}
             />
           ) : null}
-          {!isHrStaff && ((canManage && monetizationActions.showCancel) || monetizationActions.showOwnCancel) ? (
+          {((canManage && monetizationActions.showCancel) || monetizationActions.showOwnCancel) ? (
             <ActionIconButton
               label="Cancel leave monetization"
               icon={faBan}
@@ -957,9 +955,7 @@ export default function LeaveDashboard({
 
     const [requestResult, monetizationResult] = await Promise.allSettled([
       fetchLeaveRequests({ archived: leaveArchiveView }),
-      roleKey === "chief"
-        ? Promise.resolve({ records: [] })
-        : fetchLeaveMonetizationRequests({ archived: leaveArchiveView }),
+      fetchLeaveMonetizationRequests({ archived: leaveArchiveView }),
     ]);
 
     try {
@@ -982,7 +978,7 @@ export default function LeaveDashboard({
     } finally {
       setIsLoading(false);
     }
-  }, [leaveArchiveView, roleKey]);
+  }, [leaveArchiveView]);
 
   const loadModulePendingCounts = useCallback(async ({ background = false } = {}) => {
     const scopeRecords = (records = []) =>
@@ -1105,7 +1101,7 @@ export default function LeaveDashboard({
       if (matchesUserRecordScope(request, user)) return count;
 
       if (request.isLeaveMonetization) {
-        const actions = resolveMonetizationRowActions({ roleKey, record: request, isOwnRecord: false });
+        const actions = resolveMonetizationRowActions({ roleKey: isLeaveDivisionDesk(user) ? "chief" : roleKey, record: request, isOwnRecord: false });
         return count + (actions.showReview || actions.showApprove ? 1 : 0);
       }
 
@@ -1226,13 +1222,13 @@ export default function LeaveDashboard({
 
     if (request.isLeaveMonetization) {
       const actions = resolveMonetizationRowActions({
-        roleKey,
+        roleKey: isLeaveDivisionDesk(user) ? "chief" : roleKey,
         record: request,
         isOwnRecord: false,
       });
 
       if (actions.showReview) return { action: "markReviewed", status: "Reviewed" };
-      if (actions.showApprove) return { action: "approve", status: "Approved" };
+      if (actions.showApprove) return { action: "approve", status: actions.nextStatus };
       return null;
     }
 
@@ -1367,8 +1363,7 @@ export default function LeaveDashboard({
 
   /*
    * The monetization half of the row actions. It is kept apart from the leave request handler
-   * because every step of it answers to leave_monetization.php: its own approval chain, where the
-   * Regional Director signs only after the HR Head's review, and its own record to archive.
+   * because its updates and archived records are handled by leave_monetization.php.
    */
   const handleMonetizationAction = async (actionType, record) => {
     /*
@@ -1403,31 +1398,23 @@ export default function LeaveDashboard({
     }
 
     const isOwnRecord = matchesUserRecordScope(record, user);
-    const status = normalizeLeaveStatus(record.status);
 
     if (isOwnRecord && actionType !== "cancel") {
       toast.error("You cannot act on your own leave monetization request.");
       return;
     }
 
-    if (actionType === "approve" && isRegionalDirector && status !== "Reviewed") {
-      toast.error("Regional Director can only give final approval after HR Head review.");
-      return;
-    }
-
-    if (
-      (actionType === "reject" || actionType === "cancel")
-      && isRegionalDirector
-      && !isOwnRecord
-      && status !== "Reviewed"
-    ) {
-      toast.error("Regional Director can only act on requests after HR Head review.");
+    const actions = resolveMonetizationRowActions({ roleKey: isLeaveDivisionDesk(user) ? "chief" : roleKey, record, isOwnRecord });
+    if ((actionType === "approve" && !actions.showApprove)
+      || (actionType === "reject" && !actions.showReject)
+      || (actionType === "cancel" && !actions.showCancel && !actions.showOwnCancel)) {
+      toast.error("This request is awaiting another approval desk.");
       return;
     }
 
     const statusMap = {
       markReviewed: "Reviewed",
-      approve: "Approved",
+      approve: actions.nextStatus,
       reject: "Rejected",
       cancel: "Cancelled",
     };
@@ -1477,7 +1464,7 @@ export default function LeaveDashboard({
     const rejectedNote = isRejectAction ? String(confirmation.value || "").trim() : "";
 
     /*
-     * The two one-way steps leave_monetization.php gates. What comes back is the pair to send with
+     * Each approval step is gated by leave_monetization.php. What comes back is the pair to send with
      * the update, not a verdict -- the answer is judged there and never here. A null is a cancel or
      * an undealt challenge, and either way nothing is sent.
      */

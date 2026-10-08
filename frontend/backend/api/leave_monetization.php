@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/leave-credit-utils.php';
 require_once __DIR__ . '/captcha-utils.php';
+require_once __DIR__ . '/monetization-workflow.php';
 
 $sessionUser = require_session_user();
 
@@ -69,6 +70,8 @@ function monetization_date_or_null(mixed $value): ?string
 function monetization_status_to_client(string $status): string
 {
     return match (strtolower($status)) {
+        'endorsed' => 'Endorsed',
+        'chief_reviewed' => 'Chief Reviewed',
         'reviewed' => 'Reviewed',
         'approved' => 'Approved',
         'rejected' => 'Rejected',
@@ -80,6 +83,8 @@ function monetization_status_to_client(string $status): string
 function monetization_status_to_database(mixed $status): string
 {
     return match (strtolower(monetization_text($status))) {
+        'endorsed' => 'endorsed',
+        'chief reviewed', 'chief_reviewed' => 'chief_reviewed',
         'reviewed' => 'reviewed',
         'approved' => 'approved',
         'rejected' => 'rejected',
@@ -95,7 +100,8 @@ function monetization_role_key(array $user): string
 
 function monetization_can_manage(array $user): bool
 {
-    return in_array(monetization_role_key($user), ['admin', 'hrhead', 'hrstaff', 'regionaldirector'], true);
+    return in_array(monetization_role_key($user), ['admin', 'chief', 'hrhead', 'hrstaff', 'regionaldirector'], true)
+        || monetization_is_division_desk($user);
 }
 
 /** Personal leave roles may archive and restore only their own completed monetization requests. */
@@ -117,11 +123,6 @@ function monetization_can_view_all(array $user): bool
 function monetization_can_select_employee(array $user): bool
 {
     return in_array(monetization_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
-}
-
-function monetization_can_mark_reviewed(array $user): bool
-{
-    return monetization_role_key($user) === 'hrhead';
 }
 
 function monetization_is_regional_director(array $user): bool
@@ -182,6 +183,11 @@ function monetization_base_select(): string
             lm.estimated_amount AS estimatedAmount,
             lm.credits_before AS creditsBefore,
             lm.status,
+            lm.endorsed_by_employee_id AS endorsedByEmployeeRecordId,
+            lm.endorsed_at AS endorsedAt,
+            lm.chief_reviewed_by_employee_id AS chiefReviewedByEmployeeRecordId,
+            lm.chief_reviewed_at AS chiefReviewedAt,
+            COALESCE(NULLIF(TRIM(CONCAT(chief_employee.first_name, " ", COALESCE(chief_employee.middle_name, ""), " ", chief_employee.last_name)), ""), "") AS chiefReviewedByName,
             COALESCE(lm.rejected_note, "") AS rejectedNote,
             lm.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
             COALESCE(NULLIF(TRIM(CONCAT(reviewed_employee.first_name, " ", COALESCE(reviewed_employee.middle_name, ""), " ", reviewed_employee.last_name)), ""), "") AS reviewedByName,
@@ -200,6 +206,7 @@ function monetization_base_select(): string
          LEFT JOIN designations des ON des.id = e.designation_id
          LEFT JOIN employees reviewed_employee ON reviewed_employee.id = lm.reviewed_by_employee_id
          LEFT JOIN designations reviewed_designation ON reviewed_designation.id = reviewed_employee.designation_id
+         LEFT JOIN employees chief_employee ON chief_employee.id = lm.chief_reviewed_by_employee_id
          LEFT JOIN employees approved_employee ON approved_employee.id = lm.approved_by_employee_id';
 }
 
@@ -379,6 +386,12 @@ function list_leave_monetizations(PDO $pdo, array $sessionUser): void
     $sql = monetization_base_select() . ' WHERE lm.is_archived = :is_archived';
     $params = [':is_archived' => archived_view_requested() ? 1 : 0];
 
+    if (monetization_is_division_desk($sessionUser)) {
+        $sql .= ' AND (lm.employee_id = :viewer_employee_id OR e.division_id = (SELECT division_id FROM employees WHERE id = :division_viewer_id))';
+        $params[':viewer_employee_id'] = session_employee_record_id($pdo, $sessionUser);
+        $params[':division_viewer_id'] = $params[':viewer_employee_id'];
+    }
+
     if ($employeeScopeId !== null) {
         $sql .= ' AND lm.employee_id = :employee_scope_id';
         $params[':employee_scope_id'] = $employeeScopeId;
@@ -411,7 +424,9 @@ function get_leave_monetization(PDO $pdo, array $sessionUser): void
 
     $record = fetch_leave_monetization($pdo, $id, monetization_employee_scope_id($pdo, $sessionUser));
 
-    if ($record === null) {
+    if ($record === null || (monetization_is_division_desk($sessionUser)
+        && (int)$record['employeeRecordId'] !== session_employee_record_id($pdo, $sessionUser)
+        && !monetization_division_matches($pdo, (int)$record['employeeRecordId'], $sessionUser))) {
         json_response([
             'success' => false,
             'message' => 'Leave monetization request not found.',
@@ -510,7 +525,7 @@ function monetization_pending_days(PDO $pdo, int $employeeId, int $leaveTypeId, 
             FROM leave_monetization_requests
             WHERE employee_id = :employee_id
               AND leave_type_id = :leave_type_id
-              AND status IN ("pending", "reviewed")';
+              AND status IN ("pending", "endorsed", "reviewed", "chief_reviewed")';
     $params = [
         ':employee_id' => $employeeId,
         ':leave_type_id' => $leaveTypeId,
@@ -531,7 +546,7 @@ function monetization_pending_days(PDO $pdo, int $employeeId, int $leaveTypeId, 
  * Days the employee has already committed to monetization this calendar year, across every
  * leave type, counted against the 30-day annual ceiling.
  *
- * Approved days are spent and pending/reviewed days are spoken for, so both count. Rejected
+ * Approved days are spent and days at every open approval desk are reserved. Rejected
  * and cancelled filings free their days back up again.
  */
 function monetization_year_to_date_days(PDO $pdo, int $employeeId, int $year, int $excludeId = 0): float
@@ -540,7 +555,7 @@ function monetization_year_to_date_days(PDO $pdo, int $employeeId, int $year, in
             FROM leave_monetization_requests
             WHERE employee_id = :employee_id
               AND YEAR(date_filed) = :year
-              AND status IN ("pending", "reviewed", "approved")';
+              AND status IN ("pending", "endorsed", "reviewed", "chief_reviewed", "approved")';
     $params = [
         ':employee_id' => $employeeId,
         ':year' => $year,
@@ -731,7 +746,9 @@ function create_leave_monetization(PDO $pdo, array $body, array $sessionUser): v
     $isRegionalDirectorOwnRequest = monetization_is_regional_director($sessionUser)
         && $sessionEmployeeId !== null
         && $employeeId === $sessionEmployeeId;
-    $initialStatus = $isRegionalDirectorOwnRequest ? 'approved' : 'pending';
+    $isHrStaffOwnRequest = monetization_role_key($sessionUser) === 'hrstaff'
+        && $sessionEmployeeId !== null && $employeeId === $sessionEmployeeId;
+    $initialStatus = $isRegionalDirectorOwnRequest ? 'approved' : ($isHrStaffOwnRequest ? 'endorsed' : 'pending');
 
     $pdo->beginTransaction();
 
@@ -739,10 +756,10 @@ function create_leave_monetization(PDO $pdo, array $body, array $sessionUser): v
         $statement = $pdo->prepare(
             'INSERT INTO leave_monetization_requests
                 (employee_id, leave_type_id, number_of_days, date_filed, reason, daily_rate, estimated_amount,
-                 credits_before, status, approved_by_employee_id, approved_at, created_by_user_id)
+                 credits_before, status, endorsed_by_employee_id, endorsed_at, approved_by_employee_id, approved_at, created_by_user_id)
              VALUES
                 (:employee_id, :leave_type_id, :number_of_days, :date_filed, :reason, :daily_rate, :estimated_amount,
-                 :credits_before, :status, :approved_by_employee_id, :approved_at, :created_by_user_id)'
+                 :credits_before, :status, :endorsed_by_employee_id, :endorsed_at, :approved_by_employee_id, :approved_at, :created_by_user_id)'
         );
         $statement->execute([
             ':employee_id' => $employeeId,
@@ -754,6 +771,8 @@ function create_leave_monetization(PDO $pdo, array $body, array $sessionUser): v
             ':estimated_amount' => $estimatedAmount,
             ':credits_before' => $credits['remaining'],
             ':status' => $initialStatus,
+            ':endorsed_by_employee_id' => $isHrStaffOwnRequest ? $sessionEmployeeId : null,
+            ':endorsed_at' => $isHrStaffOwnRequest ? date('Y-m-d H:i:s') : null,
             ':approved_by_employee_id' => $isRegionalDirectorOwnRequest ? $sessionEmployeeId : null,
             ':approved_at' => $isRegionalDirectorOwnRequest ? date('Y-m-d H:i:s') : null,
             ':created_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
@@ -795,9 +814,10 @@ function create_leave_monetization(PDO $pdo, array $body, array $sessionUser): v
         );
         $targetRoles = $isRegionalDirectorOwnRequest
             ? ['admin', 'hrhead', 'hrstaff']
-            : ['admin', 'hrhead', 'hrstaff', 'regionaldirector'];
+            : ['admin'];
 
         notify_roles($pdo, $targetRoles, $title, $message, 'leave_monetization_submitted', (string)$recordId);
+        monetization_notify_next_desk($pdo, $initialStatus, $employeeId, $recordId);
     } catch (Throwable $notificationException) {
         error_log('Leave monetization notification error: ' . $notificationException->getMessage());
     }
@@ -867,9 +887,9 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
 
     $currentStatement = $pdo->prepare(
         'SELECT employee_id, leave_type_id, number_of_days, date_filed, status,
-                reviewed_by_employee_id, approved_by_employee_id
+                reviewed_by_employee_id, approved_by_employee_id, endorsed_by_employee_id, chief_reviewed_by_employee_id
          FROM leave_monetization_requests
-         WHERE id = :id
+         WHERE id = :id AND is_archived = 0
          LIMIT 1'
     );
     $currentStatement->execute([':id' => $id]);
@@ -923,44 +943,38 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
         ], 422);
     }
 
-    if ($status === 'reviewed' && !monetization_can_mark_reviewed($sessionUser)) {
-        json_response([
-            'success' => false,
-            'message' => 'Only HR Head can mark leave monetization requests as reviewed.',
-        ], 403);
+    $isApproval = in_array($status, ['endorsed', 'reviewed', 'chief_reviewed', 'approved'], true);
+    $stage = MONETIZATION_APPROVAL_CHAIN[$currentStatus] ?? null;
+    $role = monetization_role_key($sessionUser);
+    $deskRole = monetization_is_division_desk($sessionUser) ? 'chief' : $role;
+    if (monetization_is_division_desk($sessionUser) && !monetization_division_matches($pdo, $employeeId, $sessionUser)) {
+        json_response(['success' => false, 'message' => 'Leave monetization request not found.'], 404);
     }
-
-    if ($status === 'reviewed' && $currentStatus !== 'pending') {
-        json_response([
-            'success' => false,
-            'message' => 'Only pending leave monetization requests can be marked as reviewed.',
-        ], 422);
+    if (!$isOwnCancellation) {
+        $isAdminCancellation = $role === 'admin' && $status === 'cancelled';
+        $action = $status === 'rejected' ? 'reject' : 'approve';
+        if ($stage === null || (!$isAdminCancellation && (
+            (!$isApproval && $status !== 'rejected')
+            || !user_has_permission($sessionUser, 'leave', $action)
+            || ($role !== 'admin' && $deskRole !== $stage['role'])
+        ))) {
+            json_response(['success' => false, 'message' => 'You cannot act on this monetization request at its current approval stage.'], 403);
+        }
     }
-
-    if (monetization_can_mark_reviewed($sessionUser) && $status === 'approved') {
-        json_response([
-            'success' => false,
-            'message' => 'HR Head review forwards the request. Regional Director must give the final approval.',
-        ], 422);
-    }
-
-    if (
-        !$isOwnCancellation
-        && monetization_is_regional_director($sessionUser)
-        && in_array($status, ['approved', 'rejected', 'cancelled'], true)
-        && $currentStatus !== 'reviewed'
-    ) {
-        json_response([
-            'success' => false,
-            'message' => 'Regional Director can only take final action after HR Head has reviewed the request.',
-        ], 422);
+    if ($isApproval) {
+        $status = $stage['next'];
+        if ($currentStatus === 'pending' && monetization_employee_has_role($pdo, $employeeId, 'hrhead')) {
+            $status = 'reviewed';
+        } elseif ($currentStatus === 'endorsed' && monetization_employee_has_role($pdo, $employeeId, 'chief')) {
+            $status = 'chief_reviewed';
+        }
     }
 
     $trackedType = leave_credit_tracked_type_by_id($pdo, (int)($current['leave_type_id'] ?? 0));
     $numberOfDays = (float)($current['number_of_days'] ?? 0);
     $dateFiled = (string)($current['date_filed'] ?? '');
 
-    if ($status === 'approved') {
+    if ($isApproval) {
         if ($trackedType === null) {
             json_response([
                 'success' => false,
@@ -983,21 +997,24 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
     }
 
     /*
-     * HR Head reviewing the request and the Regional Director approving it both carry a solved
+     * Each approval desk carries a solved
      * captcha; refusing and cancelling do not. Placed after the credit check above so a challenge
      * is not spent on an approval that insufficient credits were going to refuse regardless.
      * See the approval_workflow entry in captcha-utils.php.
      */
-    if (in_array($status, ['reviewed', 'approved'], true)) {
+    if ($isApproval) {
         require_approval_captcha($body, 'leavemonetization', $id);
     }
 
     $nextReviewedByEmployeeId = (int)($current['reviewed_by_employee_id'] ?? 0) ?: null;
     $nextApprovedByEmployeeId = (int)($current['approved_by_employee_id'] ?? 0) ?: null;
-    $reviewedAt = $status === 'reviewed' ? date('Y-m-d H:i:s') : null;
+    $isStageDecision = $isApproval || $status === 'rejected';
+    $endorsedAt = $isStageDecision && $currentStatus === 'pending' ? date('Y-m-d H:i:s') : null;
+    $chiefReviewedAt = $isStageDecision && $currentStatus === 'reviewed' ? date('Y-m-d H:i:s') : null;
+    $reviewedAt = $isStageDecision && $currentStatus === 'endorsed' ? date('Y-m-d H:i:s') : null;
     $approvedAt = $status === 'approved' ? date('Y-m-d H:i:s') : null;
 
-    if ($status === 'reviewed') {
+    if ($reviewedAt !== null) {
         $nextReviewedByEmployeeId = $sessionEmployeeId > 0 ? $sessionEmployeeId : null;
         $nextApprovedByEmployeeId = null;
     }
@@ -1024,14 +1041,23 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
             'UPDATE leave_monetization_requests
              SET status = :status,
                  rejected_note = :rejected_note,
+                 endorsed_by_employee_id = :endorsed_by_employee_id,
+                 endorsed_at = COALESCE(:endorsed_at, endorsed_at),
+                 chief_reviewed_by_employee_id = :chief_reviewed_by_employee_id,
+                 chief_reviewed_at = COALESCE(:chief_reviewed_at, chief_reviewed_at),
                  reviewed_by_employee_id = :reviewed_by_employee_id,
                  reviewed_at = COALESCE(:reviewed_at, reviewed_at),
                  approved_by_employee_id = :approved_by_employee_id,
                  approved_at = :approved_at
-             WHERE id = :id'
+             WHERE id = :id AND status = :current_status AND is_archived = 0'
         );
         $statement->execute([
             ':status' => $status,
+            ':current_status' => $currentStatus,
+            ':endorsed_by_employee_id' => $endorsedAt !== null ? $sessionEmployeeId : ($current['endorsed_by_employee_id'] ?? null),
+            ':endorsed_at' => $endorsedAt,
+            ':chief_reviewed_by_employee_id' => $chiefReviewedAt !== null ? $sessionEmployeeId : ($current['chief_reviewed_by_employee_id'] ?? null),
+            ':chief_reviewed_at' => $chiefReviewedAt,
             ':rejected_note' => $status === 'rejected' ? $rejectedNote : null,
             ':reviewed_by_employee_id' => $nextReviewedByEmployeeId,
             ':reviewed_at' => $reviewedAt,
@@ -1039,6 +1065,10 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
             ':approved_at' => $approvedAt,
             ':id' => $id,
         ]);
+
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('This request was updated by another user. Refresh before trying again.');
+        }
 
         if ($status === 'approved' && $trackedType !== null) {
             deduct_monetized_leave_credits(
@@ -1084,7 +1114,7 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
                 $rejectedNote !== '' ? $rejectedNote : 'Please review the rejection details.'
             ),
             'reviewed' => sprintf(
-                'Your monetization of %s day(s) of %s credits was reviewed and forwarded for final approval.',
+                'Your monetization of %s day(s) of %s credits was reviewed and forwarded to the Division Chief.',
                 leave_credit_format_days($numberOfDays),
                 $leaveTypeName
             ),
@@ -1102,20 +1132,7 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
 
         notify_employee($pdo, $employeeId, $notificationTitle, $notificationMessage, $notificationType, (string)$id);
 
-        if ($status === 'reviewed') {
-            notify_roles(
-                $pdo,
-                ['regionaldirector'],
-                'Leave Monetization For Approval',
-                sprintf(
-                    'A leave monetization request of %s day(s) of %s credits is awaiting your final approval.',
-                    leave_credit_format_days($numberOfDays),
-                    $leaveTypeName
-                ),
-                'leave_monetization_updated',
-                (string)$id
-            );
-        }
+        monetization_notify_next_desk($pdo, $status, $employeeId, $id);
     } catch (Throwable $notificationException) {
         error_log('Leave monetization notification error: ' . $notificationException->getMessage());
     }
@@ -1123,7 +1140,9 @@ function update_leave_monetization_status(PDO $pdo, array $body, array $sessionU
     json_response([
         'success' => true,
         'message' => match ($status) {
-            'reviewed' => 'Leave monetization reviewed and forwarded to the Regional Director for final approval.',
+            'endorsed' => 'Leave credits verified and forwarded to the HR Head for approval.',
+            'reviewed' => 'Leave monetization forwarded to the Division Chief for review.',
+            'chief_reviewed' => 'Leave monetization forwarded to the Regional Director for final approval.',
             'approved' => 'Leave monetization approved and the leave credits were deducted.',
             'rejected' => 'Leave monetization request rejected.',
             'cancelled' => 'Leave monetization request cancelled.',
@@ -1196,6 +1215,7 @@ function archive_leave_monetization(PDO $pdo, array $body, array $sessionUser, b
 
 try {
     ensure_archive_columns($pdo, 'leave_monetization_requests');
+    ensure_monetization_workflow($pdo);
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
