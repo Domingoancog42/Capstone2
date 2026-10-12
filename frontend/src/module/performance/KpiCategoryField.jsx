@@ -17,7 +17,6 @@ export default function KpiCategoryField({
   value,
   options,
   onChange,
-  optional = false,
   required = false,
   maxLength,
   helper,
@@ -53,7 +52,7 @@ export default function KpiCategoryField({
   return (
     <div className="w-full">
       <label htmlFor={id} className="mb-1.5 block text-sm font-semibold text-slate-700">
-        Category {optional ? <span className="font-normal text-slate-500">(Optional)</span> : null}
+        Category
       </label>
       <div className={fieldShellClass}>
         <select

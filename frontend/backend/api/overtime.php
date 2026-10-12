@@ -129,6 +129,10 @@ function overtime_status_to_database(mixed $status): string
 
 function ensure_overtime_table(PDO $pdo): void
 {
+    // An incomplete SQL import can omit AUTO_INCREMENT and create request ID 0.
+    // Every request action requires a positive ID; keep new filings addressable.
+    restore_auto_increment_primary_key($pdo, 'overtime', 'overtime_id');
+
     if (!database_column_exists($pdo, 'overtime', 'work_date')) {
         $pdo->exec('ALTER TABLE overtime ADD COLUMN work_date DATE NULL AFTER employee_id');
 
@@ -430,6 +434,9 @@ function read_overtime_plan(array $body): array
     if ($windowGiven) {
         if ($timeStart === null || $timeEnd === null) {
             $errors[] = 'Enter the time the overtime starts and ends.';
+        } elseif ($timeStart < '17:00:00' || $timeStart > '21:00:00'
+            || $timeEnd < '17:00:00' || $timeEnd > '21:00:00') {
+            $errors[] = 'Overtime must be between 5:00 PM and 9:00 PM.';
         } elseif ($timeEnd <= $timeStart) {
             /* Same rule as the memo, which has no way to write a window that runs past midnight. */
             $errors[] = 'The end time must be later than the start time.';
@@ -671,6 +678,9 @@ function create_overtime(PDO $pdo, array $body, array $sessionUser): void
      */
     if ($workDate !== null && $workDate < date('Y-m-d')) {
         $errors[] = 'Work date cannot be in the past. Choose today or a later date.';
+    }
+    if ($workDate !== null && substr($workDate, 0, 7) !== date('Y-m')) {
+        $errors[] = 'Choose a work date in the current month.';
     }
     array_push($errors, ...$plan['errors']);
     /* A window that does not add up has already said so; the hours it could not give are not repeated. */
@@ -1102,6 +1112,9 @@ function update_overtime_request(PDO $pdo, array $body, array $sessionUser): voi
     }
     if ($workDate !== null && $workDate < date('Y-m-d')) {
         $errors[] = 'Work date cannot be in the past. Choose today or a later date.';
+    }
+    if ($workDate !== null && substr($workDate, 0, 7) !== date('Y-m')) {
+        $errors[] = 'Choose a work date in the current month.';
     }
     array_push($errors, ...$plan['errors']);
     if (!$plan['windowGiven'] || $plan['hours'] !== null) {

@@ -69,8 +69,7 @@ function useEmployeeDocuments(employeeRecordId, enabled) {
 }
 
 /**
- * Everything an employee has uploaded from Profile > Documents, for whoever is looking at their
- * record in the employee directory.
+ * Documents stored with an employee record, shown from the employee directory.
  *
  * Grouped by type and listing every file rather than only the newest of each: a re-upload does not
  * replace the previous copy on disk -- the stored name carries its own timestamp -- so showing one

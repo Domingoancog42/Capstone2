@@ -1,7 +1,7 @@
 import { BadgeCheck, GraduationCap, IdCard, ScrollText } from "lucide-react";
 
 /**
- * The document kinds the profile collects, in the order both screens show them.
+ * The document kinds stored with employee records, in display order.
  *
  * The ids have to stay in step with employee_document_type_labels() in employee_documents.php. There
  * is no table behind this feature -- the stored file name is what carries the type -- so renaming an

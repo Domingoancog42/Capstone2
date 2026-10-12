@@ -20,12 +20,12 @@ import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
 import LeaveFormModal from "../../components/leave/LeaveForm";
 import LeaveBalanceModal, { LeaveBalanceButton } from "../../components/leave/LeaveBalanceModal";
 import LeaveRequestModal from "../../components/leave/LeaveRequestModal";
+import LeaveAttachmentUploadButton from "../../components/leave/LeaveAttachmentUploadButton";
 import LeaveStatusBadge from "../../components/leave/LeaveStatusBadge";
 import LeaveMonetizationFormModal from "../../components/payroll/LeaveMonetizationForm";
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
-import { LEAVE_MONETIZATION_TYPE, LEAVE_STATUSES, LEAVE_TYPES } from "../../data/leaveTypes";
-import { useLeaveTypeFilterOptions } from "../../hooks/useFilterOptions";
+import { LEAVE_STATUSES, LEAVE_TYPES } from "../../data/leaveTypes";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   fetchLeaveCredits,
@@ -39,6 +39,7 @@ import {
   updateLeaveMonetizationStatus,
 } from "../../services/leaveMonetizationService";
 import {
+  canUploadLeaveMedicalCertificate,
   formatDateDisplay,
   formatDurationLabel,
   isLeaveStartDateTooSoon,
@@ -78,16 +79,6 @@ export default function EmployeeLeaveWorkspace({ user }) {
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [query, setQuery] = useState("");
-  const [leaveType, setLeaveType] = useState("");
-  /*
-   * Leave types from the leave_types table. Monetization is filed through leave_monetization.php rather
-   * than as a leave type, so it is offered after them for the monetization filings in this list.
-   */
-  const configuredLeaveTypes = useLeaveTypeFilterOptions();
-  const leaveTypeFilterOptions = useMemo(
-    () => Array.from(new Set([...configuredLeaveTypes, LEAVE_MONETIZATION_TYPE])),
-    [configuredLeaveTypes]
-  );
   const [status, setStatus] = useState("");
   const [rowsPerPage, setRowsPerPage] = useState("10");
   const [currentPage, setCurrentPage] = useState(1);
@@ -106,7 +97,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
         setRequests((requestResult.value.requests || []).filter((request) => matchesUserRecordScope(request, user)));
       } else if (!background) {
         setRequests([]);
-        toast.error(requestResult.reason?.response?.data?.message || "Unable to load leave history.");
+        toast.error(requestResult.reason?.response?.data?.message || "Unable to load leave requests.");
       }
 
       /* The endpoint already scopes an employee to their own filings, so nothing is filtered here. */
@@ -170,12 +161,11 @@ export default function EmployeeLeaveWorkspace({ user }) {
         displayReason,
         request.status,
       ].filter(Boolean).some((value) => String(value).toLowerCase().includes(search));
-      const matchesType = !leaveType || request.leaveType === leaveType;
       const matchesStatus = !status || normalizeLeaveStatus(request.status) === normalizeLeaveStatus(status);
 
-      return matchesSearch && matchesType && matchesStatus;
+      return matchesSearch && matchesStatus;
     });
-  }, [combinedRequests, leaveType, query, status]);
+  }, [combinedRequests, query, status]);
 
   const pageSize = Number(rowsPerPage) || 10;
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / pageSize));
@@ -184,7 +174,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [archiveView, leaveType, query, rowsPerPage, status]);
+  }, [archiveView, query, rowsPerPage, status]);
 
   const submitLeaveRequest = async (payload) => {
     try {
@@ -391,11 +381,6 @@ export default function EmployeeLeaveWorkspace({ user }) {
       return;
     }
 
-    if (!["Approved", "Rejected", "Cancelled"].includes(normalizeLeaveStatus(request.status))) {
-      toast.error("Only approved, rejected, or cancelled leave requests can be archived.");
-      return;
-    }
-
     await confirmArchiveRecord({
       module: moduleKey,
       id: request.id,
@@ -432,15 +417,23 @@ export default function EmployeeLeaveWorkspace({ user }) {
    * Viewing is always offered — the CSC Form No. 6 is the record of what was filed, and an employee
    * should be able to read their own back at any status. Printing and downloading wait for the
    * Regional Director's approval, since an unsigned form is not a document worth handing anyone.
-   * Cancelling is only theirs to do while the request is still pending; completed requests can move
-   * to the archive and requests archived by this employee can be restored. Defined once so the
-   * table and the narrow-screen cards agree.
+   * Cancelling is only theirs to do while the request is still pending; their requests can move
+   * to the archive at any status and requests archived by this employee can be restored. Defined once
+   * so the table and the narrow-screen cards agree.
    */
   const renderRequestActions = (request) => (
     <ViewFormActions
       viewLabel={request.isLeaveMonetization ? "View leave monetization form" : "View leave form"}
       onView={() => openRequestForm(request)}
     >
+      {canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
+        <LeaveAttachmentUploadButton
+          request={request}
+          onUploaded={(updatedRequest) => setRequests((current) => current.map((row) => (
+            row.id === updatedRequest.id ? updatedRequest : row
+          )))}
+        />
+      ) : null}
       {isRegionalDirectorApproved(request) ? (
         <>
           <ActionIconButton
@@ -468,7 +461,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
           onClick={() => handleArchiveRequest(request, true)}
         />
       ) : null}
-      {!archiveView && ["Approved", "Rejected", "Cancelled"].includes(normalizeLeaveStatus(request.status)) ? (
+      {!archiveView ? (
         <ActionIconButton
           label={request.isLeaveMonetization ? "Archive leave monetization request" : "Archive leave request"}
           icon={faBoxArchive}
@@ -494,7 +487,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h3 className="m-0 text-base font-semibold text-slate-950">
-              {archiveView ? "Archived Leave Requests" : "Leave History"}
+              {archiveView ? "Archived Leave Requests" : "Leave Request"}
             </h3>
             <p className="m-0 mt-1 text-sm text-slate-500">
               {archiveView
@@ -526,33 +519,20 @@ export default function EmployeeLeaveWorkspace({ user }) {
           </div>
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_150px_130px]">
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_150px_130px]">
           <label className="block">
             <span className="mb-1.5 block text-sm font-semibold text-slate-700">
-              {archiveView ? "Search Archived Requests" : "Search Leave History"}
+              {archiveView ? "Search Archived Requests" : "Search Leave Requests"}
             </span>
             <span className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder={archiveView ? "Search archived requests" : "Search leave history"}
+                placeholder={archiveView ? "Search archived requests" : "Search leave requests"}
                 className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
               />
             </span>
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Leave Type</span>
-            <select
-              value={leaveType}
-              onChange={(event) => setLeaveType(event.target.value)}
-              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-            >
-              <option value="">All leave types</option>
-              {leaveTypeFilterOptions.map((type) => (
-                <option key={type} value={type}>{type}</option>
-              ))}
-            </select>
           </label>
           <label className="block">
             <span className="mb-1.5 block text-sm font-semibold text-slate-700">Status</span>
@@ -598,7 +578,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
             title: archiveView ? "No archived leave requests" : "No leave requests found",
             description: archiveView
               ? "Requests you archive will appear here."
-              : "File a request or adjust your filters to see history.",
+              : "File a request or adjust your filters to see leave requests.",
           }}
           itemKey={(request, index) => request?.rowKey || request?.id || index}
           renderCard={(request) => ({
@@ -666,7 +646,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
                       <p className="m-0 mt-1 text-sm text-slate-500">
                         {archiveView
                           ? "Requests you archive will appear here."
-                          : "File a request or adjust your filters to see history."}
+                          : "File a request or adjust your filters to see leave requests."}
                       </p>
                     </td>
                   </tr>
@@ -767,5 +747,3 @@ export default function EmployeeLeaveWorkspace({ user }) {
     </div>
   );
 }
-
-

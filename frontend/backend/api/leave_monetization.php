@@ -104,7 +104,7 @@ function monetization_can_manage(array $user): bool
         || monetization_is_division_desk($user);
 }
 
-/** Personal leave roles may archive and restore only their own completed monetization requests. */
+/** Personal leave roles may archive and restore only monetization requests within their own scope. */
 function monetization_is_self_service_role(array $user): bool
 {
     return in_array(monetization_role_key($user), ['employee', 'planningofficer', 'cashier'], true);
@@ -1175,6 +1175,7 @@ function archive_leave_monetization(PDO $pdo, array $body, array $sessionUser, b
     if (
         $archived
         && monetization_is_self_service_role($sessionUser)
+        && monetization_role_key($sessionUser) !== 'employee'
         && !in_array(strtolower((string)($record['status'] ?? '')), ['approved', 'rejected', 'cancelled'], true)
     ) {
         json_response([

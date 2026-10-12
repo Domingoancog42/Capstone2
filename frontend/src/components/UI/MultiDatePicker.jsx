@@ -75,8 +75,8 @@ function buildInclusiveDateRange(startDate, endDate, allowWeekends) {
  * Collapsed to a single field until it is opened, so the form reads as one row of inputs and the
  * calendar only takes over the space while dates are actually being chosen.
  *
- * Ordinary leave excludes weekends, while compensatory time off and travel orders can opt into
- * full weekend selection through `allowWeekends`.
+ * Weekends are excluded by default. Callers can opt into full weekend selection through
+ * `allowWeekends`, for example for maternity leave's continuous calendar days.
  */
 export default function MultiDatePicker({
   value = [],
@@ -87,23 +87,26 @@ export default function MultiDatePicker({
   floating = false,
   closeOnSelect = false,
   selectionMode = "multiple",
+  currentMonthOnly = false,
   showRangeDuration = false,
   fullDayLabel = DATE_PORTION_LABELS.whole,
   rangeLabel = "Date Range",
   onChange,
 }) {
+  const currentMonth = todayDateInputValue().slice(0, 7);
+  const isSingleMode = selectionMode === "single";
   const sanitizedDays = useMemo(() => sanitizeSelectedDates(value), [value]);
   /*
-   * An empty `minDate` means there is no lower bound at all. Compensatory time off uses it: the
-   * hours are often logged after the days were taken, so its calendar has to reach backwards. The
-   * default is still today, so every other caller keeps the no-back-dating rule without asking.
+   * An empty `minDate` permits earlier dates, such as CTO days already taken. The optional
+   * current-month restriction applies separately. Other callers still default to today.
    */
   const earliestDate = String(minDate || "");
   const isSelectableDate = useCallback(
     (date) => (earliestDate === "" || date >= earliestDate)
       && (!disablePastDates || !isPastDate(date))
+      && (!currentMonthOnly || date.slice(0, 7) === currentMonth)
       && (allowWeekends || !isWeekendDate(date)),
-    [allowWeekends, disablePastDates, earliestDate]
+    [allowWeekends, currentMonth, currentMonthOnly, disablePastDates, earliestDate]
   );
   /*
    * `disabled` protects ordinary mouse and keyboard use, but it is not a data boundary. A stale
@@ -111,8 +114,11 @@ export default function MultiDatePicker({
    * dates out of both the rendered selection and every change emitted to the parent.
    */
   const selectedDays = useMemo(
-    () => sanitizedDays.filter((day) => isSelectableDate(day.date)),
-    [isSelectableDate, sanitizedDays]
+    () => {
+      const selectableDays = sanitizedDays.filter((day) => isSelectableDate(day.date));
+      return isSingleMode ? selectableDays.slice(0, 1) : selectableDays;
+    },
+    [isSelectableDate, isSingleMode, sanitizedDays]
   );
   const isRangeMode = selectionMode === "range";
   const [isOpen, setIsOpen] = useState(false);
@@ -142,16 +148,20 @@ export default function MultiDatePicker({
     () => selectedDays.every((day) => day.portion === selectedDays[0]?.portion),
     [selectedDays]
   );
-  const monthCells = useMemo(() => buildMonthCells(monthStart), [monthStart]);
+  const displayedMonthStart = useMemo(
+    () => currentMonthOnly ? toFirstOfMonth(`${currentMonth}-01`) : monthStart,
+    [currentMonth, currentMonthOnly, monthStart]
+  );
+  const monthCells = useMemo(() => buildMonthCells(displayedMonthStart), [displayedMonthStart]);
   const monthLabel = useMemo(
-    () => new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(monthStart),
-    [monthStart]
+    () => new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(displayedMonthStart),
+    [displayedMonthStart]
   );
   /*
    * Nothing before the earliest selectable day is reachable, so the back arrow stops at its month --
    * unless there is no earliest day, in which case it keeps going back.
    */
-  const canGoToPreviousMonth = earliestDate === "" || monthStart > toFirstOfMonth(earliestDate);
+  const canGoToPreviousMonth = !currentMonthOnly && (earliestDate === "" || monthStart > toFirstOfMonth(earliestDate));
 
   useEffect(() => {
     if (selectedDays.length !== sanitizedDays.length) {
@@ -244,12 +254,19 @@ export default function MultiDatePicker({
   };
 
   const shiftMonth = (offset) => {
+    if (currentMonthOnly) return;
     setMonthStart((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
   };
 
   const toggleDate = (date) => {
     /* Do not rely on the button alone: this also blocks synthetic/programmatic activation. */
     if (!isSelectableDate(date)) {
+      return;
+    }
+
+    if (isSingleMode) {
+      emitChange([{ date, portion: "whole" }]);
+      if (closeOnSelect) setIsOpen(false);
       return;
     }
 
@@ -332,8 +349,9 @@ export default function MultiDatePicker({
         <button
           type="button"
           onClick={() => shiftMonth(1)}
+          disabled={currentMonthOnly}
           aria-label="Next month"
-          className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
+          className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <ChevronRight size={16} />
         </button>
@@ -369,7 +387,9 @@ export default function MultiDatePicker({
                   (earliestDate !== "" && cell.value < earliestDate)
                   || (disablePastDates && isPastDate(cell.value))
                 )
-                  ? "Past dates cannot be selected"
+                  ? (earliestDate > todayDateInputValue()
+                    ? `Dates before ${formatDateDisplay(earliestDate)} cannot be selected`
+                    : "Past dates cannot be selected")
                   : undefined}
                 className={`relative flex h-10 flex-col items-center justify-center rounded-lg text-sm font-medium transition ${
                   !isSelectable
@@ -393,10 +413,13 @@ export default function MultiDatePicker({
         <p className="m-0 mt-2 text-[11px] text-slate-400">
           {isRangeMode
             ? (rangeAnchor ? "Now select the end date." : "Select a start date, then an end date.")
-            : "Tap a day to add or remove it."}
+            : isSingleMode ? "Select a date." : "Tap a day to add or remove it."}
+          {currentMonthOnly ? " Current month only." : ""}
           {/* Only promise what is actually enforced: a calendar with no lower bound takes past days. */}
           {earliestDate === "" && !disablePastDates
             ? (allowWeekends ? "" : " Weekends cannot be selected.")
+            : earliestDate > todayDateInputValue()
+              ? ` Dates before ${formatDateDisplay(earliestDate)} cannot be selected.${allowWeekends ? "" : " Weekends cannot be selected."}`
             : (allowWeekends ? " Past dates cannot be selected." : " Weekends and past dates cannot be selected.")}
         </p>
       </div>
@@ -407,6 +430,11 @@ export default function MultiDatePicker({
             <CalendarDays size={14} />
             No dates selected yet.
           </p>
+        ) : isSingleMode ? (
+          <div className="flex items-center justify-between gap-2">
+            <p className="m-0 text-xs font-medium text-slate-800">{formatDateDisplay(selectedDays[0].date)}</p>
+            <button type="button" onClick={clearSelection} className="text-xs font-semibold text-slate-500 transition hover:text-rose-700">Clear</button>
+          </div>
         ) : isRangeMode ? (
           <>
             <div className="flex items-center justify-between gap-2">

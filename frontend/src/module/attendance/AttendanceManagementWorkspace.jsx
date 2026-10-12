@@ -474,7 +474,7 @@ function LoadingSkeleton({ showMetricCards = true }) {
   );
 }
 
-function buildCalendarDays(records, month) {
+function buildCalendarDays(records, month, throughDate = toLocalDateInput()) {
   const base = parseDate(`${month}-01T00:00:00`);
   if (!base) {
     return [];
@@ -492,9 +492,9 @@ function buildCalendarDays(records, month) {
       day,
       record: recordsByDate.get(dateKey),
     };
-  });
+  }).filter((day) => day.id <= throughDate);
 
-  return [...leading, ...days];
+  return days.length > 0 ? [...leading, ...days] : [];
 }
 
 export default function AttendanceManagementWorkspace({ user, mode }) {
@@ -718,7 +718,11 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
   }, [rowsPerPage, safePage, sortedRecords]);
 
   const incompleteRecords = sortedRecords.filter((record) => String(record.status).toLowerCase() === "incomplete");
-  const calendarDays = useMemo(() => buildCalendarDays(records, dtrMonth), [dtrMonth, records]);
+  const calendarToday = toLocalDateInput();
+  const calendarDays = useMemo(
+    () => buildCalendarDays(records, dtrMonth, calendarToday),
+    [calendarToday, dtrMonth, records]
+  );
   const canImport = Boolean(permissions.canImport);
   const canViewImportHistory = Boolean(permissions.canViewImportHistory);
   const canEdit = Boolean(permissions.canEdit);
@@ -1588,7 +1592,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                 <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <CardTitle>Attendance Calendar</CardTitle>
-                    <CardDescription>Monthly view of your personal attendance status.</CardDescription>
+                    <CardDescription>Personal attendance status for dates up to today.</CardDescription>
                   </div>
                   {/*
                     * Stepping one month at a time is what this filter is actually used for, and the
@@ -1633,6 +1637,9 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                     ))}
                   </div>
                   <div className="mt-3 grid grid-cols-7 gap-2">
+                    {calendarDays.length === 0 ? (
+                      <p className="col-span-7 m-0 py-6 text-center text-sm text-slate-500">No elapsed dates in this month.</p>
+                    ) : null}
                     {calendarDays.map((day) => (
                       <div
                         key={day.id}

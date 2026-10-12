@@ -1989,6 +1989,7 @@ export default function OpcrManagementWorkspace({
               : "Select the divisions accountable for these KPIs."}
             query={assignmentQuery}
             onQueryChange={setAssignmentQuery}
+            searchLabel="Search Division"
             searchPlaceholder="Search divisions"
             divisionFilter={isChief ? chiefDivision : assignmentDivisionFilter}
             onDivisionFilterChange={setAssignmentDivisionFilter}
@@ -2103,7 +2104,6 @@ export default function OpcrManagementWorkspace({
                     name={`${kpi.uid}-sub-category`}
                     value={kpi.subCategory}
                     onChange={(event) => updateBulkKpi(kpi.uid, { subCategory: event.target.value })}
-                    placeholder="Optional, e.g. Mining Investment Promotion"
                     maxLength={255}
                   />
                   {/*

@@ -30,6 +30,7 @@ import Swal from "sweetalert2";
 import ActionIconButton from "../../components/UI/ActionIconButton";
 import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
 import InputField from "../../components/UI/InputField";
+import { RequiredFieldMarker } from "../../components/UI/RequiredFieldLabel";
 import {
   EntityCell,
   FieldCaption,
@@ -178,8 +179,8 @@ function createBulkKpi() {
 
 function createDefaultBulkForm() {
   return {
-    periodFrom: `${currentYear}-01-01`,
-    periodTo: `${currentYear}-06-30`,
+    periodFrom: `${currentYear}-07-01`,
+    periodTo: `${currentYear}-12-31`,
     kpis: [createBulkKpi()],
   };
 }
@@ -1620,7 +1621,7 @@ export default function IpcrManagementWorkspace({
               </span>
               <div>
                 <h3 className="m-0 text-base font-semibold text-slate-950">KPI details</h3>
-                <p className="mb-0 mt-0.5 text-sm text-slate-500">Set the rating period and measurable commitments.</p>
+                <p className="mb-0 mt-0.5 text-sm text-slate-500">The rating period is set automatically. Add measurable commitments.</p>
               </div>
             </div>
 
@@ -1628,18 +1629,16 @@ export default function IpcrManagementWorkspace({
               <InputField
                 label="Period From"
                 name="periodFrom"
-                type="date"
-                value={bulkForm.periodFrom}
-                onChange={(event) => setBulkForm((form) => ({ ...form, periodFrom: event.target.value }))}
-                required
+                type="text"
+                value={formatLongDate(bulkForm.periodFrom)}
+                readOnly
               />
               <InputField
                 label="Period To"
                 name="periodTo"
-                type="date"
-                value={bulkForm.periodTo}
-                onChange={(event) => setBulkForm((form) => ({ ...form, periodTo: event.target.value }))}
-                required
+                type="text"
+                value={formatLongDate(bulkForm.periodTo)}
+                readOnly
               />
             </div>
 
@@ -1674,7 +1673,6 @@ export default function IpcrManagementWorkspace({
                     name={`${kpi.uid}-program`}
                     value={kpi.program}
                     onChange={(event) => updateBulkKpi(kpi.uid, { program: event.target.value })}
-                    placeholder="Optional, e.g. OO3: ADAPTIVE CAPACITIES OF HUMAN COMMUNITIES AND NATURAL SYSTEMS IMPROVED - PROGRAM 1: GEOLOGICAL RISK REDUCTION AND RESILIENCY PROGRAM"
                     maxLength={255}
                   />
                   {/* The category is the band the KPI prints under; the output is the cell beside its rows. */}
@@ -1696,7 +1694,6 @@ export default function IpcrManagementWorkspace({
                       options={IPCR_CATEGORY_OPTIONS}
                       onChange={(category) => updateBulkKpi(kpi.uid, { category })}
                       maxLength={40}
-                      optional
                       helper="Printed as the heading above this KPI's rows on the IPCR form."
                     />
                   </div>
@@ -1708,7 +1705,7 @@ export default function IpcrManagementWorkspace({
                     */}
                   <div>
                     <div className="mb-1.5 flex items-center justify-between gap-3">
-                      <span className="block text-sm font-semibold text-slate-700">Success Indicators</span>
+                      <span className="block text-sm font-semibold text-slate-700">Success Indicators<RequiredFieldMarker /></span>
                       <span className="text-xs font-medium text-slate-500">
                         {kpi.indicators.length > 1 ? `${kpi.indicators.length} rows` : null}
                       </span>
@@ -1734,7 +1731,6 @@ export default function IpcrManagementWorkspace({
                               aria-label={`Success Indicator ${rowIndex + 1}, second column`}
                               value={row.secondTarget}
                               onChange={(event) => updateBulkIndicator(kpi.uid, row.uid, { secondTarget: event.target.value })}
-                              placeholder="Optional, e.g. 1 Groundwater Resource Assessment submitted within 42 working days after fieldwork"
                               rows={3}
                               disabled={saving}
                               className={hubFieldClass}
@@ -1814,18 +1810,16 @@ export default function IpcrManagementWorkspace({
             <InputField
               label="Period From"
               name="ipcrEditPeriodFrom"
-              type="date"
-              value={editForm.periodFrom}
-              onChange={(event) => setEditForm((form) => ({ ...form, periodFrom: event.target.value }))}
-              required
+              type="text"
+              value={formatLongDate(editForm.periodFrom)}
+              readOnly
             />
             <InputField
               label="Period To"
               name="ipcrEditPeriodTo"
-              type="date"
-              value={editForm.periodTo}
-              onChange={(event) => setEditForm((form) => ({ ...form, periodTo: event.target.value }))}
-              required
+              type="text"
+              value={formatLongDate(editForm.periodTo)}
+              readOnly
             />
           </div>
 

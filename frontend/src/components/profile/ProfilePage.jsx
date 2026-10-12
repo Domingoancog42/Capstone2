@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   BadgeCheck,
   Briefcase,
-  FolderOpen,
   GraduationCap,
   History,
   IdCard,
@@ -72,7 +71,6 @@ import AddressSection from "./sections/AddressSection";
 import GovernmentIdsSection from "./sections/GovernmentIdsSection";
 import EmploymentStatusSection from "./sections/EmploymentStatusSection";
 import EmergencyContactSection from "./sections/EmergencyContactSection";
-import DocumentsSection from "./sections/DocumentsSection";
 import SignatureSection from "./sections/SignatureSection";
 import SecuritySection from "./sections/SecuritySection";
 import PasswordChangeSection from "./sections/PasswordChangeSection";
@@ -245,7 +243,6 @@ const sectionIcons = {
   government: IdCard,
   employment: Briefcase,
   emergency: LifeBuoy,
-  documents: FolderOpen,
   signature: PenLine,
   security: ShieldCheck,
 };
@@ -1193,10 +1190,6 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
                 saving={savingSection === "emergency"}
                 onChange={handleFieldChange}
               />
-            ) : null}
-
-            {activeSection === "documents" ? (
-              <DocumentsSection readOnly={readOnly} />
             ) : null}
 
             {activeSection === "signature" ? (

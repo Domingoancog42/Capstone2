@@ -31,6 +31,7 @@ import ActionIconButton from "../../components/UI/ActionIconButton";
 import ViewFormActions from "../../components/UI/ViewFormActions";
 import SharedEmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
 import Pagination from "../../components/UI/Pagination";
+import MultiDatePicker from "../../components/UI/MultiDatePicker";
 import RecordCards from "../../components/UI/RecordCards";
 import {
   canManageLeave,
@@ -633,6 +634,8 @@ function PassSlipPreviewModal({ record, signatureDataUrl = "", onClose }) {
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close pass slip preview"
+              title="Close"
               className="grid h-9 w-9 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
             >
               <X size={16} />
@@ -717,11 +720,12 @@ function PassSlipModal({
     if (canSelectEmployee && !form.employeeRecordId) nextErrors.employeeRecordId = "Employee is required.";
     if (!form.passDate) nextErrors.passDate = "Pass date is required.";
     /*
-     * The `min` on the input stops the calendar offering earlier days, but a typed or pasted value
-     * still gets here, so the rule is enforced again rather than trusted.
+     * Validate again on submission so stale or supplied values follow the calendar's date limits.
      */
     if (form.passDate && isPastDate(form.passDate)) {
       nextErrors.passDate = "Pass date cannot be in the past. Choose today or a later date.";
+    } else if (form.passDate && form.passDate.slice(0, 7) !== today.slice(0, 7)) {
+      nextErrors.passDate = "Select a pass date within the current month.";
     }
     if (!form.destination.trim()) nextErrors.destination = "Destination is required.";
 
@@ -780,6 +784,8 @@ function PassSlipModal({
               <button
                 type="button"
                 onClick={onClose}
+                aria-label="Close pass slip form"
+                title="Close"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
               >
                 <X size={16} />
@@ -840,14 +846,18 @@ function PassSlipModal({
                 <CalendarDays size={15} />
                 Pass Date
               </span>
-              <input
-                type="date"
-                value={form.passDate}
-                min={today}
-                onChange={updateField("passDate")}
-                className={inputClasses}
+              <MultiDatePicker
+                value={form.passDate ? [{ date: form.passDate, portion: "whole" }] : []}
+                minDate={today}
+                currentMonthOnly
+                selectionMode="single"
+                allowWeekends
+                floating
+                closeOnSelect
+                placeholder="Select pass date"
+                onChange={(selectedDays) => updateField("passDate")({ target: { value: selectedDays[0]?.date || "" } })}
               />
-              <p className="m-0 mt-1 text-xs text-slate-500">Format: dd/mm/yyyy</p>
+              <p className="m-0 mt-1 text-xs text-slate-500">Select a date within the current month.</p>
               {errors.passDate ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.passDate}</p> : null}
             </label>
 

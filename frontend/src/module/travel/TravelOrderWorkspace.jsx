@@ -932,6 +932,8 @@ function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = fa
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close travel order preview"
+              title="Close"
               className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
             >
               <X size={16} />
@@ -1294,6 +1296,8 @@ function TravelOrderFormModal({
               <button
                 type="button"
                 onClick={onClose}
+                aria-label="Close travel order form"
+                title="Close"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
               >
                 <X size={16} />
@@ -1368,7 +1372,7 @@ function TravelOrderFormModal({
               <MultiDatePicker
                 value={form.selectedDates}
                 minDate={today}
-                allowWeekends
+                allowWeekends={false}
                 placeholder="Select travel dates"
                 floating
                 closeOnSelect
@@ -1377,7 +1381,7 @@ function TravelOrderFormModal({
                 onChange={updateSelectedDates}
               />
               <p className="m-0 mt-1 text-xs text-slate-500">
-                Select the trip's start and end dates. Every date in the range is included.
+                Select the trip's start and end dates. Weekdays in the range are included. Saturdays and Sundays cannot be selected.
               </p>
               {errors.selectedDates ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.selectedDates}</p> : null}
             </div>

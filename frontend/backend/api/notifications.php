@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
+require_once __DIR__ . '/leave-medical-certificate-utils.php';
 
 $sessionUser = require_session_user();
 
@@ -296,6 +297,7 @@ try {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'GET') {
+        send_due_leave_medical_certificate_reminders($pdo, $sessionUser);
         notifications_list($pdo, $sessionUser);
     }
 

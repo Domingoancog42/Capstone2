@@ -1,4 +1,5 @@
 import React, { useEffect, useId } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import Button from "./button";
@@ -20,6 +21,7 @@ export default function Modal({
   footerClassName = "",
   backdropClassName = "",
   containerClassName = "",
+  portal = false,
 }) {
   const titleId = useId();
 
@@ -40,7 +42,7 @@ export default function Modal({
     };
   }, [onClose, open]);
 
-  return (
+  const dialog = (
     <AnimatePresence>
       {open ? (
         <div className={`fixed inset-0 z-50 grid place-items-center p-3 sm:p-5 ${containerClassName}`.trim()} role="dialog" aria-modal="true" aria-labelledby={titleId}>
@@ -81,4 +83,6 @@ export default function Modal({
       ) : null}
     </AnimatePresence>
   );
+
+  return portal && typeof document !== "undefined" ? createPortal(dialog, document.body) : dialog;
 }

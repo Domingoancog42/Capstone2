@@ -14,7 +14,6 @@ export const profileSectionItems = [
   { id: "government", label: "Government IDs" },
   { id: "employment", label: "Employment Status" },
   { id: "emergency", label: "Emergency Contact" },
-  { id: "documents", label: "Documents" },
   { id: "signature", label: "E-Signature" },
   { id: "security", label: "Security" },
 ];

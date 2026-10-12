@@ -38,6 +38,9 @@ import { AccessDeniedInline } from "../../components/auth/AccessDenied";
 import { userCanAccessModule } from "../../utils/permissions";
 import { buildNextEmployeeId } from "../../utils/employeeIds";
 import { EmployeeDocumentDownloadButtons } from "../../components/employee/EmployeeDocumentsModal";
+import EmployeeDocumentUploadFields from "../../components/employee/EmployeeDocumentUploadFields";
+import EmployeeDocumentRetryModal from "../../components/employee/EmployeeDocumentRetryModal";
+import { saveEmployeeDocumentFiles } from "../../services/employeeDocumentUploads";
 import AdminAccountCard from "../../components/profile/AdminAccountCard";
 import ProfilePage from "../../components/profile/ProfilePage";
 import {
@@ -710,6 +713,8 @@ export default function AdminDashboard({
   const [query, setQuery] = useState("");
   const [employeeQuery, setEmployeeQuery] = useState("");
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
+  const [employeeDocuments, setEmployeeDocuments] = useState([]);
+  const [documentRetry, setDocumentRetry] = useState(null);
   const [employeeViewOpen, setEmployeeViewOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [viewingEmployee, setViewingEmployee] = useState(null);
@@ -2230,6 +2235,15 @@ export default function AdminDashboard({
       const emailNotification = result.emailNotification || "";
       const emailMessage = result.emailMessage || "";
       const linkedUser = result.linkedUser || null;
+      let documentWarning = "";
+
+      if (!isEditingEmployee && employeeDocuments.length) {
+        const failed = await saveEmployeeDocumentFiles(savedEmployee?.id, employeeDocuments);
+        if (failed.length) {
+          documentWarning = `${failed.length} document upload${failed.length === 1 ? "" : "s"} failed. Retry the remaining files in the Documents dialog.`;
+          setDocumentRetry({ employee: savedEmployee, attachments: failed });
+        }
+      }
 
       if (savedEmployee?.id && (profileImageDataUrl || removeProfileImage)) {
         try {
@@ -2281,11 +2295,12 @@ export default function AdminDashboard({
 
       setEmployeeModalOpen(false);
       setEditingEmployee(null);
+      setEmployeeDocuments([]);
 
       const emailWarning = emailNotification === "warning"
         ? (emailMessage || "Activation email could not be sent.")
         : "";
-      const saveWarnings = [profileImageWarning, emailWarning].filter(Boolean);
+      const saveWarnings = [profileImageWarning, emailWarning, documentWarning].filter(Boolean);
 
       if (saveWarnings.length > 0) {
         const message = `Employee saved, but ${saveWarnings.join(" ")}`;
@@ -2425,12 +2440,15 @@ export default function AdminDashboard({
 
   const openCreateEmployee = () => {
     setEditingEmployee(null);
+    setEmployeeDocuments([]);
     setEmployeeModalOpen(true);
   };
 
   const closeEmployeeModal = () => {
+    if (employeeSaving) return;
     setEmployeeModalOpen(false);
     setEditingEmployee(null);
+    setEmployeeDocuments([]);
   };
 
   const selectModule = useCallback((module) => {
@@ -2916,8 +2934,13 @@ export default function AdminDashboard({
           submitLabel={employeeSaving ? "Saving..." : editingEmployee ? "Save Changes" : "Create Employee"}
           showActions={false}
           submitting={employeeSaving}
+          additionalFields={!editingEmployee ? (
+            <EmployeeDocumentUploadFields value={employeeDocuments} onChange={setEmployeeDocuments} disabled={employeeSaving} />
+          ) : null}
         />
       </Modal>
+
+      <EmployeeDocumentRetryModal value={documentRetry} onChange={setDocumentRetry} />
 
       <Modal
         open={linkedUserModalOpen && userCanAccessModule(user, "users")}

@@ -109,7 +109,7 @@ function leave_can_manage(array $user): bool
         || leave_is_division_desk($user);
 }
 
-/** Personal leave roles may archive and restore only their own completed requests. */
+/** Personal leave roles may archive and restore only requests within their own scope. */
 function leave_is_self_service_role(array $user): bool
 {
     return in_array(leave_role_key($user), ['employee', 'planningofficer', 'cashier'], true);
@@ -530,6 +530,39 @@ function leave_attachment_upload(): ?array
     }
 
     return $file;
+}
+
+/** Restore generated IDs after an import without changing existing request/attachment links. */
+function ensure_leave_request_ids(PDO $pdo): void
+{
+    $tables = [
+        'leave_requests' => 'leave_request_id',
+        'leave_attachments' => 'leave_attachments_id',
+        'leave_types' => 'leave_type_id',
+    ];
+
+    foreach ($tables as $table => $primaryKey) {
+        $column = $pdo->query("SHOW COLUMNS FROM `$table` LIKE '$primaryKey'")->fetch();
+        if (!$column || str_contains(strtolower((string)$column['Extra']), 'auto_increment')) {
+            continue;
+        }
+
+        $type = (string)$column['Type'];
+        if ($column['Key'] !== 'PRI'
+            || !preg_match('/^(tinyint|smallint|mediumint|int|bigint)(\(\d+\))?( unsigned)?$/i', $type)) {
+            throw new RuntimeException('Invalid leave table primary key: ' . $table);
+        }
+
+        // MySQL can renumber an existing ID 0 while rebuilding an AUTO_INCREMENT column.
+        $sqlMode = (string)$pdo->query('SELECT @@SESSION.sql_mode')->fetchColumn();
+        $repairMode = $sqlMode === '' ? 'NO_AUTO_VALUE_ON_ZERO' : $sqlMode . ',NO_AUTO_VALUE_ON_ZERO';
+        $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($repairMode));
+        try {
+            $pdo->exec("ALTER TABLE `$table` MODIFY COLUMN `$primaryKey` $type NOT NULL AUTO_INCREMENT");
+        } finally {
+            $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($sqlMode));
+        }
+    }
 }
 
 function ensure_leave_request_rejected_note_column(PDO $pdo): void
@@ -2327,6 +2360,7 @@ function archive_leave_request(PDO $pdo, array $body, array $sessionUser, bool $
     if (
         $archived
         && leave_is_self_service_role($sessionUser)
+        && leave_role_key($sessionUser) !== 'employee'
         && !in_array(strtolower((string)($request['status'] ?? '')), ['approved', 'rejected', 'cancelled'], true)
     ) {
         json_response([
@@ -2363,7 +2397,90 @@ function archive_leave_request(PDO $pdo, array $body, array $sessionUser, bool $
     ]);
 }
 
+/** Employees attach their medical certificate to their own existing sick-leave request. */
+function upload_leave_medical_certificate(PDO $pdo, array $body, array $sessionUser, ?array $attachmentUpload): void
+{
+    $id = (int)($body['id'] ?? 0);
+    $employeeId = session_employee_record_id($pdo, $sessionUser);
+    if ($id <= 0 || !$employeeId) {
+        json_response(['success' => false, 'message' => 'Sick-leave request not found.'], 404);
+    }
+    if ($attachmentUpload === null) {
+        json_response(['success' => false, 'message' => 'Select a medical certificate to upload.'], 422);
+    }
+
+    $storedAttachment = null;
+    $pdo->beginTransaction();
+    try {
+        // Use the same request lock as the reminder so an upload and a notification cannot race.
+        $statement = $pdo->prepare(
+            'SELECT lr.leave_request_id, lr.status, lr.is_archived, lt.name AS leave_type
+             FROM leave_requests lr
+             INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
+             WHERE lr.leave_request_id = :id AND lr.employee_id = :employee_id
+             FOR UPDATE'
+        );
+        $statement->execute([':id' => $id, ':employee_id' => $employeeId]);
+        $request = $statement->fetch();
+        $errorStatus = 422;
+        $errorMessage = '';
+        if (!$request) {
+            $errorStatus = 404;
+            $errorMessage = 'Sick-leave request not found.';
+        } elseif (strtolower(trim((string)$request['leave_type'])) !== 'sick leave') {
+            $errorMessage = 'Medical certificates can only be uploaded for sick leave.';
+        } elseif ((int)$request['is_archived'] === 1
+            || in_array(strtolower((string)$request['status']), ['rejected', 'cancelled', 'canceled', 'withdrawn'], true)) {
+            $errorMessage = 'Attachments cannot be uploaded to archived, rejected, or cancelled requests.';
+        }
+        if ($errorMessage !== '') {
+            $pdo->rollBack();
+        } else {
+            $storedAttachment = store_leave_attachment($attachmentUpload);
+            $insert = $pdo->prepare(
+                'INSERT INTO leave_attachments (leave_request_id, file_name, file_path, file_size)
+                 VALUES (:id, :file_name, :file_path, :file_size)'
+            );
+            $insert->execute([
+                ':id' => $id,
+                ':file_name' => $storedAttachment['fileName'],
+                ':file_path' => $storedAttachment['filePath'],
+                ':file_size' => $storedAttachment['fileSize'],
+            ]);
+            $update = $pdo->prepare('UPDATE leave_requests SET updated_at = NOW() WHERE leave_request_id = :id');
+            $update->execute([':id' => $id]);
+            $read = $pdo->prepare(
+                'UPDATE notifications SET is_read = 1
+                 WHERE user_id = :user_id AND type = "leave_medical_certificate_reminder" AND reference_id = :id'
+            );
+            $read->execute([':user_id' => (int)$sessionUser['id'], ':id' => (string)$id]);
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if ($storedAttachment !== null && is_file($storedAttachment['absolutePath'])) {
+            unlink($storedAttachment['absolutePath']);
+        }
+        if ($exception instanceof RuntimeException && !$exception instanceof PDOException) {
+            json_response(['success' => false, 'message' => $exception->getMessage()], 422);
+        }
+        throw $exception;
+    }
+
+    if ($errorMessage !== '') {
+        json_response(['success' => false, 'message' => $errorMessage], $errorStatus);
+    }
+    json_response([
+        'success' => true,
+        'message' => 'Medical certificate uploaded successfully.',
+        'request' => fetch_leave_request($pdo, $id, $employeeId),
+    ]);
+}
+
 try {
+    ensure_leave_request_ids($pdo);
     ensure_leave_request_rejected_note_column($pdo);
     ensure_leave_request_pay_split_columns($pdo);
     ensure_leave_request_action_actor_columns($pdo);
@@ -2386,7 +2503,11 @@ try {
     }
 
     if ($method === 'POST') {
-        create_leave_request($pdo, leave_request_body(), $sessionUser, leave_attachment_upload());
+        $body = leave_request_body();
+        if (strtolower(leave_text($body['action'] ?? '')) === 'upload_medical_certificate') {
+            upload_leave_medical_certificate($pdo, $body, $sessionUser, leave_attachment_upload());
+        }
+        create_leave_request($pdo, $body, $sessionUser, leave_attachment_upload());
     }
 
     if ($method === 'PUT') {

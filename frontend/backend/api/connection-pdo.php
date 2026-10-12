@@ -2457,6 +2457,37 @@ function user_id_for_employee_record(PDO $pdo, int $employeeRecordId): ?int
     return $userId > 0 ? $userId : null;
 }
 
+/**
+ * Restore AUTO_INCREMENT on an integer primary key that an incomplete SQL import left without it,
+ * as leave_request.php's ensure_leave_request_ids() does for the leave tables. Existing rows keep
+ * their IDs: NO_AUTO_VALUE_ON_ZERO stops MySQL from renumbering a stored 0 that other tables may
+ * already reference. A column that is not the primary key is only logged, since AUTO_INCREMENT
+ * needs a key and failing here would take the whole endpoint down with it.
+ */
+function restore_auto_increment_primary_key(PDO $pdo, string $table, string $column): void
+{
+    $definition = $pdo->query("SHOW COLUMNS FROM `$table` LIKE " . $pdo->quote($column))->fetch(PDO::FETCH_ASSOC);
+    if (!$definition || str_contains(strtolower((string)$definition['Extra']), 'auto_increment')) {
+        return;
+    }
+
+    $type = (string)$definition['Type'];
+    if ($definition['Key'] !== 'PRI'
+        || !preg_match('/^(tinyint|smallint|mediumint|int|bigint)(\(\d+\))?( unsigned)?$/i', $type)) {
+        error_log("$table.$column is not an integer primary key; AUTO_INCREMENT was not restored.");
+        return;
+    }
+
+    $sqlMode = (string)$pdo->query('SELECT @@SESSION.sql_mode')->fetchColumn();
+    $repairMode = $sqlMode === '' ? 'NO_AUTO_VALUE_ON_ZERO' : $sqlMode . ',NO_AUTO_VALUE_ON_ZERO';
+    $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($repairMode));
+    try {
+        $pdo->exec("ALTER TABLE `$table` MODIFY COLUMN `$column` $type NOT NULL AUTO_INCREMENT");
+    } finally {
+        $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($sqlMode));
+    }
+}
+
 function ensure_notification_ids(PDO $pdo): void
 {
     static $ensured = false;

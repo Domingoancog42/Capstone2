@@ -12,6 +12,7 @@ export const NOTIFICATION_TYPE_OPTIONS = [
   { value: "leave_request_submitted", label: "Leave Request Submitted" },
   { value: "leave_request_approved", label: "Leave Request Approved" },
   { value: "leave_request_rejected", label: "Leave Request Rejected" },
+  { value: "leave_medical_certificate_reminder", label: "Medical Certificate Reminder" },
   { value: "leave_monetization_submitted", label: "Leave Monetization Filed" },
   { value: "leave_monetization_approved", label: "Leave Monetization Approved" },
   { value: "leave_monetization_rejected", label: "Leave Monetization Rejected" },
@@ -99,6 +100,8 @@ export function getNotificationTypeLabel(value) {
       return "Leave Request Approved";
     case "leave_request_rejected":
       return "Leave Request Rejected";
+    case "leave_medical_certificate_reminder":
+      return "Medical Certificate Reminder";
     case "leave_monetization_submitted":
       return "Leave Monetization Filed";
     case "leave_monetization_approved":
@@ -292,6 +295,7 @@ export function getNotificationRoute(notification = {}, roleKey = "") {
     case "leave_request_submitted":
     case "leave_request_approved":
     case "leave_request_rejected":
+    case "leave_medical_certificate_reminder":
       return role === "employee" ? "/employee/leave-request" : `/${role}/leave`;
     /* Monetization is filed and reviewed in the leave list, alongside the leave requests. */
     case "leave_monetization_submitted":

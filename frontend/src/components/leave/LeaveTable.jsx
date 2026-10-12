@@ -6,7 +6,9 @@ import ActionsMenu from "../UI/ActionsMenu";
 import RecordCards from "../UI/RecordCards";
 import SelectionCheckbox from "../UI/SelectionCheckbox";
 import LeaveStatusBadge from "./LeaveStatusBadge";
+import LeaveAttachmentUploadButton from "./LeaveAttachmentUploadButton";
 import {
+  canUploadLeaveMedicalCertificate,
   canRejectLeaveForUser,
   formatDateDisplay,
   formatDurationLabel,
@@ -177,6 +179,12 @@ export default function LeaveTable({
 
     return (
       <>
+        {canUploadLeaveMedicalCertificate(user, row) ? (
+          <LeaveAttachmentUploadButton
+            request={row}
+            onUploaded={(updatedRequest) => onAction?.("attachmentUploaded", updatedRequest)}
+          />
+        ) : null}
         {canManage && allowRowManagement ? (
           <>
             <ActionIconButton

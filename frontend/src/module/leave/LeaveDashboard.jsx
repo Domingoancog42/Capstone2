@@ -18,6 +18,7 @@ import LeaveFilters from "../../components/leave/LeaveFilters";
 import LeaveFormModal from "../../components/leave/LeaveForm";
 import LeaveReviewModal from "../../components/leave/LeaveReviewModal";
 import LeaveRequestModal from "../../components/leave/LeaveRequestModal";
+import LeaveAttachmentUploadButton from "../../components/leave/LeaveAttachmentUploadButton";
 import LeaveStatusBadge, { getLeaveStatusDisplayLabel } from "../../components/leave/LeaveStatusBadge";
 import LeaveTable from "../../components/leave/LeaveTable";
 import LeaveMonetizationFormModal from "../../components/payroll/LeaveMonetizationForm";
@@ -43,6 +44,7 @@ import {
   updateLeaveMonetizationStatus,
 } from "../../services/leaveMonetizationService";
 import {
+  canUploadLeaveMedicalCertificate,
   canCancelOwnLeaveRequest,
   canRejectLeaveForUser,
   canManageLeaveRequests,
@@ -444,6 +446,12 @@ function LeaveRequestManagementPanel({
         onView={() => onAction?.("view", request)}
       >
         {balancesAction}
+        {canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
+          <LeaveAttachmentUploadButton
+            request={request}
+            onUploaded={(updatedRequest) => onAction?.("attachmentUploaded", updatedRequest)}
+          />
+        ) : null}
         {canManage && allowRowManagement ? (
           <ActionIconButton
             label="Review leave request"
@@ -1501,6 +1509,10 @@ export default function LeaveDashboard({
   };
 
   const handleTableAction = async (actionType, request) => {
+    if (actionType === "attachmentUploaded") {
+      setRequests((current) => current.map((row) => (row.id === request.id ? request : row)));
+      return;
+    }
     /* The filer's leave credits, for either kind of row: both carry the employee's record id. */
     if (actionType === "balances") {
       setBalanceSnapshotRequest(request);
@@ -1954,7 +1966,6 @@ export default function LeaveDashboard({
             ? "File and monitor travel orders under your employee account."
             : "Review submitted travel orders, filter by employee or status, and update request outcomes."}
           submitLabel="Request Travel Order"
-          showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("travel", count)}
         />
       ) : activeTab === "passSlip" ? (
@@ -1965,7 +1976,6 @@ export default function LeaveDashboard({
           description="Create and review pass slips."
           submitLabel="File Pass Slip"
           showDeleteAction={false}
-          showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("passSlip", count)}
         />
       ) : activeTab === "cto" ? (
@@ -1975,7 +1985,6 @@ export default function LeaveDashboard({
           title="CTO Management"
           description="Create, review, approve, reject, cancel, and monitor employee compensatory time off requests."
           submitLabel="File CTO"
-          showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("cto", count)}
         />
       ) : activeTab === "overtime" ? (

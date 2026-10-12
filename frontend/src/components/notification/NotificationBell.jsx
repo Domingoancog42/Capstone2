@@ -878,6 +878,8 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
 
       <Modal
         open={detailOpen}
+        portal
+        containerClassName="notification-bell"
         title={detailNotification?.title || "Notification Details"}
         maxWidth="max-w-[680px]"
         onClose={() => {
@@ -1093,6 +1095,8 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
 
       <Modal
         open={viewAllOpen}
+        portal
+        containerClassName="notification-bell"
         title="All Notifications"
         maxWidth="max-w-[1200px]"
         onClose={() => {

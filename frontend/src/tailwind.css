@@ -3126,9 +3126,10 @@ html.dark .document-paper textarea {
 
 /* Every visible input/select/textarea label in an application workspace receives the same
    non-themeable required marker. Official printable form labels, search-only wrappers, hidden
-   labels, checkboxes, radio buttons, and file-upload buttons are intentionally excluded. */
-.app-workspace form label[for]:not(.sr-only):not(:has(.app-required-marker))::after,
-.app-workspace form label:not([for]):has(
+   labels, checkboxes, radio buttons, and file-upload buttons are intentionally excluded, as is
+   any field wrapped in .app-optional-field (one the form lets the user leave blank). */
+.app-workspace form label[for]:not(.sr-only):not(.app-optional-field label):not(:has(.app-required-marker))::after,
+.app-workspace form label:not([for]):not(.app-optional-field label):has(
   > input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
   > select,
   > textarea

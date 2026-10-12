@@ -45,6 +45,7 @@ import {
   matchesUserEmployeeOption,
   normalizeLeaveStatus,
   resolveRoleKey,
+  todayDateInputValue,
 } from "../../utils/leaveHelpers";
 import {
   canArchiveModule,
@@ -1070,6 +1071,8 @@ function CompensatoryPreviewModal({
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close compensatory time off preview"
+              title="Close"
               className="grid h-9 w-9 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
             >
               <X size={16} />
@@ -1431,6 +1434,8 @@ function CompensatoryModal({
     if (canSelectEmployee && !form.employeeRecordId) nextErrors.employeeRecordId = "Employee is required.";
     if (form.selectedDates.length === 0) {
       nextErrors.selectedDates = "Select at least one inclusive date.";
+    } else if (form.selectedDates.some((day) => day.date.slice(0, 7) !== todayDateInputValue().slice(0, 7))) {
+      nextErrors.selectedDates = "Select inclusive dates within the current month.";
     } else if (hours < 4) {
       nextErrors.selectedDates = "Minimum of 4 hours is required per request — pick at least a half day.";
     }
@@ -1528,6 +1533,8 @@ function CompensatoryModal({
               <button
                 type="button"
                 onClick={onClose}
+                aria-label="Close compensatory time off form"
+                title="Close"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
               >
                 <X size={16} />
@@ -1586,14 +1593,15 @@ function CompensatoryModal({
               <MultiDatePicker
                 value={form.selectedDates}
                 minDate=""
-                allowWeekends
+                currentMonthOnly
+                allowWeekends={false}
                 placeholder="Select inclusive dates"
                 floating
                 onChange={updateSelectedDates}
               />
               <p className="m-0 mt-1 text-xs text-slate-500">
-                Pick each day the time off is taken, including days already past. Days in between
-                that are not picked stay working days.
+                Pick each day the time off is taken in the current month, including days already past. Days in between
+                that are not picked stay working days. Saturdays and Sundays cannot be selected.
               </p>
               {errors.selectedDates ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.selectedDates}</p> : null}
             </div>

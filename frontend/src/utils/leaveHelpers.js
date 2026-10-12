@@ -260,6 +260,14 @@ export function matchesUserRecordScope(record, user) {
   }, user);
 }
 
+export function canUploadLeaveMedicalCertificate(user, request, archived = false) {
+  return !archived
+    && !request?.isLeaveMonetization
+    && String(request?.leaveType || "").trim().toLowerCase() === "sick leave"
+    && Boolean(matchesUserRecordScope(request, user))
+    && !["Rejected", "Cancelled"].includes(normalizeLeaveStatus(request?.status));
+}
+
 /** Managers act organization-wide, but never on a request that belongs to their own account. */
 export function canManageLeaveRequestRow(user, record) {
   return canManageLeaveRequests(user) && !matchesUserRecordScope(record, user);

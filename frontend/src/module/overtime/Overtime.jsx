@@ -62,6 +62,8 @@ import {
 } from "../../utils/archiveActions";
 import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
 import useRowSelection from "../../hooks/useRowSelection";
+import OvertimeWorkDateCalendar from "./OvertimeWorkDateCalendar";
+import OvertimeTimeSelect, { isAllowedOvertimeTime } from "./OvertimeTimeSelect";
 
 /*
  * The filter's choices. "Reviewed" is deliberately not one of them: the table labels both open
@@ -559,12 +561,17 @@ export default function OvertimeWorkspace({
     const nextErrors = {};
 
     /*
-     * The `min` on the input stops the calendar offering earlier days, but a typed or pasted value
-     * still gets here, so the rule is enforced again rather than trusted. Applies to every role,
+     * The calendar disables earlier days, and the rule is enforced again on submission. Applies to every role,
      * admin included -- overtime is authorized before it is rendered, never filed after the fact.
      */
-    if (form.workDate && isPastDate(form.workDate)) {
+    if (!form.workDate) {
+      nextErrors.workDate = "Select a work date on the calendar.";
+    } else if (isPastDate(form.workDate)) {
       nextErrors.workDate = "Work date cannot be in the past. Choose today or a later date.";
+    } else if (form.workDate.slice(0, 7) !== todayDateInputValue().slice(0, 7)) {
+      nextErrors.workDate = "Choose a work date in the current month.";
+    } else if ([0, 6].includes(new Date(`${form.workDate}T00:00:00`).getDay())) {
+      nextErrors.workDate = "Saturdays and Sundays cannot be selected for overtime. Choose a weekday.";
     }
 
     if (!editingRecord && useEmployeeChecklist && form.employeeRecordIds.length === 0) {
@@ -574,6 +581,8 @@ export default function OvertimeWorkspace({
     /* Same rules the memo applies, so a filing never pre-fills a report that cannot be submitted. */
     if (!form.timeStart || !form.timeEnd) {
       nextErrors.time = "Enter the time the overtime starts and ends.";
+    } else if (!isAllowedOvertimeTime(form.timeStart) || !isAllowedOvertimeTime(form.timeEnd)) {
+      nextErrors.time = "Overtime must be between 5:00 PM and 9:00 PM.";
     } else if (plannedMinutes === null) {
       nextErrors.time = "The end time must be later than the start time.";
     }
@@ -1136,6 +1145,9 @@ export default function OvertimeWorkspace({
 
       <Modal
         open={modalOpen}
+        portal
+        showCloseButton
+        closeLabel="Close overtime form"
         title={editingRecord ? "Edit Overtime Request" : submitLabel}
         maxWidth="max-w-[760px]"
         onClose={closeForm}
@@ -1201,33 +1213,24 @@ export default function OvertimeWorkspace({
             />
           )}
 
-          <InputField
-            label="Work Date"
-            name="workDate"
-            type="date"
+          <OvertimeWorkDateCalendar
             value={form.workDate}
-            min={todayDateInputValue()}
-            onChange={updateForm("workDate")}
+            onChange={(workDate) => updateForm("workDate")({ target: { value: workDate } })}
             error={formErrors.workDate}
-            required
           />
           <div>
             <div className="grid gap-4 sm:grid-cols-3">
-              <InputField
+              <OvertimeTimeSelect
                 label="Time Start"
                 name="timeStart"
-                type="time"
                 value={form.timeStart}
                 onChange={updateForm("timeStart")}
-                required
               />
-              <InputField
+              <OvertimeTimeSelect
                 label="Time End"
                 name="timeEnd"
-                type="time"
                 value={form.timeEnd}
                 onChange={updateForm("timeEnd")}
-                required
               />
               <InputField
                 label="Hours Requested"
@@ -1238,6 +1241,7 @@ export default function OvertimeWorkspace({
                 readOnly
               />
             </div>
+            <p className="m-0 mt-1.5 text-xs text-slate-500">Overtime hours: 5:00 PM to 9:00 PM. End time must be later than start time.</p>
             {formErrors.time ? (
               <p className="m-0 mt-1.5 text-sm text-rose-700">{formErrors.time}</p>
             ) : null}
@@ -1302,6 +1306,9 @@ export default function OvertimeWorkspace({
 
       <Modal
         open={Boolean(viewingRecord)}
+        portal
+        showCloseButton
+        closeLabel="Close overtime request details"
         title="Overtime Request"
         maxWidth="max-w-[640px]"
         onClose={() => setViewingRecord(null)}

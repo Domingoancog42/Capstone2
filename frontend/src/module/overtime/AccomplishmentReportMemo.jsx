@@ -602,6 +602,8 @@ function buildAccomplishmentFormValues(overtime, previousReport) {
  * because the memo is a printed form and reads as one.
  */
 const memoOverlayProps = {
+  portal: true,
+  showCloseButton: true,
   maxWidth: "max-w-5xl",
   panelClassName: "leave-form-preview !rounded-[28px]",
   backdropClassName: "backdrop-blur-sm",
@@ -697,6 +699,7 @@ export function AccomplishmentReportFormModal({
       open={open && Boolean(overtime)}
       {...memoOverlayProps}
       title={isRevision ? "Revise Accomplishment Report" : "Submit Accomplishment Report"}
+      closeLabel="Close accomplishment report form"
       description={memoFromRequest
         ? "Generated from your approved overtime request. Review it and submit it to your Division Chief."
         : "Fill in the memorandum below and submit it to your Division Chief."}
@@ -830,6 +833,7 @@ export function AccomplishmentReportPreviewModal({
       {...memoOverlayProps}
       open={Boolean(report)}
       title="Accomplishment Report"
+      closeLabel="Close accomplishment report preview"
       description="Centered overlay preview of the submitted accomplishment report."
       onClose={busy ? undefined : onClose}
       footer={

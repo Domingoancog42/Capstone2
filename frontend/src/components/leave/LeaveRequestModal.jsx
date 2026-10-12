@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, CalendarDays, FileUp, X } from "lucide-react";
+import { AlertTriangle, CalendarDays, X } from "lucide-react";
 import { toast } from "react-hot-toast";
 import EmployeeSearchSelect from "./EmployeeSearchSelect";
 import LeaveMonetizationFields from "./LeaveMonetizationFields";
@@ -8,9 +8,11 @@ import FloatingSelect from "../UI/FloatingSelect";
 import MultiDatePicker from "../UI/MultiDatePicker";
 import { LEAVE_MONETIZATION_TYPE, isLeaveMonetizationType } from "../../data/leaveTypes";
 import {
+  LEAVE_ADVANCE_NOTICE_DAYS,
   LEAVE_ADVANCE_NOTICE_ERROR,
   LEAVE_TYPE_REQUIRED_BEFORE_DATES_ERROR,
   isLeaveStartDateTooSoon,
+  isLeaveAdvanceNoticeExempt,
   isPastDate,
   resolveRoleKey,
   todayDateInputValue,
@@ -99,7 +101,6 @@ function buildInitialForm(user) {
     /* The days applied for, each with its own whole/AM/PM portion. See LeaveDatePicker. */
     leaveDays: [],
     reason: "",
-    attachment: null,
     /*
      * Only read when the type selected is the monetization filing, which draws days from a credit
      * instead of spending them on dates away. `VL` is the credit most filings monetize.
@@ -210,7 +211,7 @@ export default function LeaveRequestModal({
 
   /*
    * Monetization is filed from this same form, so the type selection carries it alongside the leave
-   * types. Picking it swaps the dates and the attachment for the credit to draw from and how many
+   * types. Picking it swaps the dates for the credit to draw from and how many
    * days of it, and the filing is kept by leave_monetization.php rather than as a leave request.
    */
   const isMonetizationFiling = isLeaveMonetizationType(form.leaveType);
@@ -253,12 +254,15 @@ export default function LeaveRequestModal({
   }
 
   /*
-   * Leave is applied for ahead of time, so the calendar starts today. This holds for every role,
-   * admin included -- a back-dated filing is not something any account may enter through this form.
-   *
-   * Recomputed each render rather than memoised, so a form left open past midnight still moves on.
+   * Regular leave starts at least five calendar days after today. Exempt leave types keep today's
+   * lower bound. Recompute on each render so the cutoff follows the filing date.
    */
   const today = todayDateInputValue();
+  const firstAllowedLeaveDate = new Date(`${today}T00:00:00`);
+  if (!isLeaveAdvanceNoticeExempt(form.leaveType)) {
+    firstAllowedLeaveDate.setDate(firstAllowedLeaveDate.getDate() + LEAVE_ADVANCE_NOTICE_DAYS);
+  }
+  const minimumLeaveDate = `${firstAllowedLeaveDate.getFullYear()}-${String(firstAllowedLeaveDate.getMonth() + 1).padStart(2, "0")}-${String(firstAllowedLeaveDate.getDate()).padStart(2, "0")}`;
 
   const handleLeaveDaysChange = (leaveDays) => {
     if (!String(form.leaveType || "").trim()) {
@@ -302,7 +306,6 @@ export default function LeaveRequestModal({
           ...current,
           leaveType: value,
           leaveDays: isMaternityLeave(value) ? [] : current.leaveDays,
-          attachment: normalizeLeaveType(value) === "sick leave" ? current.attachment : null,
           ...DEFAULT_LEAVE_REQUEST_DETAILS,
         };
       }
@@ -362,7 +365,6 @@ export default function LeaveRequestModal({
             leaveType: "",
             leaveDays: [],
             reason: "",
-            attachment: null,
             ...DEFAULT_LEAVE_REQUEST_DETAILS,
           }),
       employeeId,
@@ -372,19 +374,14 @@ export default function LeaveRequestModal({
     setErrors((current) => ({ ...current, employeeName: "" }));
   };
 
-  const handleFileChange = (event) => {
-    const file = event.target.files?.[0] || null;
-    setForm((current) => ({ ...current, attachment: file }));
-  };
-
   const handleMonetizationChange = (field, value) => {
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => ({ ...current, [field]: "" }));
   };
 
   /*
-   * The monetization filing answers to the CSC ceilings instead of the dates, the credits and the
-   * attachment a leave is checked against, so it is validated on its own terms. The same ceilings
+   * The monetization filing answers to the CSC ceilings instead of the dates and the credits a
+   * leave is checked against, so it is validated on its own terms. The same ceilings
    * are enforced again by leave_monetization.php, which is the authority on them.
    */
   const validateMonetization = () => {
@@ -519,8 +516,6 @@ export default function LeaveRequestModal({
         maternityMonth: "",
         leaveDays: form.leaveDays,
       }),
-      attachment: form.attachment,
-      attachmentName: form.attachment?.name || "",
     });
   };
 
@@ -640,7 +635,7 @@ export default function LeaveRequestModal({
                     */}
                   <MultiDatePicker
                     value={form.leaveDays}
-                    minDate={today}
+                    minDate={minimumLeaveDate}
                     allowWeekends={isMaternityFiling}
                     placeholder={isMaternityFiling ? "Select inclusive dates" : "Select leave dates"}
                     floating
@@ -798,27 +793,10 @@ export default function LeaveRequestModal({
             ) : null}
 
             {normalizedLeaveType === "sick leave" ? (
-              <label>
-                <span className="mb-1.5 block text-sm font-semibold text-slate-700">Attachment Upload</span>
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5">
-                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">
-                    <FileUp size={15} />
-                    Upload File
-                    <input
-                      type="file"
-                      accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp"
-                      className="hidden"
-                      onChange={handleFileChange}
-                    />
-                  </label>
-                  <p className="m-0 mt-2 truncate text-xs text-slate-500">
-                    {form.attachment?.name || "No file selected"}
-                  </p>
-                  <p className="m-0 mt-1 text-[11px] text-slate-400">
-                    Supported formats: PDF, PNG, JPG, JPEG, GIF, WEBP, BMP
-                  </p>
-                </div>
-              </label>
+              <p className="m-0 text-xs text-slate-500 sm:col-span-2">
+                After filing, upload your medical certificate using Attachment Upload in the request's
+                Actions menu. You will receive a reminder three days after filing if it is still missing.
+              </p>
             ) : null}
 
             <label className="sm:col-span-2">

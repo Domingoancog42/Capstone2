@@ -2943,7 +2943,7 @@ export default function LeaveBalanceManagementWorkspace({
                 className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
               >
                 <option value="">All employment statuses</option>
-                {employmentStatusOptions.map((employmentStatus) => (
+                {employmentStatusOptions.filter((employmentStatus) => employmentStatus.trim().toLowerCase() !== "contractual").map((employmentStatus) => (
                   <option key={employmentStatus} value={employmentStatus}>
                     {employmentStatus}
                   </option>

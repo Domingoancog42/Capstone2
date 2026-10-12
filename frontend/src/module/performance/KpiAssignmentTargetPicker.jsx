@@ -11,6 +11,7 @@ export default function KpiAssignmentTargetPicker({
   description,
   query,
   onQueryChange,
+  searchLabel = "Search Employees",
   searchPlaceholder,
   divisionFilter,
   onDivisionFilterChange,
@@ -51,9 +52,9 @@ export default function KpiAssignmentTargetPicker({
           </span>
         </div>
 
-        <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_180px]">
+        <div className="app-optional-field mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_180px]">
           <InputField
-            label="Search Employees"
+            label={searchLabel}
             name="assignmentTargetSearch"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}

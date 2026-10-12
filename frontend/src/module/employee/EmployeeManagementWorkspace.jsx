@@ -27,6 +27,9 @@ import {
   resolveEmployeeInitials,
 } from "../../components/employee/AdminEmployeeCard";
 import { EmployeeDocumentDownloadButtons } from "../../components/employee/EmployeeDocumentsModal";
+import EmployeeDocumentUploadFields from "../../components/employee/EmployeeDocumentUploadFields";
+import EmployeeDocumentRetryModal from "../../components/employee/EmployeeDocumentRetryModal";
+import { saveEmployeeDocumentFiles } from "../../services/employeeDocumentUploads";
 import ActionIconButton from "../../components/UI/ActionIconButton";
 import Button from "../../components/UI/button";
 import Card, {
@@ -211,6 +214,7 @@ export default function EmployeeManagementWorkspace({
   /* HR Head and HR Staff share the employee-management desk and its complete action set. */
   const userRoleKey = resolveUserRoleKey(user);
   const canManageEmployees = ["admin", "hrhead", "hrstaff"].includes(userRoleKey);
+  const canUploadEmployeeDocuments = ["admin", "hrhead", "hrstaff"].includes(userRoleKey);
   const canArchiveEmployees = ["admin", "hrhead", "hrstaff"].includes(userRoleKey);
   const [employees, setEmployees] = useState([]);
   const [archivedEmployees, setArchivedEmployees] = useState([]);
@@ -236,6 +240,8 @@ export default function EmployeeManagementWorkspace({
   const [employeeImporting, setEmployeeImporting] = useState(false);
   const [employeeLoading, setEmployeeLoading] = useState(true);
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
+  const [employeeDocuments, setEmployeeDocuments] = useState([]);
+  const [documentRetry, setDocumentRetry] = useState(null);
   const [employeeViewOpen, setEmployeeViewOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [viewingEmployee, setViewingEmployee] = useState(null);
@@ -763,8 +769,10 @@ export default function EmployeeManagementWorkspace({
   ];
 
   const closeEmployeeModal = () => {
+    if (employeeSaving) return;
     setEmployeeModalOpen(false);
     setEditingEmployee(null);
+    setEmployeeDocuments([]);
   };
 
   const handleSaveEmployee = async (employeeData) => {
@@ -803,6 +811,15 @@ export default function EmployeeManagementWorkspace({
       const emailNotification = result.emailNotification || "";
       const emailMessage = result.emailMessage || "";
       const linkedUser = result.linkedUser || null;
+      let documentWarning = "";
+
+      if (!isEditingEmployee && canUploadEmployeeDocuments && employeeDocuments.length) {
+        const failed = await saveEmployeeDocumentFiles(savedEmployee?.id, employeeDocuments);
+        if (failed.length) {
+          documentWarning = `${failed.length} document upload${failed.length === 1 ? "" : "s"} failed. Retry the remaining files in the Documents dialog.`;
+          setDocumentRetry({ employee: savedEmployee, attachments: failed });
+        }
+      }
 
       if (savedEmployee?.id && (profileImageDataUrl || removeProfileImage)) {
         try {
@@ -847,11 +864,13 @@ export default function EmployeeManagementWorkspace({
         setEmployeeCurrentPage(1);
       }
 
-      closeEmployeeModal();
+      setEmployeeModalOpen(false);
+      setEditingEmployee(null);
+      setEmployeeDocuments([]);
       const emailWarning = emailNotification === "warning"
         ? (emailMessage || "Activation email could not be sent.")
         : "";
-      const saveWarnings = [profileImageWarning, emailWarning].filter(Boolean);
+      const saveWarnings = [profileImageWarning, emailWarning, documentWarning].filter(Boolean);
 
       if (saveWarnings.length > 0) {
         const message = `Employee saved, but ${saveWarnings.join(" ")}`;
@@ -1119,6 +1138,7 @@ export default function EmployeeManagementWorkspace({
                 icon={Plus}
                 onClick={() => {
                   setEditingEmployee(null);
+                  setEmployeeDocuments([]);
                   setEmployeeModalOpen(true);
                 }}
               >
@@ -1285,8 +1305,13 @@ export default function EmployeeManagementWorkspace({
           submitLabel={employeeSaving ? "Saving..." : editingEmployee ? "Save Changes" : "Create Employee"}
           showActions={false}
           submitting={employeeSaving}
+          additionalFields={!editingEmployee && canUploadEmployeeDocuments ? (
+            <EmployeeDocumentUploadFields value={employeeDocuments} onChange={setEmployeeDocuments} disabled={employeeSaving} />
+          ) : null}
         />
       </Modal>
+
+      <EmployeeDocumentRetryModal value={documentRetry} onChange={setDocumentRetry} />
 
       <Modal
         open={employeeViewOpen}

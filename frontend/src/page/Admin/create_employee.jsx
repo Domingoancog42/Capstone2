@@ -604,6 +604,7 @@ export default function CreateEmployee({
   formId = "employee-form",
   showActions = true,
   submitting = false,
+  additionalFields = null,
 }) {
   const [form, setForm] = useState(defaultValues);
   const [profileImagePreview, setProfileImagePreview] = useState("");
@@ -1080,6 +1081,7 @@ export default function CreateEmployee({
             value={form.middleName}
             onChange={updateField("middleName")}
             placeholder="Leave blank if none"
+            className="app-optional-field"
           />
           <TextField
             label="Last Name *"
@@ -1094,6 +1096,7 @@ export default function CreateEmployee({
             name="suffix"
             value={form.suffix}
             onChange={updateField("suffix")}
+            className="app-optional-field"
           >
             <option value="">None</option>
             {suffixOptions.map((item) => <option key={item} value={item}>{item}</option>)}
@@ -1261,17 +1264,18 @@ export default function CreateEmployee({
           title="Additional Personal Details"
           description="Supplemental employee profile information."
         >
-          <SelectField label="PWD" name="pwd" value={form.pwd} onChange={updateField("pwd")}>
+          <SelectField label="PWD" name="pwd" value={form.pwd} onChange={updateField("pwd")} className="app-optional-field">
             <option value="0">No</option>
             <option value="1">Yes</option>
           </SelectField>
-          <SelectField label="Civil Status" name="civilStatus" value={form.civilStatus} onChange={updateField("civilStatus")}>
+          <SelectField label="Civil Status *" name="civilStatus" value={form.civilStatus} onChange={updateField("civilStatus")}>
             <option value="">Select civil status</option>
             {civilStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
           </SelectField>
           <TextField
             label="Height"
             name="height"
+            className="app-optional-field"
             type="number"
             min="0"
             step="0.01"
@@ -1282,6 +1286,7 @@ export default function CreateEmployee({
           <TextField
             label="Weight"
             name="weight"
+            className="app-optional-field"
             type="number"
             min="0"
             step="0.01"
@@ -1289,7 +1294,7 @@ export default function CreateEmployee({
             onChange={updateField("weight")}
             placeholder="Select weight"
           />
-          <SelectField label="Blood Type" name="bloodType" value={form.bloodType} onChange={updateField("bloodType")}>
+          <SelectField label="Blood Type" name="bloodType" value={form.bloodType} onChange={updateField("bloodType")} className="app-optional-field">
             <option value="">Select blood type</option>
             {bloodTypes.map((item) => <option key={item} value={item}>{item}</option>)}
           </SelectField>
@@ -1307,6 +1312,8 @@ export default function CreateEmployee({
           <GovernmentIdField label="PhilHealth ID No." name="philhealthIdNo" value={form.philhealthIdNo} onChange={updateGovernmentId("philhealthIdNo")} />
           <GovernmentIdField label="TIN No." name="tinNo" value={form.tinNo} onChange={updateGovernmentId("tinNo")} />
         </Section>
+
+        {additionalFields}
 
         {showActions ? (
           <div className="flex flex-col-reverse gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:justify-end">

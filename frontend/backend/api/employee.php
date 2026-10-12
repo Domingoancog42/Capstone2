@@ -10,6 +10,9 @@ require_once __DIR__ . '/profile-edit-request-utils.php';
 require_once __DIR__ . '/xlsx-reader.php';
 
 $sessionUser = require_session_user();
+// Imported schemas can lose AUTO_INCREMENT. Document attachments and linked accounts
+// need the positive employee ID returned by lastInsertId() after creation.
+restore_auto_increment_primary_key($pdo, 'employees', 'id');
 ensure_organization_structure_columns($pdo);
 ensure_user_security_columns($pdo);
 ensure_email_verification_columns($pdo);
