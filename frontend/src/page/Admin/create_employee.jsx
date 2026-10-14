@@ -27,16 +27,11 @@ import {
 } from "../../utils/emailDomainPolicy";
 import { normalizeRole } from "../../utils/roleRoutes";
 /*
- * The PSGC address lists. They used to sit in `public/` and be fetched over HTTP at runtime; they
- * now live in `src/data/` and are compiled in, so they are present the moment this module loads and
- * there is no request to fail or 404. The trade is size -- barangay.json alone is 4.8 MB and it is
- * carried in the main bundle whether or not anyone opens this form.
+ * The PSGC address lists, compiled in from `src/data/`, with the addresses added in Settings > Add
+ * Address laid over them -- see utils/addressDirectory.js.
  */
-import barangayData from "../../data/philippines-addresses/barangay.json";
-import cityData from "../../data/philippines-addresses/city.json";
-import provinceData from "../../data/philippines-addresses/province.json";
-import regionData from "../../data/philippines-addresses/region.json";
-import zipCodeData from "../../data/philippines-addresses/zipcodes.json";
+import useAddressDirectory from "../../hooks/useAddressDirectory";
+import { resolveStoredAddress, resolveZipCode } from "../../utils/addressDirectory";
 
 const defaultValues = {
   employeeId: "",
@@ -185,166 +180,6 @@ function getAgeFromDateOfBirth(value) {
   }
 
   return age;
-}
-
-function normalizePlaceText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function uniqueValues(values) {
-  return Array.from(new Set(values.filter(Boolean)));
-}
-
-function placeNameVariants(value) {
-  const original = String(value || "").trim();
-
-  if (!original) {
-    return [];
-  }
-
-  const withoutParentheses = original.replace(/\([^)]*\)/g, " ");
-  const normalized = normalizePlaceText(original);
-  const normalizedWithoutParentheses = normalizePlaceText(withoutParentheses);
-  const withoutCityOfPrefix = normalizedWithoutParentheses.replace(/^city of\s+/, "");
-  const withoutCitySuffix = normalizedWithoutParentheses.replace(/\s+city$/, "");
-  const cityOfPrefixWithoutSuffix = withoutCityOfPrefix.replace(/\s+city$/, "");
-
-  return uniqueValues([
-    normalized,
-    normalizedWithoutParentheses,
-    withoutCityOfPrefix,
-    withoutCitySuffix,
-    cityOfPrefixWithoutSuffix,
-  ]);
-}
-
-function findPlaceByName(options, nameKey, value) {
-  const storedVariants = placeNameVariants(value);
-
-  if (storedVariants.length === 0) {
-    return null;
-  }
-
-  return options.find((option) => {
-    const optionVariants = placeNameVariants(option?.[nameKey]);
-    return storedVariants.some((variant) => optionVariants.includes(variant));
-  }) || null;
-}
-
-/*
- * Employee records store the readable province, city and barangay names, but the cascading edit
- * controls use PSGC codes. Rebuild those codes before opening an existing record so every saved
- * address level is selected instead of resetting the controls to their placeholders.
- */
-function resolveStoredAddress(values = {}) {
-  const provinces = Array.isArray(provinceData) ? provinceData : [];
-  const cities = Array.isArray(cityData) ? cityData : [];
-  const barangays = Array.isArray(barangayData) ? barangayData : [];
-  const regions = Array.isArray(regionData) ? regionData : [];
-
-  let province = values.provinceCode
-    ? provinces.find((item) => item.province_code === values.provinceCode) || null
-    : null;
-  province ||= findPlaceByName(provinces, "province_name", values.province);
-
-  const provinceCities = province
-    ? cities.filter((item) => item.province_code === province.province_code)
-    : cities;
-  let city = values.cityCode
-    ? cities.find((item) => item.city_code === values.cityCode) || null
-    : null;
-  city ||= findPlaceByName(provinceCities, "city_name", values.city);
-
-  if (!province && city) {
-    province = provinces.find((item) => item.province_code === city.province_code) || null;
-  }
-
-  const regionCode = province?.region_code || city?.region_desc || values.regionCode || "";
-  const region = regions.find((item) => item.region_code === regionCode)
-    || findPlaceByName(regions, "region_name", values.region);
-  const cityBarangays = city
-    ? barangays.filter((item) => item.city_code === city.city_code)
-    : barangays;
-  const barangay = findPlaceByName(cityBarangays, "brgy_name", values.address);
-
-  return {
-    region: region?.region_name || values.region || "",
-    regionCode: region?.region_code || regionCode,
-    province: province?.province_name || values.province || "",
-    provinceCode: province?.province_code || values.provinceCode || "",
-    city: city?.city_name || values.city || "",
-    cityCode: city?.city_code || values.cityCode || "",
-    address: barangay?.brgy_name || values.address || "",
-  };
-}
-
-function zipValueToText(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.join(" ");
-  }
-
-  if (value && typeof value === "object") {
-    return Object.values(value).join(" ");
-  }
-
-  return "";
-}
-
-function resolveZipCode(zipEntries, cityName, barangayName, provinceName, regionName) {
-  const cityNeedles = placeNameVariants(cityName);
-  const barangayNeedles = placeNameVariants(barangayName);
-  const provinceNeedles = placeNameVariants(provinceName);
-  const regionNeedles = placeNameVariants(regionName);
-  const preferredNeedles = [...cityNeedles, ...barangayNeedles];
-  const fallbackNeedles = [...provinceNeedles, ...regionNeedles];
-
-  if (preferredNeedles.length === 0 && fallbackNeedles.length === 0) {
-    return "";
-  }
-
-  const exactEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return preferredNeedles.some((needle) => needle === haystack);
-  });
-
-  if (exactEntry) {
-    return exactEntry[0];
-  }
-
-  const cityEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return cityNeedles.some((needle) => haystack.includes(needle) || needle.includes(haystack));
-  });
-
-  if (cityEntry) {
-    return cityEntry[0];
-  }
-
-  const barangayEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return barangayNeedles.some((needle) => haystack.includes(needle) || needle.includes(haystack));
-  });
-
-  if (barangayEntry) {
-    return barangayEntry[0];
-  }
-
-  const fallbackEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return fallbackNeedles.some((needle) => haystack.includes(needle));
-  });
-
-  return fallbackEntry?.[0] || "";
 }
 
 // Lifts the trailing "*" out of a label string so required fields read as a red
@@ -611,13 +446,20 @@ export default function CreateEmployee({
   const [profileImageDataUrl, setProfileImageDataUrl] = useState("");
   const [removeProfileImage, setRemoveProfileImage] = useState(false);
   const [errors, setErrors] = useState({});
-  const [addressLoading, setAddressLoading] = useState(true);
-  const [addressError, setAddressError] = useState("");
-  const [regionOptions, setRegionOptions] = useState([]);
-  const [allProvinceOptions, setAllProvinceOptions] = useState([]);
-  const [allCityOptions, setAllCityOptions] = useState([]);
-  const [allBarangayOptions, setAllBarangayOptions] = useState([]);
-  const [zipEntries, setZipEntries] = useState([]);
+  const addressDirectory = useAddressDirectory();
+  const {
+    regions: regionOptions,
+    provinces: allProvinceOptions,
+    cities: allCityOptions,
+    barangays: allBarangayOptions,
+    zipEntries,
+  } = addressDirectory;
+  // The built-in lists are compiled in, so the only way to have none is a broken bundle.
+  const addressError = regionOptions.length === 0 ? "Unable to load address options." : "";
+  // Read through a ref so a refreshed list does not reset the form; see the effects below.
+  const addressDirectoryRef = useRef(addressDirectory);
+  // The record's address as it was matched before the added addresses had loaded, if it was.
+  const pendingAddressRef = useRef(null);
   const profileImageInputRef = useRef(null);
   const dateOfBirthBounds = useMemo(() => getDateOfBirthBounds(), []);
   const enteredAge = useMemo(() => getAgeFromDateOfBirth(form.dateOfBirth), [form.dateOfBirth]);
@@ -688,10 +530,17 @@ export default function CreateEmployee({
   );
 
   useEffect(() => {
+    addressDirectoryRef.current = addressDirectory;
+  }, [addressDirectory]);
+
+  useEffect(() => {
     const normalizedValues = Object.fromEntries(
       Object.entries(initialValues || {}).map(([key, value]) => [key, value ?? ""])
     );
-    const resolvedAddress = resolveStoredAddress(normalizedValues);
+    const resolvedAddress = resolveStoredAddress(normalizedValues, addressDirectoryRef.current);
+    pendingAddressRef.current = addressDirectoryRef.current.status === "loading"
+      ? { values: normalizedValues, resolved: resolvedAddress }
+      : null;
     setForm({
       ...defaultValues,
       employeeId: initialValues?.id ? defaultValues.employeeId : nextEmployeeId,
@@ -724,27 +573,32 @@ export default function CreateEmployee({
   }, [employeeRole, isEditing]);
 
   /*
-   * The lists are imported, so they are in memory before this component ever renders -- there is no
-   * request to await, fail, or race a cancelled mount against. The state is still populated here
-   * rather than initialised inline so the pickers keep their existing shape (and the loading and
-   * error flags stay for the empty-data case, which is the only failure left).
+   * The built-in lists are in memory before this form renders, but the addresses added in Settings
+   * arrive with a request, so the first time the form is used a record can open before them. Match
+   * that record's address again once they are here, so it comes out the same as it would have with
+   * them -- unless the address has been changed in the meantime, since a pick already made stays made.
    */
   useEffect(() => {
-    setAddressLoading(true);
-    setAddressError("");
+    const pending = pendingAddressRef.current;
 
-    setRegionOptions(Array.isArray(regionData) ? regionData : []);
-    setAllProvinceOptions(Array.isArray(provinceData) ? provinceData : []);
-    setAllCityOptions(Array.isArray(cityData) ? cityData : []);
-    setAllBarangayOptions(Array.isArray(barangayData) ? barangayData : []);
-    setZipEntries(zipCodeData && typeof zipCodeData === "object" ? Object.entries(zipCodeData) : []);
-
-    if (!Array.isArray(regionData) || regionData.length === 0) {
-      setAddressError("Unable to load address options.");
+    if (!pending || addressDirectory.status === "loading") {
+      return;
     }
 
-    setAddressLoading(false);
-  }, []);
+    pendingAddressRef.current = null;
+
+    if (addressDirectory.addresses.length === 0) {
+      return;
+    }
+
+    setForm((current) => {
+      const untouched = Object.keys(pending.resolved).every((key) => current[key] === pending.resolved[key]);
+
+      return untouched
+        ? { ...current, ...resolveStoredAddress(pending.values, addressDirectory) }
+        : current;
+    });
+  }, [addressDirectory]);
 
   useEffect(() => {
     if (form.regionCode || !form.region || regionOptions.length === 0) {
@@ -780,7 +634,11 @@ export default function CreateEmployee({
   }, [form.city, form.cityCode, cityOptions]);
 
   useEffect(() => {
-    const matchedZipCode = resolveZipCode(zipEntries, form.city, form.address, form.province, form.region);
+    // A barangay saved in Settings > Add Address carries its own ZIP code; any other is matched
+    // from the place names.
+    const selectedBarangay = barangayOptions.find((item) => item.brgy_name === form.address);
+    const matchedZipCode = selectedBarangay?.zip_code
+      || resolveZipCode(zipEntries, form.city, form.address, form.province, form.region);
     if (!matchedZipCode) {
       return;
     }
@@ -792,6 +650,7 @@ export default function CreateEmployee({
     setForm((current) => ({ ...current, zipCode: matchedZipCode }));
     setErrors((current) => ({ ...current, zipCode: "" }));
   }, [
+    barangayOptions,
     zipEntries,
     form.city,
     form.address,
@@ -1132,8 +991,8 @@ export default function CreateEmployee({
               {addressError}
             </p>
           ) : null}
-          <SelectField label="Region *" name="region" value={form.regionCode} onChange={updateRegion} disabled={addressLoading}>
-            <option value="">{addressLoading ? "Loading regions..." : form.region || "Select region"}</option>
+          <SelectField label="Region *" name="region" value={form.regionCode} onChange={updateRegion}>
+            <option value="">{form.region || "Select region"}</option>
             {regionOptions.map((item) => <option key={item.region_code} value={item.region_code}>{item.region_name}</option>)}
           </SelectField>
           <SelectField label="Province *" name="province" value={form.provinceCode} onChange={updateProvince} disabled={!form.regionCode}>

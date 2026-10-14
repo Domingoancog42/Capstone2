@@ -13,6 +13,9 @@ export default function ProfileField({
   inputMode,
   maxLength,
   pattern,
+  min,
+  max,
+  step,
   as = "input",
   options = [],
   rows = 4,
@@ -76,6 +79,9 @@ export default function ProfileField({
           inputMode={inputMode}
           maxLength={maxLength}
           pattern={pattern}
+          min={min}
+          max={max}
+          step={step}
           value={value}
           onChange={onChange}
           placeholder={placeholder}

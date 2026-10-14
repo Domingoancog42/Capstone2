@@ -10,6 +10,8 @@ export const profileSectionItems = [
   { id: "personal", label: "Personal Details" },
   { id: "family", label: "Family Background" },
   { id: "education", label: "Educational Background" },
+  { id: "eligibility", label: "Civil Service Eligibility" },
+  { id: "training", label: "Learning & Development" },
   { id: "address", label: "Address" },
   { id: "government", label: "Government IDs" },
   { id: "employment", label: "Employment Status" },

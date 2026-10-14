@@ -1,5 +1,5 @@
 // Render the filled official workbook so Excel and PDF use the same saved PDS data.
-// Only the four form print areas are exported; the hidden lookup sheet is excluded.
+// Export the four main pages and any populated continuation sheets.
 const elements = (node, name) => Array.from(node?.getElementsByTagNameNS("*", name) || []);
 const first = (node, name) => elements(node, name)[0];
 const number = (node, attribute, fallback = 0) => Number(node?.getAttribute(attribute) ?? fallback);
@@ -26,6 +26,7 @@ function color(node, fallback = "000000", indexedColors = []) {
 }
 
 function drawText(pdf, text, box, fontSize, alignment = {}, fontStyle = "normal", textColor = "#000000") {
+  text = text.replace(/\u2610/g, "[ ]");
   if (!text.trim() || box.width <= 0 || box.height <= 0) return;
   const padding = 1.5;
   pdf.setFont("helvetica", fontStyle);
@@ -71,17 +72,33 @@ export async function buildPersonalDataSheetPdf(workbook) {
   const strings = elements(parse("xl/sharedStrings.xml"), "si").map((node) => elements(node, "t").map((part) => part.textContent).join(""));
   const areas = elements(parse("xl/workbook.xml"), "definedName").filter((node) => node.getAttribute("name") === "_xlnm.Print_Area");
   const checked = new Set();
+  const linkedCells = new Map();
   for (const path of Object.keys(parts).filter((name) => /^xl\/drawings\/vmlDrawing\d+\.vml$/.test(name))) {
     for (const shape of elements(parse(path), "shape")) {
       if (first(shape, "Checked")?.textContent === "1") checked.add(String(shape.getAttribute("o:spid") || shape.getAttribute("id")).replace("_x0000_s", ""));
+      const link = first(shape, "FmlaLink")?.textContent;
+      if (link) {
+        if (!linkedCells.has(path)) linkedCells.set(path, new Set());
+        linkedCells.get(path).add(link.replace(/\$/g, "").split("!").pop());
+      }
     }
   }
+  const pages = areas
+    .map((area) => ({ area, sheetIndex: number(area, "localSheetId") }))
+    .sort((left, right) => left.sheetIndex - right.sheetIndex)
+    .filter(({ sheetIndex }) => sheetIndex < 4 || elements(parse(`xl/worksheets/sheet${sheetIndex + 1}.xml`), "c")
+      .some((cell) => cell.getAttribute("t") === "inlineStr" && elements(cell, "t").some((part) => part.textContent.trim())));
   const pdf = new jsPDF({ unit: "pt", format: "legal", orientation: "portrait", compress: true });
-  pdf.setProperties({ title: "Personal Data Sheet - CS Form No. 212 (Revised 2025)" });
-  for (let page = 0; page < 4; page++) {
+  pdf.setProperties({ title: "Personal Data Sheet - CS Form No. 212 (Revised 2026)" });
+  for (const [page, { area: printArea, sheetIndex }] of pages.entries()) {
     if (page) pdf.addPage("legal", "portrait");
-    const sheet = parse(`xl/worksheets/sheet${page + 1}.xml`);
-    const area = areas.find((node) => number(node, "localSheetId") === page)?.textContent.split("!").pop();
+    const sheet = parse(`xl/worksheets/sheet${sheetIndex + 1}.xml`);
+    const relationPath = `xl/worksheets/_rels/sheet${sheetIndex + 1}.xml.rels`;
+    const relationships = parts[relationPath] ? elements(parse(relationPath), "Relationship") : [];
+    const vmlRelation = relationships.find((node) => node.getAttribute("Type")?.endsWith("/vmlDrawing"));
+    const vmlPath = vmlRelation ? `xl/${vmlRelation.getAttribute("Target").replace(/^\.\.\//, "")}` : "";
+    const controlCells = linkedCells.get(vmlPath) || new Set();
+    const area = printArea.textContent.split("!").pop();
     if (!area) throw new Error("The PDS workbook is missing its print area.");
     const [start, end] = area.split(":").map(cellPosition);
     const format = first(sheet, "sheetFormatPr");
@@ -143,10 +160,19 @@ export async function buildPersonalDataSheetPdf(workbook) {
     }
     for (const { cell, position, merge, style, box: originalBox } of cells) {
       if (merge && (position.column !== merge[0].column || position.row !== merge[0].row)) continue;
+      // Checkbox and dropdown backing values belong to the controls, not the printed fields.
+      if (cell.getAttribute("t") === "b" || controlCells.has(cell.getAttribute("r"))) continue;
       const box = merge ? { ...originalBox, width: (xs[Math.min(merge[1].column, end.column) + 1] - xs[position.column]) * scale, height: (ys[Math.min(merge[1].row, end.row) + 1] - ys[position.row]) * scale } : originalBox;
       const value = first(cell, "v")?.textContent || "";
-      const text = cell.getAttribute("t") === "s" ? strings[Number(value)] || ""
+      let text = cell.getAttribute("t") === "s" ? strings[Number(value)] || ""
         : cell.getAttribute("t") === "inlineStr" ? elements(cell, "t").map((node) => node.textContent).join("") : value;
+      // The template already draws the response lines with cell borders.
+      if (cell.getAttribute("t") === "s") text = text.replace(/_{3,}/g, "").trimEnd();
+      if (!cell.getAttribute("t") && value !== "" && position.column === 9
+        && ((sheetIndex === 1 && position.row >= 17 && position.row <= 40)
+          || (sheetIndex === 5 && position.row >= 6 && position.row <= 38))) {
+        text = Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
       const font = fonts[number(style, "fontId")];
       const bold = Boolean(first(font, "b"));
       const italic = Boolean(first(font, "i"));
@@ -166,9 +192,8 @@ export async function buildPersonalDataSheetPdf(workbook) {
         bold && italic ? "bolditalic" : bold ? "bold" : italic ? "italic" : "normal", workbookColor(first(font, "color")));
     }
     // The official form keeps checkbox captions and the photo box in drawing anchors.
-    const relationPath = `xl/worksheets/_rels/sheet${page + 1}.xml.rels`;
     if (parts[relationPath]) {
-      const relation = elements(parse(relationPath), "Relationship").find((node) => node.getAttribute("Type")?.endsWith("/drawing"));
+      const relation = relationships.find((node) => node.getAttribute("Type")?.endsWith("/drawing"));
       if (relation) {
         const drawingPath = `xl/${relation.getAttribute("Target").replace(/^\.\.\//, "")}`;
         for (const anchor of elements(parse(drawingPath), "twoCellAnchor")) {
@@ -197,8 +222,8 @@ export async function buildPersonalDataSheetPdf(workbook) {
             }
             drawText(pdf, text, { ...box, x: box.x + size + 1, width: Math.max(box.width - size - 1, 20 * scale) }, 8 * scale, { vertical: "center" });
           } else if (text) {
-            if (page === 0 && /^CS\s*Form No\.\s*212/.test(text)) {
-              drawText(pdf, "CS Form No. 212\nRevised 2025",
+            if (sheetIndex === 0 && /^CS\s*Form No\.\s*212/.test(text)) {
+              drawText(pdf, "CS Form No. 212\nRevised 2026",
                 { x: margin + 1, y: margin + 1, width: 160 * scale, height: 24 * scale },
                 8 * scale, { horizontal: "left", vertical: "top" }, "bolditalic");
               continue;

@@ -9,6 +9,33 @@ const EMPLOYEE_PDS_EDUCATION_LEVELS = [
     'graduate',
 ];
 
+const EMPLOYEE_PDS_RECORD_SECTIONS = [
+    'eligibility' => [
+        'table' => 'employee_civil_service_eligibility', 'limit' => 31,
+        'label' => 'Civil service eligibility', 'nameField' => 'eligibilityName',
+        'fields' => [
+            'eligibilityName' => ['column' => 'eligibility_name', 'length' => 255],
+            'rating' => ['column' => 'rating', 'length' => 40],
+            'examinationDate' => ['column' => 'examination_date', 'type' => 'date'],
+            'examinationPlace' => ['column' => 'examination_place', 'length' => 255],
+            'licenseNumber' => ['column' => 'license_number', 'length' => 100],
+            'validityDate' => ['column' => 'validity_date', 'type' => 'date'],
+        ],
+    ],
+    'training' => [
+        'table' => 'employee_learning_development', 'limit' => 61,
+        'label' => 'Learning and development', 'nameField' => 'title',
+        'fields' => [
+            'title' => ['column' => 'title', 'length' => 255],
+            'dateFrom' => ['column' => 'date_from', 'type' => 'date'],
+            'dateTo' => ['column' => 'date_to', 'type' => 'date'],
+            'hours' => ['column' => 'hours', 'type' => 'hours'],
+            'type' => ['column' => 'training_type', 'length' => 100],
+            'conductedBy' => ['column' => 'conducted_by', 'length' => 255],
+        ],
+    ],
+];
+
 function ensure_employee_pds_profile_tables(PDO $pdo): void
 {
     $pdo->exec(
@@ -70,6 +97,46 @@ function ensure_employee_pds_profile_tables(PDO $pdo): void
             PRIMARY KEY (id),
             UNIQUE KEY uq_employee_education_level (employee_record_id, education_level),
             CONSTRAINT fk_employee_education_background_employee
+                FOREIGN KEY (employee_record_id) REFERENCES employees (id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci'
+    );
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS employee_civil_service_eligibility (
+            id INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+            employee_record_id INT(10) UNSIGNED NOT NULL,
+            eligibility_name VARCHAR(255) NOT NULL,
+            rating VARCHAR(40) DEFAULT NULL,
+            examination_date DATE DEFAULT NULL,
+            examination_place VARCHAR(255) DEFAULT NULL,
+            license_number VARCHAR(100) DEFAULT NULL,
+            validity_date DATE DEFAULT NULL,
+            sort_order TINYINT(3) UNSIGNED NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_employee_eligibility_order (employee_record_id, sort_order),
+            CONSTRAINT fk_employee_eligibility_employee
+                FOREIGN KEY (employee_record_id) REFERENCES employees (id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci'
+    );
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS employee_learning_development (
+            id INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+            employee_record_id INT(10) UNSIGNED NOT NULL,
+            title VARCHAR(255) NOT NULL,
+            date_from DATE DEFAULT NULL,
+            date_to DATE DEFAULT NULL,
+            hours DECIMAL(8,2) DEFAULT NULL,
+            training_type VARCHAR(100) DEFAULT NULL,
+            conducted_by VARCHAR(255) DEFAULT NULL,
+            sort_order TINYINT(3) UNSIGNED NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_employee_training_order (employee_record_id, sort_order),
+            CONSTRAINT fk_employee_training_employee
                 FOREIGN KEY (employee_record_id) REFERENCES employees (id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci'
     );
@@ -178,7 +245,7 @@ function employee_pds_profile_empty_education(string $level): array
     ];
 }
 
-/** @return array{family:array<string, mixed>,education:array<int, array<string, string>>} */
+/** @return array<string, mixed> */
 function employee_pds_profile_fetch(PDO $pdo, int $employeeRecordId): array
 {
     $legacyStatement = $pdo->prepare(
@@ -304,7 +371,104 @@ function employee_pds_profile_fetch(PDO $pdo, int $employeeRecordId): array
     return [
         'family' => $family,
         'education' => array_values($educationByLevel),
+        'eligibility' => employee_pds_profile_fetch_records($pdo, $employeeRecordId, 'eligibility'),
+        'training' => employee_pds_profile_fetch_records($pdo, $employeeRecordId, 'training'),
     ];
+}
+
+function employee_pds_profile_record_config(string $section): array
+{
+    if (!isset(EMPLOYEE_PDS_RECORD_SECTIONS[$section])) {
+        throw new InvalidArgumentException('Choose a valid PDS record section.');
+    }
+    return EMPLOYEE_PDS_RECORD_SECTIONS[$section];
+}
+
+/** @return array<int, array<string, mixed>> */
+function employee_pds_profile_fetch_records(PDO $pdo, int $employeeRecordId, string $section): array
+{
+    $config = employee_pds_profile_record_config($section);
+    $columns = array_column($config['fields'], 'column');
+    $statement = $pdo->prepare('SELECT id, ' . implode(', ', $columns) . ' FROM ' . $config['table']
+        . ' WHERE employee_record_id = :employee_record_id ORDER BY sort_order, id');
+    $statement->execute([':employee_record_id' => $employeeRecordId]);
+    return array_map(static function (array $row) use ($config): array {
+        $record = ['id' => (int)$row['id']];
+        foreach ($config['fields'] as $field => $definition) {
+            $record[$field] = (string)($row[$definition['column']] ?? '');
+        }
+        return $record;
+    }, $statement->fetchAll(PDO::FETCH_ASSOC));
+}
+
+/** Validate all entries before replacing any saved records. */
+function employee_pds_profile_clean_records(string $section, array $records): array
+{
+    $config = employee_pds_profile_record_config($section);
+    if (!array_is_list($records) || count($records) > $config['limit']) {
+        throw new InvalidArgumentException($config['label'] . ' must be a list of up to ' . $config['limit'] . ' entries.');
+    }
+    $clean = [];
+    foreach ($records as $index => $record) {
+        if (!is_array($record)) {
+            throw new InvalidArgumentException($config['label'] . ' entry ' . ($index + 1) . ' must be an object.');
+        }
+        $entry = [];
+        foreach ($config['fields'] as $field => $definition) {
+            $value = $record[$field] ?? '';
+            if (!is_scalar($value) && $value !== null) {
+                throw new InvalidArgumentException('Enter a valid value for ' . $config['label'] . ' entry ' . ($index + 1) . '.');
+            }
+            $value = trim((string)$value);
+            $type = $definition['type'] ?? 'text';
+            if ($type === 'date' && $value !== '') {
+                $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
+                if ($date === false || $date->format('Y-m-d') !== $value) {
+                    throw new InvalidArgumentException('Enter a valid date for ' . $config['label'] . ' entry ' . ($index + 1) . '.');
+                }
+            } elseif ($type === 'hours' && $value !== '') {
+                $hours = is_numeric($value) ? (float)$value : NAN;
+                if (!is_finite($hours) || $hours < 0 || $hours > 999999.99 || abs(round($hours, 2) - $hours) > 0.000001) {
+                    throw new InvalidArgumentException('Training hours must be a non-negative number with up to two decimal places.');
+                }
+                $value = (string)$hours;
+            } elseif ($type === 'text') {
+                $value = employee_pds_profile_text($value, $definition['length']);
+            }
+            $entry[$field] = $value;
+        }
+        if (array_filter($entry, static fn(string $value): bool => $value !== '') === []) {
+            continue;
+        }
+        if ($entry[$config['nameField']] === '') {
+            throw new InvalidArgumentException('Enter a name or title for ' . $config['label'] . ' entry ' . ($index + 1) . '.');
+        }
+        if ($section === 'training' && $entry['dateFrom'] !== '' && $entry['dateTo'] !== '' && $entry['dateTo'] < $entry['dateFrom']) {
+            throw new InvalidArgumentException('The training end date must be on or after its start date.');
+        }
+        $clean[] = $entry;
+    }
+    return $clean;
+}
+
+/** The API wraps this replacement in a transaction. Table/column names are from the allowlist above. */
+function employee_pds_profile_save_records(PDO $pdo, int $employeeRecordId, string $section, array $records): void
+{
+    $config = employee_pds_profile_record_config($section);
+    $clean = employee_pds_profile_clean_records($section, $records);
+    $delete = $pdo->prepare('DELETE FROM ' . $config['table'] . ' WHERE employee_record_id = :employee_record_id');
+    $delete->execute([':employee_record_id' => $employeeRecordId]);
+    $columns = array_column($config['fields'], 'column');
+    $insert = $pdo->prepare('INSERT INTO ' . $config['table'] . ' (employee_record_id, '
+        . implode(', ', $columns) . ', sort_order) VALUES (:employee_record_id, :'
+        . implode(', :', $columns) . ', :sort_order)');
+    foreach ($clean as $index => $record) {
+        $values = [':employee_record_id' => $employeeRecordId, ':sort_order' => $index];
+        foreach ($config['fields'] as $field => $definition) {
+            $values[':' . $definition['column']] = $record[$field] !== '' ? $record[$field] : null;
+        }
+        $insert->execute($values);
+    }
 }
 
 function employee_pds_profile_valid_date(mixed $value): string

@@ -11,6 +11,7 @@ import {
   Layers,
   LockKeyhole,
   MailX,
+  MapPin,
   PenLine,
   Palette,
   Plus,
@@ -109,6 +110,7 @@ import PermissionSettings, {
   permissionSections,
 } from "./permission";
 import PreferencesSettings from "./preferences";
+import AddressSettings from "./addresses";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   applyUiThemeColor,
@@ -150,6 +152,13 @@ const settingsGroups = [
         icon: PenLine,
         description: "Who certifies, approves and pays a payroll",
         keywords: ["signatory", "signature", "certified", "payroll", "register", "approve", "cashier", "director", "chief"],
+      },
+      {
+        key: "addresses",
+        label: "Add Address",
+        icon: MapPin,
+        description: "Regions, provinces, cities, addresses, and ZIP codes for employee addresses",
+        keywords: ["address", "region", "province", "city", "municipality", "barangay", "zip", "postal", "location"],
       },
     ],
   },
@@ -2732,6 +2741,8 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
           onSave={handleSavePayrollSignatories}
         />
       ) : null}
+
+      {activeTab === "addresses" ? <AddressSettings user={user} /> : null}
 
       {activeTab === "rateLimiting" ? (
         <RateLimitSettings

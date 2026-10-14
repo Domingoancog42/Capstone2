@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   BadgeCheck,
+  BookOpenCheck,
   Briefcase,
   GraduationCap,
   History,
@@ -78,23 +79,25 @@ import ProfileEmailChangeSection from "./sections/ProfileEmailChangeSection";
 import { downloadPersonalDataSheet } from "../../services/personalDataSheetService";
 import FamilyBackgroundSection from "./sections/FamilyBackgroundSection";
 import EducationalBackgroundSection from "./sections/EducationalBackgroundSection";
+import PdsRecordsSection from "./sections/PdsRecordsSection";
 import {
+  createEmptyPdsEligibility,
   createEmptyPdsProfile,
+  createEmptyPdsTraining,
   getPdsProfile,
+  pdsRecordLimits,
   savePdsEducation,
+  savePdsEligibility,
   savePdsFamily,
+  savePdsTraining,
+  validatePdsRecords,
 } from "../../services/pdsProfileService";
 
 /*
- * The PSGC address lists. They used to sit in `public/` and be fetched over HTTP at runtime; they
- * now live in `src/data/` and are compiled in, so they are present the moment this module loads and
- * there is no request to fail or 404. The trade is size -- barangay.json alone is 4.8 MB and it is
- * carried in the main bundle whether or not anyone opens this page.
+ * The PSGC address lists, compiled in from `src/data/`, with the addresses added in Settings > Add
+ * Address laid over them -- see utils/addressDirectory.js.
  */
-import barangayData from "../../data/philippines-addresses/barangay.json";
-import cityData from "../../data/philippines-addresses/city.json";
-import provinceData from "../../data/philippines-addresses/province.json";
-import regionData from "../../data/philippines-addresses/region.json";
+import useAddressDirectory from "../../hooks/useAddressDirectory";
 
 function clearSectionErrors(section, previousErrors) {
   const keysBySection = {
@@ -106,6 +109,9 @@ function clearSectionErrors(section, previousErrors) {
   };
 
   const next = { ...previousErrors };
+  if (section === "eligibility" || section === "training") {
+    Object.keys(next).filter((key) => key === section || key.startsWith(`${section}-`)).forEach((key) => delete next[key]);
+  }
   (keysBySection[section] || []).forEach((key) => {
     delete next[key];
   });
@@ -239,6 +245,8 @@ const sectionIcons = {
   personal: UserRound,
   family: UsersRound,
   education: GraduationCap,
+  eligibility: BadgeCheck,
+  training: BookOpenCheck,
   address: MapPin,
   government: IdCard,
   employment: Briefcase,
@@ -261,6 +269,7 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
   const [savingSection, setSavingSection] = useState("");
   const [downloadingPdsFormat, setDownloadingPdsFormat] = useState("");
   const [pdsProfile, setPdsProfile] = useState(createEmptyPdsProfile);
+  const [pdsProfileError, setPdsProfileError] = useState("");
   const [twoFactorProfile, setTwoFactorProfile] = useState(null);
   const [passwordExpiry, setPasswordExpiry] = useState(null);
   const [personalEditGate, setPersonalEditGate] = useState({ canEditDirectly: null, request: null });
@@ -281,10 +290,12 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
   /* The profile as it was when Edit Profile was pressed: what Save compares against and Cancel restores. */
   const editSnapshotRef = useRef(null);
   const [profileImageOpen, setProfileImageOpen] = useState(false);
-  const [regions, setRegions] = useState([]);
-  const [allProvinces, setAllProvinces] = useState([]);
-  const [allCities, setAllCities] = useState([]);
-  const [allBarangays, setAllBarangays] = useState([]);
+  const {
+    regions,
+    provinces: allProvinces,
+    cities: allCities,
+    barangays: allBarangays,
+  } = useAddressDirectory();
   const normalizedRole = resolveUserRoleKey(user);
   const canEditPersonalByRole = ["admin", "hrhead", "hrstaff"].includes(normalizedRole);
 
@@ -435,11 +446,14 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
           normalizedRole === "employee" ? getUsers().catch(() => null) : Promise.resolve(null),
           getTwoFactorProfile().catch(() => null),
           checkPasswordExpiry().catch(() => null),
-          getPdsProfile().catch(() => createEmptyPdsProfile()),
+          getPdsProfile().then((data) => ({ data, error: "" })).catch((error) => ({
+            data: createEmptyPdsProfile(),
+            error: error?.response?.data?.message || "Unable to load your saved PDS details. Refresh the page to try again.",
+          })),
         ]);
 
-        // The address lists are imported above rather than fetched, so there is nothing to await or
-        // to check for a failed response -- they are already in memory by the time this runs.
+        // The address lists come from useAddressDirectory() above, which loads on its own; the
+        // built-in part of them is in memory before this runs.
 
         if (!mounted) {
           return;
@@ -483,11 +497,8 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
         });
         setTwoFactorProfile(twoFactorResult?.twoFactor || null);
         setPasswordExpiry(passwordExpiryResult?.passwordExpiry || null);
-        setPdsProfile(pdsProfileResult);
-        setRegions(Array.isArray(regionData) ? regionData : []);
-        setAllProvinces(Array.isArray(provinceData) ? provinceData : []);
-        setAllCities(Array.isArray(cityData) ? cityData : []);
-        setAllBarangays(Array.isArray(barangayData) ? barangayData : []);
+        setPdsProfile(pdsProfileResult.data);
+        setPdsProfileError(pdsProfileResult.error);
       } catch (error) {
         if (mounted) {
           setLoadError(error?.message || "Unable to load profile.");
@@ -632,7 +643,13 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
       updateProfile({
         barangayCode: value,
         barangay: selected?.brgy_name || "",
+        // A barangay saved in Settings > Add Address brings its own ZIP code.
+        ...(selected?.zip_code ? { zipCode: String(selected.zip_code) } : {}),
       });
+
+      if (selected?.zip_code) {
+        setErrors((current) => ({ ...current, zipCode: "" }));
+      }
       return;
     }
 
@@ -730,11 +747,16 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
       emergency: fieldsChanged(EMERGENCY_FIELDS, profile, snapshot.profile),
       family: JSON.stringify(pdsProfile.family) !== JSON.stringify(snapshot.pdsProfile.family),
       education: JSON.stringify(pdsProfile.education) !== JSON.stringify(snapshot.pdsProfile.education),
+      eligibility: JSON.stringify(pdsProfile.eligibility) !== JSON.stringify(snapshot.pdsProfile.eligibility),
+      training: JSON.stringify(pdsProfile.training) !== JSON.stringify(snapshot.pdsProfile.training),
       signature: pendingSignature !== null,
     };
 
-    const validatedSections = ["personal", "address", "government", "emergency"].filter((section) => changed[section]);
-    const sectionErrors = validatedSections.map((section) => [section, validateSection(section, profile)]);
+    const validatedSections = ["personal", "address", "government", "emergency", "eligibility", "training"].filter((section) => changed[section]);
+    const sectionErrors = validatedSections.map((section) => [section,
+      section === "eligibility" || section === "training"
+        ? validatePdsRecords(section, pdsProfile[section]) : validateSection(section, profile),
+    ]);
     const nextErrors = Object.assign({}, ...sectionErrors.map(([, found]) => found));
 
     setErrors((current) => ({
@@ -793,25 +815,24 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
         }
       }
 
-      if (changed.family || changed.education) {
+      if (changed.family || changed.education || changed.eligibility || changed.training) {
         if (!employeeRecord?.id) {
           throw new Error("This account is not linked to an employee master record yet.");
         }
 
         let savedPds = pdsProfile;
 
-        if (changed.family) {
-          const result = await savePdsFamily(pdsProfile.family);
-          savedPds = { family: result.family, education: pdsProfile.education };
+        const saveSections = { family: savePdsFamily, education: savePdsEducation, eligibility: savePdsEligibility, training: savePdsTraining };
+        for (const section of Object.keys(saveSections).filter((key) => changed[key])) {
+          const result = await saveSections[section](pdsProfile[section]);
+          // Merge only the section just saved so another tab's draft survives.
+          savedPds = { ...savedPds, [section]: result[section] };
+          setPdsProfile(savedPds);
+          const savedSnapshot = editSnapshotRef.current || snapshot;
+          editSnapshotRef.current = {
+            ...savedSnapshot, pdsProfile: { ...savedSnapshot.pdsProfile, [section]: result[section] },
+          };
         }
-
-        if (changed.education) {
-          const result = await savePdsEducation(pdsProfile.education);
-          savedPds = { family: savedPds.family, education: result.education };
-        }
-
-        setPdsProfile(savedPds);
-        editSnapshotRef.current = { ...(editSnapshotRef.current || snapshot), pdsProfile: savedPds };
       }
 
       if (changed.signature) {
@@ -968,6 +989,27 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
     }));
   };
 
+  const handlePdsRecordChange = (section, index, field, value) => {
+    setErrors((current) => ({ ...current, [`${section}-${index}-${field}`]: "" }));
+    setPdsProfile((current) => ({
+      ...current,
+      [section]: current[section].map((record, recordIndex) => recordIndex === index ? { ...record, [field]: value } : record),
+    }));
+  };
+
+  const handleAddPdsRecord = (section) => {
+    const empty = section === "eligibility" ? createEmptyPdsEligibility() : createEmptyPdsTraining();
+    const record = { ...empty, id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+    setPdsProfile((current) => current[section].length >= pdsRecordLimits[section] ? current : {
+      ...current, [section]: [...current[section], record],
+    });
+  };
+
+  const handleRemovePdsRecord = (section, index) => {
+    setErrors((current) => clearSectionErrors(section, current));
+    setPdsProfile((current) => ({ ...current, [section]: current[section].filter((_, recordIndex) => recordIndex !== index) }));
+  };
+
   const handleTogglePersonalTwoFactor = async () => {
     const nextEnabled = !Boolean(twoFactorProfile?.personalEnabled);
     setSavingSection("security");
@@ -1106,6 +1148,9 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
             * section instead of one long scroll through all seven, and each tab's fields start at the top.
             */}
           <div className="profile-sections min-w-0">
+            {pdsProfileError && ["family", "education", "eligibility", "training"].includes(activeSection) ? (
+              <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-[#B41818]">{pdsProfileError}</p>
+            ) : null}
             <AnimatePresence mode="wait" initial={false}>
               <motion.div
                 key={activeSection}
@@ -1146,7 +1191,7 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
             {activeSection === "family" ? (
               <FamilyBackgroundSection
                 values={pdsProfile.family}
-                readOnly={readOnly}
+                readOnly={readOnly || Boolean(pdsProfileError)}
                 saving={savingSection === "family"}
                 onChange={handlePdsFamilyChange}
                 onChildChange={handlePdsChildChange}
@@ -1158,9 +1203,19 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
             {activeSection === "education" ? (
               <EducationalBackgroundSection
                 values={pdsProfile.education}
-                readOnly={readOnly}
+                readOnly={readOnly || Boolean(pdsProfileError)}
                 saving={savingSection === "education"}
                 onChange={handlePdsEducationChange}
+              />
+            ) : null}
+
+            {activeSection === "eligibility" || activeSection === "training" ? (
+              <PdsRecordsSection
+                section={activeSection} values={pdsProfile[activeSection]} errors={errors}
+                readOnly={readOnly || Boolean(pdsProfileError)} saving={savingSection === "all"}
+                onChange={(index, field, value) => handlePdsRecordChange(activeSection, index, field, value)}
+                onAdd={() => handleAddPdsRecord(activeSection)}
+                onRemove={(index) => handleRemovePdsRecord(activeSection, index)}
               />
             ) : null}
 

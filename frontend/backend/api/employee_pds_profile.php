@@ -34,10 +34,14 @@ try {
 
     $body = read_json_body();
     $section = strtolower(employee_pds_profile_text($body['section'] ?? '', 20));
-    if (!in_array($section, ['family', 'education'], true)) {
+    $sectionLabels = [
+        'family' => 'Family background', 'education' => 'Educational background',
+        'eligibility' => 'Civil service eligibility', 'training' => 'Learning and development',
+    ];
+    if (!isset($sectionLabels[$section])) {
         json_response([
             'success' => false,
-            'message' => 'Choose the family or education section to save.',
+            'message' => 'Choose a valid PDS profile section to save.',
         ], 422);
     }
 
@@ -49,12 +53,18 @@ try {
                 throw new InvalidArgumentException('Family background must be an object.');
             }
             employee_pds_profile_save_family($pdo, $employeeRecordId, $family);
-        } else {
+        } elseif ($section === 'education') {
             $education = $body['education'] ?? [];
             if (!is_array($education)) {
                 throw new InvalidArgumentException('Educational background must be a list.');
             }
             employee_pds_profile_save_education($pdo, $employeeRecordId, $education);
+        } else {
+            $records = $body[$section] ?? null;
+            if (!is_array($records)) {
+                throw new InvalidArgumentException($sectionLabels[$section] . ' must be a list.');
+            }
+            employee_pds_profile_save_records($pdo, $employeeRecordId, $section, $records);
         }
 
         $pdo->commit();
@@ -69,18 +79,14 @@ try {
         $pdo,
         $sessionUser,
         'profile.pds_' . $section . '_updated',
-        $section === 'family'
-            ? 'The employee updated their PDS family background.'
-            : 'The employee updated their PDS educational background.',
+        'The employee updated their PDS ' . strtolower($sectionLabels[$section]) . '.',
         ['module' => 'profile', 'employeeRecordId' => $employeeRecordId]
     );
 
     json_response(array_merge(
         [
             'success' => true,
-            'message' => $section === 'family'
-                ? 'Family background saved successfully.'
-                : 'Educational background saved successfully.',
+            'message' => $sectionLabels[$section] . ' saved successfully.',
         ],
         employee_pds_profile_fetch($pdo, $employeeRecordId)
     ));
