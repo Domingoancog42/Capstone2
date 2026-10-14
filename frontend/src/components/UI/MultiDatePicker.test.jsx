@@ -60,6 +60,27 @@ test("current-month calendars discard supplied dates from other months", async (
   expect(container.textContent).not.toContain(formatDateDisplay("2026-11-02"));
 });
 
+test("CTO calendars allow the current and earlier months but never a future month", async () => {
+  const onChange = jest.fn();
+  await mount({ minDate: "", disableFutureMonths: true, onChange, value: ["2026-09-30", "2026-11-02"] });
+  expect(onChange).toHaveBeenCalledWith([{ date: "2026-09-30", portion: "whole" }]);
+  onChange.mockClear();
+  await openPicker();
+  // The calendar opens on the first selected date's month.
+  expect(container.textContent).toContain("September 2026");
+  expect(button(formatDateDisplay("2026-09-29")).disabled).toBe(false);
+  await click(button(formatDateDisplay("2026-09-29")));
+  expect(onChange).toHaveBeenLastCalledWith(expect.arrayContaining([{ date: "2026-09-29", portion: "whole" }]));
+  expect(button("Next month").disabled).toBe(false);
+  await click(button("Next month"));
+  expect(container.textContent).toContain("October 2026");
+  expect(button(formatDateDisplay("2026-10-20")).disabled).toBe(false);
+  expect(button("Next month").disabled).toBe(true);
+  await click(button("Next month"));
+  expect(container.textContent).toContain("October 2026");
+  expect(button("Previous month").disabled).toBe(false);
+});
+
 function PassDatePicker({ onChange }) {
   const [selectedDays, setSelectedDays] = useState([]);
   return <MultiDatePicker value={selectedDays} currentMonthOnly selectionMode="single" allowWeekends closeOnSelect onChange={(days) => {

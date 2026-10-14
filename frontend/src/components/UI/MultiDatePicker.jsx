@@ -88,6 +88,7 @@ export default function MultiDatePicker({
   closeOnSelect = false,
   selectionMode = "multiple",
   currentMonthOnly = false,
+  disableFutureMonths = false,
   showRangeDuration = false,
   fullDayLabel = DATE_PORTION_LABELS.whole,
   rangeLabel = "Date Range",
@@ -105,8 +106,9 @@ export default function MultiDatePicker({
     (date) => (earliestDate === "" || date >= earliestDate)
       && (!disablePastDates || !isPastDate(date))
       && (!currentMonthOnly || date.slice(0, 7) === currentMonth)
+      && (!disableFutureMonths || date.slice(0, 7) <= currentMonth)
       && (allowWeekends || !isWeekendDate(date)),
-    [allowWeekends, currentMonth, currentMonthOnly, disablePastDates, earliestDate]
+    [allowWeekends, currentMonth, currentMonthOnly, disableFutureMonths, disablePastDates, earliestDate]
   );
   /*
    * `disabled` protects ordinary mouse and keyboard use, but it is not a data boundary. A stale
@@ -162,6 +164,8 @@ export default function MultiDatePicker({
    * unless there is no earliest day, in which case it keeps going back.
    */
   const canGoToPreviousMonth = !currentMonthOnly && (earliestDate === "" || monthStart > toFirstOfMonth(earliestDate));
+  const canGoToNextMonth = !currentMonthOnly
+    && (!disableFutureMonths || monthStart < toFirstOfMonth(`${currentMonth}-01`));
 
   useEffect(() => {
     if (selectedDays.length !== sanitizedDays.length) {
@@ -255,6 +259,8 @@ export default function MultiDatePicker({
 
   const shiftMonth = (offset) => {
     if (currentMonthOnly) return;
+    if (offset > 0 && !canGoToNextMonth) return;
+    if (offset < 0 && !canGoToPreviousMonth) return;
     setMonthStart((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
   };
 
@@ -349,7 +355,7 @@ export default function MultiDatePicker({
         <button
           type="button"
           onClick={() => shiftMonth(1)}
-          disabled={currentMonthOnly}
+          disabled={!canGoToNextMonth}
           aria-label="Next month"
           className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
         >

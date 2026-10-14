@@ -1434,8 +1434,8 @@ function CompensatoryModal({
     if (canSelectEmployee && !form.employeeRecordId) nextErrors.employeeRecordId = "Employee is required.";
     if (form.selectedDates.length === 0) {
       nextErrors.selectedDates = "Select at least one inclusive date.";
-    } else if (form.selectedDates.some((day) => day.date.slice(0, 7) !== todayDateInputValue().slice(0, 7))) {
-      nextErrors.selectedDates = "Select inclusive dates within the current month.";
+    } else if (form.selectedDates.some((day) => day.date.slice(0, 7) > todayDateInputValue().slice(0, 7))) {
+      nextErrors.selectedDates = "Select inclusive dates in the current month or an earlier month.";
     } else if (hours < 4) {
       nextErrors.selectedDates = "Minimum of 4 hours is required per request — pick at least a half day.";
     }
@@ -1593,14 +1593,14 @@ function CompensatoryModal({
               <MultiDatePicker
                 value={form.selectedDates}
                 minDate=""
-                currentMonthOnly
+                disableFutureMonths
                 allowWeekends={false}
                 placeholder="Select inclusive dates"
                 floating
                 onChange={updateSelectedDates}
               />
               <p className="m-0 mt-1 text-xs text-slate-500">
-                Pick each day the time off is taken in the current month, including days already past. Days in between
+                Pick each day the time off is taken in the current month or an earlier month. Days in between
                 that are not picked stay working days. Saturdays and Sundays cannot be selected.
               </p>
               {errors.selectedDates ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.selectedDates}</p> : null}
