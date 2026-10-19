@@ -25,7 +25,7 @@ export default function GovernmentIdsSection({
     >
       <div className="grid gap-4 md:grid-cols-2">
         {isRegularEmploymentStatus(values.employmentStatus) ? (
-          <ProfileField label="GSIS Number" name="gsisIdNo" value={values.gsisIdNo} onChange={onChange} error={errors.gsisIdNo} readOnly={readOnly} placeholder="e.g. 12345678901" inputMode="numeric" maxLength={getGovernmentIdMaxLength("gsisIdNo")} pattern="[0-9-]*" />
+          <ProfileField label="GSIS ID No." name="gsisIdNo" value={values.gsisIdNo} onChange={onChange} error={errors.gsisIdNo} readOnly={readOnly} placeholder="e.g. 12345678901" inputMode="numeric" maxLength={getGovernmentIdMaxLength("gsisIdNo")} pattern="[0-9-]*" />
         ) : null}
         <ProfileField label="PhilHealth Number" name="philhealthIdNo" value={values.philhealthIdNo} onChange={onChange} error={errors.philhealthIdNo} readOnly={readOnly} placeholder="e.g. 12-345678901-2" inputMode="numeric" maxLength={getGovernmentIdMaxLength("philhealthIdNo")} pattern="[0-9-]*" />
         <ProfileField label="Pag-IBIG Number" name="pagibigIdNo" value={values.pagibigIdNo} onChange={onChange} error={errors.pagibigIdNo} readOnly={readOnly} placeholder="e.g. 1234-5678-9012" inputMode="numeric" maxLength={getGovernmentIdMaxLength("pagibigIdNo")} pattern="[0-9-]*" />

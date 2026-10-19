@@ -85,6 +85,8 @@ foreach (['D16' => '0', 'E16' => '1', 'D17' => '0', 'E17' => '1', 'D18' => '0', 
 }
 pds_test_expect(pds_test_cell($parts, 4, 'H45'), ['b', '1'], 'PWD yes');
 pds_test_expect(pds_test_cell($parts, 4, 'J45'), ['b', '0'], 'PWD no');
+pds_test_expect(pds_test_cell($parts, 4, 'D61'), ['inlineStr', 'GSIS'], 'Government-issued ID name');
+pds_test_expect(pds_test_cell($parts, 4, 'D62'), ['inlineStr', '001234567'], 'Government-issued ID preserves leading zeros');
 pds_test_expect(str_contains($parts['xl/ctrlProps/ctrlProp5.xml'], 'checked="Checked"'), true, 'Female Excel control');
 pds_test_expect(str_contains($parts['xl/ctrlProps/ctrlProp11.xml'], 'checked="Checked"'), true, 'Married Excel control');
 pds_test_expect(str_contains($parts['xl/ctrlProps/ctrlProp4.xml'], 'checked='), false, 'Native unchecked checkbox state');

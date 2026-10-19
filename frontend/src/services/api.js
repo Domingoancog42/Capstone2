@@ -611,6 +611,30 @@ export const getSettings = async (params = {}) => {
   return response.data;
 };
 
+// A modal and its printed sheet can request this together. Share the in-flight request,
+// but read the server again for each newly opened form so admin changes stay current.
+let filingSignatoriesRequest = null;
+
+export const getFilingSignatories = () => {
+  if (!filingSignatoriesRequest) {
+    filingSignatoriesRequest = api
+      .get("/settings.php", { params: { section: "filingSignatories" } })
+      .then((response) => response.data)
+      .finally(() => { filingSignatoriesRequest = null; });
+  }
+
+  return filingSignatoriesRequest;
+};
+
+export const saveFilingSignatories = async ({ showTimestamps, showESignatures }) => {
+  const response = await api.put("/settings.php", {
+    type: "filing_signatories",
+    showTimestamps,
+    showESignatures,
+  });
+  return response.data;
+};
+
 // `section=lockedAccounts` skips the division, permission, audit and configuration queries the full
 // settings payload runs, which matters because the security screen re-reads this on every lock.
 export const getLockedAccounts = async () => {

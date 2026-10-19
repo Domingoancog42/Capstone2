@@ -7,6 +7,7 @@ import LeaveApplicationSheet, {
   printLeaveApplicationSheet,
 } from "../leave/LeaveApplicationSheet";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 import { CSC_FORM_LEAVE_TYPES, mergeCscLeaveTypes } from "../../data/leaveTypes";
 import { formatSignatureTimestamp } from "../../utils/signatureTimestamp";
 import { buildLeaveMonetizationQrPayload } from "../../utils/formQrCode";
@@ -159,6 +160,7 @@ export default function LeaveMonetizationFormModal({
   autoDownload = false,
   onClose,
 }) {
+  const { showESignatures, showTimestamps, loading: signatoriesLoading } = useFilingSignatories();
   const [visible, setVisible] = useState(false);
   const [resolvedRecord, setResolvedRecord] = useState(record);
   const [employeeSignature, setEmployeeSignature] = useState("");
@@ -176,7 +178,7 @@ export default function LeaveMonetizationFormModal({
    * callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: open && (autoPrint || autoDownload),
+    active: open && !signatoriesLoading && (autoPrint || autoDownload),
     /* The PDF is saved asynchronously, so a download closes the sheet only once the file is out. */
     onPrint: () => {
       if (autoDownload) {
@@ -606,6 +608,8 @@ export default function LeaveMonetizationFormModal({
         <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <div className="mx-auto w-full max-w-[900px]">
             <LeaveApplicationSheet
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
               sheetRef={printRef}
               formData={formData}
               leaveTypes={availableLeaveTypes}

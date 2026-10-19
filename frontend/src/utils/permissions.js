@@ -8,6 +8,7 @@ export const MODULE_PERMISSION_MAP = {
   permissions: "permissions",
   rbac: "permissions",
   settings: "settings",
+  signatories: "settings",
   divisions: "settings",
   designations: "settings",
   salaryManagement: "employees",

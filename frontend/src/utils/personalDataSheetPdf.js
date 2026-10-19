@@ -52,6 +52,37 @@ function drawText(pdf, text, box, fontSize, alignment = {}, fontStyle = "normal"
   lines.forEach((line, index) => pdf.text(line, x, top + size * 0.85 + index * lineHeight, { align: horizontal }));
 }
 
+function packageTarget(source, target) {
+  const segments = target.startsWith("/") ? [] : source.split("/").slice(0, -1);
+  for (const segment of target.split("/")) {
+    if (segment === "..") segments.pop();
+    else if (segment && segment !== ".") segments.push(segment);
+  }
+  return segments.join("/");
+}
+
+function drawPicture(pdf, bytes, box, passportPhoto) {
+  if (box.width <= 0 || box.height <= 0) return;
+  const image = pdf.getImageProperties(bytes);
+  const ratio = passportPhoto ? Math.max(box.width / image.width, box.height / image.height)
+    : Math.min(box.width / image.width, box.height / image.height);
+  const width = image.width * ratio;
+  const height = image.height * ratio;
+  pdf.saveGraphicsState();
+  // A centered crop fills the passport frame; signatures retain their full aspect ratio.
+  pdf.rect(box.x, box.y, box.width, box.height, null);
+  pdf.clip();
+  pdf.discardPath();
+  pdf.addImage(bytes, image.fileType, box.x + (box.width - width) / 2,
+    box.y + (box.height - height) / 2, width, height);
+  pdf.restoreGraphicsState();
+  if (passportPhoto) {
+    pdf.setDrawColor("#000000");
+    pdf.setLineWidth(0.5);
+    pdf.rect(box.x, box.y, box.width, box.height);
+  }
+}
+
 export async function buildPersonalDataSheetPdf(workbook) {
   const [{ unzipSync, strFromU8 }, { jsPDF }] = await Promise.all([import("fflate"), import("jspdf")]);
   const parts = unzipSync(new Uint8Array(await workbook.arrayBuffer()));
@@ -195,8 +226,12 @@ export async function buildPersonalDataSheetPdf(workbook) {
     if (parts[relationPath]) {
       const relation = relationships.find((node) => node.getAttribute("Type")?.endsWith("/drawing"));
       if (relation) {
-        const drawingPath = `xl/${relation.getAttribute("Target").replace(/^\.\.\//, "")}`;
-        for (const anchor of elements(parse(drawingPath), "twoCellAnchor")) {
+        const drawingPath = packageTarget(`xl/worksheets/sheet${sheetIndex + 1}.xml`, relation.getAttribute("Target"));
+        const drawing = parse(drawingPath);
+        const drawingRelationPath = drawingPath.replace(/([^/]+)$/, "_rels/$1.rels");
+        const drawingRelationships = parts[drawingRelationPath] ? elements(parse(drawingRelationPath), "Relationship") : [];
+        const hasPassportPhoto = elements(drawing, "pic").some((picture) => first(picture, "cNvPr")?.getAttribute("name") === "PDS Passport Photo");
+        for (const anchor of elements(drawing, "twoCellAnchor")) {
           const from = first(anchor, "from");
           const to = first(anchor, "to");
           const col = Number(first(from, "col")?.textContent);
@@ -210,7 +245,16 @@ export async function buildPersonalDataSheetPdf(workbook) {
           const box = { x: x(left), y: y(top), width: (xs[lastCol] + emu(to, "colOff") - left) * scale, height: (ys[lastRow] + emu(to, "rowOff") - top) * scale };
           const text = elements(anchor, "p").map((paragraph) => elements(paragraph, "t").map((node) => node.textContent).join("")).join("\n").trim();
           const metadata = first(anchor, "cNvPr");
-          if (metadata?.getAttribute("name")?.startsWith("Check Box")) {
+          const picture = first(anchor, "pic");
+          if (picture) {
+            const blip = first(picture, "blip");
+            const embeddedId = blip?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed");
+            const imageRelation = drawingRelationships.find((node) => node.getAttribute("Id") === embeddedId
+              && node.getAttribute("Type")?.endsWith("/image") && node.getAttribute("TargetMode") !== "External");
+            const mediaPath = imageRelation && packageTarget(drawingPath, imageRelation.getAttribute("Target"));
+            if (!mediaPath || !parts[mediaPath]) throw new Error("A saved PDS photo or signature could not be loaded.");
+            drawPicture(pdf, parts[mediaPath], box, metadata?.getAttribute("name") === "PDS Passport Photo");
+          } else if (metadata?.getAttribute("name")?.startsWith("Check Box")) {
             const size = 7 * scale;
             const cy = box.y + (box.height - size) / 2;
             pdf.setDrawColor("#000000");
@@ -229,6 +273,7 @@ export async function buildPersonalDataSheetPdf(workbook) {
               continue;
             }
             if (/Passport-sized/.test(text)) {
+              if (hasPassportPhoto) continue;
               pdf.setDrawColor("#000000");
               pdf.setLineWidth(0.5);
               pdf.rect(box.x, box.y, box.width, box.height);

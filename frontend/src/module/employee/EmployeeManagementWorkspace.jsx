@@ -27,6 +27,7 @@ import {
   resolveEmployeeInitials,
 } from "../../components/employee/AdminEmployeeCard";
 import { EmployeeDocumentDownloadButtons } from "../../components/employee/EmployeeDocumentsModal";
+import EmployeeDocumentManager from "../../components/employee/EmployeeDocumentManager";
 import EmployeeDocumentUploadFields from "../../components/employee/EmployeeDocumentUploadFields";
 import EmployeeDocumentRetryModal from "../../components/employee/EmployeeDocumentRetryModal";
 import { saveEmployeeDocumentFiles } from "../../services/employeeDocumentUploads";
@@ -467,6 +468,7 @@ export default function EmployeeManagementWorkspace({
   };
 
   const openEmployeeEditor = (employee) => {
+    setEmployeeDocuments([]);
     setEditingEmployee(employee);
     setEmployeeModalOpen(true);
   };
@@ -813,7 +815,7 @@ export default function EmployeeManagementWorkspace({
       const linkedUser = result.linkedUser || null;
       let documentWarning = "";
 
-      if (!isEditingEmployee && canUploadEmployeeDocuments && employeeDocuments.length) {
+      if (canUploadEmployeeDocuments && employeeDocuments.length) {
         const failed = await saveEmployeeDocumentFiles(savedEmployee?.id, employeeDocuments);
         if (failed.length) {
           documentWarning = `${failed.length} document upload${failed.length === 1 ? "" : "s"} failed. Retry the remaining files in the Documents dialog.`;
@@ -1305,8 +1307,22 @@ export default function EmployeeManagementWorkspace({
           submitLabel={employeeSaving ? "Saving..." : editingEmployee ? "Save Changes" : "Create Employee"}
           showActions={false}
           submitting={employeeSaving}
-          additionalFields={!editingEmployee && canUploadEmployeeDocuments ? (
-            <EmployeeDocumentUploadFields value={employeeDocuments} onChange={setEmployeeDocuments} disabled={employeeSaving} />
+          additionalFields={canUploadEmployeeDocuments ? (
+            <div className="space-y-5">
+              {editingEmployee ? (
+                <EmployeeDocumentManager
+                  key={editingEmployee.id}
+                  employee={editingEmployee}
+                  disabled={employeeSaving}
+                />
+              ) : null}
+              {editingEmployee ? (
+                <p className="m-0 text-xs text-slate-500">
+                  Select corrected or additional files below. New uploads are saved when you click Save Changes.
+                </p>
+              ) : null}
+              <EmployeeDocumentUploadFields value={employeeDocuments} onChange={setEmployeeDocuments} disabled={employeeSaving} />
+            </div>
           ) : null}
         />
       </Modal>

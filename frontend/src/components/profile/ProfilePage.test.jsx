@@ -100,8 +100,8 @@ test("adds both PDS sections, saves drafts across tabs, reloads them, and remove
   await click("Learning & Development");
   await click("Add Training");
   await change(/Title of L&D/, "Records Management");
-  await change("Attendance From", "2026-01-02");
-  await change("Attendance To", "2026-01-04");
+  await change("From", "2026-01-02");
+  await change("To", "2026-01-04");
   await change("Number of Hours", "0");
   await click("Save Changes");
   expect(button("Edit Profile")).toBeTruthy();
@@ -130,8 +130,8 @@ test("rejects invalid training dates and cancels edits without saving", async ()
   await click("Edit Profile");
   await click("Add Training");
   await change(/Title of L&D/, "Safety Training");
-  await change("Attendance From", "2026-02-04");
-  await change("Attendance To", "2026-02-02");
+  await change("From", "2026-02-04");
+  await change("To", "2026-02-02");
   await click("Save Changes");
   expect(savePdsTraining).not.toHaveBeenCalled();
   expect(toast.error).toHaveBeenCalledWith("End date must be on or after the start date.");

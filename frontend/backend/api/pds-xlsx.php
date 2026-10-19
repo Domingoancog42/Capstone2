@@ -646,6 +646,282 @@ function pds_xlsx_education_row(mixed $level): int
     return 55;
 }
 
+/** @return array{bytes: string, extension: string, mime: string, width: int, height: int}|null */
+function pds_xlsx_image(string $bytes): ?array
+{
+    if ($bytes === '' || strlen($bytes) > 5 * 1024 * 1024) {
+        return null;
+    }
+    $size = @getimagesizefromstring($bytes);
+    $formats = ['image/png' => 'png', 'image/jpeg' => 'jpeg', 'image/gif' => 'gif',
+        'image/webp' => 'webp', 'image/bmp' => 'bmp', 'image/x-ms-bmp' => 'bmp'];
+    if ($size === false || !isset($formats[$size['mime'] ?? ''])
+        || $size[0] <= 0 || $size[1] <= 0 || $size[0] > 8192 || $size[1] > 8192
+        || $size[0] * $size[1] > 24000000) {
+        return null;
+    }
+
+    $mime = $size['mime'];
+    $extension = $formats[$mime];
+    // PNG/JPEG are portable to both Excel and the PDF renderer. Keep JPEG bytes
+    // usable on hosts whose GD build has no JPEG codec; normalize other formats.
+    $canDecode = function_exists('imagecreatefromstring')
+        && ($mime !== 'image/jpeg' || (imagetypes() & IMG_JPG) !== 0);
+    if (!$canDecode && in_array($mime, ['image/png', 'image/jpeg'], true)) {
+        return ['bytes' => $bytes, 'extension' => $extension, 'mime' => $mime,
+            'width' => (int)$size[0], 'height' => (int)$size[1]];
+    }
+    if (!$canDecode) {
+        return null;
+    }
+    $image = @imagecreatefromstring($bytes);
+    if ($image === false) {
+        return null;
+    }
+    if (!in_array($mime, ['image/png', 'image/jpeg'], true)) {
+        imagesavealpha($image, true);
+        ob_start();
+        $written = imagepng($image);
+        $bytes = (string)ob_get_clean();
+        if (!$written) {
+            imagedestroy($image);
+            return null;
+        }
+        $mime = 'image/png';
+        $extension = 'png';
+    }
+    imagedestroy($image);
+    return ['bytes' => $bytes, 'extension' => $extension, 'mime' => $mime,
+        'width' => (int)$size[0], 'height' => (int)$size[1]];
+}
+
+/** Read only server-stored profile uploads; never fetch a supplied URL. */
+function pds_xlsx_profile_image(mixed $value): ?array
+{
+    $path = rawurldecode(trim((string)($value ?? '')));
+    $path = str_replace('\\', '/', $path);
+    if (!str_starts_with($path, 'uploads/profile-images/') || str_contains($path, "\0")) {
+        return null;
+    }
+    $base = realpath(dirname(__DIR__) . '/uploads/profile-images');
+    $resolved = realpath(dirname(__DIR__) . '/' . $path);
+    if ($base === false || $resolved === false || !is_file($resolved)
+        || !str_starts_with($resolved, $base . DIRECTORY_SEPARATOR)) {
+        return null;
+    }
+    $length = filesize($resolved);
+    if ($length === false || $length <= 0 || $length > 5 * 1024 * 1024) {
+        return null;
+    }
+    $bytes = file_get_contents($resolved);
+    return $bytes === false ? null : pds_xlsx_image($bytes);
+}
+
+function pds_xlsx_signature_image(mixed $value): ?array
+{
+    $dataUrl = trim((string)($value ?? ''));
+    if (strlen($dataUrl) > 7 * 1024 * 1024
+        || !preg_match('/^data:image\/(png|jpe?g|gif|webp|bmp);base64,([A-Za-z0-9+\/=\r\n]+)$/i', $dataUrl, $match)) {
+        return null;
+    }
+    $bytes = base64_decode($match[2], true);
+    if ($bytes === false) {
+        return null;
+    }
+    $image = pds_xlsx_image($bytes);
+    $declared = strtolower($match[1]);
+    // Check the original MIME as well as decoding; normalization may convert GIF etc. to PNG.
+    $actual = @getimagesizefromstring($bytes)['mime'] ?? '';
+    $expected = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+        'gif' => 'image/gif', 'webp' => 'image/webp', 'bmp' => 'image/bmp'][$declared];
+    return $image !== null && ($actual === $expected || ($declared === 'bmp' && $actual === 'image/x-ms-bmp'))
+        ? $image : null;
+}
+
+/**
+ * Add the authenticated employee's saved media to the form's existing drawing.
+ * The 35 x 45 mm photo is measured at the PDF renderer's legal-page print scale.
+ *
+ * @param array<string, string> $parts
+ * @param array<string, mixed> $employee
+ */
+function pds_xlsx_embed_profile_media(array &$parts, array $employee): void
+{
+    $photo = pds_xlsx_profile_image($employee['profile_image'] ?? null);
+    $signature = pds_xlsx_signature_image($employee['e_signature'] ?? null);
+    if ($photo === null && $signature === null) {
+        return;
+    }
+    $xdr = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
+    $drawingNs = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+    $relationshipNs = 'http://schemas.openxmlformats.org/package/2006/relationships';
+    $officeRelationshipNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    $load = static function (string $xml): DOMDocument {
+        $document = new DOMDocument();
+        if (!$document->loadXML($xml, LIBXML_NONET)) {
+            throw new RuntimeException('The PDS media layout contains invalid XML.');
+        }
+        return $document;
+    };
+    $sheet = $load($parts['xl/worksheets/sheet4.xml']);
+    $sheetNs = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    $widths = array_fill(0, 14, (9.28515625 * 7 + 5) * 0.75);
+    foreach ($sheet->getElementsByTagNameNS($sheetNs, 'col') as $column) {
+        for ($i = (int)$column->getAttribute('min') - 1; $i < min(14, (int)$column->getAttribute('max')); $i++) {
+            $widths[$i] = $column->getAttribute('hidden') === '1' ? 0 : ((float)$column->getAttribute('width') * 7 + 5) * 0.75;
+        }
+    }
+    $heights = array_fill(0, 71, 12.75);
+    foreach ($sheet->getElementsByTagNameNS($sheetNs, 'row') as $row) {
+        $i = (int)$row->getAttribute('r') - 1;
+        if ($i >= 0 && $i < count($heights)) {
+            $heights[$i] = $row->getAttribute('hidden') === '1' ? 0
+                : ($row->hasAttribute('ht') ? (float)$row->getAttribute('ht') : 12.75);
+        }
+    }
+    $offsets = static function (array $values): array {
+        $result = [0.0];
+        foreach ($values as $value) {
+            $result[] = end($result) + $value;
+        }
+        return $result;
+    };
+    $xs = $offsets($widths);
+    $ys = $offsets($heights);
+    $scale = min(588 / end($xs), 984 / end($ys));
+    $drawingPath = 'xl/drawings/drawing2.xml';
+    $relsPath = 'xl/drawings/_rels/drawing2.xml.rels';
+    $drawing = $load($parts[$drawingPath]);
+    $rels = $load($parts[$relsPath] ?? '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="' . $relationshipNs . '"/>');
+    $types = $load($parts['[Content_Types].xml']);
+    $typesNs = 'http://schemas.openxmlformats.org/package/2006/content-types';
+    $xpath = new DOMXPath($drawing);
+    $xpath->registerNamespace('a', $drawingNs);
+    $xpath->registerNamespace('xdr', $xdr);
+    $nextId = 1;
+    foreach ($drawing->getElementsByTagNameNS($xdr, 'cNvPr') as $properties) {
+        $nextId = max($nextId, (int)$properties->getAttribute('id') + 1);
+    }
+    $marker = static function (float $position, array $positions): array {
+        $index = 0;
+        while ($index + 1 < count($positions) - 1 && $position >= $positions[$index + 1]) {
+            $index++;
+        }
+        return [$index, (int)round(($position - $positions[$index]) * 12700)];
+    };
+    $setAnchor = static function (DOMElement $anchor, array $box) use ($drawing, $xdr, $marker, $xs, $ys): void {
+        foreach (['from' => [$box[0], $box[1]], 'to' => [$box[0] + $box[2], $box[1] + $box[3]]] as $name => [$x, $y]) {
+            $node = $anchor->getElementsByTagNameNS($xdr, $name)->item(0);
+            if ($node === null) {
+                $node = $drawing->createElementNS($xdr, 'xdr:' . $name);
+                $anchor->appendChild($node);
+            }
+            while ($node->firstChild !== null) {
+                $node->removeChild($node->firstChild);
+            }
+            [$column, $columnOffset] = $marker($x, $xs);
+            [$row, $rowOffset] = $marker($y, $ys);
+            foreach (['col' => $column, 'colOff' => $columnOffset, 'row' => $row, 'rowOff' => $rowOffset] as $field => $value) {
+                $node->appendChild($drawing->createElementNS($xdr, 'xdr:' . $field, (string)$value));
+            }
+        }
+    };
+    $addPicture = static function (array $image, string $name, string $slug, array $box, bool $cover) use (
+        &$parts, $drawing, $rels, $types, $typesNs, $relationshipNs, $officeRelationshipNs, $drawingNs, $xdr, $setAnchor, &$nextId
+    ): void {
+        $mediaPath = 'xl/media/pds-' . $slug . '.' . $image['extension'];
+        $parts[$mediaPath] = $image['bytes'];
+        $relationshipId = 'rIdPds' . $nextId;
+        $relationship = $rels->createElementNS($relationshipNs, 'Relationship');
+        $relationship->setAttribute('Id', $relationshipId);
+        $relationship->setAttribute('Type', $officeRelationshipNs . '/image');
+        $relationship->setAttribute('Target', '../media/' . basename($mediaPath));
+        $rels->documentElement->appendChild($relationship);
+        $type = $types->createElementNS($typesNs, 'Override');
+        $type->setAttribute('PartName', '/' . $mediaPath);
+        $type->setAttribute('ContentType', $image['mime']);
+        $types->documentElement->appendChild($type);
+        $anchor = $drawing->createElementNS($xdr, 'xdr:twoCellAnchor');
+        $anchor->setAttribute('editAs', 'absolute');
+        $setAnchor($anchor, $box);
+        $crop = '';
+        if ($cover) {
+            $imageRatio = $image['width'] / $image['height'];
+            $boxRatio = $box[2] / $box[3];
+            if ($imageRatio > $boxRatio) {
+                $inset = (int)round((1 - $boxRatio / $imageRatio) * 50000);
+                $crop = '<a:srcRect l="' . $inset . '" r="' . $inset . '"/>';
+            } else {
+                $inset = (int)round((1 - $imageRatio / $boxRatio) * 50000);
+                $crop = '<a:srcRect t="' . $inset . '" b="' . $inset . '"/>';
+            }
+        }
+        $fragment = $drawing->createDocumentFragment();
+        $fragment->appendXML('<xdr:pic xmlns:xdr="' . $xdr . '" xmlns:a="' . $drawingNs . '" xmlns:r="' . $officeRelationshipNs . '">'
+            . '<xdr:nvPicPr><xdr:cNvPr id="' . $nextId++ . '" name="' . pds_xlsx_xml_escape($name) . '"/>'
+            . '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'
+            . '<xdr:blipFill><a:blip r:embed="' . $relationshipId . '"/>' . $crop . '<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
+            . '<xdr:spPr><a:xfrm><a:off x="' . (int)round($box[0] * 12700) . '" y="' . (int)round($box[1] * 12700) . '"/>'
+            . '<a:ext cx="' . (int)round($box[2] * 12700) . '" cy="' . (int)round($box[3] * 12700) . '"/></a:xfrm>'
+            . '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>');
+        $anchor->appendChild($fragment);
+        $anchor->appendChild($drawing->createElementNS($xdr, 'xdr:clientData'));
+        $drawing->documentElement->appendChild($anchor);
+    };
+    if ($photo !== null) {
+        $photoAnchor = $xpath->query('//xdr:twoCellAnchor[.//a:t[contains(., "Passport-sized")]]')->item(0);
+        if (!$photoAnchor instanceof DOMElement) {
+            throw new RuntimeException('The PDS passport photo field is unavailable.');
+        }
+        $position = static function (DOMNode $anchor, string $which, string $axis) use ($xdr, $xs, $ys): float {
+            $node = $anchor->getElementsByTagNameNS($xdr, $which)->item(0);
+            $index = (int)$node->getElementsByTagNameNS($xdr, $axis)->item(0)->textContent;
+            $offset = (int)$node->getElementsByTagNameNS($xdr, $axis . 'Off')->item(0)->textContent;
+            return ($axis === 'col' ? $xs[$index] : $ys[$index]) + $offset / 12700;
+        };
+        $center = ($position($photoAnchor, 'from', 'col') + $position($photoAnchor, 'to', 'col')) / 2;
+        $width = 35 / 25.4 * 72 / $scale;
+        $height = 45 / 25.4 * 72 / $scale;
+        $box = [$center - $width / 2, ($ys[49] + $ys[55] - $height) / 2, $width, $height];
+        $setAnchor($photoAnchor, $box);
+        foreach ($xpath->query('.//a:t', $photoAnchor) as $text) {
+            $text->nodeValue = '';
+        }
+        // Keep the existing border shape aligned when opened in Excel as well.
+        $transform = $xpath->query('.//a:xfrm', $photoAnchor)->item(0);
+        if ($transform !== null) {
+            foreach (['off' => ['x' => $box[0], 'y' => $box[1]], 'ext' => ['cx' => $width, 'cy' => $height]] as $nodeName => $values) {
+                $node = $transform->getElementsByTagNameNS($drawingNs, $nodeName)->item(0);
+                foreach ($values as $attribute => $value) {
+                    $node->setAttribute($attribute, (string)(int)round($value * 12700));
+                }
+            }
+        }
+        $addPicture($photo, 'PDS Passport Photo', 'profile', $box, true);
+    }
+    if ($signature !== null) {
+        $box = [$xs[6] + 4, $ys[59] + 4, $xs[10] - $xs[6] - 8, $ys[62] - $ys[59] - 8];
+        $factor = min($box[2] / $signature['width'], $box[3] / $signature['height']);
+        $width = $signature['width'] * $factor;
+        $height = $signature['height'] * $factor;
+        $addPicture($signature, 'PDS E-Signature', 'signature',
+            [$box[0] + ($box[2] - $width) / 2, $box[1] + ($box[3] - $height) / 2, $width, $height], false);
+        foreach ($sheet->getElementsByTagNameNS($sheetNs, 'c') as $cell) {
+            if ($cell->getAttribute('r') === 'G60') {
+                $cell->removeAttribute('t');
+                while ($cell->firstChild !== null) {
+                    $cell->removeChild($cell->firstChild);
+                }
+                break;
+            }
+        }
+        $parts['xl/worksheets/sheet4.xml'] = $sheet->saveXML();
+    }
+    $parts[$drawingPath] = $drawing->saveXML();
+    $parts[$relsPath] = $rels->saveXML();
+    $parts['[Content_Types].xml'] = $types->saveXML();
+}
+
 /**
  * @param array<string, mixed> $employee
  * @param array<int, array<string, mixed>> $serviceRecords
@@ -941,6 +1217,7 @@ function pds_xlsx_build(
     pds_xlsx_set_checkbox($parts, 4, 'H45', (int)($employee['pwd'] ?? 0) === 1);
     pds_xlsx_set_checkbox($parts, 4, 'J45', (int)($employee['pwd'] ?? 0) !== 1);
 
+    pds_xlsx_embed_profile_media($parts, $employee);
     pds_xlsx_prepare_layout($parts);
     return pds_xlsx_write_package($parts);
 }

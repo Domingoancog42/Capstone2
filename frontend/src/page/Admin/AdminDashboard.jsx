@@ -38,6 +38,7 @@ import { AccessDeniedInline } from "../../components/auth/AccessDenied";
 import { userCanAccessModule } from "../../utils/permissions";
 import { buildNextEmployeeId } from "../../utils/employeeIds";
 import { EmployeeDocumentDownloadButtons } from "../../components/employee/EmployeeDocumentsModal";
+import EmployeeDocumentManager from "../../components/employee/EmployeeDocumentManager";
 import EmployeeDocumentUploadFields from "../../components/employee/EmployeeDocumentUploadFields";
 import EmployeeDocumentRetryModal from "../../components/employee/EmployeeDocumentRetryModal";
 import { saveEmployeeDocumentFiles } from "../../services/employeeDocumentUploads";
@@ -62,6 +63,7 @@ import {
   updateEmployeeProfileImage,
 } from "../../services/api";
 import DivisionSettings from "../settings/division";
+import SignatoriesManagement from "../settings/signatories_management";
 import LeaveDashboard from "../../module/leave/LeaveDashboard";
 import LeaveBalanceManagementWorkspace from "../../module/leave/LeaveBalanceManagementWorkspace";
 import AttendanceManagementWorkspace from "../../module/attendance/AttendanceManagementWorkspace";
@@ -127,6 +129,7 @@ const modulePaths = {
   divisions: "/admin/divisions",
   designations: "/admin/designations",
   rbac: "/admin/rbac",
+  signatories: "/admin/signatories",
   serviceRecord: "/admin/service-record",
   promotions: "/admin/promotions",
   rewardsRecognition: "/admin/rewards-recognition",
@@ -222,6 +225,7 @@ const adminModuleBreadcrumbs = {
   divisions: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Divisions Management", path: modulePaths.divisions }],
   designations: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Positions Management", path: modulePaths.designations }],
   rbac: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "RBAC Management", path: modulePaths.rbac }],
+  signatories: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Signatories Management", path: modulePaths.signatories }],
   serviceRecord: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Service Record", path: modulePaths.serviceRecord }],
   promotions: [{ label: "Dashboard", path: modulePaths.dashboard }, { label: "Promotions", path: modulePaths.promotions }],
   rewardsNomination: [
@@ -299,6 +303,10 @@ function moduleFromPath(pathname) {
 
   if (pathname === modulePaths.rbac) {
     return "rbac";
+  }
+
+  if (pathname === modulePaths.signatories) {
+    return "signatories";
   }
 
   if (pathname === modulePaths.serviceRecord) {
@@ -1701,6 +1709,7 @@ export default function AdminDashboard({
 
   const openEmployeeRecordEditor = (employee) => {
     setEditingEmployee(employee);
+    setEmployeeDocuments([]);
     setEmployeeModalOpen(true);
   };
 
@@ -2237,7 +2246,7 @@ export default function AdminDashboard({
       const linkedUser = result.linkedUser || null;
       let documentWarning = "";
 
-      if (!isEditingEmployee && employeeDocuments.length) {
+      if (employeeDocuments.length) {
         const failed = await saveEmployeeDocumentFiles(savedEmployee?.id, employeeDocuments);
         if (failed.length) {
           documentWarning = `${failed.length} document upload${failed.length === 1 ? "" : "s"} failed. Retry the remaining files in the Documents dialog.`;
@@ -2870,6 +2879,8 @@ export default function AdminDashboard({
 
 
 
+              {activeModule === "signatories" ? <SignatoriesManagement user={user} /> : null}
+
               {["settings", "divisions", "designations", "rbac"].includes(activeModule) ? (
                 <DivisionSettings
                   key={activeModule}
@@ -2934,9 +2945,21 @@ export default function AdminDashboard({
           submitLabel={employeeSaving ? "Saving..." : editingEmployee ? "Save Changes" : "Create Employee"}
           showActions={false}
           submitting={employeeSaving}
-          additionalFields={!editingEmployee ? (
-            <EmployeeDocumentUploadFields value={employeeDocuments} onChange={setEmployeeDocuments} disabled={employeeSaving} />
-          ) : null}
+          additionalFields={(
+            <div className="space-y-4">
+              {editingEmployee?.id ? (
+                <EmployeeDocumentManager
+                  key={editingEmployee.id}
+                  employee={editingEmployee}
+                  disabled={employeeSaving}
+                />
+              ) : null}
+              <EmployeeDocumentUploadFields value={employeeDocuments} onChange={setEmployeeDocuments} disabled={employeeSaving} />
+              {editingEmployee ? (
+                <p className="m-0 text-xs text-slate-500">New uploads are saved when you click Save Changes.</p>
+              ) : null}
+            </div>
+          )}
         />
       </Modal>
 

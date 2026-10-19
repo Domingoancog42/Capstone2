@@ -5,6 +5,7 @@ import { getCurrentEmployeeSignature, getEmployeeSignature } from "../../service
 import { fetchLoanRequestById, LOAN_TYPES } from "../../services/loanService";
 import { currencyFormatter } from "../../utils/format";
 import { splitEmployeeName } from "../../utils/employeeName";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 
 function normalizeText(value) {
   return String(value || "").trim().toLowerCase();
@@ -373,17 +374,19 @@ function SignatureBlock({
   fallbackText = "",
   name = "",
   caption = "",
+  showESignatures = true,
+  showTimestamps = true,
 }) {
   return (
     <div style={{ marginTop: "20px", textAlign: "center" }}>
       <div style={styles.signaturePreview}>
-        {signatureDataUrl ? (
+        {showESignatures && signatureDataUrl ? (
           <img
             src={signatureDataUrl}
             alt={`${name || "Authorized"} signature`}
             style={styles.signatureImage}
           />
-        ) : fallbackText ? (
+        ) : showTimestamps && fallbackText ? (
           <div style={styles.signatureTimestamp}>{fallbackText}</div>
         ) : null}
       </div>
@@ -408,6 +411,7 @@ export default function LoanApplicationFormModal({
   showRegionalDirectorApproverSignature = false,
   onClose,
 }) {
+  const { showESignatures, showTimestamps, loading: signatoriesLoading } = useFilingSignatories();
   const [visible, setVisible] = useState(false);
   const [resolvedRecord, setResolvedRecord] = useState(record);
   const [employeeSignature, setEmployeeSignature] = useState("");
@@ -614,7 +618,7 @@ export default function LoanApplicationFormModal({
   );
 
   const handlePrint = () => {
-    if (!printRef.current) {
+    if (signatoriesLoading || !printRef.current) {
       return;
     }
 
@@ -889,6 +893,8 @@ export default function LoanApplicationFormModal({
                 <div style={{ ...styles.cell, width: "45%", borderRight: "none" }}>
                   <label style={styles.label}>8.A Applicant</label>
                   <SignatureBlock
+                    showESignatures={showESignatures}
+                    showTimestamps={showTimestamps}
                     signatureDataUrl={employeeSignature}
                     fallbackText={applicantTimestampLabel}
                     name={formData.applicantName}
@@ -908,6 +914,8 @@ export default function LoanApplicationFormModal({
                   </p>
                   {hasHrmoSignatureBlock ? (
                     <SignatureBlock
+                      showESignatures={showESignatures}
+                      showTimestamps={showTimestamps}
                       signatureDataUrl={hrmoSignature}
                       fallbackText={hrmoTimestampLabel}
                       name={hrmoName}
@@ -961,6 +969,8 @@ export default function LoanApplicationFormModal({
                   />
                   {hasRegionalDirectorSignatureBlock ? (
                     <SignatureBlock
+                      showESignatures={showESignatures}
+                      showTimestamps={showTimestamps}
                       signatureDataUrl={regionalDirectorSignature}
                       fallbackText={regionalDirectorTimestampLabel}
                       name={regionalDirectorName}
@@ -995,6 +1005,7 @@ export default function LoanApplicationFormModal({
               <button
                 type="button"
                 onClick={handlePrint}
+                disabled={signatoriesLoading}
                 className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-900 bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
               >
                 Print Form

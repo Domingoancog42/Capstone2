@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { CalendarDays, ExternalLink, Eye, FileText, Paperclip, UserRound, X } from "lucide-react";
+import LeaveAttachmentPreview, { getLeaveAttachmentPreviewInfo } from "./LeaveAttachmentPreview";
 import LeaveStatusBadge from "./LeaveStatusBadge";
 import {
   formatDateDisplay,
@@ -25,9 +27,6 @@ const STUDY_LEAVE_PURPOSE_LABELS = {
   masters: "Completion of Master's Degree",
   bar_review: "BAR/Board Examination Review",
 };
-
-const API_BASE_URL =
-  process.env.REACT_APP_API_BASE_URL || "http://localhost/Capstone2/frontend/backend/api";
 
 function normalizeLeaveType(value) {
   return String(value || "").trim().toLowerCase();
@@ -81,49 +80,6 @@ function buildLeaveDetailRows(request) {
   return rows;
 }
 
-function resolveAttachmentUrl(attachmentPath, attachmentName) {
-  const preferredValue = String(attachmentPath || attachmentName || "").trim();
-  if (!preferredValue) {
-    return "";
-  }
-
-  let backendRootUrl = "";
-  try {
-    const apiUrl = new URL(API_BASE_URL, window.location.origin);
-    const backendBasePath = apiUrl.pathname.replace(/\/api\/?$/, "/");
-    backendRootUrl = `${apiUrl.origin}${backendBasePath}`;
-  } catch {
-    backendRootUrl = `${window.location.origin}/`;
-  }
-
-  if (/^(https?:|data:|blob:)/i.test(preferredValue)) {
-    return preferredValue;
-  }
-
-  if (/^[a-z]:\\/i.test(preferredValue)) {
-    return "";
-  }
-
-  if (preferredValue.startsWith("/")) {
-    return `${window.location.origin}${preferredValue}`;
-  }
-
-  if (preferredValue.includes("/") || preferredValue.includes("\\")) {
-    const normalizedPath = preferredValue.replace(/\\/g, "/").replace(/^\/+/, "");
-    return new URL(normalizedPath, backendRootUrl).toString();
-  }
-
-  return "";
-}
-
-function isImageAttachment(value) {
-  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(String(value || ""));
-}
-
-function isPdfAttachment(value) {
-  return /\.pdf$/i.test(String(value || ""));
-}
-
 function DetailCard({ icon: Icon, label, value }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -136,79 +92,13 @@ function DetailCard({ icon: Icon, label, value }) {
   );
 }
 
-function AttachmentViewerCard({ attachmentName, previewUrl, previewKey, onClose }) {
-  const imagePreview = isImageAttachment(previewKey);
-  const pdfPreview = isPdfAttachment(previewKey);
-
-  return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
-      <button
-        type="button"
-        aria-label="Close attachment preview"
-        className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      <div className="relative z-10 w-full max-w-5xl overflow-hidden rounded-[28px] border border-white/20 bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
-          <div>
-            <h3 className="m-0 text-lg font-semibold text-slate-950">Attachment Preview</h3>
-            <p className="m-0 mt-1 break-all text-sm text-slate-500">{attachmentName}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <a
-              href={previewUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex min-h-9 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-            >
-              <ExternalLink size={14} />
-              Open New Tab
-            </a>
-            <button
-              type="button"
-              onClick={onClose}
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        </div>
-
-        <div className="max-h-[78vh] overflow-auto bg-slate-100 p-4 sm:p-5">
-          {imagePreview ? (
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3">
-              <img
-                src={previewUrl}
-                alt={attachmentName}
-                className="max-h-[68vh] w-full rounded-2xl object-contain"
-              />
-            </div>
-          ) : pdfPreview ? (
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-              <iframe
-                src={previewUrl}
-                title={attachmentName}
-                className="h-[70vh] w-full border-0"
-              />
-            </div>
-          ) : (
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 text-center">
-              <p className="m-0 text-sm font-semibold text-slate-800">Preview is not available for this file type.</p>
-              <p className="m-0 mt-2 text-sm text-slate-500">Open the file in a new tab to review it.</p>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AttachmentPreview({ attachmentName, attachmentPath }) {
   const [viewerOpen, setViewerOpen] = useState(false);
-  const previewUrl = resolveAttachmentUrl(attachmentPath, attachmentName);
-  const previewKey = previewUrl || attachmentName;
-  const canPreviewInCard = Boolean(previewUrl && (isImageAttachment(previewKey) || isPdfAttachment(previewKey)));
+  const {
+    path: previewUrl,
+    name: displayName,
+    canPreview: canPreviewInCard,
+  } = getLeaveAttachmentPreviewInfo(attachmentPath, attachmentName);
 
   return (
     <>
@@ -218,9 +108,9 @@ function AttachmentPreview({ attachmentName, attachmentPath }) {
           <span>Attachment Upload</span>
         </div>
 
-        {attachmentName ? (
+        {displayName ? (
           <>
-            <p className="m-0 mt-2 break-all text-sm font-medium text-slate-900">{attachmentName}</p>
+            <p className="m-0 mt-2 break-all text-sm font-medium text-slate-900">{displayName}</p>
 
             {canPreviewInCard ? (
               <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -262,11 +152,11 @@ function AttachmentPreview({ attachmentName, attachmentPath }) {
               </p>
             ) : canPreviewInCard ? (
               <p className="m-0 mt-3 text-xs text-slate-500">
-                Click view attach to open the uploaded file in a floating preview card.
+                Click View Attach to open the uploaded file in a centered overlay preview.
               </p>
             ) : (
               <p className="m-0 mt-3 text-xs text-slate-500">
-                This file type can be opened in a new tab, but it does not support the in-app floating preview.
+                This file type can be opened in a new tab, but it does not support the in-app preview.
               </p>
             )}
           </>
@@ -275,14 +165,12 @@ function AttachmentPreview({ attachmentName, attachmentPath }) {
         )}
       </div>
 
-      {viewerOpen ? (
-        <AttachmentViewerCard
-          attachmentName={attachmentName}
-          previewUrl={previewUrl}
-          previewKey={previewKey}
-          onClose={() => setViewerOpen(false)}
-        />
-      ) : null}
+      <LeaveAttachmentPreview
+        open={viewerOpen}
+        attachmentName={attachmentName}
+        attachmentPath={attachmentPath}
+        onClose={() => setViewerOpen(false)}
+      />
     </>
   );
 }
@@ -336,7 +224,8 @@ export default function LeaveReviewModal({
     return null;
   }
 
-  return (
+  // Keep the review above animated workspace ancestors, just like the leave form preview.
+  return createPortal((
     <div className="fixed inset-0 z-[96] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -436,5 +325,5 @@ export default function LeaveReviewModal({
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }

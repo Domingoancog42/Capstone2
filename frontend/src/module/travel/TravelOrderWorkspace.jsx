@@ -61,6 +61,7 @@ import {
 } from "../../utils/dateSelection";
 import { buildTravelOrderQrPayload } from "../../utils/formQrCode";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 import { fitSheetToPrintArea, PRINT_AREA_WIDTH_MM, PRINT_PAGE_MARGIN_MM } from "../../utils/printSheetFit";
 import { downloadFormSheetPdf } from "../../utils/formSheetPdf";
 import { getEmployeeSignature } from "../../services/api";
@@ -640,6 +641,7 @@ function TravelPreviewSelectionBox({ checked = false }) {
 }
 
 function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = false, onClose }) {
+  const { showESignatures, showTimestamps, loading: signatorySettingsLoading } = useFilingSignatories();
   const [visible, setVisible] = useState(false);
   const [employeeSignature, setEmployeeSignature] = useState("");
   const [recommendedBySignature, setRecommendedBySignature] = useState("");
@@ -652,7 +654,7 @@ function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = fa
    * frame callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: Boolean(request) && (autoPrint || autoDownload),
+    active: Boolean(request) && !signatorySettingsLoading && (autoPrint || autoDownload),
     /* The PDF is saved asynchronously, so a download closes the order only once the file is out. */
     onPrint: () => {
       if (autoDownload) {
@@ -1053,18 +1055,14 @@ function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = fa
               <div style={{ gridColumn: "1" }}>
                 <p className="travel-print-ra-label" style={travelFormStyles.raLabel}>Recommended by:</p>
                 <div className="travel-print-signature" style={travelFormStyles.raSigPreview}>
-                  {recommendedBySignature ? (
-                    <>
-                      <img
-                        src={recommendedBySignature}
-                        alt={`${recommendedBy || recommendedByRole} signature`}
-                        style={travelFormStyles.raSigImage}
-                      />
-                      {recommendedTimestampLabel ? (
-                        <div style={travelFormStyles.signatureTimestamp}>{recommendedTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : recommendedTimestampLabel ? (
+                  {showESignatures && recommendedBySignature ? (
+                    <img
+                      src={recommendedBySignature}
+                      alt={`${recommendedBy || recommendedByRole} signature`}
+                      style={travelFormStyles.raSigImage}
+                    />
+                  ) : null}
+                  {showTimestamps && recommendedTimestampLabel ? (
                     <div style={travelFormStyles.signatureTimestamp}>{recommendedTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -1075,18 +1073,14 @@ function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = fa
               <div style={{ gridColumn: "2" }}>
                 <p className="travel-print-ra-label" style={travelFormStyles.raLabel}>{approvalActionLabel}</p>
                 <div className="travel-print-signature" style={travelFormStyles.raSigPreview}>
-                  {approvedBySignature ? (
-                    <>
-                      <img
-                        src={approvedBySignature}
-                        alt={`${approvedBy || "Regional Director"} signature`}
-                        style={travelFormStyles.raSigImage}
-                      />
-                      {approvedTimestampLabel ? (
-                        <div style={travelFormStyles.signatureTimestamp}>{approvedTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : approvedTimestampLabel ? (
+                  {showESignatures && approvedBySignature ? (
+                    <img
+                      src={approvedBySignature}
+                      alt={`${approvedBy || "Regional Director"} signature`}
+                      style={travelFormStyles.raSigImage}
+                    />
+                  ) : null}
+                  {showTimestamps && approvedTimestampLabel ? (
                     <div style={travelFormStyles.signatureTimestamp}>{approvedTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -1102,18 +1096,14 @@ function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = fa
               <p style={travelFormStyles.authText}>{TRAVEL_AUTHORIZATION_TEXT}</p>
               <div style={travelFormStyles.authSig}>
                 <div className="travel-print-signature" style={travelFormStyles.authSigPreview}>
-                  {employeeSignature ? (
-                    <>
-                      <img
-                        src={employeeSignature}
-                        alt={`${displayValue(request.employeeName) || "Official Employee"} signature`}
-                        style={travelFormStyles.authSigImage}
-                      />
-                      {applicantTimestampLabel ? (
-                        <div style={travelFormStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : applicantTimestampLabel ? (
+                  {showESignatures && employeeSignature ? (
+                    <img
+                      src={employeeSignature}
+                      alt={`${displayValue(request.employeeName) || "Official Employee"} signature`}
+                      style={travelFormStyles.authSigImage}
+                    />
+                  ) : null}
+                  {showTimestamps && applicantTimestampLabel ? (
                     <div style={travelFormStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
                   ) : null}
                 </div>

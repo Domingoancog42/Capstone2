@@ -1,3 +1,5 @@
+import { formatDate, formatPeriod } from "./awardCycleUtils";
+
 export const CERTIFICATE_WIDTH = 960;
 export const CERTIFICATE_HEIGHT = 679;
 
@@ -287,11 +289,172 @@ const presetDefinitions = {
 
 export const CERTIFICATE_PRESETS = Object.values(presetDefinitions);
 
+export const CERTIFICATE_DYNAMIC_FIELDS = [
+  { key: "employeeName", label: "Recipient name" },
+  { key: "designationTitle", label: "Position" },
+  { key: "divisionName", label: "Division" },
+  { key: "awardTitle", label: "Award name" },
+  { key: "awardPeriod", label: "Award period" },
+  { key: "awardedOn", label: "Award date" },
+  { key: "signatoryName", label: "Signatory name" },
+  { key: "signatoryTitle", label: "Signatory title" },
+  { key: "certificateNumber", label: "Certificate number" },
+];
+
+/** Record values are inserted as plain text, so the design is shared by every recipient. */
+export function resolveCertificateText(text, certificate) {
+  const fields = Object.fromEntries(CERTIFICATE_DYNAMIC_FIELDS.map(({ key }) => [key, String(certificate?.[key] || "")]));
+  fields.awardedOn = formatDate(certificate?.awardedOn);
+  fields.awardPeriod = String(certificate?.awardPeriod || formatPeriod(certificate));
+  return String(text || "").replace(/\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g, (token, key) => (
+    Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : token
+  ));
+}
+
+let nextElementId = 0;
+
+function newElementId() {
+  nextElementId += 1;
+  return `element-${Date.now().toString(36)}-${nextElementId.toString(36)}`;
+}
+
+/** New designs contain only what their author adds to the white paper. */
+export function createBlankCertificateTemplate() {
+  return {
+    version: 2,
+    preset: "blank",
+    paper: { backgroundColor: "#ffffff" },
+    backgroundImage: "",
+    backgroundImageFit: "contain",
+    elements: [],
+  };
+}
+
+export function createCanvasElement(type = "text", overrides = {}) {
+  const elementType = ["text", "image", "shape"].includes(type) ? type : "text";
+  const common = {
+    id: newElementId(),
+    type: elementType,
+    x: 250,
+    y: 200,
+    width: 460,
+    height: 64,
+    rotation: 0,
+    opacity: 1,
+    locked: false,
+  };
+  const details = elementType === "text" ? {
+    text: "Add your text",
+    fontSize: 32,
+    fontFamily: "Arial, Helvetica, sans-serif",
+    fontWeight: 400,
+    fontStyle: "normal",
+    textAlign: "center",
+    color: "#111827",
+    letterSpacing: 0,
+    lineHeight: 1.2,
+    textTransform: "none",
+  } : elementType === "image" ? {
+    width: 200,
+    height: 150,
+    src: "",
+    fit: "contain",
+  } : {
+    width: 240,
+    height: 140,
+    shape: "rectangle",
+    fill: "#e2e8f0",
+    stroke: "#334155",
+    strokeWidth: 0,
+    borderRadius: 0,
+  };
+
+  return {
+    ...common,
+    ...details,
+    ...overrides,
+    id: typeof overrides.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(overrides.id) ? overrides.id : common.id,
+    type: elementType,
+  };
+}
+
+function boundedNumber(value, fallback, minimum, maximum) {
+  if (value === null || typeof value === "boolean" || (typeof value === "string" && !value.trim())) return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
+}
+
+function canvasColor(value, fallback) {
+  const color = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^#[0-9a-f]{6}$/.test(color) ? color : fallback;
+}
+
+function canvasImagePath(value) {
+  const path = typeof value === "string" ? value.trim() : "";
+  return /^uploads\/certificate-(?:designs|signatures)\/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(path) ? path : "";
+}
+
+function normalizeCanvasElement(candidate, index, usedIds) {
+  if (!candidate || typeof candidate !== "object" || !["text", "image", "shape"].includes(candidate.type)) {
+    return null;
+  }
+  let id = typeof candidate.id === "string" ? candidate.id : "";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || usedIds.has(id)) {
+    id = `element_${index + 1}`;
+    let suffix = 1;
+    while (usedIds.has(id)) id = `element_${index + 1}_${suffix++}`;
+  }
+  usedIds.add(id);
+  const defaults = createCanvasElement(candidate.type, { id });
+  const width = boundedNumber(candidate.width, defaults.width, 1, CERTIFICATE_WIDTH);
+  const height = boundedNumber(candidate.height, defaults.height, 1, CERTIFICATE_HEIGHT);
+  const item = {
+    id,
+    type: candidate.type,
+    x: boundedNumber(candidate.x, Math.min(defaults.x, CERTIFICATE_WIDTH - width), 0, CERTIFICATE_WIDTH - width),
+    y: boundedNumber(candidate.y, Math.min(defaults.y, CERTIFICATE_HEIGHT - height), 0, CERTIFICATE_HEIGHT - height),
+    width,
+    height,
+    rotation: boundedNumber(candidate.rotation, 0, -360, 360),
+    opacity: boundedNumber(candidate.opacity, 1, 0, 1),
+    locked: candidate.locked === true,
+  };
+
+  if (item.type === "text") {
+    const weight = Math.trunc(boundedNumber(candidate.fontWeight, defaults.fontWeight, 100, 900));
+    return {
+      ...item,
+      text: typeof candidate.text === "string" ? [...candidate.text].slice(0, 5000).join("") : "",
+      fontSize: boundedNumber(candidate.fontSize, defaults.fontSize, 8, 128),
+      fontFamily: CERTIFICATE_FONT_OPTIONS.some(({ value }) => value === candidate.fontFamily) ? candidate.fontFamily : defaults.fontFamily,
+      fontWeight: weight % 100 === 0 ? weight : defaults.fontWeight,
+      fontStyle: candidate.fontStyle === "italic" ? "italic" : "normal",
+      textAlign: ["left", "center", "right", "justify"].includes(candidate.textAlign) ? candidate.textAlign : defaults.textAlign,
+      color: canvasColor(candidate.color, defaults.color),
+      letterSpacing: boundedNumber(candidate.letterSpacing, defaults.letterSpacing, -5, 30),
+      lineHeight: boundedNumber(candidate.lineHeight, defaults.lineHeight, 0.5, 3),
+      textTransform: ["none", "uppercase", "lowercase", "capitalize"].includes(candidate.textTransform) ? candidate.textTransform : "none",
+    };
+  }
+  if (item.type === "image") {
+    return { ...item, src: canvasImagePath(candidate.src), fit: candidate.fit === "cover" ? "cover" : "contain" };
+  }
+  return {
+    ...item,
+    shape: ["rectangle", "ellipse", "line"].includes(candidate.shape) ? candidate.shape : "rectangle",
+    fill: candidate.fill === "transparent" ? "transparent" : canvasColor(candidate.fill, defaults.fill),
+    stroke: candidate.stroke === "transparent" ? "transparent" : canvasColor(candidate.stroke, defaults.stroke),
+    strokeWidth: boundedNumber(candidate.strokeWidth, defaults.strokeWidth, 0, 20),
+    borderRadius: boundedNumber(candidate.borderRadius, defaults.borderRadius, 0, 240),
+  };
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-export function createCertificateTemplate(presetId = "classic", text = sharedText) {
+export function createCertificateTemplate(presetId = "blank", text = sharedText) {
+  if (presetId === "blank") return createBlankCertificateTemplate();
   const preset = presetDefinitions[presetId] || presetDefinitions.classic;
 
   return {
@@ -316,8 +479,8 @@ export function applyCertificatePreset(presetId, currentTemplate) {
 
   return {
     ...next,
-    showLeftLogo: current.showLeftLogo,
-    showRightLogo: current.showRightLogo,
+    showLeftLogo: current.showLeftLogo !== false,
+    showRightLogo: current.showRightLogo !== false,
   };
 }
 
@@ -339,6 +502,23 @@ export function certificateTemplateDraftForPreset(drafts, presetId, currentTempl
 }
 
 export function normalizeCertificateTemplate(value) {
+  const isLegacy = value && value.version !== 2 && value.preset !== "blank" && (
+    value.version === 1 || presetDefinitions[value.preset]
+    || (value.elements && !Array.isArray(value.elements)) || value.text
+  );
+  if (!isLegacy) {
+    const base = createBlankCertificateTemplate();
+    const usedIds = new Set();
+    return {
+      ...base,
+      paper: { backgroundColor: canvasColor(value?.paper?.backgroundColor, base.paper.backgroundColor) },
+      backgroundImage: canvasImagePath(value?.backgroundImage),
+      backgroundImageFit: value?.backgroundImageFit === "cover" ? "cover" : "contain",
+      elements: (Array.isArray(value?.elements) ? value.elements : []).slice(0, 100)
+        .map((candidate, index) => normalizeCanvasElement(candidate, index, usedIds))
+        .filter(Boolean),
+    };
+  }
   const presetId = presetDefinitions[value?.preset] ? value.preset : "classic";
   const base = createCertificateTemplate(presetId, value?.text);
 

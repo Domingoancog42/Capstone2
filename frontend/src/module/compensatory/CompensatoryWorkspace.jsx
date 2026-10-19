@@ -31,6 +31,7 @@ import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
 import SelectionCheckbox from "../../components/UI/SelectionCheckbox";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 import { downloadFormSheetPdf } from "../../utils/formSheetPdf";
 import { getEmployeeSignature } from "../../services/api";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
@@ -714,6 +715,7 @@ function CompensatoryPreviewModal({
   autoDownload = false,
   onClose,
 }) {
+  const { showESignatures, showTimestamps, loading: signatorySettingsLoading } = useFilingSignatories();
   const [visible, setVisible] = useState(false);
   const [applicantSignature, setApplicantSignature] = useState("");
   const [chiefReviewerSignature, setChiefReviewerSignature] = useState("");
@@ -727,7 +729,7 @@ function CompensatoryPreviewModal({
    * frame callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: Boolean(record) && (autoPrint || autoDownload),
+    active: Boolean(record) && !signatorySettingsLoading && (autoPrint || autoDownload),
     /* The PDF is saved asynchronously, so a download closes the form only once the file is out. */
     onPrint: () => {
       if (autoDownload) {
@@ -1161,18 +1163,14 @@ function CompensatoryPreviewModal({
               <div>
                 <div style={{ fontSize: "10px", marginBottom: "4px" }}>Recommending Approval:</div>
                 <div style={ctoPreviewStyles.signaturePreview}>
-                  {showChiefReviewerSignature && chiefReviewerSignature ? (
-                    <>
-                      <img
-                        src={chiefReviewerSignature}
-                        alt={`${chiefReviewerName || "Chief"} signature`}
-                        style={ctoPreviewStyles.signatureImage}
-                      />
-                      {chiefReviewerTimestampLabel ? (
-                        <div style={ctoPreviewStyles.signatureTimestamp}>{chiefReviewerTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : chiefReviewerTimestampLabel ? (
+                  {showESignatures && showChiefReviewerSignature && chiefReviewerSignature ? (
+                    <img
+                      src={chiefReviewerSignature}
+                      alt={`${chiefReviewerName || "Chief"} signature`}
+                      style={ctoPreviewStyles.signatureImage}
+                    />
+                  ) : null}
+                  {showTimestamps && chiefReviewerTimestampLabel ? (
                     <div style={ctoPreviewStyles.signatureTimestamp}>{chiefReviewerTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -1182,18 +1180,14 @@ function CompensatoryPreviewModal({
               </div>
               <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
                 <div style={ctoPreviewStyles.signaturePreview}>
-                  {applicantSignature ? (
-                    <>
-                      <img
-                        src={applicantSignature}
-                        alt={`${applicantName || "Applicant"} signature`}
-                        style={ctoPreviewStyles.signatureImage}
-                      />
-                      {applicantTimestampLabel ? (
-                        <div style={ctoPreviewStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : applicantTimestampLabel ? (
+                  {showESignatures && applicantSignature ? (
+                    <img
+                      src={applicantSignature}
+                      alt={`${applicantName || "Applicant"} signature`}
+                      style={ctoPreviewStyles.signatureImage}
+                    />
+                  ) : null}
+                  {showTimestamps && applicantTimestampLabel ? (
                     <div style={ctoPreviewStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -1235,18 +1229,14 @@ function CompensatoryPreviewModal({
                   style={{ marginTop: "10px", width: "170px", ...(usesDirectRoute ? { visibility: "hidden" } : null) }}
                 >
                   <div style={ctoPreviewStyles.signaturePreview}>
-                    {showCreditCertifierSignature && creditCertifierSignature ? (
-                      <>
-                        <img
-                          src={creditCertifierSignature}
-                          alt={`${creditCertifierName || "Chief Admin"} signature`}
-                          style={ctoPreviewStyles.signatureImage}
-                        />
-                        {creditCertifierTimestampLabel ? (
-                          <div style={ctoPreviewStyles.signatureTimestamp}>{creditCertifierTimestampLabel}</div>
-                        ) : null}
-                      </>
-                    ) : creditCertifierTimestampLabel ? (
+                    {showESignatures && showCreditCertifierSignature && creditCertifierSignature ? (
+                      <img
+                        src={creditCertifierSignature}
+                        alt={`${creditCertifierName || "Chief Admin"} signature`}
+                        style={ctoPreviewStyles.signatureImage}
+                      />
+                    ) : null}
+                    {showTimestamps && creditCertifierTimestampLabel ? (
                       <div style={ctoPreviewStyles.signatureTimestamp}>{creditCertifierTimestampLabel}</div>
                     ) : null}
                   </div>
@@ -1273,18 +1263,14 @@ function CompensatoryPreviewModal({
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "30px" }}>
               <div style={{ width: "48%", textAlign: "center" }}>
                 <div style={ctoPreviewStyles.signaturePreview}>
-                  {authorizedOfficialSignature ? (
-                    <>
-                      <img
-                        src={authorizedOfficialSignature}
-                        alt={`${authorizedOfficialName || "Authorized official"} signature`}
-                        style={ctoPreviewStyles.signatureImage}
-                      />
-                      {authorizedOfficialTimestampLabel ? (
-                        <div style={ctoPreviewStyles.signatureTimestamp}>{authorizedOfficialTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : authorizedOfficialTimestampLabel ? (
+                  {showESignatures && authorizedOfficialSignature ? (
+                    <img
+                      src={authorizedOfficialSignature}
+                      alt={`${authorizedOfficialName || "Authorized official"} signature`}
+                      style={ctoPreviewStyles.signatureImage}
+                    />
+                  ) : null}
+                  {showTimestamps && authorizedOfficialTimestampLabel ? (
                     <div style={ctoPreviewStyles.signatureTimestamp}>{authorizedOfficialTimestampLabel}</div>
                   ) : null}
                 </div>

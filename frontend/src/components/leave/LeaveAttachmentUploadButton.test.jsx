@@ -7,6 +7,16 @@ import { canUploadLeaveMedicalCertificate } from "../../utils/leaveHelpers";
 
 jest.mock("../../services/leaveService", () => ({ uploadLeaveMedicalCertificate: jest.fn() }));
 jest.mock("react-hot-toast", () => ({ toast: { error: jest.fn(), success: jest.fn() } }));
+jest.mock("./LeaveAttachmentPreview", () => {
+  const React = require("react");
+  return function MockLeaveAttachmentPreview({ open, attachmentName, attachmentPath, onClose }) {
+    return open ? React.createElement("div", {
+      role: "dialog",
+      "aria-label": "Medical certificate preview",
+      "data-attachment-path": attachmentPath,
+    }, attachmentName, React.createElement("button", { type: "button", onClick: onClose }, "Close preview")) : null;
+  };
+});
 
 /* eslint-disable testing-library/no-unnecessary-act */
 let container;
@@ -57,6 +67,43 @@ test("rejects unsupported files before sending an upload", async () => {
   await selectFile(new File(["script"], "certificate.exe"));
   expect(uploadLeaveMedicalCertificate).not.toHaveBeenCalled();
   expect(toast.error).toHaveBeenCalled();
+});
+
+test("opens the saved certificate in the shared overlay and closes without uploading", () => {
+  const request = {
+    id: 42,
+    attachmentName: "medical.jpg",
+    attachmentPath: "uploads/leave-attachments/medical.jpg",
+  };
+  const onUploaded = jest.fn();
+  act(() => root.render(<LeaveAttachmentUploadButton request={request} onUploaded={onUploaded} />));
+  const viewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "View medical certificate");
+  expect(viewButton.type).toBe("button");
+  expect(container.querySelector('a[target="_blank"]')).toBeNull();
+  act(() => viewButton.click());
+  const preview = container.querySelector('[role="dialog"]');
+  expect(preview.textContent).toContain("medical.jpg");
+  expect(preview.getAttribute("data-attachment-path")).toBe(request.attachmentPath);
+  act(() => preview.querySelector("button").click());
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(uploadLeaveMedicalCertificate).not.toHaveBeenCalled();
+  expect(onUploaded).not.toHaveBeenCalled();
+});
+
+test.each([
+  { id: 43, attachmentPath: "uploads/leave-attachments/medical.jpg" },
+  { id: 42, attachmentPath: "uploads/leave-attachments/replacement.jpg" },
+])("closes the previous preview when its request or attachment changes: %j", (changedRequest) => {
+  const request = { id: 42, attachmentName: "medical.jpg", attachmentPath: "uploads/leave-attachments/medical.jpg" };
+  act(() => root.render(<LeaveAttachmentUploadButton request={request} />));
+  const viewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "View medical certificate");
+  act(() => viewButton.click());
+  expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  act(() => root.render(<LeaveAttachmentUploadButton request={{ ...request, ...changedRequest }} />));
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  act(() => root.render(<LeaveAttachmentUploadButton request={request} />));
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(uploadLeaveMedicalCertificate).not.toHaveBeenCalled();
 });
 
 test("offers the upload only for the applicant's active sick-leave request", () => {

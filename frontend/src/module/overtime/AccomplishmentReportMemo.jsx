@@ -9,6 +9,7 @@ import { getEmployeeSignature } from "../../services/api";
 import { submitOvertimeAccomplishmentReport } from "../../services/overtimeService";
 import { todayDateInputValue } from "../../utils/leaveHelpers";
 import { formatSignatureTimestamp } from "../../utils/signatureTimestamp";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 
 /*
  * The office's memorandum "Accomplishment Report of Task Rendered During Overtime", as the employee
@@ -262,6 +263,8 @@ export function AccomplishmentMemoPaper({
   notedByName = "",
   notedAt = "",
   chiefSignature = "",
+  showESignatures = false,
+  showTimestamps = false,
   paperRef,
 }) {
   const tasks = editable ? [] : splitTaskLines(values.tasks);
@@ -412,20 +415,20 @@ export function AccomplishmentMemoPaper({
       </p>
 
       <div style={memoStyles.signatory}>
-        {employeeSignature ? (
+        {showESignatures && employeeSignature ? (
           <img src={employeeSignature} alt={`${employeeName || "Employee"} signature`} style={memoStyles.signatureImage} />
         ) : null}
-        {submittedLabel ? <p style={memoStyles.signatureTimestamp}>Submitted: {submittedLabel}</p> : null}
+        {showTimestamps && submittedLabel ? <p style={memoStyles.signatureTimestamp}>Submitted: {submittedLabel}</p> : null}
         <div style={memoStyles.signatoryName}>{employeeName || " "}</div>
       </div>
 
       <p style={{ ...memoStyles.notedBy, margin: "26px 0 0" }}>Noted by:</p>
       <div style={memoStyles.notedBlock}>
         <div style={memoStyles.notedSignature}>
-          {notedByName && chiefSignature ? (
+          {showESignatures && notedByName && chiefSignature ? (
             <img src={chiefSignature} alt={`${notedByName} signature`} style={memoStyles.signatureImage} />
           ) : null}
-          {notedByName && notedLabel ? <p style={memoStyles.signatureTimestamp}>Noted: {notedLabel}</p> : null}
+          {showTimestamps && notedByName && notedLabel ? <p style={memoStyles.signatureTimestamp}>Noted: {notedLabel}</p> : null}
         </div>
         <div style={memoStyles.notedName}>{notedByName || " "}</div>
         <div style={memoStyles.notedLine} />
@@ -617,6 +620,7 @@ export function AccomplishmentReportFormModal({
   onClose,
   onSubmitted,
 }) {
+  const { showESignatures, showTimestamps } = useFilingSignatories();
   const [form, setForm] = useState(emptyAccomplishmentForm);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
@@ -771,6 +775,8 @@ export function AccomplishmentReportFormModal({
 
           <div className="overflow-x-auto py-1">
             <AccomplishmentMemoPaper
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
               editable={!memoFromRequest}
               employeeName={overtime.employeeName}
               division={overtime.division}
@@ -800,6 +806,7 @@ export function AccomplishmentReportPreviewModal({
   onNote,
   onReturn,
 }) {
+  const { showESignatures, showTimestamps, loading: signatoriesLoading } = useFilingSignatories();
   const paperRef = useRef(null);
   const employeeSignature = useEmployeeSignature(report?.employeeRecordId);
   const chiefSignature = useEmployeeSignature(
@@ -838,7 +845,7 @@ export function AccomplishmentReportPreviewModal({
       onClose={busy ? undefined : onClose}
       footer={
         <>
-          <Button variant="secondary" icon={Printer} onClick={() => printAccomplishmentMemo(paperRef.current)} disabled={busy}>
+          <Button variant="secondary" icon={Printer} onClick={() => printAccomplishmentMemo(paperRef.current)} disabled={busy || signatoriesLoading}>
             Print
           </Button>
           {canDecide && isPending ? (
@@ -861,6 +868,8 @@ export function AccomplishmentReportPreviewModal({
           {banner}
           <div className="overflow-x-auto py-1">
             <AccomplishmentMemoPaper
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
               paperRef={paperRef}
               employeeName={report.employeeName}
               division={report.division}

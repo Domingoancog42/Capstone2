@@ -190,6 +190,81 @@ function store_application_setting(PDO $pdo, string $key, string $value): void
 }
 
 /**
+ * Display controls for filing-form signatories. Keep both switches in one settings row so a reader
+ * always sees the complete saved policy. Stored workflow dates and employee signatures are untouched.
+ */
+function settings_filing_signatories(PDO $pdo): array
+{
+    $stored = json_decode(get_application_setting($pdo, 'filing_signatories', ''), true);
+    $settings = ['showTimestamps' => true, 'showESignatures' => true];
+
+    foreach ($settings as $key => $default) {
+        if (is_array($stored) && array_key_exists($key, $stored) && is_bool($stored[$key])) {
+            $settings[$key] = $stored[$key];
+        }
+    }
+
+    return $settings;
+}
+
+function list_filing_signatories_settings(PDO $pdo): void
+{
+    json_response([
+        'status' => 'success',
+        'success' => true,
+        'filingSignatories' => settings_filing_signatories($pdo),
+    ]);
+}
+
+function settings_update_filing_signatories(PDO $pdo, array $sessionUser, array $body): void
+{
+    // This administrator control must not be inherited through a custom role's base role.
+    if (user_exact_role_key($sessionUser) !== 'admin') {
+        json_response([
+            'success' => false,
+            'message' => 'Only administrators can update filing signatory settings.',
+        ], 403);
+    }
+
+    require_permission($sessionUser, 'settings', 'edit');
+
+    $settings = [];
+    foreach (['showTimestamps', 'showESignatures'] as $key) {
+        if (!array_key_exists($key, $body) || !is_bool($body[$key])) {
+            json_response([
+                'success' => false,
+                'message' => 'Timestamp and e-signature visibility must both be true or false.',
+            ], 422);
+        }
+        $settings[$key] = $body[$key];
+    }
+
+    try {
+        store_application_setting(
+            $pdo,
+            'filing_signatories',
+            json_encode($settings, JSON_THROW_ON_ERROR)
+        );
+    } catch (Throwable $exception) {
+        error_log('Unable to save filing signatory settings: ' . $exception->getMessage());
+        json_response([
+            'success' => false,
+            'message' => 'Unable to save filing signatory settings.',
+        ], 500);
+    }
+
+    write_auth_audit(
+        $pdo,
+        $sessionUser,
+        'settings.filing_signatories_updated',
+        'Filing form timestamp and e-signature visibility were updated.',
+        ['settings' => $settings]
+    );
+
+    list_filing_signatories_settings($pdo);
+}
+
+/**
  * Fallbacks for the branding fields of the System Configuration tab, used until an
  * administrator saves one. settings_default_system_configuration() builds its own
  * defaults on top of these so the two never drift apart.
@@ -3079,6 +3154,13 @@ if ($section === 'public') {
 }
 
 $sessionUser = require_session_user();
+
+// Every signed-in filing workspace needs these two rendering flags, without the administrative
+// details in the full settings payload or permission to edit system settings.
+if ($method === 'GET' && $section === 'filingSignatories') {
+    list_filing_signatories_settings($pdo);
+}
+
 ensure_organization_structure_columns($pdo);
 
 if ($method === 'GET') {
@@ -3092,6 +3174,10 @@ if ($method === 'GET') {
 
 $body = read_json_body();
 $type = settings_text($body['type'] ?? '');
+
+if (($method === 'POST' || $method === 'PUT') && $type === 'filing_signatories') {
+    settings_update_filing_signatories($pdo, $sessionUser, $body);
+}
 
 if ($method === 'POST' && $type === 'division') {
     $name = settings_text($body['name'] ?? '');

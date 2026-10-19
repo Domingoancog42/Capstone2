@@ -583,6 +583,19 @@ function ensure_rewards_tables(PDO $pdo): void
  */
 function rewards_default_certificate_template(): array
 {
+    return [
+        'version' => 2,
+        'preset' => 'blank',
+        'paper' => ['backgroundColor' => '#ffffff'],
+        'backgroundImage' => '',
+        'backgroundImageFit' => 'contain',
+        'elements' => [],
+    ];
+}
+
+/** Keep historical preset defaults separate from new, empty certificate canvases. */
+function rewards_legacy_certificate_template(): array
+{
     $serif = "Georgia, 'Times New Roman', serif";
     $sans = 'Arial, Helvetica, sans-serif';
     $element = static function (int $x, int $y, int $width, array $overrides = []) use ($sans): array {
@@ -647,13 +660,13 @@ function rewards_default_certificate_template(): array
 
 function rewards_certificate_color(mixed $value, string $fallback): string
 {
-    $color = strtolower(rewards_text($value));
+    $color = is_string($value) ? strtolower(trim($value)) : '';
     return preg_match('/^#[0-9a-f]{6}$/', $color) === 1 ? $color : $fallback;
 }
 
 function rewards_number_between(mixed $value, float $fallback, float $minimum, float $maximum): float
 {
-    if (!is_numeric($value)) {
+    if (!is_numeric($value) || !is_finite((float)$value)) {
         return $fallback;
     }
 
@@ -663,13 +676,10 @@ function rewards_number_between(mixed $value, float $fallback, float $minimum, f
 /** Whitelist every visual field before it reaches shared certificate rendering. */
 function rewards_normalize_certificate_template(mixed $candidate): array
 {
-    $default = rewards_default_certificate_template();
-    if (!is_array($candidate)) {
-        return $default;
+    if (!is_array($candidate) || $candidate === []) {
+        return rewards_default_certificate_template();
     }
 
-    $template = $default;
-    $preset = rewards_text($candidate['preset'] ?? '');
     $allowedPresets = [
         'classic',
         'modern',
@@ -682,6 +692,21 @@ function rewards_normalize_certificate_template(mixed $candidate): array
         'academic',
         'sunrise',
     ];
+    // Older templates did not always include an explicit version number. Recognize their named
+    // slots or preset metadata rather than adding legacy content to malformed/new canvas records.
+    $isLegacy = ($candidate['version'] ?? null) !== 2 && (
+        ($candidate['version'] ?? null) === 1
+        || in_array($candidate['preset'] ?? null, $allowedPresets, true)
+        || (is_array($candidate['elements'] ?? null) && !array_is_list($candidate['elements']))
+        || is_array($candidate['text'] ?? null)
+    );
+    if (!$isLegacy) {
+        return rewards_normalize_canvas_certificate_template($candidate);
+    }
+
+    $default = rewards_legacy_certificate_template();
+    $template = $default;
+    $preset = rewards_text($candidate['preset'] ?? '');
     $template['preset'] = in_array($preset, $allowedPresets, true) ? $preset : 'classic';
 
     if (in_array($template['preset'], ['modern', 'geometric'], true)) {
@@ -787,6 +812,118 @@ function rewards_normalize_certificate_template(mixed $candidate): array
         ];
     }
 
+    return $template;
+}
+
+/** Only uploaded raster assets can become part of a shared, printed certificate. */
+function rewards_certificate_image_path(mixed $value): string
+{
+    if (!is_string($value)) {
+        return '';
+    }
+    $path = trim($value);
+    return preg_match(
+        '#^uploads/certificate-(?:designs|signatures)/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$#i',
+        $path
+    ) === 1 ? $path : '';
+}
+
+/** A canvas is an ordered list of user-created objects, without implied certificate content. */
+function rewards_normalize_canvas_certificate_template(array $candidate): array
+{
+    $template = rewards_default_certificate_template();
+    $paper = is_array($candidate['paper'] ?? null) ? $candidate['paper'] : [];
+    $template['paper']['backgroundColor'] = rewards_certificate_color($paper['backgroundColor'] ?? null, '#ffffff');
+    $template['backgroundImage'] = rewards_certificate_image_path($candidate['backgroundImage'] ?? '');
+    $template['backgroundImageFit'] = ($candidate['backgroundImageFit'] ?? '') === 'cover' ? 'cover' : 'contain';
+    $allowedFonts = [
+        "Georgia, 'Times New Roman', serif",
+        "'Times New Roman', Times, serif",
+        "Garamond, 'Times New Roman', serif",
+        "'Palatino Linotype', Palatino, serif",
+        'Cambria, Georgia, serif',
+        "'Book Antiqua', Palatino, serif",
+        'Baskerville, Georgia, serif',
+        'Arial, Helvetica, sans-serif',
+        "'Trebuchet MS', Arial, sans-serif",
+        "'Segoe UI', Arial, sans-serif",
+        "'Century Gothic', Arial, sans-serif",
+        'Verdana, Geneva, sans-serif',
+        'Tahoma, Geneva, sans-serif',
+        "'Franklin Gothic Medium', Arial, sans-serif",
+        "'Monotype Corsiva', 'Segoe Script', cursive",
+        "'Brush Script MT', 'Segoe Script', cursive",
+        "'Segoe Script', 'Brush Script MT', cursive",
+    ];
+    $elements = is_array($candidate['elements'] ?? null) && array_is_list($candidate['elements'])
+        ? $candidate['elements']
+        : [];
+    $seenIds = [];
+    foreach (array_slice($elements, 0, 100) as $index => $input) {
+        if (!is_array($input) || !in_array($input['type'] ?? null, ['text', 'image', 'shape'], true)) {
+            continue;
+        }
+        $id = is_string($input['id'] ?? null) ? $input['id'] : '';
+        if (preg_match('/^[A-Za-z0-9_-]{1,64}$/', $id) !== 1 || isset($seenIds[$id])) {
+            $id = 'element_' . ($index + 1);
+            $suffix = 1;
+            while (isset($seenIds[$id])) {
+                $id = 'element_' . ($index + 1) . '_' . $suffix++;
+            }
+        }
+        $seenIds[$id] = true;
+        $defaultSize = match ($input['type']) {
+            'text' => [460, 64],
+            'image' => [200, 150],
+            default => [240, 140],
+        };
+        $width = rewards_number_between($input['width'] ?? null, $defaultSize[0], 1, 960);
+        $height = rewards_number_between($input['height'] ?? null, $defaultSize[1], 1, 679);
+        $element = [
+            'id' => $id,
+            'type' => $input['type'],
+            'x' => rewards_number_between($input['x'] ?? null, min(250, 960 - $width), 0, 960 - $width),
+            'y' => rewards_number_between($input['y'] ?? null, min(200, 679 - $height), 0, 679 - $height),
+            'width' => $width,
+            'height' => $height,
+            'rotation' => rewards_number_between($input['rotation'] ?? null, 0, -360, 360),
+            'opacity' => rewards_number_between($input['opacity'] ?? null, 1, 0, 1),
+            'locked' => ($input['locked'] ?? false) === true,
+        ];
+        if ($element['type'] === 'text') {
+            $font = $input['fontFamily'] ?? '';
+            $weight = (int)rewards_number_between($input['fontWeight'] ?? null, 400, 100, 900);
+            $text = is_string($input['text'] ?? null) ? $input['text'] : '';
+            preg_match('/\A.{0,5000}/us', $text, $textMatch);
+            $element += [
+                // Render this field as plain text. Tokens are replaced by the shared renderer.
+                'text' => $textMatch[0] ?? '',
+                'fontSize' => rewards_number_between($input['fontSize'] ?? null, 32, 8, 128),
+                'fontFamily' => in_array($font, $allowedFonts, true) ? $font : 'Arial, Helvetica, sans-serif',
+                'fontWeight' => $weight % 100 === 0 ? $weight : 400,
+                'fontStyle' => ($input['fontStyle'] ?? '') === 'italic' ? 'italic' : 'normal',
+                'textAlign' => in_array($input['textAlign'] ?? '', ['left', 'center', 'right', 'justify'], true) ? $input['textAlign'] : 'center',
+                'color' => rewards_certificate_color($input['color'] ?? null, '#111827'),
+                'letterSpacing' => rewards_number_between($input['letterSpacing'] ?? null, 0, -5, 30),
+                'lineHeight' => rewards_number_between($input['lineHeight'] ?? null, 1.2, 0.5, 3),
+                'textTransform' => in_array($input['textTransform'] ?? '', ['none', 'uppercase', 'lowercase', 'capitalize'], true) ? $input['textTransform'] : 'none',
+            ];
+        } elseif ($element['type'] === 'image') {
+            $element += [
+                'src' => rewards_certificate_image_path($input['src'] ?? ''),
+                'fit' => ($input['fit'] ?? '') === 'cover' ? 'cover' : 'contain',
+            ];
+        } else {
+            $element += [
+                'shape' => in_array($input['shape'] ?? '', ['rectangle', 'ellipse', 'line'], true) ? $input['shape'] : 'rectangle',
+                'fill' => ($input['fill'] ?? '') === 'transparent' ? 'transparent' : rewards_certificate_color($input['fill'] ?? null, '#e2e8f0'),
+                'stroke' => ($input['stroke'] ?? '') === 'transparent' ? 'transparent' : rewards_certificate_color($input['stroke'] ?? null, '#334155'),
+                'strokeWidth' => rewards_number_between($input['strokeWidth'] ?? null, 0, 0, 20),
+                'borderRadius' => rewards_number_between($input['borderRadius'] ?? null, 0, 0, 240),
+            ];
+        }
+        $template['elements'][] = $element;
+    }
     return $template;
 }
 
@@ -1033,8 +1170,8 @@ function rewards_upload_certificate_design(PDO $pdo, array $user): void
         json_response(['success' => false, 'message' => 'Use a PNG, JPG, or WebP certificate design.'], 422);
     }
 
-    if ((int)($image[0] ?? 0) < 600 || (int)($image[1] ?? 0) < 400 || (int)$image[0] > 8000 || (int)$image[1] > 8000) {
-        json_response(['success' => false, 'message' => 'Use a design image between 600 × 400 and 8000 × 8000 pixels.'], 422);
+    if ((int)($image[0] ?? 0) < 1 || (int)($image[1] ?? 0) < 1 || (int)$image[0] > 8000 || (int)$image[1] > 8000) {
+        json_response(['success' => false, 'message' => 'Use an image between 1 × 1 and 8000 × 8000 pixels.'], 422);
     }
 
     $uploadDirectory = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'certificate-designs';
@@ -1095,23 +1232,10 @@ function rewards_save_certificate_template(PDO $pdo, array $user): void
     $library['activeTemplateId'] = $templateId;
     rewards_store_certificate_template_library($pdo, $library);
 
-    $previousSignature = rewards_text($previousTemplate['signatureImage'] ?? '');
-    $nextSignature = rewards_text($template['signatureImage'] ?? '');
-    if (
-        $previousSignature !== ''
-        && $previousSignature !== $nextSignature
-        && !rewards_certificate_signature_is_referenced($pdo, $previousSignature)
-    ) {
-        rewards_remove_certificate_signature_file($previousSignature);
-    }
-    $previousDesign = rewards_text($previousTemplate['backgroundImage'] ?? '');
-    $nextDesign = rewards_text($template['backgroundImage'] ?? '');
-    if (
-        $previousDesign !== ''
-        && $previousDesign !== $nextDesign
-        && !rewards_certificate_asset_is_referenced($pdo, 'backgroundImage', $previousDesign)
-    ) {
-        rewards_remove_certificate_design_file($previousDesign);
+    foreach (array_diff(rewards_certificate_template_asset_paths($previousTemplate), rewards_certificate_template_asset_paths($template)) as $storedPath) {
+        if (!rewards_certificate_asset_is_referenced($pdo, 'src', $storedPath)) {
+            rewards_remove_certificate_asset_file($storedPath);
+        }
     }
     write_auth_audit($pdo, $user, 'rewards.certificate_template_updated', 'The award certificate template was updated.', [
         'templateId' => $templateId,
@@ -1214,17 +1338,11 @@ function rewards_delete_certificate_template(PDO $pdo, array $user): void
     }
     rewards_store_certificate_template_library($pdo, $library);
 
-    foreach (['signatureImage', 'backgroundImage'] as $field) {
-        $storedPath = rewards_text($removed['template'][$field] ?? '');
-        if ($storedPath === '' || rewards_certificate_asset_is_referenced($pdo, $field, $storedPath)) {
+    foreach (rewards_certificate_template_asset_paths($removed['template']) as $storedPath) {
+        if (rewards_certificate_asset_is_referenced($pdo, 'src', $storedPath)) {
             continue;
         }
-
-        if ($field === 'signatureImage') {
-            rewards_remove_certificate_signature_file($storedPath);
-        } else {
-            rewards_remove_certificate_design_file($storedPath);
-        }
+        rewards_remove_certificate_asset_file($storedPath);
     }
 
     write_auth_audit($pdo, $user, 'rewards.certificate_template_deleted', 'A certificate template was deleted.', [
@@ -1255,27 +1373,58 @@ function rewards_certificate_signature_is_referenced(PDO $pdo, string $storedPat
     return rewards_certificate_asset_is_referenced($pdo, 'signatureImage', $storedPath);
 }
 
+/** Include object images as well as the old template's dedicated image slots. */
+function rewards_certificate_template_asset_paths(array $template): array
+{
+    $paths = [
+        rewards_certificate_image_path($template['backgroundImage'] ?? ''),
+        rewards_certificate_image_path($template['signatureImage'] ?? ''),
+    ];
+    foreach (is_array($template['elements'] ?? null) ? $template['elements'] : [] as $element) {
+        if (is_array($element) && ($element['type'] ?? '') === 'image') {
+            $paths[] = rewards_certificate_image_path($element['src'] ?? '');
+        }
+    }
+    return array_values(array_unique(array_filter($paths, static fn(string $path): bool => $path !== '')));
+}
+
+function rewards_remove_certificate_asset_file(string $storedPath): void
+{
+    if (str_starts_with($storedPath, 'uploads/certificate-signatures/')) {
+        rewards_remove_certificate_signature_file($storedPath);
+    } else {
+        rewards_remove_certificate_design_file($storedPath);
+    }
+}
+
 function rewards_certificate_asset_is_referenced(PDO $pdo, string $field, string $storedPath): bool
 {
-    if ($storedPath === '' || !in_array($field, ['signatureImage', 'backgroundImage'], true)) {
+    if (rewards_certificate_image_path($storedPath) === '' || !in_array($field, ['signatureImage', 'backgroundImage', 'src'], true)) {
         return false;
     }
 
-    $needle = '%"' . $field . '":"' . $storedPath . '"%';
+    // A legacy background/signature can be reused by any v2 image object. Match its exact JSON
+    // string value in any slot, including older JSON with escaped slashes. LOCATE also treats
+    // filename underscores as literals.
+    $needle = '"' . $storedPath . '"';
+    $escapedNeedle = json_encode($storedPath, JSON_THROW_ON_ERROR);
     $statement = $pdo->prepare(
         'SELECT
-            EXISTS(SELECT 1 FROM reward_cycles WHERE certificate_template LIKE :cycle_path)
-            OR EXISTS(SELECT 1 FROM reward_certificates WHERE template_snapshot LIKE :certificate_path)
+            EXISTS(SELECT 1 FROM reward_cycles WHERE LOCATE(:cycle_path, certificate_template) > 0 OR LOCATE(:cycle_escaped_path, certificate_template) > 0)
+            OR EXISTS(SELECT 1 FROM reward_certificates WHERE LOCATE(:certificate_path, template_snapshot) > 0 OR LOCATE(:certificate_escaped_path, template_snapshot) > 0)
             OR EXISTS(
                 SELECT 1 FROM settings
-                WHERE setting_key = "reward_certificate_templates"
-                  AND setting_value LIKE :library_path
+                WHERE setting_key IN ("reward_certificate_templates", "reward_certificate_template")
+                  AND (LOCATE(:library_path, setting_value) > 0 OR LOCATE(:library_escaped_path, setting_value) > 0)
             )'
     );
     $statement->execute([
         ':cycle_path' => $needle,
+        ':cycle_escaped_path' => $escapedNeedle,
         ':certificate_path' => $needle,
+        ':certificate_escaped_path' => $escapedNeedle,
         ':library_path' => $needle,
+        ':library_escaped_path' => $escapedNeedle,
     ]);
 
     return (int)$statement->fetchColumn() === 1;

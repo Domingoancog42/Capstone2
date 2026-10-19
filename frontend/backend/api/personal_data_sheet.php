@@ -17,7 +17,7 @@ function pds_download_employee(PDO $pdo, int $employeeRecordId): ?array
                 e.school_name, e.education_course, e.year_graduated, e.height, e.weight,
                 e.blood_type, e.emp_gsis_id_no, e.emp_pagibig_id_no, e.emp_philhealth_id_no,
                 e.tin_no, e.basic_salary, d.name AS division_name, des.name AS designation_title,
-                des.salary_grade
+                des.salary_grade, e.profile_image, e.e_signature
          FROM employees e
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id

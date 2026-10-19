@@ -57,7 +57,7 @@ export default function EducationalBackgroundSection({
                   />
                 </div>
                 <ProfileField
-                  label="Attendance From"
+                  label="From"
                   name={`${level.value}-attendanceFrom`}
                   value={record.attendanceFrom || ""}
                   placeholder="e.g. 2010"
@@ -65,7 +65,7 @@ export default function EducationalBackgroundSection({
                   readOnly={readOnly}
                 />
                 <ProfileField
-                  label="Attendance To"
+                  label="To"
                   name={`${level.value}-attendanceTo`}
                   value={record.attendanceTo || ""}
                   placeholder="e.g. 2014"

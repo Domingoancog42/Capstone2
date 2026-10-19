@@ -1,13 +1,19 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { faFileArrowUp } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import ActionIconButton from "../UI/ActionIconButton";
+import LeaveAttachmentPreview from "./LeaveAttachmentPreview";
 import { uploadLeaveMedicalCertificate } from "../../services/leaveService";
-import { getBackendAssetUrl } from "../../services/api";
 
 export default function LeaveAttachmentUploadButton({ request, onUploaded }) {
   const inputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
+  const [previewAttachment, setPreviewAttachment] = useState(null);
+  const attachmentKey = JSON.stringify([request.id, request.attachmentPath]);
+
+  useEffect(() => {
+    setPreviewAttachment(null);
+  }, [attachmentKey]);
 
   const handleFileChange = async (event) => {
     const file = event.target.files?.[0];
@@ -55,14 +61,22 @@ export default function LeaveAttachmentUploadButton({ request, onUploaded }) {
         onChange={handleFileChange}
       />
       {request.attachmentPath ? (
-        <a
-          href={getBackendAssetUrl(request.attachmentPath)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rounded-lg px-2.5 py-2 text-xs font-semibold text-teal-700 hover:underline"
-        >
-          View medical certificate
-        </a>
+        <>
+          <button
+            type="button"
+            onClick={() => setPreviewAttachment(attachmentKey)}
+            className="rounded-lg px-2.5 py-2 text-xs font-semibold text-teal-700 hover:underline"
+          >
+            View medical certificate
+          </button>
+          <LeaveAttachmentPreview
+            key={attachmentKey}
+            open={previewAttachment === attachmentKey}
+            attachmentName={request.attachmentName}
+            attachmentPath={request.attachmentPath}
+            onClose={() => setPreviewAttachment(null)}
+          />
+        </>
       ) : null}
     </>
   );

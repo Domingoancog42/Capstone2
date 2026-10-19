@@ -280,22 +280,20 @@ function SignatureBlock({
   fallbackText = "",
   name = "",
   caption = "",
+  showESignatures = true,
+  showTimestamps = true,
 }) {
   return (
     <div className="leave-print-sign" style={{ marginTop: "20px", textAlign: "center" }}>
       <div className="leave-print-signature" style={styles.signaturePreview}>
-        {signatureDataUrl ? (
-          <>
-            <img
-              src={signatureDataUrl}
-              alt={`${name || "Authorized"} signature`}
-              style={styles.signatureImage}
-            />
-            {fallbackText ? (
-              <div style={styles.signatureTimestamp}>{fallbackText}</div>
-            ) : null}
-          </>
-        ) : fallbackText ? (
+        {showESignatures && signatureDataUrl ? (
+          <img
+            src={signatureDataUrl}
+            alt={`${name || "Authorized"} signature`}
+            style={styles.signatureImage}
+          />
+        ) : null}
+        {showTimestamps && fallbackText ? (
           <div style={styles.signatureTimestamp}>{fallbackText}</div>
         ) : null}
       </div>
@@ -307,7 +305,7 @@ function SignatureBlock({
 }
 
 /* A signatory's block once they have signed; before that, the blank line with its caption. */
-function SignatoryLine({ signatory = {} }) {
+function SignatoryLine({ signatory = {}, showESignatures, showTimestamps }) {
   if (signatory.signed) {
     return (
       <SignatureBlock
@@ -315,6 +313,8 @@ function SignatoryLine({ signatory = {} }) {
         fallbackText={signatory.fallbackText}
         name={signatory.name}
         caption={signatory.caption}
+        showESignatures={showESignatures}
+        showTimestamps={showTimestamps}
       />
     );
   }
@@ -439,6 +439,8 @@ export default function LeaveApplicationSheet({
   chief = {},
   regionalDirector = {},
   qrPayload = "",
+  showESignatures = false,
+  showTimestamps = false,
 }) {
   return (
     <div ref={sheetRef} className="leave-form-paper" style={styles.wrap}>
@@ -619,6 +621,8 @@ export default function LeaveApplicationSheet({
               fallbackText={applicant.fallbackText}
               name={formData.applicantName}
               caption="(Signature of Applicant)"
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
             />
           </div>
         </div>
@@ -656,7 +660,7 @@ export default function LeaveApplicationSheet({
                 ))}
               </tbody>
             </table>
-            <SignatoryLine signatory={hrmo} />
+            <SignatoryLine signatory={hrmo} showESignatures={showESignatures} showTimestamps={showTimestamps} />
           </div>
 
           {/* A column so the Chief's signature sits at the bottom, level with the HR Head's in 7.A. */}
@@ -675,7 +679,7 @@ export default function LeaveApplicationSheet({
               value={formData.disapprovalReason}
             />
             <div style={{ marginTop: "auto" }}>
-              <SignatoryLine signatory={chief} />
+              <SignatoryLine signatory={chief} showESignatures={showESignatures} showTimestamps={showTimestamps} />
             </div>
           </div>
         </div>
@@ -716,7 +720,11 @@ export default function LeaveApplicationSheet({
          */}
         <div className="leave-print-qr" style={styles.qrFooter}>
           <div style={{ gridColumn: 2 }}>
-            <SignatoryLine signatory={{ ...regionalDirector, caption: "OIC, Regional Director" }} />
+            <SignatoryLine
+              signatory={{ ...regionalDirector, caption: "OIC, Regional Director" }}
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
+            />
           </div>
           {/* The record's reference stays inside the QR payload; only the printed caption was replaced. */}
           <div style={styles.qrColumn}>

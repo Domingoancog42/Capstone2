@@ -175,6 +175,17 @@ const CHANGE_FEED_TOPICS = [
             'where' => 'setting_key = "security_session_timeout_minutes"',
         ],
     ],
+    // Open filing forms must follow signatory display changes made by an administrator on another
+    // machine. Fingerprint the JSON value as well as the timestamp to catch saves in the same second.
+    'filing_signatories' => [
+        [
+            'table' => 'settings',
+            'pk' => 'setting_key',
+            'stamp' => 'updated_at',
+            'status' => 'setting_value',
+            'where' => 'setting_key = "filing_signatories"',
+        ],
+    ],
     'access_request' => [
         ['table' => 'module_access_requests', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
     ],

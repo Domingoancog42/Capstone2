@@ -8,6 +8,7 @@ import {
   CERTIFICATE_HEIGHT,
   CERTIFICATE_WIDTH,
   normalizeCertificateTemplate,
+  resolveCertificateText,
 } from "./certificateTemplate";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 
@@ -57,6 +58,7 @@ export async function exportCertificatePdf(node, fileName) {
   }
 
   await waitForImages(node);
+  if (document.fonts?.ready) await document.fonts.ready;
 
   const canvas = await html2canvas(node, {
     scale: 2,
@@ -125,7 +127,8 @@ export function printCertificate(node) {
     printWindow.addEventListener("afterprint", () => printWindow.close(), { once: true });
   };
 
-  waitForImages(printWindow.document).then(() => window.setTimeout(finish, 150));
+  Promise.all([waitForImages(printWindow.document), printWindow.document.fonts?.ready])
+    .then(() => window.setTimeout(finish, 150));
 }
 
 function CertificateBackdrop({ template }) {
@@ -413,6 +416,159 @@ function CertificateSignatureImage({
   );
 }
 
+function CanvasElement({
+  item,
+  certificate,
+  editable,
+  selected,
+  onSelectElement,
+  onElementPointerDown,
+  onElementKeyDown,
+  onElementDoubleClick,
+  onElementResizePointerDown,
+}) {
+  const label = item.type === "text" ? item.text.slice(0, 70) || "Text" : item.type === "image" ? "Image" : item.shape;
+  const fullSize = { display: "block", width: "100%", height: "100%", boxSizing: "border-box" };
+  let content;
+  if (item.type === "text") {
+    content = (
+      <div style={{
+        ...fullSize,
+        overflow: "hidden",
+        fontSize: item.fontSize,
+        fontFamily: item.fontFamily,
+        fontWeight: item.fontWeight,
+        fontStyle: item.fontStyle,
+        textAlign: item.textAlign,
+        color: item.color,
+        letterSpacing: item.letterSpacing,
+        lineHeight: item.lineHeight,
+        textTransform: item.textTransform,
+        whiteSpace: "pre-wrap",
+        overflowWrap: "anywhere",
+        opacity: item.opacity,
+      }}>
+        {resolveCertificateText(item.text, certificate)}
+      </div>
+    );
+  } else if (item.type === "image") {
+    content = item.src ? (
+      <img
+        src={resolveBackendAssetUrl(item.src)}
+        alt=""
+        draggable="false"
+        crossOrigin="anonymous"
+        style={{ ...fullSize, objectFit: item.fit, pointerEvents: "none", opacity: item.opacity }}
+      />
+    ) : editable ? (
+      <div style={{ ...fullSize, display: "grid", placeItems: "center", border: "1px dashed #94a3b8", color: "#64748b", fontFamily: "Arial, sans-serif", fontSize: 14 }}>Upload an image</div>
+    ) : null;
+  } else if (item.shape === "line") {
+    content = <div style={{ position: "absolute", top: "50%", left: 0, width: "100%", height: item.strokeWidth, background: item.stroke, opacity: item.opacity, transform: "translateY(-50%)" }} />;
+  } else {
+    content = <div style={{ ...fullSize, background: item.fill, border: `${item.strokeWidth}px solid ${item.stroke}`, borderRadius: item.shape === "ellipse" ? "50%" : item.borderRadius, opacity: item.opacity }} />;
+  }
+
+  return (
+    <div
+      data-certificate-element={item.id}
+      data-certificate-element-type={item.type}
+      role={editable ? "button" : undefined}
+      tabIndex={editable ? 0 : undefined}
+      aria-label={editable ? `Select ${label}${item.locked ? " (locked)" : ""}` : undefined}
+      onPointerDown={editable ? (event) => {
+        event.stopPropagation();
+        onSelectElement?.(item.id);
+        if (!item.locked) onElementPointerDown?.(event, item.id);
+      } : undefined}
+      onDoubleClick={editable && !item.locked ? (event) => onElementDoubleClick?.(event, item.id) : undefined}
+      onKeyDown={editable ? (event) => onElementKeyDown?.(event, item.id) : undefined}
+      style={{
+        position: "absolute",
+        left: item.x,
+        top: item.y,
+        width: item.width,
+        height: item.height,
+        boxSizing: "border-box",
+        transform: `rotate(${item.rotation}deg)`,
+        transformOrigin: "center center",
+        outline: selected ? "2px solid #0ea5e9" : undefined,
+        outlineOffset: selected ? 2 : undefined,
+        cursor: editable ? item.locked ? "default" : "move" : "default",
+        touchAction: editable ? "none" : "auto",
+      }}
+    >
+      {content}
+      {selected && !item.locked && onElementResizePointerDown ? (
+        <span
+          data-certificate-resize={item.id}
+          role="button"
+          aria-label={`Resize ${label}`}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            onElementResizePointerDown(event, item.id);
+          }}
+          style={{ position: "absolute", right: -6, bottom: -6, width: 12, height: 12, boxSizing: "border-box", border: "2px solid #0ea5e9", background: "#ffffff", cursor: "nwse-resize", touchAction: "none" }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const FreeCertificateCanvas = forwardRef(function FreeCertificateCanvas({
+  certificate,
+  template,
+  editable,
+  selectedElementId,
+  onSelectElement,
+  ...elementHandlers
+}, ref) {
+  return (
+    <div
+      ref={ref}
+      data-certificate-canvas="true"
+      data-certificate-version="2"
+      onPointerDown={(event) => {
+        if (editable && !event.target.closest?.("[data-certificate-element]")) onSelectElement?.("");
+      }}
+      style={{
+        position: "relative",
+        width: CERTIFICATE_WIDTH,
+        height: CERTIFICATE_HEIGHT,
+        flex: "0 0 auto",
+        overflow: "hidden",
+        boxSizing: "border-box",
+        background: template.paper.backgroundColor,
+        boxShadow: editable ? "0 20px 50px rgba(15, 23, 42, 0.18)" : "none",
+        WebkitPrintColorAdjust: "exact",
+        printColorAdjust: "exact",
+        userSelect: editable ? "none" : "text",
+      }}
+    >
+      {template.backgroundImage ? (
+        <img
+          src={resolveBackendAssetUrl(template.backgroundImage)}
+          alt=""
+          crossOrigin="anonymous"
+          draggable="false"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: template.backgroundImageFit, pointerEvents: "none" }}
+        />
+      ) : null}
+      {template.elements.map((item) => (
+        <CanvasElement
+          key={item.id}
+          item={item}
+          certificate={certificate}
+          editable={editable}
+          selected={editable && selectedElementId === item.id}
+          onSelectElement={onSelectElement}
+          {...elementHandlers}
+        />
+      ))}
+    </div>
+  );
+});
+
 /**
  * Shared visual canvas used by the editor and by issued certificates. Editor-only selection handles
  * are never rendered in previews, PDFs, or printouts.
@@ -425,11 +581,30 @@ export const CertificateCanvas = forwardRef(function CertificateCanvas({
   onSelectElement,
   onElementPointerDown,
   onElementKeyDown,
+  onElementDoubleClick,
+  onElementResizePointerDown,
 }, ref) {
   const resolvedTemplate = useMemo(() => normalizeCertificateTemplate(template), [template]);
 
   if (!certificate) {
     return null;
+  }
+
+  if (resolvedTemplate.version === 2) {
+    return (
+      <FreeCertificateCanvas
+        ref={ref}
+        certificate={certificate}
+        template={resolvedTemplate}
+        editable={editable}
+        selectedElementId={selectedElementId}
+        onSelectElement={onSelectElement}
+        onElementPointerDown={onElementPointerDown}
+        onElementKeyDown={onElementKeyDown}
+        onElementDoubleClick={onElementDoubleClick}
+        onElementResizePointerDown={onElementResizePointerDown}
+      />
+    );
   }
 
   return (

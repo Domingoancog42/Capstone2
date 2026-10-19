@@ -53,6 +53,7 @@ import { buildSignatureTimestampLabel } from "../../utils/signatureTimestamp";
 import { formatRecordDivision } from "../../utils/divisionDisplay";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 import { getEmployeeSignature } from "../../services/api";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 import {
   cancelPassSlip,
   deletePassSlip,
@@ -312,7 +313,13 @@ function printPassSlipContent(contentNode) {
 }
 
 /** The printable slip. */
-function PassSlipFormSheet({ record, contentRef = null, signatureDataUrl = "" }) {
+function PassSlipFormSheet({
+  record,
+  contentRef = null,
+  signatureDataUrl = "",
+  showESignatures = false,
+  showTimestamps = false,
+}) {
   if (!record) {
     return null;
   }
@@ -403,13 +410,13 @@ function PassSlipFormSheet({ record, contentRef = null, signatureDataUrl = "" })
         </div>
         <div style={passSlipPreviewStyles.footerRight}>
           <div style={passSlipPreviewStyles.sigLine}>
-            {signatureDataUrl ? (
+            {showESignatures && signatureDataUrl ? (
               <img
                 src={signatureDataUrl}
                 alt={`${record.employeeName || "Employee"} signature`}
                 style={passSlipPreviewStyles.sigImage}
               />
-            ) : filedTimestampLabel ? (
+            ) : showTimestamps && filedTimestampLabel ? (
               <span style={passSlipPreviewStyles.signatureTimestamp}>{filedTimestampLabel}</span>
             ) : " "}
           </div>
@@ -589,7 +596,13 @@ function PassSlipEmployeeProfile({ record }) {
   );
 }
 
-function PassSlipPreviewModal({ record, signatureDataUrl = "", onClose }) {
+function PassSlipPreviewModal({
+  record,
+  signatureDataUrl = "",
+  showESignatures = false,
+  showTimestamps = false,
+  onClose,
+}) {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -645,7 +658,12 @@ function PassSlipPreviewModal({ record, signatureDataUrl = "", onClose }) {
 
         <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-            <PassSlipFormSheet record={record} signatureDataUrl={signatureDataUrl} />
+            <PassSlipFormSheet
+              record={record}
+              signatureDataUrl={signatureDataUrl}
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
+            />
 
             <aside aria-label="Pass slip details sidebar" className="space-y-4">
               <PassSlipEmployeeProfile record={record} />
@@ -945,6 +963,7 @@ export default function PassSlipWorkspace({
   showDivisionFilter = true,
   onPendingCountChange,
 }) {
+  const { showESignatures, showTimestamps, loading: signatorySettingsLoading } = useFilingSignatories();
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1128,7 +1147,7 @@ export default function PassSlipWorkspace({
   }, [resolveSignature, selectedRecord?.employeeRecordId]);
 
   useEffect(() => {
-    if (!printRecord) {
+    if (!printRecord || signatorySettingsLoading) {
       return undefined;
     }
 
@@ -1138,7 +1157,7 @@ export default function PassSlipWorkspace({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [printRecord]);
+  }, [printRecord, signatorySettingsLoading]);
 
   const filteredRecords = useMemo(() => {
     const search = query.trim().toLowerCase();
@@ -1636,12 +1655,16 @@ export default function PassSlipWorkspace({
           record={printRecord}
           contentRef={hiddenPrintRef}
           signatureDataUrl={printSignature}
+          showESignatures={showESignatures}
+          showTimestamps={showTimestamps}
         />
       </div>
 
       <PassSlipPreviewModal
         record={previewRecord}
         signatureDataUrl={selectedSignature}
+        showESignatures={showESignatures}
+        showTimestamps={showTimestamps}
         onClose={handleClosePreview}
       />
     </div>

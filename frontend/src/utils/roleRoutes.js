@@ -328,6 +328,7 @@ const KNOWN_APP_PATHS = new Set([
     "divisions",
     "designations",
     "rbac",
+    "signatories",
     "calendar",
     "messages",
     "notifications",

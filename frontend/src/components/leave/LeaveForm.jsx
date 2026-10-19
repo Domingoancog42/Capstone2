@@ -7,6 +7,7 @@ import LeaveApplicationSheet, {
   printLeaveApplicationSheet,
 } from "./LeaveApplicationSheet";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 import { CSC_FORM_LEAVE_TYPES, mergeCscLeaveTypes } from "../../data/leaveTypes";
 import { formatDateDisplay, getDurationDays } from "../../utils/leaveHelpers";
 import { buildLeaveRequestQrPayload } from "../../utils/formQrCode";
@@ -276,6 +277,7 @@ export default function LeaveFormModal({
   const [leaveCredits, setLeaveCredits] = useState(null);
   const [configuredLeaveTypes, setConfiguredLeaveTypes] = useState([]);
   const printRef = useRef(null);
+  const { showESignatures, showTimestamps, loading: signatorySettingsLoading } = useFilingSignatories();
   /*
    * Opened from the Print or Download PDF action in the table rather than by a reader: print or save
    * the form once every load below has landed, then hand back to the caller so the sheet does not
@@ -283,7 +285,7 @@ export default function LeaveFormModal({
    * callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: open && (autoPrint || autoDownload),
+    active: open && !signatorySettingsLoading && (autoPrint || autoDownload),
     /* The PDF is saved asynchronously, so a download closes the sheet only once the file is out. */
     onPrint: () => {
       if (autoDownload) {
@@ -746,6 +748,8 @@ export default function LeaveFormModal({
           <div className="mx-auto w-full max-w-[900px]">
             <LeaveApplicationSheet
               sheetRef={printRef}
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
               formData={formData}
               leaveTypes={availableLeaveTypes}
               applicant={{ signatureDataUrl: employeeSignature, fallbackText: applicantTimestampLabel }}
