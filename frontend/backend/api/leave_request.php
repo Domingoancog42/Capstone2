@@ -2479,6 +2479,102 @@ function upload_leave_medical_certificate(PDO $pdo, array $body, array $sessionU
     ]);
 }
 
+/** Only delete files stored inside the leave attachment directory. */
+function remove_leave_attachment_file(string $storedPath): void
+{
+    if (preg_match('#^uploads/leave-attachments/[A-Za-z0-9._-]+\.(?:pdf|png|jpe?g|gif|webp|bmp)$#i', $storedPath) !== 1) {
+        return;
+    }
+
+    $baseDirectory = realpath(dirname(__DIR__) . '/uploads/leave-attachments');
+    $absolutePath = realpath(dirname(__DIR__) . '/' . $storedPath);
+    if ($baseDirectory === false || $absolutePath === false
+        || !str_starts_with($absolutePath, $baseDirectory . DIRECTORY_SEPARATOR)
+        || !is_file($absolutePath)) {
+        return;
+    }
+
+    if (!@unlink($absolutePath)) {
+        error_log('Unable to delete removed leave attachment: ' . $storedPath);
+    }
+}
+
+/** Applicants may cancel their certificate upload and then attach a replacement. */
+function remove_leave_medical_certificate(PDO $pdo, array $body, array $sessionUser): void
+{
+    $id = (int)($body['id'] ?? 0);
+    $employeeId = session_employee_record_id($pdo, $sessionUser);
+    if ($id <= 0 || !$employeeId) {
+        json_response(['success' => false, 'message' => 'Sick-leave request not found.'], 404);
+    }
+
+    $attachmentPath = trim((string)($body['attachmentPath'] ?? ''));
+    $paths = [];
+    $errorStatus = 422;
+    $errorMessage = '';
+    $pdo->beginTransaction();
+    try {
+        // Share the upload lock so an older preview cannot remove a replacement certificate.
+        $statement = $pdo->prepare(
+            'SELECT lr.leave_request_id, lr.status, lr.is_archived, lt.name AS leave_type
+             FROM leave_requests lr
+             INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
+             WHERE lr.leave_request_id = :id AND lr.employee_id = :employee_id
+             FOR UPDATE'
+        );
+        $statement->execute([':id' => $id, ':employee_id' => $employeeId]);
+        $request = $statement->fetch();
+        if (!$request) {
+            $errorStatus = 404;
+            $errorMessage = 'Sick-leave request not found.';
+        } elseif (strtolower(trim((string)$request['leave_type'])) !== 'sick leave') {
+            $errorMessage = 'Medical certificates can only be removed from sick leave.';
+        } elseif ((int)$request['is_archived'] === 1
+            || in_array(strtolower((string)$request['status']), ['rejected', 'cancelled', 'canceled', 'withdrawn'], true)) {
+            $errorMessage = 'Attachments cannot be removed from archived, rejected, or cancelled requests.';
+        } else {
+            $attachments = $pdo->prepare(
+                'SELECT file_path FROM leave_attachments WHERE leave_request_id = :id
+                 ORDER BY leave_attachments_id DESC FOR UPDATE'
+            );
+            $attachments->execute([':id' => $id]);
+            $paths = $attachments->fetchAll(PDO::FETCH_COLUMN);
+            if ($attachmentPath === '' || !$paths || $paths[0] !== $attachmentPath) {
+                $errorStatus = 409;
+                $errorMessage = 'The certificate has changed. Refresh this request before cancelling the upload.';
+            }
+        }
+
+        if ($errorMessage !== '') {
+            $pdo->rollBack();
+        } else {
+            // Clear previous versions too, so an older certificate does not become visible again.
+            $delete = $pdo->prepare('DELETE FROM leave_attachments WHERE leave_request_id = :id');
+            $delete->execute([':id' => $id]);
+            $update = $pdo->prepare('UPDATE leave_requests SET updated_at = NOW() WHERE leave_request_id = :id');
+            $update->execute([':id' => $id]);
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    if ($errorMessage !== '') {
+        json_response(['success' => false, 'message' => $errorMessage], $errorStatus);
+    }
+    foreach (array_unique($paths) as $path) {
+        remove_leave_attachment_file((string)$path);
+    }
+    json_response([
+        'success' => true,
+        'message' => 'Medical certificate removed. You can upload a replacement.',
+        'request' => fetch_leave_request($pdo, $id, $employeeId),
+    ]);
+}
+
 try {
     ensure_leave_request_ids($pdo);
     ensure_leave_request_rejected_note_column($pdo);
@@ -2504,6 +2600,9 @@ try {
 
     if ($method === 'POST') {
         $body = leave_request_body();
+        if (strtolower(leave_text($body['action'] ?? '')) === 'remove_medical_certificate') {
+            remove_leave_medical_certificate($pdo, $body, $sessionUser);
+        }
         if (strtolower(leave_text($body['action'] ?? '')) === 'upload_medical_certificate') {
             upload_leave_medical_certificate($pdo, $body, $sessionUser, leave_attachment_upload());
         }

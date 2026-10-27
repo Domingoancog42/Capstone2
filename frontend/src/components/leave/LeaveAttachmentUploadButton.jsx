@@ -1,15 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
-import { faFileArrowUp } from "@fortawesome/free-solid-svg-icons";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faEye, faFileArrowUp } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
-import ActionIconButton from "../UI/ActionIconButton";
 import LeaveAttachmentPreview from "./LeaveAttachmentPreview";
-import { uploadLeaveMedicalCertificate } from "../../services/leaveService";
+import { removeLeaveMedicalCertificate, uploadLeaveMedicalCertificate } from "../../services/leaveService";
 
 export default function LeaveAttachmentUploadButton({ request, onUploaded }) {
   const inputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const attachmentKey = JSON.stringify([request.id, request.attachmentPath]);
+  const hasAttachment = Boolean(request.attachmentPath);
+  const actionLabel = hasAttachment ? "View medical certificate" : "Upload medical certificate";
 
   useEffect(() => {
     setPreviewAttachment(null);
@@ -41,43 +44,56 @@ export default function LeaveAttachmentUploadButton({ request, onUploaded }) {
     }
   };
 
+  const handleRemove = async () => {
+    if (!hasAttachment || removing) return;
+
+    setRemoving(true);
+    try {
+      const result = await removeLeaveMedicalCertificate(request.id, request.attachmentPath);
+      onUploaded?.(result.request);
+      setPreviewAttachment(null);
+      toast.success(result.message || "Medical certificate removed. You can upload a replacement.");
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Unable to remove your medical certificate.");
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   return (
     <>
-      <ActionIconButton
-        label="Attachment Upload"
-        text={uploading ? "Uploading..." : "Attachment Upload"}
-        icon={faFileArrowUp}
-        tone="edit"
-        disabled={uploading}
-        onClick={() => inputRef.current?.click()}
-      />
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp"
-        aria-label="Upload medical certificate"
-        className="hidden"
-        disabled={uploading}
-        onChange={handleFileChange}
-      />
-      {request.attachmentPath ? (
-        <>
-          <button
-            type="button"
-            onClick={() => setPreviewAttachment(attachmentKey)}
-            className="rounded-lg px-2.5 py-2 text-xs font-semibold text-teal-700 hover:underline"
-          >
-            View medical certificate
-          </button>
-          <LeaveAttachmentPreview
-            key={attachmentKey}
-            open={previewAttachment === attachmentKey}
-            attachmentName={request.attachmentName}
-            attachmentPath={request.attachmentPath}
-            onClose={() => setPreviewAttachment(null)}
-          />
-        </>
-      ) : null}
+      <button
+        type="button"
+        aria-label={actionLabel}
+        title={uploading ? "Uploading medical certificate..." : actionLabel}
+        aria-busy={uploading || removing}
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-800 shadow-sm transition hover:border-slate-400 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-400/40 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={uploading || removing}
+        onClick={() => hasAttachment ? setPreviewAttachment(attachmentKey) : inputRef.current?.click()}
+      >
+        <FontAwesomeIcon icon={hasAttachment ? faEye : faFileArrowUp} className="text-[12px]" aria-hidden="true" />
+      </button>
+      {!hasAttachment ? (
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp"
+          aria-label="Upload medical certificate"
+          className="hidden"
+          disabled={uploading}
+          onChange={handleFileChange}
+        />
+      ) : (
+        <LeaveAttachmentPreview
+          key={attachmentKey}
+          open={previewAttachment === attachmentKey}
+          attachmentName={request.attachmentName}
+          attachmentPath={request.attachmentPath}
+          onClose={() => setPreviewAttachment(null)}
+          onRemove={handleRemove}
+          removing={removing}
+        />
+      )}
     </>
   );
 }

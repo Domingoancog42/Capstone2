@@ -17,8 +17,11 @@ frontend/backend/api/smtp-config.php
 # HR data and runtime files
 frontend/backend/backups/**
 frontend/backend/database/*.sql
+!frontend/backend/database/recruitment.sql
 frontend/backend/database/sample-faces/
 frontend/backend/uploads/**
+!frontend/backend/uploads/recruitment/
+!frontend/backend/uploads/recruitment/.htaccess
 *.log
 
 # Editor and OS noise

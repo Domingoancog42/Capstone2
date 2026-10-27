@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, ExternalLink, LoaderCircle, X } from "lucide-react";
+import { AlertTriangle, LoaderCircle, X } from "lucide-react";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 import { fetchBackendFileBlob } from "../../utils/downloadBackendFile";
 
@@ -21,7 +21,7 @@ export function getLeaveAttachmentPreviewInfo(attachmentPath, attachmentName) {
 }
 
 /** A viewport-level attachment viewer, shared by reviewers and leave applicants. */
-export default function LeaveAttachmentPreview({ open, attachmentName, attachmentPath, onClose }) {
+export default function LeaveAttachmentPreview({ open, attachmentName, attachmentPath, onClose, onRemove, removing = false }) {
   const info = getLeaveAttachmentPreviewInfo(attachmentPath, attachmentName);
   const sourceKey = `${info.path}\n${info.name}`;
   const [preview, setPreview] = useState({ sourceKey: "", url: "", error: "", loading: true });
@@ -103,12 +103,13 @@ export default function LeaveAttachmentPreview({ open, attachmentName, attachmen
             <h3 id={headingId} className="m-0 text-lg font-semibold text-slate-950">Attachment Preview</h3>
             <p title={info.name} className="m-0 mt-1 truncate text-sm text-slate-500">{info.name || "Medical certificate"}</p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {currentPreview.url ? (
-              <a href={currentPreview.url} target="_blank" rel="noopener noreferrer"
-                className="inline-flex min-h-9 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                <ExternalLink size={14} aria-hidden="true" />Open New Tab
-              </a>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {onRemove ? (
+              <button type="button" aria-label="Cancel medical certificate upload" aria-busy={removing}
+                disabled={removing} onClick={onRemove}
+                className="inline-flex min-h-9 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">
+                <X size={14} aria-hidden="true" />{removing ? "Cancelling..." : "Cancel Upload"}
+              </button>
             ) : null}
             <button ref={closeRef} type="button" aria-label="Close attachment preview" onClick={onClose}
               className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50">

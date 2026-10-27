@@ -2104,6 +2104,7 @@ export default function OpcrManagementWorkspace({
                     name={`${kpi.uid}-sub-category`}
                     value={kpi.subCategory}
                     onChange={(event) => updateBulkKpi(kpi.uid, { subCategory: event.target.value })}
+                    placeholder="Optional, e.g. Mining Investment Promotion"
                     maxLength={255}
                   />
                   {/*

@@ -794,8 +794,8 @@ export default function LeaveRequestModal({
 
             {normalizedLeaveType === "sick leave" ? (
               <p className="m-0 text-xs text-slate-500 sm:col-span-2">
-                After filing, upload your medical certificate using Attachment Upload in the request's
-                Actions menu. You will receive a reminder three days after filing if it is still missing.
+                After filing, upload your medical certificate using the file-upload icon in the request's
+                Actions column. You will receive a reminder three days after filing if it is still missing.
               </p>
             ) : null}
 

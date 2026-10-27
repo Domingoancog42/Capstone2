@@ -12,8 +12,9 @@ import { assignCertificateTemplateToCycle, createSavedCertificateTemplate, delet
   fetchAwardCycles, fetchCertificateTemplate, updateCertificateTemplate,
   uploadCertificateDesign, uploadCertificateSignature } from "../../services/api";
 import { CertificateCanvas, useCertificateFitScale } from "./AwardCertificate";
-import { CERTIFICATE_DYNAMIC_FIELDS, CERTIFICATE_FONT_OPTIONS, CERTIFICATE_HEIGHT, CERTIFICATE_WIDTH,
-  certificateTemplateSnapshot, createBlankCertificateTemplate, createCanvasElement, normalizeCertificateTemplate } from "./certificateTemplate";
+import { editableCertificateTemplate } from "./editableCertificateTemplate";
+import { CERTIFICATE_DYNAMIC_FIELDS, CERTIFICATE_FONT_OPTIONS, CERTIFICATE_HEIGHT, CERTIFICATE_WIDTH, CERTIFICATE_PRESETS,
+  certificateTemplateSnapshot, createBlankCertificateTemplate, createCanvasElement, createCertificateTemplate, normalizeCertificateTemplate } from "./certificateTemplate";
 
 const SAMPLE_CERTIFICATE = {
   id: "sample", employeeName: "Juan Dela Cruz", designationTitle: "Senior Science Research Specialist",
@@ -64,6 +65,14 @@ function CanvasPreview({ template }) {
   </div>;
 }
 
+function DesignThumbnail({ template }) {
+  return <div aria-hidden="true" className="relative mx-auto overflow-hidden border border-slate-200 bg-white" style={{ width: 176, height: 125 }}>
+    <div style={{ width: CERTIFICATE_WIDTH, height: CERTIFICATE_HEIGHT, transform: "scale(0.1833)", transformOrigin: "top left" }}>
+      <CertificateCanvas certificate={SAMPLE_CERTIFICATE} template={editableCertificateTemplate(template)} />
+    </div>
+  </div>;
+}
+
 export default function CertificateTemplateEditor() {
   const [history, setHistory] = useState(() => ({ present: createBlankCertificateTemplate(), past: [], future: [] }));
   const template = history.present;
@@ -78,6 +87,7 @@ export default function CertificateTemplateEditor() {
   const [working, setWorking] = useState("");
   const [loadError, setLoadError] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const [signatureOpen, setSignatureOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [cycles, setCycles] = useState([]);
@@ -134,17 +144,30 @@ export default function CertificateTemplateEditor() {
   }, [confirmDiscard, dirty]);
 
   const openRecord = (record) => {
-    const next = normalizeCertificateTemplate(record.template);
+    const next = editableCertificateTemplate(record.template);
     setHistory({ present: next, past: [], future: [] });
     setActiveId(String(record.id)); setName(record.name); setSavedName(record.name);
-    setSavedSnapshot(certificateTemplateSnapshot(next)); setSelectedId("");
+    setSavedSnapshot(certificateTemplateSnapshot(record.template)); setSelectedId(""); setTab("add");
+  };
+  const uniqueName = (base) => {
+    let nextName = base;
+    const existingNames = new Set(records.map((record) => record.name));
+    for (let suffix = 2; existingNames.has(nextName); suffix += 1) nextName = `${base} ${suffix}`;
+    return nextName;
+  };
+  const selectPreset = async (preset) => {
+    if (busy || !(await confirmDiscard())) return;
+    const next = editableCertificateTemplate(createCertificateTemplate(preset.id));
+    const nextName = uniqueName(preset.name);
+    setHistory({ present: next, past: [], future: [] });
+    setActiveId(""); setName(nextName); setSavedName(nextName);
+    setSavedSnapshot(certificateTemplateSnapshot(createBlankCertificateTemplate()));
+    setSelectedId("title"); setTab("add"); setTemplatesOpen(false); setManualZoom(null);
   };
   const newBlank = async () => {
     if (!(await confirmDiscard())) return;
     const blank = createBlankCertificateTemplate();
-    let nextName = "Untitled certificate";
-    const existingNames = new Set(records.map((record) => record.name));
-    for (let suffix = 2; existingNames.has(nextName); suffix += 1) nextName = `Untitled certificate ${suffix}`;
+    const nextName = uniqueName("Untitled certificate");
     setHistory({ present: blank, past: [], future: [] }); setActiveId(""); setName(nextName); setSavedName(nextName);
     setSavedSnapshot(certificateTemplateSnapshot(blank)); setSelectedId(""); setTab("add");
   };
@@ -254,18 +277,19 @@ export default function CertificateTemplateEditor() {
     if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > limit * 1024 * 1024) {
       toast.error(`Choose a PNG, JPG, or WebP image of ${limit} MB or smaller.`); return false;
     }
-    if (mode !== "background" && elements.length >= 100) { toast.error("A design can contain up to 100 elements."); return false; }
+    if (mode !== "background" && mode !== "replace" && elements.length >= 100) { toast.error("A design can contain up to 100 elements."); return false; }
     setWorking("upload");
     try {
       const result = mode === "signature" ? await uploadCertificateSignature(file) : await uploadCertificateDesign(file);
       const src = mode === "signature" ? result.signatureImage : result.backgroundImage;
       if (!src) throw new Error("The uploaded image is missing.");
       if (mode === "background") commit((current) => ({ ...current, backgroundImage: src }));
+      else if (mode === "replace") updateElement({ src });
       else {
         const element = createCanvasElement("image", { src, width: mode === "signature" ? 220 : 240, height: mode === "signature" ? 90 : 180 });
         commit((current) => ({ ...current, elements: [...current.elements, element] })); setSelectedId(element.id);
       }
-      toast.success("Image added to your design."); return true;
+      toast.success(mode === "replace" ? "Image replaced." : "Image added to your design."); return true;
     } catch (error) { toast.error(error.response?.data?.message || "Unable to upload this image."); return false; }
     finally { setWorking(""); }
   };
@@ -312,13 +336,28 @@ export default function CertificateTemplateEditor() {
   return <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" onKeyDown={keyboardShortcuts}>
     <header className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-5 py-4">
       <div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-teal-50 text-teal-700"><Palette size={21} /></span>
-        <div><h2 className="m-0 text-base font-bold text-slate-900">Certificate designer</h2><p className="m-0 mt-0.5 text-xs text-slate-500">Start with a blank canvas. Make every detail your own.</p></div>
+        <div><h2 className="m-0 text-base font-bold text-slate-900">Certificate designer</h2><p className="m-0 mt-0.5 text-xs text-slate-500">Choose a certificate template or create your own design.</p></div>
       </div><div className="flex flex-wrap gap-2">
         <Tool icon={FilePlus2} onClick={newBlank} disabled={busy}>New blank</Tool><Tool icon={Eye} onClick={() => setPreviewOpen(true)} disabled={busy}>Preview</Tool>
         <Tool icon={Award} onClick={openAssignment} disabled={busy}>Use for nomination</Tool>
         <Button icon={Save} onClick={save} loading={working === "save"} disabled={busy || (Boolean(activeId) && !dirty)}>Save design</Button>
       </div>
     </header>
+    <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4">
+      <h3 className="m-0 mb-3 text-sm font-bold text-slate-800">Template Design</h3>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button type="button" aria-label="Select template" disabled={busy} onClick={() => setTemplatesOpen(true)}
+          className="flex items-start gap-3 rounded-xl border border-teal-200 bg-white p-4 text-left transition hover:border-teal-400 hover:bg-teal-50 disabled:opacity-50">
+          <Palette size={22} className="shrink-0 text-teal-700" /><span><span className="block text-sm font-semibold text-slate-800">Select template</span>
+            <span className="mt-1 block text-xs leading-5 text-slate-500">Choose a ready-made style or open one of your saved designs.</span></span>
+        </button>
+        <button type="button" aria-label="Design your own" disabled={busy} onClick={newBlank}
+          className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-teal-400 hover:bg-teal-50 disabled:opacity-50">
+          <PenLine size={22} className="shrink-0 text-teal-700" /><span><span className="block text-sm font-semibold text-slate-800">Design your own</span>
+            <span className="mt-1 block text-xs leading-5 text-slate-500">Start with a blank canvas and add text, images, shapes, and signatures.</span></span>
+        </button>
+      </div>
+    </div>
     {loadError ? <div role="alert" className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-5 py-3 text-xs text-amber-900">
       {loadError}<button type="button" onClick={loadLibrary} className="font-bold underline">Try again</button></div> : null}
     <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_260px]">
@@ -349,13 +388,13 @@ export default function CertificateTemplateEditor() {
                 className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50/50 px-2.5 py-2 text-left text-xs font-medium text-slate-600 hover:border-teal-300 hover:bg-teal-50 disabled:opacity-40">{field.label}<Plus size={13} /></button>)}
             </div>
           </fieldset> : null}
-          {tab === "designs" ? <div className="space-y-3"><p className="m-0 text-xs leading-5 text-slate-500">Open a saved design, or start a new blank certificate.</p>
+          {tab === "designs" ? <div className="space-y-3"><Tool icon={Palette} onClick={() => setTemplatesOpen(true)} disabled={busy} className="w-full">Browse templates</Tool>
+            <p className="m-0 text-xs leading-5 text-slate-500">Your saved designs</p>
             {loading ? <p role="status" className="text-xs text-slate-500">Loading designs...</p> : records.map((record) => <button key={record.id} type="button" disabled={busy}
               aria-label={`Open design ${record.name}`} onClick={async () => { if (await confirmDiscard()) openRecord(record); }}
               className={`w-full overflow-hidden rounded-xl border p-2 text-left ${activeId === record.id ? "border-teal-400 bg-teal-50" : "border-slate-200 hover:bg-slate-50"}`}>
-              <div className="relative mx-auto overflow-hidden border border-slate-200 bg-white" style={{ width: 176, height: 125 }}>
-                <div style={{ width: CERTIFICATE_WIDTH, height: CERTIFICATE_HEIGHT, transform: "scale(0.1833)", transformOrigin: "top left" }}><CertificateCanvas certificate={SAMPLE_CERTIFICATE} template={record.template} /></div>
-              </div><span className="mt-2 block truncate text-xs font-semibold text-slate-700">{record.name}</span></button>)}
+              <DesignThumbnail template={record.template} /><span className="mt-2 block truncate text-xs font-semibold text-slate-700">{record.name}</span></button>)}
+            {!loading && !records.length ? <p className="text-xs leading-5 text-slate-400">Save a design to find it here later.</p> : null}
           </div> : null}
           {tab === "layers" ? <div className="space-y-2"><p className="m-0 text-[11px] leading-5 text-slate-500">Top layers appear in front. Select a layer to edit it.</p>
             {elements.length ? [...elements].reverse().map((element) => <button type="button" key={element.id} onClick={() => setSelectedId(element.id)} aria-label={`Select layer ${elementLabel(element)}`}
@@ -374,7 +413,7 @@ export default function CertificateTemplateEditor() {
             <Tool icon={Trash2} label="Delete element" onClick={() => removeElement()} disabled={busy || !selected || selected.locked} className="px-2" />
           </div><span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">A4 · Landscape</span>
         </div>
-        {!freeform ? <div className="border-b border-teal-200 bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-900">This saved certificate keeps its existing layout. Choose <strong>New blank</strong> to create a design with your own text, images, and shapes.</div> : null}
+        <div className="border-b border-teal-200 bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-900">Select any text, image, or shape to edit it. Use <strong>Layers</strong> to select borders and decorations. Every template can be customized.</div>
         <div ref={viewportRef} className="relative min-h-[450px] overflow-auto p-4 sm:p-7 xl:min-h-[650px]" style={{ backgroundImage: "radial-gradient(#cbd5e1 0.8px, transparent 0.8px)", backgroundSize: "16px 16px" }}>
           <div className="mx-auto" style={{ width: CERTIFICATE_WIDTH * zoom, height: CERTIFICATE_HEIGHT * zoom }}>
             <div style={{ width: CERTIFICATE_WIDTH, height: CERTIFICATE_HEIGHT, transform: `scale(${zoom})`, transformOrigin: "top left" }}>
@@ -410,17 +449,20 @@ export default function CertificateTemplateEditor() {
                 <Tool icon={Italic} label="Italic" active={selected.fontStyle === "italic"} onClick={() => updateElement({ fontStyle: selected.fontStyle === "italic" ? "normal" : "italic" })} className="px-2" />
                 {[{ align: "left", icon: AlignLeft }, { align: "center", icon: AlignCenter }, { align: "right", icon: AlignRight }].map(({ align, icon }) => <Tool key={align} icon={icon} label={`Align ${align}`} active={selected.textAlign === align} onClick={() => updateElement({ textAlign: align })} className="px-2" />)}</div>
               <ColorField label="Text color" value={selected.color} onChange={(color) => updateElement({ color })} />
+              <Field label="Text case"><select aria-label="Text case" value={selected.textTransform} onChange={(event) => updateElement({ textTransform: event.target.value })} className={inputClass}>
+                <option value="none">As typed</option><option value="uppercase">UPPERCASE</option><option value="lowercase">lowercase</option><option value="capitalize">Capitalize Words</option></select></Field>
               <NumberField label="Letter spacing" value={selected.letterSpacing} min={-5} max={30} step={0.5} onChange={(letterSpacing) => updateElement({ letterSpacing })} />
             </> : selected.type === "shape" ? <>
               <ColorField label="Fill color" value={selected.fill} onChange={(fill) => updateElement({ fill })} />
               <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" aria-label="Transparent fill" checked={selected.fill === "transparent"} onChange={(event) => updateElement({ fill: event.target.checked ? "transparent" : "#e2e8f0" })} />No fill</label>
               <ColorField label="Border color" value={selected.stroke} onChange={(stroke) => updateElement({ stroke })} />
-              <NumberField label="Border width" value={selected.strokeWidth} min={0} max={20} onChange={(strokeWidth) => updateElement({ strokeWidth })} />
+              <NumberField label="Border width" value={selected.strokeWidth} min={0} max={128} onChange={(strokeWidth) => updateElement({ strokeWidth })} />
               {selected.shape === "rectangle" ? <NumberField label="Corner radius" value={selected.borderRadius} min={0} max={240} onChange={(borderRadius) => updateElement({ borderRadius })} /> : null}
-            </> : <Field label="Image fit"><select aria-label="Image fit" value={selected.fit} onChange={(event) => updateElement({ fit: event.target.value })} className={inputClass}><option value="contain">Fit entire image</option><option value="cover">Fill and crop</option></select></Field>}
+            </> : <><Tool icon={Upload} onClick={() => chooseUpload("replace")} className="w-full">Replace image</Tool>
+              <Field label="Image fit"><select aria-label="Image fit" value={selected.fit} onChange={(event) => updateElement({ fit: event.target.value })} className={inputClass}><option value="contain">Fit entire image</option><option value="cover">Fill and crop</option></select></Field></>}
             <div className="grid grid-cols-2 gap-2 border-t border-slate-100 pt-4">
               {[{ key: "x", label: "X position", max: CERTIFICATE_WIDTH }, { key: "y", label: "Y position", max: CERTIFICATE_HEIGHT }, { key: "width", label: "Width", max: CERTIFICATE_WIDTH }, { key: "height", label: "Height", max: CERTIFICATE_HEIGHT }].map(({ key, label, max }) =>
-                <NumberField key={key} label={label} value={Math.round(selected[key] * 10) / 10} min={key === "width" || key === "height" ? 1 : 0} max={max} onChange={(value) => updateElement({ [key]: value })} />)}
+                <NumberField key={key} label={label} value={Math.round(selected[key] * 10) / 10} min={key === "width" || key === "height" ? 1 : selected.type === "shape" ? -(key === "x" ? selected.width : selected.height) : 0} max={max} onChange={(value) => updateElement({ [key]: value })} />)}
               <NumberField label="Rotation" value={selected.rotation} min={-360} max={360} onChange={(rotation) => updateElement({ rotation })} />
               <NumberField label="Opacity (%)" value={Math.round(selected.opacity * 100)} min={0} max={100} onChange={(value) => updateElement({ opacity: value / 100 })} />
             </div>
@@ -442,6 +484,26 @@ export default function CertificateTemplateEditor() {
       </aside>
     </div>
     <input ref={uploadRef} type="file" aria-label="Upload certificate image" accept="image/png,image/jpeg,image/webp" onChange={uploadImage} className="hidden" />
+    <Modal open={templatesOpen} title="Select a certificate template" description="Choose a ready-made template or reopen a saved design. Recipient and award details fill in automatically."
+      onClose={() => setTemplatesOpen(false)} maxWidth="max-w-4xl" portal>
+      <h3 className="m-0 mb-3 text-sm font-semibold text-slate-800">Ready-made templates</h3>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {CERTIFICATE_PRESETS.map((preset) => <button type="button" key={preset.id} aria-label={`Use template ${preset.name}`} disabled={busy}
+          onClick={() => selectPreset(preset)} className="rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-teal-400 hover:bg-teal-50 disabled:opacity-50">
+          <DesignThumbnail template={createCertificateTemplate(preset.id)} />
+          <span className="mt-3 block text-sm font-semibold text-slate-800">{preset.name}</span>
+          <span className="mt-1 block text-xs leading-5 text-slate-500">{preset.description}</span>
+        </button>)}
+      </div>
+      <h3 className="mb-3 mt-6 text-sm font-semibold text-slate-800">Saved designs</h3>
+      {records.length ? <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {records.map((record) => <button type="button" key={record.id} aria-label={`Select saved design ${record.name}`} disabled={busy}
+          onClick={async () => { if (await confirmDiscard()) { openRecord(record); setTemplatesOpen(false); } }}
+          className="rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-teal-400 hover:bg-teal-50 disabled:opacity-50">
+          <DesignThumbnail template={record.template} /><span className="mt-3 block truncate text-sm font-semibold text-slate-800">{record.name}</span>
+        </button>)}
+      </div> : <p className="text-xs text-slate-500">Your saved certificate designs will appear here.</p>}
+    </Modal>
     <Modal open={previewOpen} title="Certificate preview" description="Sample award details show how your design will look for a recipient." onClose={() => setPreviewOpen(false)} maxWidth="max-w-5xl" portal><CanvasPreview template={template} /></Modal>
     <Modal open={assignOpen} title="Use design for nomination" description="Winners receive this design when the nomination closes." onClose={working ? undefined : () => setAssignOpen(false)} portal
       footer={<Button icon={Award} onClick={assign} disabled={busy || loadingCycles || !cycleId}>Use this design</Button>}>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { Check, ChevronRight, Contrast, Moon, Sun } from "lucide-react";
 
 const THEME_STORAGE_KEY = "hris_theme";
@@ -100,10 +101,11 @@ function useThemePreference() {
 
 export function ThemeToggleButton({ className = "" }) {
   const [theme, setTheme] = useThemePreference();
+  const reducedMotion = useReducedMotion();
   const isDark = theme === "dark";
 
   return (
-    <button
+    <motion.button
       type="button"
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       aria-pressed={isDark}
@@ -112,6 +114,18 @@ export function ThemeToggleButton({ className = "" }) {
       data-theme={theme}
       className={`app-theme-toggle relative grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 text-slate-700 shadow-sm transition duration-200 hover:-translate-y-px hover:border-slate-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D61E1E]/35 focus-visible:ring-offset-2 ${className}`.trim()}
     >
+      <motion.span
+        className="relative grid h-5 w-5 place-items-center origin-top"
+        animate={reducedMotion ? { rotate: 0, x: 0 } : "themeIconIdle"}
+
+        variants={reducedMotion ? undefined : {
+          themeIconIdle: {
+            rotate: [0, -12, 12, -10, 10, 0],
+            x: [0, -1, 1, -1, 1, 0],
+            transition: { duration: 0.9, repeat: Infinity, repeatDelay: 2.5, ease: "easeInOut" },
+          },
+        }}
+      >
       <Moon
         aria-hidden="true"
         size={17}
@@ -126,7 +140,8 @@ export function ThemeToggleButton({ className = "" }) {
           isDark ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"
         }`}
       />
-    </button>
+      </motion.span>
+    </motion.button>
   );
 }
 

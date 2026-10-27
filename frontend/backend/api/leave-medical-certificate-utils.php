@@ -64,7 +64,7 @@ function send_due_leave_medical_certificate_reminders(PDO $pdo, array $sessionUs
                 $userId,
                 'Medical Certificate Reminder',
                 sprintf(
-                    'It has been three days since you filed your sick-leave request for %s to %s. Please upload your medical certificate using Attachment Upload in the request\'s Actions menu.',
+                    'It has been three days since you filed your sick-leave request for %s to %s. Please upload your medical certificate using the file-upload icon in the request\'s Actions column.',
                     (string)$request['start_date'],
                     (string)$request['end_date']
                 ),

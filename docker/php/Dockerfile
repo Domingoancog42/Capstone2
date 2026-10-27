@@ -3,7 +3,7 @@
 # The -apache variant is mod_php behind Apache, which is the same arrangement the
 # .htaccess files in this tree were written for -- php-fpm would need every one of
 # them rewritten.
-FROM php:8.2-apache
+FROM php:8.2.35-apache
 
 # What the app actually needs on top of the base image:
 #

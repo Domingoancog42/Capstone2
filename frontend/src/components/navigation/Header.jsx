@@ -249,17 +249,31 @@ export default function Header({
           wrapped second line would be clipped rather than shown. */}
       <header className="app-topbar app-topbar-themed fixed inset-x-0 top-0 z-40 h-14 border-b border-slate-200 bg-white transition-colors duration-300">
         <div ref={headerActionsRef} className="flex h-full items-center justify-between gap-2 px-3 sm:gap-3 sm:px-5">
-          <div className={`flex min-w-0 flex-1 items-center transition-all duration-300 ${sidebarCollapsed ? "lg:ml-[6rem]" : "lg:ml-[19.5rem]"}`}>
+          <div className={`flex min-w-0 flex-1 items-center gap-2 transition-all duration-300 sm:gap-3 ${sidebarCollapsed ? "lg:ml-[7rem]" : "lg:ml-[21rem]"}`}>
             {onToggleSidebar ? (
               <button
                 type="button"
                 aria-label="Open navigation menu"
                 onClick={onToggleSidebar}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:border-slate-300 hover:bg-white lg:hidden"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:border-slate-300 hover:bg-white lg:hidden"
               >
                 <Menu size={16} />
               </button>
             ) : null}
+            <div className="app-header-brand min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-3">
+                <p
+                  title="Department of Environment and Natural Resources Mines and Geosciences Bureau – Regional Office No. X"
+                  className="m-0 min-w-0 truncate text-[11px] leading-tight tracking-tight text-[#0c2c6e] sm:text-[13px] dark:text-blue-100"
+                >
+                  <span className="font-bold">Department of Environment and Natural Resources</span>{" "}
+                  <strong className="font-bold">Mines and Geosciences Bureau – Regional Office No. X</strong>
+                </p>
+                <p className="app-header-tagline m-0 hidden shrink-0 border-l border-blue-300 pl-3 text-xs text-[#315a9d] dark:border-blue-700 dark:text-blue-300">
+                  People · Resources · Sustainable Future
+                </p>
+              </div>
+            </div>
           </div>
           <div className="flex shrink-0 items-center justify-end gap-2">
             <ThemeToggleButton />
@@ -291,8 +305,8 @@ export default function Header({
                   )}
                 </span>
                 <span className="hidden min-w-0 sm:block">
-                  <strong className="block max-w-28 truncate text-xs font-semibold text-slate-900">
-                    {user?.username || "Admin"}
+                  <strong title={userName} className="block max-w-48 truncate text-xs font-semibold text-slate-900">
+                    {userName}
                   </strong>
                   <span className="block max-w-28 truncate text-[10.5px] text-slate-500">{userRole}</span>
                 </span>

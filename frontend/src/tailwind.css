@@ -509,6 +509,55 @@ html.dark [class*="border-slate-100/"] {
   border-color: #334155 !important;
 }
 
+.app-header-brand {
+  container-type: inline-size;
+}
+
+@container (min-width: 64rem) {
+  .app-header-tagline {
+    display: block;
+  }
+}
+
+.admin-sidebar {
+  isolation: isolate;
+}
+
+.admin-sidebar-brand-title {
+  font-family: "Arial Narrow", "Roboto Condensed", Arial, sans-serif;
+  font-stretch: condensed;
+}
+
+/* Keep the supplied artwork independent of the theme's sidebar gradients. */
+.admin-sidebar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: url("./assets/sidebar-background.png") center / 100% 100% no-repeat;
+  opacity: 0.18;
+}
+
+html.dark .admin-sidebar::before {
+  opacity: 0.1;
+}
+
+@keyframes sidebar-icon-hover {
+  0%, 100% { transform: translateY(0) rotate(0) scale(1); }
+  33% { transform: translateY(-4px) rotate(-16deg) scale(1.15); }
+  50% { transform: translateY(-5px) rotate(0) scale(1.2); }
+  66% { transform: translateY(-4px) rotate(16deg) scale(1.15); }
+}
+
+/* Only the hovered row triggers its icon; leaving the row cancels the animation. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .admin-sidebar-item:hover .admin-sidebar-icon,
+  .admin-sidebar-collapse:hover .admin-sidebar-icon {
+    animation: sidebar-icon-hover 0.55s ease-in-out;
+  }
+}
+
 /* The nav scrolls inside a saturated panel, so the default scrollbar reads as a bright seam. */
 .admin-sidebar-nav {
   scrollbar-width: thin;
@@ -555,7 +604,7 @@ html.dark .admin-sidebar .admin-sidebar-brand {
 
 html.dark .admin-sidebar .admin-sidebar-brand-logo {
   border-color: rgba(51, 65, 85, 0.9) !important;
-  background: rgba(15, 23, 42, 0.95) !important;
+  background: #fff !important;
   color: #cbd5e1 !important;
 }
 

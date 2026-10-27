@@ -33,6 +33,10 @@ function store_leave_attachment(array $upload): array
     if (($upload['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) throw new RuntimeException('Unable to upload the attachment.');
     return ['fileName' => 'medical.pdf', 'filePath' => 'uploads/leave-attachments/test.pdf', 'fileSize' => 12, 'absolutePath' => __DIR__ . '/nonexistent-test-file.pdf'];
 }
+function remove_leave_attachment_file(string $storedPath): void
+{
+    $GLOBALS['medicalTestRemovedFiles'][] = $storedPath;
+}
 function fetch_leave_request(PDO $pdo, int $id, ?int $employeeId = null): array
 {
     $statement = $pdo->prepare('SELECT file_name AS attachmentName, file_path AS attachmentPath FROM leave_attachments WHERE leave_request_id = ? ORDER BY leave_attachments_id DESC LIMIT 1');
@@ -45,7 +49,7 @@ function medical_test_assert(bool $condition, string $message): void
     echo 'PASS: ' . $message . PHP_EOL;
 }
 medical_test_load_functions(__DIR__ . '/../api/connection-pdo.php', ['normalize_notification_type', 'notification_insert']);
-medical_test_load_functions(__DIR__ . '/../api/leave_request.php', ['upload_leave_medical_certificate']);
+medical_test_load_functions(__DIR__ . '/../api/leave_request.php', ['upload_leave_medical_certificate', 'remove_leave_medical_certificate']);
 require __DIR__ . '/../api/leave-medical-certificate-utils.php';
 
 $pdo = new PDO(getenv('HRIS_TEST_DB_DSN') ?: 'mysql:host=127.0.0.1;dbname=hris;charset=utf8mb4', getenv('HRIS_TEST_DB_USER') ?: 'root', getenv('HRIS_TEST_DB_PASSWORD') ?: '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
@@ -100,3 +104,52 @@ $pdo->exec('DELETE FROM notifications');
 $pdo->exec('DELETE FROM leave_attachments WHERE leave_request_id = 9');
 send_due_leave_medical_certificate_reminders($pdo, $user);
 medical_test_assert((int)$pdo->query('SELECT COUNT(*) FROM notifications')->fetchColumn() === 0, 'Deleting a reminder does not cause it to repeat');
+
+$GLOBALS['medicalTestRemovedFiles'] = [];
+$attachmentCount = (int)$pdo->query('SELECT COUNT(*) FROM leave_attachments')->fetchColumn();
+foreach ([0 => 404, 4 => 422, 5 => 404, 6 => 422, 7 => 422, 8 => 422] as $id => $expected) {
+    try {
+        remove_leave_medical_certificate($pdo, ['id' => $id, 'attachmentPath' => 'uploads/leave-attachments/test.pdf'], $user);
+        throw new RuntimeException('Handler returned without a response');
+    } catch (MedicalTestResponse $response) {
+        medical_test_assert($response->status === $expected && !$pdo->inTransaction(), 'Certificate removal request ' . $id . ' returns ' . $expected);
+    }
+}
+medical_test_assert((int)$pdo->query('SELECT COUNT(*) FROM leave_attachments')->fetchColumn() === $attachmentCount
+    && $GLOBALS['medicalTestRemovedFiles'] === [], 'Refused certificate removals leave attachment rows and files untouched');
+
+$pdo->exec('INSERT INTO leave_attachments (leave_request_id, file_name, file_path, file_size) VALUES (1, "replacement.pdf", "uploads/leave-attachments/replacement.pdf", 12)');
+foreach (['uploads/leave-attachments/test.pdf', ''] as $stalePath) {
+    try {
+        remove_leave_medical_certificate($pdo, ['id' => 1, 'attachmentPath' => $stalePath], $user);
+        throw new RuntimeException('Handler returned without a response');
+    } catch (MedicalTestResponse $response) {
+        medical_test_assert($response->status === 409 && !$pdo->inTransaction(), 'An outdated or missing certificate reference cannot remove the current file');
+    }
+}
+medical_test_assert((int)$pdo->query('SELECT COUNT(*) FROM leave_attachments WHERE leave_request_id = 1')->fetchColumn() === 2, 'A stale preview preserves both stored certificate versions');
+try {
+    remove_leave_medical_certificate($pdo, ['id' => 1, 'attachmentPath' => 'uploads/leave-attachments/replacement.pdf'], $user);
+    throw new RuntimeException('Handler returned without a response');
+} catch (MedicalTestResponse $response) {
+    medical_test_assert($response->status === 200 && empty($response->body['request']['attachmentPath']), 'Cancelling an upload returns the request without a certificate');
+}
+medical_test_assert((int)$pdo->query('SELECT COUNT(*) FROM leave_attachments WHERE leave_request_id = 1')->fetchColumn() === 0
+    && $GLOBALS['medicalTestRemovedFiles'] === ['uploads/leave-attachments/replacement.pdf', 'uploads/leave-attachments/test.pdf'], 'Cancelling removes the saved versions so an older certificate does not reappear');
+medical_test_assert((int)$pdo->query('SELECT COUNT(*) FROM leave_attachments WHERE leave_request_id IN (2, 3)')->fetchColumn() === 2, 'Cancelling preserves other leave requests and their certificates');
+try {
+    upload_leave_medical_certificate($pdo, ['id' => 1], $user, ['error' => UPLOAD_ERR_OK]);
+} catch (MedicalTestResponse $response) {
+    medical_test_assert($response->status === 200 && !empty($response->body['request']['attachmentPath']), 'The applicant can upload a replacement after cancellation');
+}
+try {
+    upload_leave_medical_certificate($pdo, ['id' => 9], $user, ['error' => UPLOAD_ERR_OK]);
+} catch (MedicalTestResponse $response) {
+    medical_test_assert($response->status === 200, 'The applicant can attach a certificate to approved sick leave');
+}
+try {
+    remove_leave_medical_certificate($pdo, ['id' => 9, 'attachmentPath' => 'uploads/leave-attachments/test.pdf'], $user);
+} catch (MedicalTestResponse $response) {
+    medical_test_assert($response->status === 200, 'Certificate cancellation works for approved sick leave too');
+}
+medical_test_assert($pdo->query('SELECT status FROM leave_requests WHERE leave_request_id = 9')->fetchColumn() === 'approved', 'Cancelling an attachment preserves the leave approval status');

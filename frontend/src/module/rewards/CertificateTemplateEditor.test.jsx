@@ -1,7 +1,8 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import CertificateTemplateEditor from "./CertificateTemplateEditor";
-import { createCertificateTemplate } from "./certificateTemplate";
+import { CERTIFICATE_PRESETS, createCertificateTemplate } from "./certificateTemplate";
+import { editableCertificateTemplate } from "./editableCertificateTemplate";
 import { assignCertificateTemplateToCycle, createSavedCertificateTemplate, deleteSavedCertificateTemplate,
   fetchAwardCycles, fetchCertificateTemplate, updateCertificateTemplate,
   uploadCertificateDesign, uploadCertificateSignature } from "../../services/api";
@@ -229,4 +230,102 @@ test("keeps the draft after a failed save and retries without losing the design"
   await click("Save design");
   expect(createSavedCertificateTemplate).toHaveBeenCalledTimes(2);
   expect(createSavedCertificateTemplate.mock.calls[1][0].template.elements[0].text).toBe("Keep my work");
+});
+
+test("selects a ready-made template, saves a new design and reopens it from the gallery", async () => {
+  await renderEditor();
+  await click("Select template");
+  for (const preset of CERTIFICATE_PRESETS) expect(button(`Use template ${preset.name}`)).toBeTruthy();
+  await click("Use template Modern Teal");
+  expect(paper().dataset.certificateVersion).toBe("2");
+  expect(paper().textContent).toContain("CERTIFICATE OF RECOGNITION");
+  expect(paper().textContent).toContain("Juan Dela Cruz");
+  expect(control("Template name").value).toBe("Modern Teal");
+  await click("Save design");
+  expect(createSavedCertificateTemplate).toHaveBeenCalledWith({ name: "Modern Teal", template: editableCertificateTemplate(createCertificateTemplate("modern")) });
+  expect(updateCertificateTemplate).not.toHaveBeenCalled();
+  expect(library[0].template.text.title).toBe("Historic ceremony");
+  await click("Design your own");
+  expect(paper().childElementCount).toBe(0);
+  expect(button("Add heading").closest("fieldset").disabled).toBe(false);
+  await click("Select template");
+  await click("Select saved design Modern Teal");
+  expect(control("Template name").value).toBe("Modern Teal");
+  expect(paper().textContent).toContain("CERTIFICATE OF RECOGNITION");
+  expect(button("Save design").disabled).toBe(true);
+});
+
+test("protects a custom draft when choosing a preset or starting another design", async () => {
+  await renderEditor();
+  await click("Add text");
+  await change("Text content", "Keep this draft");
+  Swal.fire.mockResolvedValue({ isConfirmed: false });
+  await click("Select template");
+  expect(Swal.fire).not.toHaveBeenCalled();
+  await click("Use template Classic Gold");
+  expect(Swal.fire).toHaveBeenCalledTimes(1);
+  expect(paper().textContent).toBe("Keep this draft");
+  Swal.fire.mockResolvedValue({ isConfirmed: true });
+  await click("Use template Classic Gold");
+  expect(control("Template name").value).toBe("Classic Gold");
+  Swal.fire.mockResolvedValue({ isConfirmed: false });
+  await click("Design your own");
+  expect(paper().textContent).toContain("CERTIFICATE OF RECOGNITION");
+  Swal.fire.mockResolvedValue({ isConfirmed: true });
+  await click("Design your own");
+  await click("Add heading");
+  expect(paper().textContent).toBe("Your heading");
+});
+
+test("assigns a selected preset to a nomination and avoids duplicate saved names", async () => {
+  library.push({ id: "gold", name: "Classic Gold", template: createCertificateTemplate("classic") });
+  await renderEditor();
+  await click("Select template");
+  await click("Use template Classic Gold");
+  expect(control("Template name").value).toBe("Classic Gold 2");
+  await click("Use for nomination");
+  await click("Use this design");
+  expect(assignCertificateTemplateToCycle).toHaveBeenCalledWith({ cycleId: "open", template: editableCertificateTemplate(createCertificateTemplate("classic")) });
+});
+
+test("edits preset wording, decorations and logos and persists changes on reopening", async () => {
+  await renderEditor();
+  await click("Select template");
+  await click("Use template Executive Blue");
+  expect(control("Text content").value).toBe("CERTIFICATE OF RECOGNITION");
+  await change("Text content", "My own certificate title");
+  await change("Text case", "none");
+  await change("Text color", "#123456");
+  await click("Layers");
+  await act(async () => paper().querySelector('[data-certificate-element="decoration-1"]').dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+  await change("Fill color", "#446688");
+  await change("Height", 120);
+  await act(async () => paper().querySelector('[data-certificate-element="leftLogo"]').dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+  await upload("Replace image", new File(["logo"], "my-logo.png", { type: "image/png" }));
+  await click("Save design");
+  const saved = createSavedCertificateTemplate.mock.calls[0][0].template;
+  expect(saved.elements.find(({ id }) => id === "title")).toMatchObject({ text: "My own certificate title", color: "#123456" });
+  expect(saved.elements.find(({ id }) => id === "decoration-1")).toMatchObject({ fill: "#446688", height: 120 });
+  expect(saved.elements.find(({ id }) => id === "leftLogo").src).toBe("uploads/certificate-designs/custom-logo.png");
+  expect(saved.elements.find(({ id }) => id === "recipient").text).toBe("{{employeeName}}");
+  await click("New blank");
+  await click("Select template");
+  await click("Select saved design Executive Blue");
+  expect(paper().textContent).toContain("My own certificate title");
+  expect(paper().querySelector('[data-certificate-element="decoration-1"]').style.height).toBe("120px");
+  expect(button("Save design").disabled).toBe(true);
+});
+
+test("opens an older saved preset as editable layers and saves edits to the same record", async () => {
+  await renderEditor();
+  await click("Designs");
+  await click("Open design Existing ceremony");
+  expect(paper().dataset.certificateVersion).toBe("2");
+  await click("Layers");
+  await click("Select layer Historic ceremony");
+  await change("Text content", "Updated ceremony");
+  await click("Save design");
+  expect(updateCertificateTemplate).toHaveBeenCalledWith(expect.objectContaining({ version: 2 }), { templateId: "legacy", name: "Existing ceremony" });
+  expect(library[0].template.elements.find(({ id }) => id === "title").text).toBe("Updated ceremony");
+  expect(createSavedCertificateTemplate).not.toHaveBeenCalled();
 });

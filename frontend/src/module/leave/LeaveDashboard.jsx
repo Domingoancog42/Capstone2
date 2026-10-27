@@ -444,14 +444,14 @@ function LeaveRequestManagementPanel({
       <ViewFormActions
         viewLabel={showOwnRegionalDirectorFormOnly ? "Leave Request Form" : "View leave form"}
         onView={() => onAction?.("view", request)}
-      >
-        {balancesAction}
-        {canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
+        inlineActions={canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
           <LeaveAttachmentUploadButton
             request={request}
             onUploaded={(updatedRequest) => onAction?.("attachmentUploaded", updatedRequest)}
           />
         ) : null}
+      >
+        {balancesAction}
         {canManage && allowRowManagement ? (
           <ActionIconButton
             label="Review leave request"

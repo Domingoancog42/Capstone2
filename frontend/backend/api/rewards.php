@@ -815,13 +815,14 @@ function rewards_normalize_certificate_template(mixed $candidate): array
     return $template;
 }
 
-/** Only uploaded raster assets can become part of a shared, printed certificate. */
+/** Allow uploaded raster assets and the two bundled certificate logos. */
 function rewards_certificate_image_path(mixed $value): string
 {
     if (!is_string($value)) {
         return '';
     }
     $path = trim($value);
+    if (in_array($path, ['/mgb.png', '/bagongpilipinas.png'], true)) return $path;
     return preg_match(
         '#^uploads/certificate-(?:designs|signatures)/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$#i',
         $path
@@ -882,8 +883,8 @@ function rewards_normalize_canvas_certificate_template(array $candidate): array
         $element = [
             'id' => $id,
             'type' => $input['type'],
-            'x' => rewards_number_between($input['x'] ?? null, min(250, 960 - $width), 0, 960 - $width),
-            'y' => rewards_number_between($input['y'] ?? null, min(200, 679 - $height), 0, 679 - $height),
+            'x' => rewards_number_between($input['x'] ?? null, min(250, 960 - $width), $input['type'] === 'shape' ? -$width : 0, $input['type'] === 'shape' ? 960 : 960 - $width),
+            'y' => rewards_number_between($input['y'] ?? null, min(200, 679 - $height), $input['type'] === 'shape' ? -$height : 0, $input['type'] === 'shape' ? 679 : 679 - $height),
             'width' => $width,
             'height' => $height,
             'rotation' => rewards_number_between($input['rotation'] ?? null, 0, -360, 360),
@@ -918,7 +919,7 @@ function rewards_normalize_canvas_certificate_template(array $candidate): array
                 'shape' => in_array($input['shape'] ?? '', ['rectangle', 'ellipse', 'line'], true) ? $input['shape'] : 'rectangle',
                 'fill' => ($input['fill'] ?? '') === 'transparent' ? 'transparent' : rewards_certificate_color($input['fill'] ?? null, '#e2e8f0'),
                 'stroke' => ($input['stroke'] ?? '') === 'transparent' ? 'transparent' : rewards_certificate_color($input['stroke'] ?? null, '#334155'),
-                'strokeWidth' => rewards_number_between($input['strokeWidth'] ?? null, 0, 0, 20),
+                'strokeWidth' => rewards_number_between($input['strokeWidth'] ?? null, 0, 0, 128),
                 'borderRadius' => rewards_number_between($input['borderRadius'] ?? null, 0, 0, 240),
             ];
         }

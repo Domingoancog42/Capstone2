@@ -122,15 +122,6 @@ function AttachmentPreview({ attachmentName, attachmentPath }) {
                   <Eye size={15} />
                   View Attach
                 </button>
-                <a
-                  href={previewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-100"
-                >
-                  <ExternalLink size={14} />
-                  Open New Tab
-                </a>
               </div>
             ) : previewUrl ? (
               <div className="mt-3 flex flex-wrap items-center gap-2">

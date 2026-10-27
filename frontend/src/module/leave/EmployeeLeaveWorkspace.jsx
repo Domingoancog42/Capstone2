@@ -425,8 +425,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
     <ViewFormActions
       viewLabel={request.isLeaveMonetization ? "View leave monetization form" : "View leave form"}
       onView={() => openRequestForm(request)}
-    >
-      {canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
+      inlineActions={canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
         <LeaveAttachmentUploadButton
           request={request}
           onUploaded={(updatedRequest) => setRequests((current) => current.map((row) => (
@@ -434,6 +433,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
           )))}
         />
       ) : null}
+    >
       {isRegionalDirectorApproved(request) ? (
         <>
           <ActionIconButton

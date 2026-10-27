@@ -10,7 +10,7 @@ RUN composer install \
     --prefer-dist \
     --optimize-autoloader
 
-FROM php:8.2-apache
+FROM php:8.2.35-apache
 
 RUN set -eux; \
     apt-get update; \

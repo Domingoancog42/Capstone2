@@ -359,7 +359,7 @@ export default function ChatBubbleButton({ user, onOpen, headerSlot = null }) {
     >
       {/* Stays mounted while open: in the header it shows the active state, like the bell beside it. */}
       <div className="relative">
-        <button
+        <motion.button
           type="button"
           ref={triggerRef}
           aria-controls="floating-messenger-panel"
@@ -370,8 +370,21 @@ export default function ChatBubbleButton({ user, onOpen, headerSlot = null }) {
           onClick={handleToggle}
           className="messenger-trigger"
         >
-          <MessageCircleMore size={24} />
-        </button>
+          <motion.span
+            className="grid place-items-center origin-top"
+            animate={reducedMotion ? { rotate: 0, x: 0 } : "messageIconIdle"}
+
+            variants={reducedMotion ? undefined : {
+              messageIconIdle: {
+                rotate: [0, -12, 12, -10, 10, 0],
+                x: [0, -1, 1, -1, 1, 0],
+                transition: { duration: 0.9, repeat: Infinity, repeatDelay: 2.5, ease: "easeInOut" },
+              },
+            }}
+          >
+            <MessageCircleMore size={24} />
+          </motion.span>
+        </motion.button>
         <UnreadBadge count={totalUnread} />
       </div>
 

@@ -522,7 +522,6 @@ function HoverRail({ toneClass }) {
  * old row to the new one instead of blinking out and back in somewhere else.
  */
 const ACTIVE_SURFACE_LAYOUT_ID = "admin-sidebar-active-surface";
-
 const NAV_LIST_VARIANTS = {
   hidden: {},
   visible: { transition: { delayChildren: 0.05, staggerChildren: 0.025 } },
@@ -1136,14 +1135,9 @@ export default function Sidebar({
           onClick={onToggleCollapse}
           className="admin-sidebar-collapse absolute left-full top-3.5 z-20 ml-4 hidden h-9 w-9 items-center justify-center rounded-lg text-slate-600 transition-colors hover:bg-slate-100 hover:text-[#D61E1E] lg:inline-flex"
         >
-          <motion.span
-            className="grid place-items-center"
-            transition={{ type: "spring", stiffness: 400, damping: 22 }}
-            whileHover={prefersReducedMotion ? undefined : { scale: 1.15 }}
-            whileTap={prefersReducedMotion ? undefined : { scale: 0.9 }}
-          >
+          <span className="admin-sidebar-icon grid place-items-center">
             <Menu size={16} />
-          </motion.span>
+          </span>
         </button>
       ) : null}
 
@@ -1156,7 +1150,7 @@ export default function Sidebar({
           type="button"
           aria-label="Close navigation menu"
           onClick={onCloseMobile}
-          className={`absolute right-3 top-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-lg transition lg:hidden ${
+          className={`absolute right-1 top-1 z-20 inline-flex h-9 w-9 items-center justify-center rounded-lg transition lg:hidden ${
             isCrimson
               ? "bg-white/15 text-white hover:bg-white/25"
               : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -1167,34 +1161,40 @@ export default function Sidebar({
       ) : null}
 
       <div
-        className={`admin-sidebar-brand flex shrink-0 flex-col items-center justify-center border-b px-3 ${
+        className={`admin-sidebar-brand flex shrink-0 items-center border-b ${
           isCrimson ? "border-white/20" : "border-slate-200"
-        } ${displayCollapsed ? "py-3" : "py-4"}`}
+        } ${displayCollapsed ? "justify-center px-2 py-3" : "min-h-28 justify-start gap-3 px-3 py-5"}`}
       >
         <motion.div
           className={`admin-sidebar-brand-logo grid shrink-0 place-items-center overflow-hidden rounded-full bg-white shadow-md transition-[height,width] duration-300 ${
             isCrimson ? "" : "border border-slate-200"
-          } ${displayCollapsed ? "h-11 w-11" : "h-14 w-14"}`}
+          } ${displayCollapsed ? "h-11 w-11" : "h-16 w-16"}`}
           transition={{ type: "spring", stiffness: 320, damping: 20 }}
           whileHover={prefersReducedMotion ? undefined : { scale: 1.06 }}
         >
           <img
             src="/mgb.png"
             alt="MGB logo"
-            className={`object-contain ${displayCollapsed ? "h-8 w-8" : "h-11 w-11"}`}
+            className="h-full w-full object-contain"
           />
         </motion.div>
         {!displayCollapsed && (
-          <motion.p
+          <motion.div
             animate={{ opacity: 1 }}
-            className={`admin-sidebar-brand-text m-0 mt-3 text-center text-[11px] font-bold uppercase leading-snug tracking-[0.1em] ${
+            className={`admin-sidebar-brand-text min-w-0 flex-1 text-left uppercase ${
               isCrimson ? "text-white" : "text-slate-800"
             }`}
             initial={{ opacity: 0 }}
             transition={{ delay: prefersReducedMotion ? 0 : 0.1, duration: 0.22 }}
           >
-            Mines and Geosciences Bureau X
-          </motion.p>
+            <p className="admin-sidebar-brand-title m-0 text-[16px] font-extrabold leading-[1.15] tracking-tight">
+              <span className="block">Mines and</span>
+              <span className="block">Geosciences Bureau</span>
+            </p>
+            <p className="m-0 mt-1.5 text-[9px] font-semibold leading-none tracking-[0.35em] opacity-80">
+              Region X
+            </p>
+          </motion.div>
         )}
       </div>
 
@@ -1299,10 +1299,9 @@ export default function Sidebar({
                     <HoverRail toneClass={resolvedNavigationStyle.hoverRail} />
                   )}
                   <span className={`relative z-[1] flex min-w-0 items-center gap-3 ${HOVER_SHIFT_CLASS}`}>
-                    <Icon
-                      size={16}
-                      className="shrink-0 transition-transform duration-200 motion-safe:group-hover:scale-110"
-                    />
+                    <span className="admin-sidebar-icon shrink-0">
+                      <Icon size={16} />
+                    </span>
                     {displayCollapsed ? null : (
                       <motion.span
                         animate={{ opacity: 1 }}
@@ -1436,10 +1435,9 @@ export default function Sidebar({
                 <HoverRail toneClass={resolvedNavigationStyle.hoverRail} />
               )}
               <span className={`relative z-[1] flex min-w-0 items-center gap-3 ${HOVER_SHIFT_CLASS}`}>
-                <Icon
-                  size={16}
-                  className="shrink-0 transition-transform duration-200 motion-safe:group-hover:scale-110"
-                />
+                <span className="admin-sidebar-icon shrink-0">
+                  <Icon size={16} />
+                </span>
                 {displayCollapsed ? null : (
                   <motion.span
                     animate={{ opacity: 1 }}

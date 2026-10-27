@@ -391,6 +391,7 @@ function canvasColor(value, fallback) {
 
 function canvasImagePath(value) {
   const path = typeof value === "string" ? value.trim() : "";
+  if (["/mgb.png", "/bagongpilipinas.png"].includes(path)) return path;
   return /^uploads\/certificate-(?:designs|signatures)\/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(path) ? path : "";
 }
 
@@ -411,8 +412,8 @@ function normalizeCanvasElement(candidate, index, usedIds) {
   const item = {
     id,
     type: candidate.type,
-    x: boundedNumber(candidate.x, Math.min(defaults.x, CERTIFICATE_WIDTH - width), 0, CERTIFICATE_WIDTH - width),
-    y: boundedNumber(candidate.y, Math.min(defaults.y, CERTIFICATE_HEIGHT - height), 0, CERTIFICATE_HEIGHT - height),
+    x: boundedNumber(candidate.x, Math.min(defaults.x, CERTIFICATE_WIDTH - width), candidate.type === "shape" ? -width : 0, candidate.type === "shape" ? CERTIFICATE_WIDTH : CERTIFICATE_WIDTH - width),
+    y: boundedNumber(candidate.y, Math.min(defaults.y, CERTIFICATE_HEIGHT - height), candidate.type === "shape" ? -height : 0, candidate.type === "shape" ? CERTIFICATE_HEIGHT : CERTIFICATE_HEIGHT - height),
     width,
     height,
     rotation: boundedNumber(candidate.rotation, 0, -360, 360),
@@ -444,7 +445,7 @@ function normalizeCanvasElement(candidate, index, usedIds) {
     shape: ["rectangle", "ellipse", "line"].includes(candidate.shape) ? candidate.shape : "rectangle",
     fill: candidate.fill === "transparent" ? "transparent" : canvasColor(candidate.fill, defaults.fill),
     stroke: candidate.stroke === "transparent" ? "transparent" : canvasColor(candidate.stroke, defaults.stroke),
-    strokeWidth: boundedNumber(candidate.strokeWidth, defaults.strokeWidth, 0, 20),
+    strokeWidth: boundedNumber(candidate.strokeWidth, defaults.strokeWidth, 0, 128),
     borderRadius: boundedNumber(candidate.borderRadius, defaults.borderRadius, 0, 240),
   };
 }

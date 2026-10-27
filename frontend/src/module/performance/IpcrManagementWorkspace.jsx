@@ -1673,6 +1673,7 @@ export default function IpcrManagementWorkspace({
                     name={`${kpi.uid}-program`}
                     value={kpi.program}
                     onChange={(event) => updateBulkKpi(kpi.uid, { program: event.target.value })}
+                    placeholder="Optional, e.g. Geological Risk Reduction and Resiliency Program"
                     maxLength={255}
                   />
                   {/* The category is the band the KPI prints under; the output is the cell beside its rows. */}
@@ -1731,6 +1732,7 @@ export default function IpcrManagementWorkspace({
                               aria-label={`Success Indicator ${rowIndex + 1}, second column`}
                               value={row.secondTarget}
                               onChange={(event) => updateBulkIndicator(kpi.uid, row.uid, { secondTarget: event.target.value })}
+                              placeholder="Optional second target, e.g. 2 assessment reports submitted by June"
                               rows={3}
                               disabled={saving}
                               className={hubFieldClass}

@@ -129,7 +129,8 @@ exactly as it did.
 
 ## Notes on the image
 
-`docker/php/Dockerfile` is `php:8.2-apache` — the same PHP version and the same
+`docker/php/Dockerfile` is `php:8.2.35-apache` — the patched PHP 8.2 security
+release, using the same PHP version line and the same
 mod_php arrangement XAMPP uses, which matters because every `.htaccess` in this
 project was written for it. On top of the base image it adds `pdo_mysql`, `zip`
 (for the payslip and report ZIP exports) and opcache, and enables `mod_rewrite`.

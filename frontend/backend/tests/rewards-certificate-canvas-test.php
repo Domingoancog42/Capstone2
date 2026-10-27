@@ -117,6 +117,16 @@ foreach (['data:image/png;base64,abcd', 'javascript:alert(1)', 'https://evil.inv
     certificate_canvas_test_expect($candidate['backgroundImage'] === '' && $candidate['elements'][0]['src'] === '', 'unsafe image and background sources are rejected');
 }
 certificate_canvas_test_expect(rewards_certificate_image_path('uploads/certificate-signatures/signature_1.png') !== '', 'uploaded signatures can be ordinary canvas images');
+foreach (['/mgb.png', '/bagongpilipinas.png'] as $logo) {
+    $logoTemplate = rewards_normalize_certificate_template(['version' => 2, 'elements' => [['id' => 'logo', 'type' => 'image', 'src' => $logo]]]);
+    certificate_canvas_test_expect($logoTemplate['elements'][0]['src'] === $logo, 'bundled logos survive saving an editable preset');
+}
+certificate_canvas_test_expect(rewards_certificate_image_path('/private.png') === '', 'other root image paths are rejected');
+$ringTemplate = rewards_normalize_certificate_template(['version' => 2, 'elements' => [
+    ['id' => 'ring', 'type' => 'shape', 'shape' => 'ellipse', 'x' => -105, 'y' => 469, 'width' => 330, 'height' => 330, 'strokeWidth' => 48],
+]]);
+certificate_canvas_test_expect($ringTemplate['elements'][0]['x'] == -105 && $ringTemplate['elements'][0]['y'] == 469 && $ringTemplate['elements'][0]['strokeWidth'] == 48, 'preset decorations retain their clipped geometry and thick borders');
+certificate_canvas_test_expect(rewards_normalize_certificate_template($ringTemplate) == $ringTemplate, 'editable decoration geometry survives repeated saves');
 certificate_canvas_test_expect(count(rewards_normalize_certificate_template(['version' => 2, 'elements' => array_fill(0, 150, ['type' => 'shape'])])['elements']) === 100, 'canvas object count is capped at 100');
 certificate_canvas_test_expect(rewards_normalize_certificate_template(['version' => 2, 'elements' => ['legacy' => ['type' => 'text']]])['elements'] === [], 'v2 elements must be an ordered list');
 

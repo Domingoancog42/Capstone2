@@ -57,6 +57,18 @@
 .employee-primary-actions-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 16px; }
 .employee-primary-actions-grid button { display: flex; min-width: 0; min-height: 62px; align-items: center; gap: 11px; padding: 10px 11px; border: 1px solid #dbe8fb; border-radius: 12px; background: linear-gradient(120deg, #fff, #fbfdff); color: var(--ed-muted); text-align: left; transition: border-color .2s, box-shadow .2s, transform .2s; }
 .employee-primary-action-icon { display: grid; width: 40px; height: 40px; flex-shrink: 0; place-items: center; border-radius: 12px; background: #eaf2ff; color: var(--ed-blue); }
+@keyframes employee-quick-action-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .employee-primary-actions-grid .employee-primary-action-icon {
+    animation: employee-quick-action-float 3s ease-in-out infinite;
+  }
+  .employee-primary-actions-grid button:nth-child(2) .employee-primary-action-icon { animation-delay: .2s; }
+  .employee-primary-actions-grid button:nth-child(3) .employee-primary-action-icon { animation-delay: .4s; }
+  .employee-primary-actions-grid button:nth-child(4) .employee-primary-action-icon { animation-delay: .6s; }
+}
 .employee-primary-action-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .employee-primary-action-copy strong { overflow: hidden; color: var(--ed-ink); font-size: 11px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .employee-primary-action-copy small { overflow: hidden; color: var(--ed-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }

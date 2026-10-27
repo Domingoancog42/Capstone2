@@ -179,12 +179,6 @@ export default function LeaveTable({
 
     return (
       <>
-        {canUploadLeaveMedicalCertificate(user, row) ? (
-          <LeaveAttachmentUploadButton
-            request={row}
-            onUploaded={(updatedRequest) => onAction?.("attachmentUploaded", updatedRequest)}
-          />
-        ) : null}
         {canManage && allowRowManagement ? (
           <>
             <ActionIconButton
@@ -254,6 +248,18 @@ export default function LeaveTable({
     );
   };
 
+  const renderActions = (row) => (
+    <div className="flex items-center gap-2 whitespace-nowrap">
+      <ActionsMenu>{renderRowActions(row)}</ActionsMenu>
+      {canUploadLeaveMedicalCertificate(user, row) ? (
+        <LeaveAttachmentUploadButton
+          request={row}
+          onUploaded={(updatedRequest) => onAction?.("attachmentUploaded", updatedRequest)}
+        />
+      ) : null}
+    </div>
+  );
+
   return (
     <>
       {/*
@@ -295,7 +301,7 @@ export default function LeaveTable({
             { label: "Leave Duration", value: formatDurationLabel(row.numberOfDays) },
             { label: "Date Filed", value: formatDateDisplay(row.dateFiled) },
           ],
-          actions: <ActionsMenu>{renderRowActions(row)}</ActionsMenu>,
+          actions: renderActions(row),
         })}
       />
 
@@ -381,7 +387,7 @@ export default function LeaveTable({
                       />
                     </td>
                     <td className="px-3 py-3.5">
-                      <ActionsMenu>{renderRowActions(row)}</ActionsMenu>
+                      {renderActions(row)}
                     </td>
                   </tr>
                 );

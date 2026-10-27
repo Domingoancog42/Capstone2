@@ -191,6 +191,23 @@ test("does not fetch while the preview is closed", async () => {
   expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
 
+test("offers Cancel Upload only when the applicant supplies a removal action", async () => {
+  await renderPreview();
+  expect(findButton(/Cancel medical certificate upload/)).toBeUndefined();
+  const onRemove = jest.fn();
+  const onClose = jest.fn();
+  await renderPreview({ onRemove, onClose });
+  act(() => findButton(/Cancel medical certificate upload/).click());
+  expect(onRemove).toHaveBeenCalledTimes(1);
+  expect(onClose).not.toHaveBeenCalled();
+  await renderPreview({ onRemove, onClose, removing: true });
+  const cancelButton = findButton(/Cancel medical certificate upload/);
+  expect(cancelButton.disabled).toBe(true);
+  expect(cancelButton.textContent).toContain("Cancelling...");
+  act(() => cancelButton.click());
+  expect(onRemove).toHaveBeenCalledTimes(1);
+});
+
 test("explains a missing attachment without attempting to fetch it", async () => {
   await renderPreview({ attachmentPath: "", attachmentName: "certificate.png" });
   expect(document.querySelector('[role="alert"]').textContent).toContain("no attachment link available");
