@@ -1280,6 +1280,15 @@ export const saveLeaveType = async (leaveType) => {
   return response.data;
 };
 
+export const updateLeaveTypeStatus = async (id, isActive) => {
+  const response = await api.put("/settings.php", {
+    type: "leave_type",
+    id,
+    isActive,
+  });
+  return response.data;
+};
+
 export const saveSecuritySettings = async (security) => {
   const response = await api.put("/settings.php", {
     type: "security",

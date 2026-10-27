@@ -2403,6 +2403,34 @@ function settings_leave_types(PDO $pdo): array
     return $statement->fetchAll();
 }
 
+function settings_update_leave_type_status(PDO $pdo, array $sessionUser, array $body): void
+{
+    settings_require_admin($sessionUser);
+
+    $id = filter_var($body['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+    $isActive = $body['isActive'] ?? null;
+    if ($id === false || !in_array($isActive, [0, 1, '0', '1', false, true], true)) {
+        json_response([
+            'success' => false,
+            'message' => 'A valid leave type and active status are required.',
+        ], 422);
+    }
+
+    $statement = $pdo->prepare('SELECT leave_type_id FROM leave_types WHERE leave_type_id = :id');
+    $statement->execute([':id' => $id]);
+    if ($statement->fetchColumn() === false) {
+        json_response([
+            'success' => false,
+            'message' => 'Leave type was not found.',
+        ], 404);
+    }
+
+    $statement = $pdo->prepare('UPDATE leave_types SET is_active = :is_active WHERE leave_type_id = :id');
+    $statement->execute([':id' => $id, ':is_active' => (int)$isActive]);
+
+    list_settings($pdo);
+}
+
 function settings_default_system_configuration(): array
 {
     // The two branding fields are shared with the login screen, which reads them through
@@ -3274,6 +3302,10 @@ if ($method === 'POST' && $type === 'designation') {
     }
 
     list_settings($pdo);
+}
+
+if ($method === 'PUT' && $type === 'leave_type') {
+    settings_update_leave_type_status($pdo, $sessionUser, $body);
 }
 
 if ($method === 'POST' && $type === 'leave_type') {

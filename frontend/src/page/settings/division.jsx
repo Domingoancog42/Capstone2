@@ -68,6 +68,7 @@ import {
   saveDesignation,
   saveDivision,
   saveLeaveType,
+  updateLeaveTypeStatus,
   saveRateLimitSettings,
   savePayrollSignatories,
   saveSecurityPolicySettings,
@@ -484,6 +485,7 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
   const [designations, setDesignations] = useState([]);
   const [settingsLoadState, setSettingsLoadState] = useState("loading");
   const [leaveTypes, setLeaveTypes] = useState([]);
+  const [togglingLeaveTypeId, setTogglingLeaveTypeId] = useState(null);
   const [designationQuery, setDesignationQuery] = useState("");
   const [designationFilter, setDesignationFilter] = useState("");
   const [divisionArchiveView, setDivisionArchiveView] = useState(false);
@@ -1276,6 +1278,23 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
       setErrors({ leaveTypeName: error.response?.data?.message || "Unable to save leave type." });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleToggleLeaveTypeStatus = async (leaveType) => {
+    if (togglingLeaveTypeId !== null) return;
+
+    const isActive = Number(leaveType.isActive) === 1 ? 0 : 1;
+    setTogglingLeaveTypeId(leaveType.id);
+    try {
+      const result = await updateLeaveTypeStatus(leaveType.id, isActive);
+      setLeaveTypes(result.leaveTypes || []);
+      onSettingsChange?.({ leaveTypes: result.leaveTypes || [] });
+      toast.success(`Leave type ${isActive ? "activated" : "deactivated"} successfully.`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to update leave type status.");
+    } finally {
+      setTogglingLeaveTypeId(null);
     }
   };
 
@@ -2712,6 +2731,8 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
           query={leaveTypeQuery}
           onQueryChange={(event) => setLeaveTypeQuery(event.target.value)}
           onAdd={openLeaveTypeModal}
+          onToggleStatus={handleToggleLeaveTypeStatus}
+          togglingId={togglingLeaveTypeId}
         />
       ) : null}
 

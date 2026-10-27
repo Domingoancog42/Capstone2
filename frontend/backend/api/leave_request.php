@@ -1507,40 +1507,17 @@ function resolve_leave_type_id(PDO $pdo, string $leaveType): int
         'SELECT leave_type_id FROM leave_types WHERE name = :name AND is_active = 1 LIMIT 1'
     );
     $statement->execute([':name' => $leaveType]);
-    $id = (int)$statement->fetchColumn();
+    $id = $statement->fetchColumn();
 
-    if ($id <= 0) {
-        $baseCode = strtoupper(preg_replace('/[^A-Z0-9]/', '', implode('', array_map(
-            static fn (string $word): string => $word[0] ?? '',
-            preg_split('/\s+/', $leaveType) ?: []
-        ))));
-        $baseCode = $baseCode !== '' ? substr($baseCode, 0, 12) : 'LT';
-        $code = $baseCode;
-        $suffix = 1;
-
-        while (true) {
-            $codeCheck = $pdo->prepare('SELECT COUNT(*) FROM leave_types WHERE code = :code');
-            $codeCheck->execute([':code' => $code]);
-            if ((int)$codeCheck->fetchColumn() === 0) {
-                break;
-            }
-            $code = substr($baseCode, 0, 10) . $suffix;
-            $suffix++;
-        }
-
-        $insert = $pdo->prepare(
-            'INSERT INTO leave_types (name, code, is_with_pay, requires_approval, requires_attachment, is_active)
-             VALUES (:name, :code, 1, 1, 0, 1)'
-        );
-        $insert->execute([
-            ':name' => $leaveType,
-            ':code' => $code,
-        ]);
-
-        return (int)$pdo->lastInsertId();
+    // A stale form must not recreate a type that an administrator has deactivated.
+    if ($id === false) {
+        json_response([
+            'success' => false,
+            'message' => 'Selected leave type is inactive or unavailable. Please choose an active leave type.',
+        ], 422);
     }
 
-    return $id;
+    return (int)$id;
 }
 
 /**

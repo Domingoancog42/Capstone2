@@ -23,7 +23,6 @@ import LeaveStatusBadge, { getLeaveStatusDisplayLabel } from "../../components/l
 import LeaveTable from "../../components/leave/LeaveTable";
 import LeaveMonetizationFormModal from "../../components/payroll/LeaveMonetizationForm";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
-import { LEAVE_TYPES } from "../../data/leaveTypes";
 import PassSlipWorkspace from "../passslip/PassSlipWorkspace";
 import TravelOrderWorkspace from "../travel/TravelOrderWorkspace";
 import CompensatoryWorkspace from "../compensatory/CompensatoryWorkspace";
@@ -2014,7 +2013,6 @@ export default function LeaveDashboard({
       <LeaveRequestModal
         open={isRequestModalOpen}
         user={user}
-        leaveTypes={LEAVE_TYPES}
         leaveCredits={leaveCredits}
         employees={employees}
         isSubmitting={isSubmitting}

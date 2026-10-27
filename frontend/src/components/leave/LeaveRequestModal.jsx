@@ -7,6 +7,7 @@ import LeaveMonetizationFields from "./LeaveMonetizationFields";
 import FloatingSelect from "../UI/FloatingSelect";
 import MultiDatePicker from "../UI/MultiDatePicker";
 import { LEAVE_MONETIZATION_TYPE, isLeaveMonetizationType } from "../../data/leaveTypes";
+import { fetchLeaveTypes } from "../../services/leaveService";
 import {
   LEAVE_ADVANCE_NOTICE_DAYS,
   LEAVE_ADVANCE_NOTICE_ERROR,
@@ -115,7 +116,6 @@ function buildInitialForm(user) {
 export default function LeaveRequestModal({
   open = false,
   user,
-  leaveTypes = [],
   employees = [],
   leaveCredits = [],
   isSubmitting = false,
@@ -126,6 +126,9 @@ export default function LeaveRequestModal({
   const [visible, setVisible] = useState(false);
   const [form, setForm] = useState(() => buildInitialForm(user));
   const [errors, setErrors] = useState({});
+  const [leaveTypes, setLeaveTypes] = useState([]);
+  const [leaveTypesLoading, setLeaveTypesLoading] = useState(false);
+  const [leaveTypesError, setLeaveTypesError] = useState("");
   /* The monetizable credits, daily rate and CSC ceilings the monetization fields fetched. */
   const [monetizationSummary, setMonetizationSummary] = useState(null);
   const canSelectEmployee = resolveRoleKey(user) === "admin";
@@ -163,6 +166,33 @@ export default function LeaveRequestModal({
 
     return () => window.cancelAnimationFrame(frame);
   }, [open, user]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    let mounted = true;
+    setLeaveTypes([]);
+    setLeaveTypesLoading(true);
+    setLeaveTypesError("");
+
+    const loadLeaveTypes = async () => {
+      try {
+        const result = await fetchLeaveTypes();
+        if (mounted) {
+          setLeaveTypes((result?.leaveTypes || []).map((leaveType) => leaveType.name));
+        }
+      } catch {
+        if (mounted) {
+          setLeaveTypesError("Unable to load leave types. Reopen this form to try again.");
+        }
+      } finally {
+        if (mounted) setLeaveTypesLoading(false);
+      }
+    };
+
+    void loadLeaveTypes();
+    return () => { mounted = false; };
+  }, [open]);
 
   const computedDays = useMemo(
     () => getSelectedDatesTotal(form.leaveDays),
@@ -218,7 +248,8 @@ export default function LeaveRequestModal({
   const filingEmployeeGender = resolvedEmployee?.gender || "";
   const selectableLeaveTypes = useMemo(
     () => [
-      ...leaveTypes.filter((leaveType) => leaveTypeMatchesEmployeeGender(leaveType, filingEmployeeGender)),
+      ...leaveTypes.filter((leaveType) => !isLeaveMonetizationType(leaveType)
+        && leaveTypeMatchesEmployeeGender(leaveType, filingEmployeeGender)),
       LEAVE_MONETIZATION_TYPE,
     ],
     [filingEmployeeGender, leaveTypes]
@@ -420,6 +451,9 @@ export default function LeaveRequestModal({
 
     if (!form.employeeName.trim()) nextErrors.employeeName = "Employee name is required.";
     if (!form.leaveType) nextErrors.leaveType = "Leave type is required.";
+    else if (!selectableLeaveTypes.includes(form.leaveType)) {
+      nextErrors.leaveType = "Select an active leave type.";
+    }
     if (!form.reason.trim()) nextErrors.reason = "Reason / Supporting Details is required.";
     if (form.leaveDays.length === 0) {
       nextErrors.leaveDays = "Select at least one leave date.";
@@ -598,11 +632,12 @@ export default function LeaveRequestModal({
                   ariaLabel="Leave Type"
                   value={form.leaveType}
                   options={selectableLeaveTypes}
-                  placeholder="Select Leave Type"
+                  placeholder={leaveTypesLoading ? "Loading leave types..." : "Select Leave Type"}
                   visibleThrough="Solo Parent Leave"
                   onChange={(value) => handleChange("leaveType")({ target: { value } })}
                 />
                 {errors.leaveType ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.leaveType}</p> : null}
+                {leaveTypesError ? <p role="alert" className="m-0 mt-1 text-xs text-rose-700">{leaveTypesError}</p> : null}
               </label>
 
               {isMonetizationFiling ? null : (

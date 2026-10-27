@@ -25,7 +25,7 @@ import LeaveStatusBadge from "../../components/leave/LeaveStatusBadge";
 import LeaveMonetizationFormModal from "../../components/payroll/LeaveMonetizationForm";
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
-import { LEAVE_STATUSES, LEAVE_TYPES } from "../../data/leaveTypes";
+import { LEAVE_STATUSES } from "../../data/leaveTypes";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   fetchLeaveCredits,
@@ -706,7 +706,6 @@ export default function EmployeeLeaveWorkspace({ user }) {
       <LeaveRequestModal
         open={modalOpen}
         user={user}
-        leaveTypes={LEAVE_TYPES}
         leaveCredits={leaveCredits}
         isSubmitting={submitting}
         onClose={() => setModalOpen(false)}

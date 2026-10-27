@@ -6,18 +6,18 @@ import Modal from "../../components/UI/modal";
 import Table from "../../components/UI/table";
 import { SettingsPanel } from "../../components/settings";
 
-const leaveTypeColumns = [
+const createLeaveTypeColumns = (onToggleStatus, togglingId) => [
   {
     key: "name",
     header: "Leave Type",
     cardRole: "title",
     render: (row) => (
-      <div>
-        <p className="m-0 font-semibold text-slate-900">{row.name}</p>
+      <span className="block">
+        <span className="block font-semibold text-slate-900">{row.name}</span>
         {row.description ? (
-          <p className="m-0 mt-1 max-w-[320px] truncate text-xs text-slate-500">{row.description}</p>
+          <span className="mt-1 block max-w-[320px] truncate text-xs text-slate-500">{row.description}</span>
         ) : null}
-      </div>
+      </span>
     ),
   },
   {
@@ -52,15 +52,22 @@ const leaveTypeColumns = [
     header: "Status",
     cardRole: "badge",
     render: (row) => (
-      <span
-        className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${
+      <button
+        type="button"
+        role="switch"
+        aria-checked={Number(row.isActive) === 1}
+        aria-label={`${row.name} status`}
+        title={`Click to ${Number(row.isActive) === 1 ? "deactivate" : "activate"} ${row.name}`}
+        disabled={togglingId !== null}
+        onClick={() => onToggleStatus?.(row)}
+        className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold transition focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 disabled:cursor-wait disabled:opacity-60 ${
           Number(row.isActive) === 1
-            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-            : "border-slate-200 bg-slate-50 text-slate-600"
+            ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+            : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
         }`}
       >
-        {Number(row.isActive) === 1 ? "Active" : "Inactive"}
-      </span>
+        {togglingId === row.id ? "Saving..." : Number(row.isActive) === 1 ? "Active" : "Inactive"}
+      </button>
     ),
   },
 ];
@@ -70,7 +77,13 @@ export default function LeaveTypeSettings({
   query = "",
   onQueryChange,
   onAdd,
+  onToggleStatus,
+  togglingId = null,
 }) {
+  const leaveTypeColumns = useMemo(
+    () => createLeaveTypeColumns(onToggleStatus, togglingId),
+    [onToggleStatus, togglingId]
+  );
   const filteredLeaveTypes = useMemo(() => {
     const search = query.trim().toLowerCase();
     if (!search) {
@@ -88,7 +101,7 @@ export default function LeaveTypeSettings({
     <SettingsPanel
       icon={FileText}
       title="Leave Types"
-      description="Maintain the leave types available for employee leave requests."
+      description="Click a status to activate or deactivate a leave type. Inactive types are hidden from leave forms."
       actions={
         <>
           <InputField
