@@ -30,7 +30,7 @@ class LeaveTestResponse extends RuntimeException
 function json_response(array $body, int $status = 200): void { throw new LeaveTestResponse($body, $status); }
 function notify_employee(mixed ...$args): void {}
 function notify_roles(mixed ...$args): void {}
-function throttle_leave_request(mixed ...$args): void {}
+function throttle_filing_request(mixed ...$args): void {}
 function ensure_role_columns(PDO $pdo): void {}
 function ensure_archive_columns(PDO $pdo, string $table): void {}
 function database_table_exists(PDO $pdo, string $table): bool

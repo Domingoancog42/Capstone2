@@ -1213,6 +1213,8 @@ function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
     $unpaidHours = round((float)$hoursApplied - $payableCredits, 2);
     $unpaidHours = $unpaidHours > 0.001 ? $unpaidHours : 0.0;
 
+    throttle_filing_request($pdo, $sessionUser);
+
     /*
      * The balance read a moment ago is also what the form certifies, so it is stored with the row.
      * It is the credits standing before this filing is counted, which is what "COC as of <date

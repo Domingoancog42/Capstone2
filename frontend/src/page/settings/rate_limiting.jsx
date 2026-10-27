@@ -176,7 +176,7 @@ function QuotaRuleCard({ rule, draft, disabled, errors, onToggle, onFieldChange 
             name={`rateLimit-${rule.key}-maxRequests`}
             label="Request limit"
             suffix="requests"
-            helper={`How many may be filed before the rest are refused. ${range.min ?? 1} to ${range.max ?? 100000}.`}
+            helper={`Total filings allowed across all request modules. ${range.min ?? 1} to ${range.max ?? 100000}.`}
             error={errors.maxRequests}
             value={draft.maxRequests}
             min={range.min}
@@ -200,7 +200,7 @@ function QuotaRuleCard({ rule, draft, disabled, errors, onToggle, onFieldChange 
 
         <p className="m-0 text-xs leading-5 text-slate-500">
           {draft.enabled
-            ? `Allows ${draft.maxRequests || 0} ${quotaPeriodNoun(draft.windowSeconds)} from one account. Anything past that is refused until the allowance resets.`
+            ? `Allows ${draft.maxRequests || 0} combined requests ${quotaPeriodNoun(draft.windowSeconds)} from one account. Anything past that is refused until the allowance resets.`
             : "This group is not being counted."}
         </p>
       </div>

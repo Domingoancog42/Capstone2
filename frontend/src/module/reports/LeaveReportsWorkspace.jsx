@@ -26,34 +26,33 @@ const REPORTS = [
     label: "Leave Applications",
     shortLabel: "Applications",
     description: "Filed, approved, pending, rejected, and cancelled applications in one view.",
-    filters: ["dateRange", "employeeId", "divisionId", "leaveTypeId", "status"],
+    filters: ["dateRange", "divisionId", "leaveTypeId", "status"],
   },
   {
     key: "leave-monetization",
     label: "Leave Monetization",
     shortLabel: "Monetization",
     description: "Monetization requests, approved days, rates, and computed amounts.",
-    filters: ["dateRange", "employeeId", "divisionId", "status"],
+    filters: ["dateRange", "divisionId", "status"],
   },
   {
     key: "leave-balance",
     label: "Leave Balance",
     shortLabel: "Balance",
     description: "Current leave credits by employee, leave type, and reporting year.",
-    filters: ["employeeId", "divisionId", "leaveTypeId", "year"],
+    filters: ["divisionId", "leaveTypeId", "year"],
   },
   {
     key: "leave-utilization",
     label: "Leave Utilization",
     shortLabel: "Utilization",
     description: "Approved paid and unpaid leave days actually consumed.",
-    filters: ["dateRange", "employeeId", "divisionId", "leaveTypeId"],
+    filters: ["dateRange", "divisionId", "leaveTypeId"],
   },
 ];
 const EMPTY_ROWS = [];
 
 const FILTERS = {
-  employeeId: { label: "Employee", optionsKey: "employees", placeholder: "All Employees" },
   divisionId: { label: "Division/Department", optionsKey: "divisions", placeholder: "All Divisions/Departments" },
   leaveTypeId: { label: "Leave Type", optionsKey: "leaveTypes", placeholder: "All Leave Types" },
   status: { label: "Status", optionsKey: "leaveStatuses", placeholder: "All Statuses" },
@@ -105,7 +104,6 @@ export default function LeaveReportsWorkspace({ user }) {
     dateRange: "thisyear",
     customStart: today,
     customEnd: today,
-    employeeId: "",
     divisionId: "",
     leaveTypeId: "",
     status: "",
@@ -233,7 +231,6 @@ export default function LeaveReportsWorkspace({ user }) {
     setFilters((current) => ({
       ...current,
       dateRange: "thisyear",
-      employeeId: "",
       divisionId: "",
       leaveTypeId: "",
       status: "",
@@ -368,7 +365,7 @@ export default function LeaveReportsWorkspace({ user }) {
           </span>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {supportsDateRange ? (
             <div>
               <label htmlFor="leave-report-date-range" className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Date Range</label>
@@ -404,7 +401,7 @@ export default function LeaveReportsWorkspace({ user }) {
                   <option value="">{meta.placeholder}</option>
                   {options.map((option) => (
                     <option key={option.value} value={option.value}>
-                      {key === "employeeId" && option.employeeNo ? `${option.employeeNo} — ${option.label}` : option.label}
+                      {option.label}
                     </option>
                   ))}
                 </select>

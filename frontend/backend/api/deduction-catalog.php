@@ -87,17 +87,25 @@ function deduction_catalog_ensure_schema(PDO $pdo): void
  * table rather than kept as a view: `payroll` now stores each deduction in its own column, and the
  * `all_deductions` / `payroll_deduction_columns` views that used to stand in for that are gone.
  *
- * Always used as `... INNER JOIN ' . deduction_catalog_union_sql() . ' d ON d.id = ...`.
+ * Always used as `... INNER JOIN ' . deduction_catalog_union_sql($pdo) . ' d ON d.id = ...`.
  */
-function deduction_catalog_union_sql(): string
+function deduction_catalog_union_sql(PDO $pdo): string
 {
+    $otherAmountColumn = deduction_catalog_other_amount_column($pdo);
     $parts = [];
     foreach (DEDUCTION_FAMILIES as $key => $family) {
+        // Other deductions store a simple amount; expose the shared payroll shape at this boundary.
+        $amountColumns = $key === 'other'
+            ? "'fixed' AS calculation_type, {$otherAmountColumn} AS default_amount, 0 AS default_rate,
+               'basic_salary' AS basis, 0 AS threshold_amount, NULL AS threshold_rules,
+               0 AS base_floor, NULL AS base_cap"
+            : 'calculation_type, default_amount, default_rate, basis,
+               threshold_amount, threshold_rules, base_floor, base_cap';
         $parts[] = sprintf(
-            'SELECT id, code, name, description, calculation_type, default_amount, default_rate, basis,
-                    threshold_amount, threshold_rules, base_floor, base_cap, is_recurring, is_active,
+            'SELECT id, code, name, description, %s, is_recurring, is_active,
                     show_in_payroll, sort_order, %s AS deduction_family, %s AS source_table
              FROM `%s`',
+            $amountColumns,
             deduction_catalog_sql_string($key),
             deduction_catalog_sql_string($family['table']),
             $family['table']
@@ -105,6 +113,57 @@ function deduction_catalog_union_sql(): string
     }
 
     return '(' . implode(' UNION ALL ', $parts) . ')';
+}
+
+/** Support existing deployments without requiring a destructive catalog cleanup. */
+function deduction_catalog_other_amount_column(PDO $pdo): string
+{
+    $columns = $pdo->query("SHOW COLUMNS FROM other_deductions WHERE Field IN ('amount', 'default_amount')")
+        ->fetchAll(PDO::FETCH_COLUMN);
+    if (in_array('amount', $columns, true)) {
+        return 'amount';
+    }
+    if (in_array('default_amount', $columns, true)) {
+        return 'default_amount';
+    }
+    throw new RuntimeException('Other Deductions is missing its amount column.');
+}
+
+/** Write catalog fields while keeping the simple Other Deductions table free of calculation fields. */
+function deduction_catalog_update_fields(PDO $pdo, string $table, int $id, array $values): void
+{
+    $family = null;
+    foreach (DEDUCTION_FAMILIES as $candidate) {
+        if ($candidate['table'] === $table) {
+            $family = $candidate;
+            break;
+        }
+    }
+    if ($family === null) {
+        throw new InvalidArgumentException('Unknown deduction table.');
+    }
+
+    $allowed = ['name', 'description', 'default_amount', 'is_recurring', 'is_active', 'show_in_payroll', 'sort_order'];
+    if ($table !== DEDUCTION_FAMILIES['other']['table']) {
+        $allowed = array_merge($allowed, [
+            'calculation_type', 'default_rate', 'basis', 'threshold_amount', 'threshold_rules', 'base_floor', 'base_cap',
+        ]);
+    }
+
+    $assignments = [];
+    $params = [':id' => $id];
+    foreach (array_intersect_key($values, array_flip($allowed)) as $column => $value) {
+        $storedColumn = $table === DEDUCTION_FAMILIES['other']['table'] && $column === 'default_amount'
+            ? deduction_catalog_other_amount_column($pdo) : $column;
+        $assignments[] = "`{$storedColumn}` = :{$column}";
+        $params[':' . $column] = $value;
+    }
+    if ($assignments === []) {
+        return;
+    }
+
+    $statement = $pdo->prepare("UPDATE `{$table}` SET " . implode(', ', $assignments) . ' WHERE id = :id');
+    $statement->execute($params);
 }
 
 /**
@@ -124,7 +183,7 @@ function deduction_catalog_sql_string(string $value): string
  * `dt.deduction_name` / `dt.category_name`. Rather than rewrite each one around the family tables,
  * they join this and keep working — `category_name` resolves the family key back to its label.
  */
-function deduction_catalog_type_union_sql(): string
+function deduction_catalog_type_union_sql(PDO $pdo): string
 {
     $labels = [];
     foreach (DEDUCTION_FAMILIES as $key => $family) {
@@ -155,7 +214,7 @@ function deduction_catalog_type_union_sql(): string
                 d.is_active,
                 d.show_in_payroll,
                 d.sort_order
-             FROM ' . deduction_catalog_union_sql() . ' d)';
+             FROM ' . deduction_catalog_union_sql($pdo) . ' d)';
 }
 
 /** The `payroll` column a deduction is stored in. Codes are already slugs; 64 is MySQL's limit. */
@@ -199,7 +258,7 @@ function deduction_catalog_sync_payroll_columns(PDO $pdo): void
 
     $after = isset($existing['total_allowance']) ? 'total_allowance' : null;
     $statement = $pdo->query(
-        'SELECT code FROM ' . deduction_catalog_union_sql() . ' d
+        'SELECT code FROM ' . deduction_catalog_union_sql($pdo) . ' d
          WHERE d.is_active = 1 AND d.show_in_payroll = 1 ORDER BY d.id'
     );
 
@@ -237,7 +296,7 @@ function deduction_catalog_table_for_id(PDO $pdo, int $deductionId): ?string
     }
 
     $statement = $pdo->prepare(
-        'SELECT d.source_table FROM ' . deduction_catalog_union_sql() . ' d WHERE d.id = :id LIMIT 1'
+        'SELECT d.source_table FROM ' . deduction_catalog_union_sql($pdo) . ' d WHERE d.id = :id LIMIT 1'
     );
     $statement->execute([':id' => $deductionId]);
     $table = $statement->fetchColumn();
@@ -305,6 +364,11 @@ function deduction_catalog_resolve_type(PDO $pdo, string $categoryName, string $
     $familyKey = deduction_family_key_for_name($categoryName);
     $table = DEDUCTION_FAMILIES[$familyKey]['table'];
 
+    // PhilHealth and PHIC are the same contribution. Keep one catalog row for both labels.
+    if ($familyKey === 'phic' && in_array(strtolower($name), ['phic', 'philhealth', 'philhealth premium'], true)) {
+        $name = 'PHIC';
+    }
+
     $statement = $pdo->prepare("SELECT id FROM `{$table}` WHERE name = :name LIMIT 1");
     $statement->execute([':name' => $name]);
     $id = (int)$statement->fetchColumn();
@@ -320,7 +384,7 @@ function deduction_catalog_resolve_type(PDO $pdo, string $categoryName, string $
     $base = deduction_catalog_slug($name) ?: 'deduction';
     $code = $base;
     $exists = $pdo->prepare(
-        'SELECT COUNT(*) FROM ' . deduction_catalog_union_sql() . ' d WHERE d.code = :code'
+        'SELECT COUNT(*) FROM ' . deduction_catalog_union_sql($pdo) . ' d WHERE d.code = :code'
     );
     $exists->execute([':code' => $code]);
 
@@ -396,7 +460,7 @@ function deduction_catalog_types(PDO $pdo, array $filters = []): array
 
     // The union spares callers from having to know which family table a deduction lives in.
     $statement = $pdo->prepare(
-        'SELECT d.* FROM ' . deduction_catalog_union_sql() . ' d' . $whereSql . ' ORDER BY d.id'
+        'SELECT d.* FROM ' . deduction_catalog_union_sql($pdo) . ' d' . $whereSql . ' ORDER BY d.id'
     );
 
     if (!empty($filters['categoryCode'])) {

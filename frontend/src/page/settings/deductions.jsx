@@ -119,6 +119,30 @@ function StatusBadge({ active }) {
   );
 }
 
+const otherDeductionColumns = [
+  {
+    key: "type_name",
+    header: "Deduction Name",
+    headerClassName: "w-[30%]",
+    cardRole: "title",
+    render: (row) => <span className="font-semibold text-slate-900">{row.type_name || "Unnamed deduction"}</span>,
+  },
+  {
+    key: "description",
+    header: "Description",
+    headerClassName: "w-[45%]",
+    cardRole: "subtitle",
+    render: (row) => <span className="block break-words text-sm leading-5 text-slate-600">{row.description || "No description provided."}</span>,
+  },
+  {
+    key: "default_amount",
+    header: "Amount",
+    headerClassName: "w-[25%] text-right",
+    cellClassName: "text-right",
+    render: (row) => <span className="font-semibold tabular-nums text-slate-900">₱{formatDeductionAmount(row.default_amount)}</span>,
+  },
+];
+
 function buildDeductionColumns({ onView, onEdit, onToggleStatus, togglingDeductionId }) {
   return [
     {
@@ -320,7 +344,7 @@ export default function DeductionSettings({
               }
             >
               <Table
-                columns={columns}
+                columns={group.key === "other" ? otherDeductionColumns : columns}
                 data={groupDeductions}
                 rowKey="definitionKey"
                 emptyMessage={loading
@@ -330,7 +354,7 @@ export default function DeductionSettings({
                     : `No ${group.label} deductions found.`}
                 loading={loading}
                 tableClassName="table-fixed"
-                minWidthClassName="min-w-[900px]"
+                minWidthClassName={group.key === "other" ? "min-w-[480px]" : "min-w-[900px]"}
                 className="rounded-lg border border-slate-200"
                 cardsClassName="xl:hidden"
                 tableWrapperClassName="hidden xl:block"
@@ -535,6 +559,47 @@ export function DeductionModal({
   const isEditing = mode === "edit";
   const active = String(form.is_active ?? "1") === "1";
   const changeValue = (field, value) => onFieldChange?.(field)({ target: { value } });
+
+  if (groupKey === "other") {
+    return (
+      <Modal open={open} title={`${isEditing ? "Edit" : "Add"} ${groupLabel} Deduction`} onClose={onClose} maxWidth="max-w-xl">
+        <form className="grid gap-5" onSubmit={onSubmit}>
+          <InputField
+            label="Deduction Name"
+            name="type_name"
+            value={form.type_name}
+            onChange={onFieldChange?.("type_name")}
+            placeholder="Enter deduction name"
+            error={errors.type_name}
+          />
+          <div className="app-optional-field">
+            <label htmlFor="deductionDescription" className="mb-1.5 block text-sm font-semibold text-slate-700">Description</label>
+            <textarea
+              id="deductionDescription"
+              value={form.description}
+              onChange={onFieldChange?.("description")}
+              rows={3}
+              placeholder="Describe when this deduction is applied"
+              className="min-h-[96px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
+            />
+          </div>
+          <AffixedNumberField
+            id="deductionDefaultAmount"
+            label="Amount"
+            prefix="₱"
+            min="0"
+            step="0.01"
+            value={form.default_amount}
+            onChange={onFieldChange?.("default_amount")}
+            error={errors.default_amount}
+          />
+          <div className="flex justify-end border-t border-slate-200 pt-4">
+            <Button type="submit" loading={saving}>{isEditing ? "Update Deduction" : "Save Deduction"}</Button>
+          </div>
+        </form>
+      </Modal>
+    );
+  }
 
   return (
     <Modal

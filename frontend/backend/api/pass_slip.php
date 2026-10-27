@@ -473,6 +473,8 @@ function create_pass_slip(PDO $pdo, array $body, array $sessionUser): void
         ], 422);
     }
 
+    throttle_filing_request($pdo, $sessionUser);
+
     /*
      * Filed is live. There is no approval step, so a slip goes straight to ACTIVE and its QR code
      * works from this moment -- `approved_by` stays NULL, which is what leaves the "Approved by"

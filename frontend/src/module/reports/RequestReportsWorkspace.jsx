@@ -28,7 +28,6 @@ import { DATE_RANGE_OPTIONS, downloadBlob, localDateString } from "./reportsThem
  */
 
 const FILTERS = {
-  employeeId: { label: "Employee", optionsKey: "employees", placeholder: "All Employees" },
   divisionId: { label: "Division/Department", optionsKey: "divisions", placeholder: "All Divisions/Departments" },
   // The same four public statuses the leave reports filter on; open stages count as Pending.
   status: { label: "Status", optionsKey: "leaveStatuses", placeholder: "All Statuses" },
@@ -43,7 +42,7 @@ export const TRAVEL_REPORTS_CONFIG = {
       key: "travel-orders",
       label: "Travel Orders",
       description: "Every travel order with destination, purpose, travel dates, days away, and status.",
-      filters: ["dateRange", "employeeId", "divisionId", "status"],
+      filters: ["dateRange", "divisionId", "status"],
     },
   ],
   buildAnalytics: buildTravelReportAnalytics,
@@ -63,7 +62,7 @@ export const CTO_REPORTS_CONFIG = {
       key: "cto-requests",
       label: "CTO Requests",
       description: "CTO filings with covered dates, hours applied, credit balance at filing, unpaid hours, and status.",
-      filters: ["dateRange", "employeeId", "divisionId", "status"],
+      filters: ["dateRange", "divisionId", "status"],
     },
   ],
   buildAnalytics: buildCtoReportAnalytics,
@@ -89,7 +88,6 @@ export default function RequestReportsWorkspace({ user, config }) {
     dateRange: "thisyear",
     customStart: today,
     customEnd: today,
-    employeeId: "",
     divisionId: "",
     status: "",
   });
@@ -220,7 +218,7 @@ export default function RequestReportsWorkspace({ user, config }) {
   };
 
   const clearAll = () => {
-    setFilters((current) => ({ ...current, dateRange: "thisyear", employeeId: "", divisionId: "", status: "" }));
+    setFilters((current) => ({ ...current, dateRange: "thisyear", divisionId: "", status: "" }));
     setSearch("");
   };
 
@@ -349,7 +347,7 @@ export default function RequestReportsWorkspace({ user, config }) {
           </span>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {supportsDateRange ? (
             <div>
               <label htmlFor={`${category}-report-date-range`} className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Date Range</label>
@@ -381,7 +379,7 @@ export default function RequestReportsWorkspace({ user, config }) {
                   <option value="">{meta.placeholder}</option>
                   {(filterOptions[meta.optionsKey] || []).map((option) => (
                     <option key={option.value} value={option.value}>
-                      {key === "employeeId" && option.employeeNo ? `${option.employeeNo} — ${option.label}` : option.label}
+                      {option.label}
                     </option>
                   ))}
                 </select>

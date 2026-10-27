@@ -970,6 +970,8 @@ function create_travel_order(PDO $pdo, array $body, array $sessionUser): void
         ? travel_status_after_recommendation($pdo, $employeeId)
         : 'pending';
 
+    throttle_filing_request($pdo, $sessionUser);
+
     $statement = $pdo->prepare(
         'INSERT INTO travel_orders
             (employee_id, destination, purpose, start_date, end_date, assistance_labor, appropriations, remarks, recommended_by_employee_id, recommended_at, filed_by_employee_id, status)

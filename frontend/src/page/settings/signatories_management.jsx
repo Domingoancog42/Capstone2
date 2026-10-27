@@ -70,6 +70,7 @@ export default function SignatoriesManagement({ user }) {
 
   return (
     <SettingsPanel
+      className="app-optional-field"
       icon={FileSignature}
       title="Signatories Management"
       description="Control timestamps and e-signatures on filing forms for all users, including printed and downloaded copies."

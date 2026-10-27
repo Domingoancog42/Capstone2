@@ -752,6 +752,7 @@ function create_overtime(PDO $pdo, array $body, array $sessionUser): void
     $records = [];
 
     /* One filing, one row per employee — all of them land or none do. */
+    throttle_filing_request($pdo, $sessionUser);
     $pdo->beginTransaction();
 
     try {

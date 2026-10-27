@@ -16,7 +16,7 @@ declare(strict_types=1);
  *   passwordReset         reset-code submissions, keyed by account identifier
  *   passwordResetRequest  reset-code *requests*, keyed by account identifier — a separate budget
  *   twoFactor             one-time passcode submissions, keyed by IP address
- *   leaveRequest          leave filings, keyed by user id — a daily quota rather than an abuse guard
+ *   leaveRequest          all request filings, keyed by user id (legacy key retained for saved limits)
  *   api                   every authenticated request, keyed by user id (or IP before sign-in)
  *
  * Everything about this fails open. A missing table, a database error, an open transaction: the
@@ -59,10 +59,11 @@ function rate_limit_rule_definitions(): array
             'scope' => 'Per IP address and request type',
             'default' => ['enabled' => true, 'maxRequests' => 12, 'windowSeconds' => 600, 'blockSeconds' => 900],
         ],
+        // Keep the stored key so existing settings and active filing counters continue to apply.
         'leaveRequest' => [
-            'label' => 'Leave Request Limit',
-            'description' => 'How many leave requests one account may file per day. Set it to 50 and the fifty-first filing that day is refused until the allowance resets. Only a submission that passed validation is counted, so a form the employee got wrong does not spend the allowance.',
-            'scope' => 'Per signed-in account. Someone filing on behalf of others spends their own allowance.',
+            'label' => 'Request Filing Limit',
+            'description' => 'One shared allowance for filing leave requests, travel orders, CTO requests, pass slips, overtime requests, loan requests, and leave monetization. For example, a limit of 50 allows 50 combined filings across these modules during the selected period. Submissions rejected by form validation do not spend the allowance.',
+            'scope' => 'Per signed-in account, shared across all request modules. Filing on behalf of others spends the signed-in account\'s allowance.',
             /*
              * Presented as a plain "N requests per day" control rather than the burst-guard card the
              * other groups use. It is the same three stored numbers underneath -- the cool-down is

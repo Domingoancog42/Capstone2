@@ -19,7 +19,7 @@ declare(strict_types=1);
  *     throttle_password_reset_request()  reset-code requests, on its own budget
  *     throttle_two_factor()              one-time passcode submissions
  *     throttle_two_factor_resend()       replacement two-factor codes
- *     throttle_leave_request()           the daily filing quota
+ *     throttle_filing_request()          the shared request-filing quota
  *     throttle_request()                 the general ceiling, on every request
  *
  * Adding a throttle to an endpoint means calling one of these. Adding a *kind* of throttle means a
@@ -164,17 +164,22 @@ function throttle_two_factor_resend(PDO $pdo): void
 }
 
 /**
- * The daily leave-filing allowance. A quota rather than an abuse guard, which is why it is keyed by
- * the account doing the filing: somebody filing on behalf of others spends their own allowance.
+ * One filing allowance shared by all request modules. Count the account doing the filing, even
+ * when the employee on the form is somebody else. Call after validation and before any transaction
+ * or write, so invalid forms do not use the allowance and a refused filing cannot save a record.
  */
-function throttle_leave_request(PDO $pdo, array $user, string $identifier): void
+function throttle_filing_request(PDO $pdo, array $user): void
 {
+    $userId = (int)($user['id'] ?? 0);
+    $identifier = $userId > 0 ? 'user:' . $userId : 'ip:' . rate_limit_client_ip();
+
     throttle(
         $pdo,
+        // Retain the legacy rule key to preserve saved settings and existing counters.
         'leaveRequest',
         $identifier,
         $user,
-        'You have reached the limit for leave requests filed from this account.'
+        'You have reached the shared request filing limit for this account.'
     );
 }
 

@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Archive,
   Banknote,
-  Building2,
   CalendarDays,
   Check,
   Clock3,
@@ -322,31 +321,25 @@ function loanTerms(record) {
     principal: principalFor(record),
     rate: Number.isFinite(Number(record?.annualInterestRate)) ? Number(record.annualInterestRate) : product.rate,
     term: Number(record?.termMonths) || parseTermMonths(record?.repaymentTerms) || product.term,
-    method: record?.interestMethod === "diminishing" ? "diminishing" : (record?.interestMethod || product.method),
   };
 }
 
-function monthlyAmortization(principal, annualRate, termMonths, method) {
+function monthlyAmortization(principal, annualRate, termMonths) {
   if (principal <= 0 || termMonths <= 0) return 0;
-  if (method === "diminishing" && annualRate > 0) {
-    const monthlyRate = annualRate / 100 / 12;
-    const factor = (1 + monthlyRate) ** termMonths;
-    return principal * monthlyRate * factor / (factor - 1);
-  }
   const totalInterest = principal * (annualRate / 100) * (termMonths / 12);
   return (principal + totalInterest) / termMonths;
 }
 
 function loanFinancials(record) {
-  const { principal, rate, term, method } = loanTerms(record);
+  const { principal, rate, term } = loanTerms(record);
   const monthly = Number(record?.monthlyAmortization)
-    || monthlyAmortization(principal, rate, term, method);
+    || monthlyAmortization(principal, rate, term);
   const totalPayable = Number(record?.totalPayable) || monthly * term || principal;
   const paid = Number(record?.paidAmount)
     || (record?.payments || []).reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
   const outstanding = Math.max(0, Number(record?.outstandingAmount ?? totalPayable - paid));
   const paidInstallments = Math.min(term, Math.floor((paid + 0.01) / Math.max(monthly, 0.01)));
-  return { principal, rate, term, method, monthly, totalPayable, paid, outstanding, paidInstallments };
+  return { principal, rate, term, monthly, totalPayable, paid, outstanding, paidInstallments };
 }
 
 function displayStatus(record) {
@@ -368,21 +361,18 @@ function emptyForm() {
     loanAmount: "",
     annualInterestRate: "",
     termMonths: "",
-    interestMethod: "flat",
-    governmentReferenceNumber: "",
     purpose: "",
     dateFiled: todayInputValue(),
   };
 }
 
-/** The form fields a loan type fills in: its name and its default rate, term and interest method. */
+/** The form fields a loan type fills in: its name and default rate and term. */
 function productFormFields(product) {
   return {
     productId: product.id,
     loanType: product.name,
     annualInterestRate: String(product.rate),
     termMonths: String(product.term),
-    interestMethod: product.method,
   };
 }
 
@@ -399,8 +389,6 @@ function formFromRecord(record, configuredProducts = []) {
     loanAmount: String(terms.principal || ""),
     annualInterestRate: String(terms.rate),
     termMonths: String(terms.term),
-    interestMethod: terms.method,
-    governmentReferenceNumber: record?.governmentReferenceNumber || "",
     purpose: record?.purpose || "",
     dateFiled: String(record?.dateFiled || todayInputValue()).slice(0, 10),
   };
@@ -429,7 +417,7 @@ function installmentStatus(row, isNextInstallment, collection) {
 }
 
 function repaymentSchedule(record) {
-  const { principal, rate, term, method, monthly, totalPayable } = loanFinancials(record);
+  const { principal, rate, term, monthly, totalPayable } = loanFinancials(record);
   const paymentsByInstallment = (record?.payments || []).reduce((map, payment) => {
     const number = Number(payment.installmentNumber);
     if (!map[number]) map[number] = [];
@@ -442,10 +430,8 @@ function repaymentSchedule(record) {
 
   const rows = Array.from({ length: term }, (_, index) => {
     const installmentNumber = index + 1;
-    const interest = method === "diminishing"
-      ? scheduledBalance * (rate / 100 / 12)
-      : principal * (rate / 100 / 12);
-    const scheduledPrincipal = method === "diminishing" ? Math.max(0, monthly - interest) : principal / term;
+    const interest = principal * (rate / 100 / 12);
+    const scheduledPrincipal = principal / term;
     const principalDue = installmentNumber === term ? scheduledBalance : Math.min(scheduledBalance, scheduledPrincipal);
     scheduledBalance = Math.max(0, scheduledBalance - principalDue);
     const amountDue = installmentNumber === term
@@ -609,7 +595,6 @@ export default function FileLoan({
     return records.filter((record) => {
       const matchesSearch = !search || [
         loanNumber(record),
-        record.governmentReferenceNumber,
         record.employeeName,
         record.employeeId,
         record.loanType,
@@ -738,8 +723,6 @@ export default function FileLoan({
       loanAmounts: { [formLoanType]: amount },
       repaymentTerms: `${term} months`,
       annualInterestRate: rate,
-      interestMethod: form.interestMethod,
-      governmentReferenceNumber: editingRecord ? form.governmentReferenceNumber.trim() : undefined,
       purpose: form.purpose.trim(),
       dateFiled: editingRecord ? (form.dateFiled || todayInputValue()) : undefined,
     };
@@ -888,8 +871,7 @@ export default function FileLoan({
   const formMonthly = monthlyAmortization(
     Number(form.loanAmount) || 0,
     Number(form.annualInterestRate) || 0,
-    Number(form.termMonths) || 0,
-    form.interestMethod
+    Number(form.termMonths) || 0
   );
   const viewProduct = productForType(viewingRecord?.loanType);
   const viewFinances = viewingRecord ? loanFinancials(viewingRecord) : null;
@@ -1135,11 +1117,6 @@ export default function FileLoan({
             </div>
           ) : null}
 
-          {editingRecord ? (
-            <Field label="Reference Number">
-              <input value={form.governmentReferenceNumber} onChange={(event) => setForm((current) => ({ ...current, governmentReferenceNumber: event.target.value }))} placeholder="MGB Coop loan reference no." maxLength={180} className={inputClass} />
-            </Field>
-          ) : null}
           <Field label="Purpose">
             <textarea value={form.purpose} onChange={(event) => setForm((current) => ({ ...current, purpose: event.target.value }))} placeholder="Reason for the loan..." rows={3} maxLength={2000} className={`${inputClass} py-2.5`} />
           </Field>
@@ -1236,10 +1213,6 @@ export default function FileLoan({
                 <span className="block text-xs font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300">Review Notes</span>
                 <p className="m-0 mt-1 text-sm text-amber-900 dark:text-amber-100">{viewingRecord.approvalRemarks}</p>
               </section>
-            ) : null}
-
-            {viewingRecord.governmentReferenceNumber ? (
-              <div className="flex items-center gap-2 border-b border-slate-200 pb-3 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300"><Building2 size={16} /> <span>Reference:</span> <strong>{viewingRecord.governmentReferenceNumber}</strong></div>
             ) : null}
 
             <section>

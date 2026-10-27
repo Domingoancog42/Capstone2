@@ -750,6 +750,8 @@ function create_leave_monetization(PDO $pdo, array $body, array $sessionUser): v
         && $sessionEmployeeId !== null && $employeeId === $sessionEmployeeId;
     $initialStatus = $isRegionalDirectorOwnRequest ? 'approved' : ($isHrStaffOwnRequest ? 'endorsed' : 'pending');
 
+    throttle_filing_request($pdo, $sessionUser);
+
     $pdo->beginTransaction();
 
     try {

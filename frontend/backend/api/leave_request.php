@@ -1520,19 +1520,6 @@ function resolve_leave_type_id(PDO $pdo, string $leaveType): int
     return (int)$id;
 }
 
-/**
- * The bucket a filing is counted against for the `leaveRequest` limit: the account doing the filing,
- * or the caller's address in the impossible case of a session without a user id. Keyed by account
- * rather than by the employee named on the form, because the quota exists to cap what one signed-in
- * person can push into the approval queue.
- */
-function leave_rate_limit_identifier(array $sessionUser): string
-{
-    $userId = (int)($sessionUser['id'] ?? 0);
-
-    return $userId > 0 ? 'user:' . $userId : 'ip:' . rate_limit_client_ip();
-}
-
 function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array $attachmentUpload = null): void
 {
     $employeeId = resolve_employee_id($pdo, $body, $sessionUser);
@@ -1714,7 +1701,7 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
      * upload behind, and before the transaction opens, because the limiter declines to count anything
      * while one is in progress.
      */
-    throttle_leave_request($pdo, $sessionUser, leave_rate_limit_identifier($sessionUser));
+    throttle_filing_request($pdo, $sessionUser);
 
     $attachmentName = leave_text($body['attachmentName'] ?? '');
     $attachmentPath = leave_text($body['attachmentPath'] ?? $attachmentName);

@@ -1316,13 +1316,18 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
 
     setDeductionSaving(true);
     try {
+      const definitionFields = group.key === "other" ? {
+        type_name: deductionDefinitionForm.type_name,
+        description: deductionDefinitionForm.description,
+        default_amount: deductionDefinitionForm.default_amount,
+      } : deductionDefinitionForm;
       const payload = {
         action: "definition_type",
         groupKey: group.key,
-        ...deductionDefinitionForm,
+        ...definitionFields,
         type_name: deductionDefinitionForm.type_name.trim(),
         description: deductionDefinitionForm.description.trim(),
-        threshold_rules: deductionDefinitionForm.threshold_rules.trim(),
+        ...(group.key !== "other" ? { threshold_rules: deductionDefinitionForm.threshold_rules.trim() } : {}),
       };
       if (editingDeduction?.id) {
         await updateDeductionType({

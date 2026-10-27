@@ -23,13 +23,6 @@ function loan_decimal(mixed $value): float
     return round((float)$value, 2);
 }
 
-function loan_interest_method(mixed $value): string
-{
-    $method = strtolower(loan_text($value));
-
-    return in_array($method, ['flat', 'diminishing'], true) ? $method : 'flat';
-}
-
 function loan_term_months(mixed $value): int
 {
     $text = loan_text($value);
@@ -41,30 +34,20 @@ function loan_term_months(mixed $value): int
     return max(0, min(360, (int)$matches[1]));
 }
 
-function loan_monthly_amortization(float $principal, float $annualRate, int $termMonths, string $method): float
+function loan_monthly_amortization(float $principal, float $annualRate, int $termMonths): float
 {
     if ($principal <= 0 || $termMonths <= 0) {
         return 0.0;
-    }
-
-    if ($method === 'diminishing' && $annualRate > 0) {
-        $monthlyRate = ($annualRate / 100) / 12;
-        $factor = pow(1 + $monthlyRate, $termMonths);
-        return round($principal * $monthlyRate * $factor / ($factor - 1), 2);
     }
 
     $interest = $principal * ($annualRate / 100) * ($termMonths / 12);
     return round(($principal + $interest) / $termMonths, 2);
 }
 
-function loan_total_payable(float $principal, float $annualRate, int $termMonths, string $method): float
+function loan_total_payable(float $principal, float $annualRate, int $termMonths): float
 {
     if ($principal <= 0 || $termMonths <= 0) {
         return round(max(0, $principal), 2);
-    }
-
-    if ($method === 'diminishing') {
-        return round(loan_monthly_amortization($principal, $annualRate, $termMonths, $method) * $termMonths, 2);
     }
 
     return round($principal + ($principal * ($annualRate / 100) * ($termMonths / 12)), 2);
@@ -253,8 +236,6 @@ function ensure_loan_request_tables(PDO $pdo): void
 
     $columns = [
         'annual_interest_rate' => 'DECIMAL(7,4) NOT NULL DEFAULT 0.0000 AFTER repayment_terms',
-        'interest_method' => 'VARCHAR(20) NOT NULL DEFAULT "flat" AFTER annual_interest_rate',
-        'government_reference_number' => 'VARCHAR(180) NULL AFTER purpose',
         'disbursed_at' => 'DATE NULL AFTER date_filed',
         'approval_remarks' => 'TEXT NULL AFTER status',
         'approved_by_user_id' => 'INT UNSIGNED NULL AFTER approval_remarks',
@@ -442,9 +423,7 @@ function loan_base_select(): string
             lr.loan_amount AS loanAmount,
             lr.repayment_terms AS repaymentTerms,
             lr.annual_interest_rate AS annualInterestRate,
-            lr.interest_method AS interestMethod,
             lr.purpose,
-            lr.government_reference_number AS governmentReferenceNumber,
             lr.date_filed AS dateFiled,
             DATE_FORMAT(lr.date_filed, "%M %e, %Y") AS dateFiledDisplay,
             lr.disbursed_at AS disbursedAt,
@@ -501,19 +480,16 @@ function loan_normalize_record(array $record): array
     $record['employeeRecordId'] = (int)$record['employeeRecordId'];
     $record['loanAmount'] = loan_decimal($record['loanAmount'] ?? 0);
     $record['annualInterestRate'] = round((float)($record['annualInterestRate'] ?? 0), 4);
-    $record['interestMethod'] = loan_interest_method($record['interestMethod'] ?? 'flat');
     $record['termMonths'] = loan_term_months($record['repaymentTerms'] ?? '');
     $record['monthlyAmortization'] = loan_monthly_amortization(
         $record['loanAmount'],
         $record['annualInterestRate'],
-        $record['termMonths'],
-        $record['interestMethod']
+        $record['termMonths']
     );
     $record['totalPayable'] = loan_total_payable(
         $record['loanAmount'],
         $record['annualInterestRate'],
-        $record['termMonths'],
-        $record['interestMethod']
+        $record['termMonths']
     );
     $record['paymentCount'] = (int)($record['paymentCount'] ?? 0);
     $record['paidAmount'] = loan_decimal($record['paidAmount'] ?? 0);
@@ -741,12 +717,12 @@ function create_loan_request(PDO $pdo, array $body, array $sessionUser): void
     $amount = loan_total_amount($amounts);
     $repaymentTerms = loan_text($body['repaymentTerms'] ?? $body['repayment_terms'] ?? '');
     $annualInterestRate = loan_decimal($body['annualInterestRate'] ?? $body['annual_interest_rate'] ?? 0);
-    $interestMethod = loan_interest_method($body['interestMethod'] ?? $body['interest_method'] ?? 'flat');
     $purpose = loan_text($body['purpose'] ?? '');
-    $governmentReferenceNumber = loan_text($body['governmentReferenceNumber'] ?? $body['government_reference_number'] ?? '');
     $dateFiled = loan_date_or_null($body['dateFiled'] ?? $body['date_filed'] ?? date('Y-m-d'));
 
     validate_loan_payload($amounts, $repaymentTerms, $dateFiled, $annualInterestRate);
+
+    throttle_filing_request($pdo, $sessionUser);
 
     try {
         $pdo->beginTransaction();
@@ -754,11 +730,11 @@ function create_loan_request(PDO $pdo, array $body, array $sessionUser): void
         $statement = $pdo->prepare(
             'INSERT INTO loan_records
                 (employee_id, loan_type, loan_amount, repayment_terms, annual_interest_rate,
-                 interest_method, purpose, government_reference_number, date_filed, status,
+                 purpose, date_filed, status,
                  created_by_user_id, updated_by_user_id)
              VALUES
                 (:employee_id, :loan_type, :loan_amount, :repayment_terms, :annual_interest_rate,
-                 :interest_method, :purpose, :government_reference_number, :date_filed, "Pending",
+                 :purpose, :date_filed, "Pending",
                  :created_by_user_id, :updated_by_user_id)'
         );
         $statement->execute([
@@ -767,9 +743,7 @@ function create_loan_request(PDO $pdo, array $body, array $sessionUser): void
             ':loan_amount' => number_format($amount, 2, '.', ''),
             ':repayment_terms' => $repaymentTerms,
             ':annual_interest_rate' => number_format($annualInterestRate, 4, '.', ''),
-            ':interest_method' => $interestMethod,
             ':purpose' => $purpose !== '' ? $purpose : null,
-            ':government_reference_number' => $governmentReferenceNumber !== '' ? $governmentReferenceNumber : null,
             ':date_filed' => $dateFiled,
             ':created_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
             ':updated_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
@@ -842,13 +816,7 @@ function update_loan_request(PDO $pdo, array $body, array $sessionUser): void
     $amount = loan_total_amount($amounts);
     $repaymentTerms = loan_text($body['repaymentTerms'] ?? $body['repayment_terms'] ?? $existing['repaymentTerms']);
     $annualInterestRate = loan_decimal($body['annualInterestRate'] ?? $body['annual_interest_rate'] ?? $existing['annualInterestRate']);
-    $interestMethod = loan_interest_method($body['interestMethod'] ?? $body['interest_method'] ?? $existing['interestMethod']);
     $purpose = loan_text($body['purpose'] ?? $existing['purpose']);
-    $governmentReferenceNumber = loan_text(
-        $body['governmentReferenceNumber']
-        ?? $body['government_reference_number']
-        ?? $existing['governmentReferenceNumber']
-    );
     $dateFiled = loan_date_or_null($body['dateFiled'] ?? $body['date_filed'] ?? $existing['dateFiled']);
 
     validate_loan_payload($amounts, $repaymentTerms, $dateFiled, $annualInterestRate);
@@ -863,9 +831,7 @@ function update_loan_request(PDO $pdo, array $body, array $sessionUser): void
                  loan_amount = :loan_amount,
                  repayment_terms = :repayment_terms,
                  annual_interest_rate = :annual_interest_rate,
-                 interest_method = :interest_method,
                  purpose = :purpose,
-                 government_reference_number = :government_reference_number,
                  date_filed = :date_filed,
                  updated_by_user_id = :updated_by_user_id
              WHERE id = :id'
@@ -876,9 +842,7 @@ function update_loan_request(PDO $pdo, array $body, array $sessionUser): void
             ':loan_amount' => number_format($amount, 2, '.', ''),
             ':repayment_terms' => $repaymentTerms,
             ':annual_interest_rate' => number_format($annualInterestRate, 4, '.', ''),
-            ':interest_method' => $interestMethod,
             ':purpose' => $purpose !== '' ? $purpose : null,
-            ':government_reference_number' => $governmentReferenceNumber !== '' ? $governmentReferenceNumber : null,
             ':date_filed' => $dateFiled,
             ':updated_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
             ':id' => $id,

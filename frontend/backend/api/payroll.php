@@ -633,8 +633,6 @@ function payroll_ensure_loan_tracking_schema(PDO $pdo): void
 
     $columns = [
         'annual_interest_rate' => 'DECIMAL(7,4) NOT NULL DEFAULT 0.0000 AFTER repayment_terms',
-        'interest_method' => 'VARCHAR(20) NOT NULL DEFAULT "flat" AFTER annual_interest_rate',
-        'government_reference_number' => 'VARCHAR(180) NULL AFTER purpose',
         'disbursed_at' => 'DATE NULL AFTER date_filed',
     ];
 
@@ -669,16 +667,10 @@ function payroll_ensure_loan_tracking_schema(PDO $pdo): void
     $ensured = true;
 }
 
-function payroll_loan_monthly_amount(float $principal, float $annualRate, int $months, string $method): float
+function payroll_loan_monthly_amount(float $principal, float $annualRate, int $months): float
 {
     if ($principal <= 0 || $months <= 0) {
         return 0.0;
-    }
-
-    if ($method === 'diminishing' && $annualRate > 0) {
-        $monthlyRate = ($annualRate / 100) / 12;
-        $factor = pow(1 + $monthlyRate, $months);
-        return round($principal * $monthlyRate * $factor / ($factor - 1), 2);
     }
 
     return round(($principal + ($principal * ($annualRate / 100) * ($months / 12))) / $months, 2);
@@ -747,7 +739,6 @@ function payroll_seed_deduction_engine_defaults(PDO $pdo): void
         ['Pag-IBIG', 'HDMF', 'fixed', 200.00, 0.0000, 'basic_salary', 1, 1],
         ['Pag-IBIG', 'Pag-IBIG', 'fixed', 200.00, 0.0000, 'basic_salary', 1, 0],
         ['PHIC', 'PHIC', 'percentage', 0.00, 2.5000, 'basic_salary', 1, 1],
-        ['PHIC', 'PhilHealth', 'percentage', 0.00, 2.5000, 'basic_salary', 1, 0],
         ['Attendance Deductions', 'Late Deduction', 'fixed', 0.00, 0.0000, 'basic_salary', 0, 1],
         ['Attendance Deductions', 'Absence Deduction', 'fixed', 0.00, 0.0000, 'basic_salary', 0, 1],
         ['Attendance Deductions', 'Undertime Deduction', 'fixed', 0.00, 0.0000, 'basic_salary', 0, 1],
@@ -794,6 +785,15 @@ function payroll_seed_deduction_engine_defaults(PDO $pdo): void
         $table = deduction_catalog_table_for_id($pdo, $deductionTypeId);
 
         if ($table === null) {
+            continue;
+        }
+
+        if ($table === DEDUCTION_FAMILIES['other']['table']) {
+            // Other deductions have a fixed amount and retain their existing payroll metadata.
+            deduction_catalog_update_fields($pdo, $table, $deductionTypeId, [
+                'is_recurring' => (int)$isRecurring,
+                'is_active' => (int)$isActive,
+            ]);
             continue;
         }
 
@@ -1171,7 +1171,7 @@ function payroll_fetch_global_recurring_deduction_rows(PDO $pdo, array $excluded
             dt.threshold_rules AS thresholdRules,
             "monthly" AS frequency,
             "global" AS source
-         FROM ' . deduction_catalog_type_union_sql() . ' dt
+         FROM ' . deduction_catalog_type_union_sql($pdo) . ' dt
          WHERE COALESCE(dt.is_active, 1) = 1
            AND COALESCE(dt.is_recurring, 0) = 1
          ORDER BY dt.deduction_type_id ASC'
@@ -1247,7 +1247,6 @@ function payroll_fetch_approved_loan_deduction_items(
             lr.loan_amount AS loanAmount,
             lr.repayment_terms AS repaymentTerms,
             lr.annual_interest_rate AS annualInterestRate,
-            lr.interest_method AS interestMethod,
             lr.date_filed AS dateFiled,
             lr.disbursed_at AS disbursedAt,
             COALESCE(payment_summary.paidAmount, 0) AS paidAmount
@@ -1283,10 +1282,7 @@ function payroll_fetch_approved_loan_deduction_items(
 
         $principal = payroll_decimal($loan['loanAmount'] ?? 0);
         $annualRate = payroll_decimal($loan['annualInterestRate'] ?? 0);
-        $interestMethod = strtolower(payroll_text($loan['interestMethod'] ?? 'flat')) === 'diminishing'
-            ? 'diminishing'
-            : 'flat';
-        $monthlyAmount = payroll_loan_monthly_amount($principal, $annualRate, $months, $interestMethod);
+        $monthlyAmount = payroll_loan_monthly_amount($principal, $annualRate, $months);
         $totalPayable = round($monthlyAmount * $months, 2);
         $paidAmount = payroll_decimal($loan['paidAmount'] ?? 0);
         $outstanding = max(0.0, $totalPayable - $paidAmount);

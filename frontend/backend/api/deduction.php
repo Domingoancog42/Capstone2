@@ -325,9 +325,11 @@ function deduction_resolve_type(PDO $pdo, string $categoryName, string $deductio
 
     if ($defaultAmount > 0 && $table !== null) {
         // Only seeds an amount that has not been set; never overwrites what an admin configured.
+        $amountColumn = $table === DEDUCTION_FAMILIES['other']['table']
+            ? deduction_catalog_other_amount_column($pdo) : 'default_amount';
         $update = $pdo->prepare(
-            "UPDATE `{$table}` SET default_amount = :default_amount
-             WHERE id = :id AND COALESCE(default_amount, 0.00) = 0.00"
+            "UPDATE `{$table}` SET `{$amountColumn}` = :default_amount
+             WHERE id = :id AND COALESCE(`{$amountColumn}`, 0.00) = 0.00"
         );
         $update->execute([
             ':default_amount' => deduction_decimal_string($defaultAmount),
@@ -483,7 +485,7 @@ function deduction_list_types(PDO $pdo, ?int $categoryId = null): array
             d.is_active AS isActive,
             d.show_in_payroll AS showInPayroll,
             0 AS usageCount
-         FROM ' . deduction_catalog_union_sql() . ' d
+         FROM ' . deduction_catalog_union_sql($pdo) . ' d
          ' . $where . '
          ORDER BY d.id'
     );
@@ -557,11 +559,16 @@ function deduction_list_definition_types(PDO $pdo, string $groupKey = ''): array
     );
 }
 
-function deduction_definition_payload(array $body): array
+function deduction_definition_payload(array $body, bool $amountOnly = false): array
 {
+    if ($amountOnly) {
+        $body = array_intersect_key($body, array_flip([
+            'type_name', 'typeName', 'deductionName', 'name', 'description', 'default_amount', 'defaultAmount', 'amount',
+        ]));
+    }
     $typeName = deduction_text($body['type_name'] ?? $body['typeName'] ?? $body['deductionName'] ?? $body['name'] ?? '');
     $description = deduction_text($body['description'] ?? '');
-    $defaultAmount = deduction_decimal($body['default_amount'] ?? $body['defaultAmount'] ?? 0, 'Default amount');
+    $defaultAmount = deduction_decimal($body['default_amount'] ?? $body['defaultAmount'] ?? $body['amount'] ?? 0, 'Amount');
     $thresholdAmount = deduction_decimal($body['threshold_amount'] ?? $body['thresholdAmount'] ?? 0, 'Threshold amount');
     $thresholdMode = strtolower(deduction_text($body['threshold_mode'] ?? $body['thresholdMode'] ?? 'fixed'));
     $thresholdRules = deduction_text($body['threshold_rules'] ?? $body['thresholdRules'] ?? '');
@@ -639,7 +646,7 @@ function deduction_definition_payload(array $body): array
 function deduction_create_definition_type(PDO $pdo, array $body): void
 {
     $group = deduction_definition_group((string)($body['groupKey'] ?? $body['group_key'] ?? ''));
-    $payload = deduction_definition_payload($body);
+    $payload = deduction_definition_payload($body, $group['key'] === 'other');
 
     // `deduction_catalog_resolve_type` is find-or-create, so editing an existing deduction and
     // adding a new one both land here and neither can produce a duplicate.
@@ -654,32 +661,17 @@ function deduction_create_definition_type(PDO $pdo, array $body): void
         ], 500);
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$table}`
-         SET description = :description,
-             calculation_type = :calculation_type,
-             default_amount = :default_amount,
-             default_rate = :default_rate,
-             threshold_amount = :threshold_amount,
-             threshold_rules = :threshold_rules,
-             base_floor = :base_floor,
-             base_cap = :base_cap,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-
-    $statement->execute([
-        ':description' => $payload['description'] !== '' ? $payload['description'] : null,
+    deduction_catalog_update_fields($pdo, $table, $typeId, [
+        'description' => $payload['description'] !== '' ? $payload['description'] : null,
         // `is_percentage` was a second source of truth for the same fact. The mode decides.
-        ':calculation_type' => $payload['thresholdMode'],
-        ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-        ':default_rate' => deduction_rate_string($payload['defaultRate']),
-        ':threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
-        ':threshold_rules' => $payload['thresholdRules'],
-        ':base_floor' => deduction_decimal_string($payload['baseFloor']),
-        ':base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
-        ':is_active' => $payload['isActive'] ? 1 : 0,
-        ':id' => $typeId,
+        'calculation_type' => $payload['thresholdMode'],
+        'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+        'default_rate' => deduction_rate_string($payload['defaultRate']),
+        'threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
+        'threshold_rules' => $payload['thresholdRules'],
+        'base_floor' => deduction_decimal_string($payload['baseFloor']),
+        'base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
+        ...($table === DEDUCTION_FAMILIES['other']['table'] ? [] : ['is_active' => $payload['isActive'] ? 1 : 0]),
     ]);
 
     json_response([
@@ -710,7 +702,7 @@ function deduction_update_definition_type(PDO $pdo, array $body): void
         ], 404);
     }
 
-    $payload = deduction_definition_payload($body);
+    $payload = deduction_definition_payload($body, $table === DEDUCTION_FAMILIES['other']['table']);
 
     if ($payload['typeName'] === '') {
         json_response([
@@ -730,33 +722,17 @@ function deduction_update_definition_type(PDO $pdo, array $body): void
         ], 422);
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$table}`
-         SET name = :name,
-             description = :description,
-             calculation_type = :calculation_type,
-             default_amount = :default_amount,
-             default_rate = :default_rate,
-             threshold_amount = :threshold_amount,
-             threshold_rules = :threshold_rules,
-             base_floor = :base_floor,
-             base_cap = :base_cap,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-
-    $statement->execute([
-        ':name' => $payload['typeName'],
-        ':description' => $payload['description'] !== '' ? $payload['description'] : null,
-        ':calculation_type' => $payload['thresholdMode'],
-        ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-        ':default_rate' => deduction_rate_string($payload['defaultRate']),
-        ':threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
-        ':threshold_rules' => $payload['thresholdRules'],
-        ':base_floor' => deduction_decimal_string($payload['baseFloor']),
-        ':base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
-        ':is_active' => $payload['isActive'] ? 1 : 0,
-        ':id' => $typeId,
+    deduction_catalog_update_fields($pdo, $table, $typeId, [
+        'name' => $payload['typeName'],
+        'description' => $payload['description'] !== '' ? $payload['description'] : null,
+        'calculation_type' => $payload['thresholdMode'],
+        'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+        'default_rate' => deduction_rate_string($payload['defaultRate']),
+        'threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
+        'threshold_rules' => $payload['thresholdRules'],
+        'base_floor' => deduction_decimal_string($payload['baseFloor']),
+        'base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
+        ...($table === DEDUCTION_FAMILIES['other']['table'] ? [] : ['is_active' => $payload['isActive'] ? 1 : 0]),
     ]);
 
     json_response([
@@ -950,24 +926,13 @@ function deduction_create_type(PDO $pdo, array $body): void
         ], 500);
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$table}`
-         SET default_amount = :default_amount,
-             calculation_type = :calculation_type,
-             default_rate = :default_rate,
-             basis = :basis,
-             is_recurring = :is_recurring,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-    $statement->execute([
-        ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-        ':calculation_type' => $payload['calculationType'],
-        ':default_rate' => deduction_rate_string($payload['defaultRate']),
-        ':basis' => $payload['basis'],
-        ':is_recurring' => $payload['isRecurring'] ? 1 : 0,
-        ':is_active' => $payload['isActive'] ? 1 : 0,
-        ':id' => $deductionTypeId,
+    deduction_catalog_update_fields($pdo, $table, $deductionTypeId, [
+        'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+        'calculation_type' => $payload['calculationType'],
+        'default_rate' => deduction_rate_string($payload['defaultRate']),
+        'basis' => $payload['basis'],
+        'is_recurring' => $payload['isRecurring'] ? 1 : 0,
+        'is_active' => $payload['isActive'] ? 1 : 0,
     ]);
 
     json_response([
@@ -1016,28 +981,15 @@ function deduction_update_type(PDO $pdo, array $body): void
         }
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$currentTable}`
-         SET name = :name,
-             default_amount = :default_amount,
-             calculation_type = :calculation_type,
-             default_rate = :default_rate,
-             basis = :basis,
-             is_recurring = :is_recurring,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-
     try {
-        $statement->execute([
-            ':name' => $payload['deductionName'],
-            ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-            ':calculation_type' => $payload['calculationType'],
-            ':default_rate' => deduction_rate_string($payload['defaultRate']),
-            ':basis' => $payload['basis'],
-            ':is_recurring' => $payload['isRecurring'] ? 1 : 0,
-            ':is_active' => $payload['isActive'] ? 1 : 0,
-            ':id' => $deductionTypeId,
+        deduction_catalog_update_fields($pdo, $currentTable, $deductionTypeId, [
+            'name' => $payload['deductionName'],
+            'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+            'calculation_type' => $payload['calculationType'],
+            'default_rate' => deduction_rate_string($payload['defaultRate']),
+            'basis' => $payload['basis'],
+            'is_recurring' => $payload['isRecurring'] ? 1 : 0,
+            'is_active' => $payload['isActive'] ? 1 : 0,
         ]);
     } catch (PDOException $exception) {
         if ($exception->getCode() === '23000') {
