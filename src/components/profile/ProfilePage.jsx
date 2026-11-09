@@ -1,26 +1,30 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   BadgeCheck,
+  BookOpenCheck,
   Briefcase,
-  FolderOpen,
   GraduationCap,
+  History,
   IdCard,
   LifeBuoy,
   LoaderCircle,
   MapPin,
   PenLine,
-  ScrollText,
   ShieldCheck,
   UserRound,
   UsersRound,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
+import Swal from "sweetalert2";
+import "sweetalert2/dist/sweetalert2.min.css";
+import { registerNavigationGuard } from "../../utils/navigationGuard";
 import {
   getEmployeeOptions,
   getEmployees,
   getEmployeeSignature,
+  fetchServiceRecord,
   getTwoFactorProfile,
   getUsers,
   checkPasswordExpiry,
@@ -32,21 +36,21 @@ import {
 import { useAutoRefreshOnChange } from "../auto/autorefreshdatalist";
 import {
   fetchProfileEditRequestStatus,
-  markProfileEditUsed,
   requestProfileEdit,
 } from "../../services/profileEditRequestService";
 import ProfileFloatingCard from "./ProfileFloatingCard";
 import ProfileHeaderCard from "./ProfileHeaderCard";
 import ProfileImageModal from "./ProfileImageModal";
+import SalaryGradeHistory, { getCurrentSalaryGradeRecord } from "./SalaryGradeHistory";
 import ProfileSectionNav from "./ProfileSectionNav";
 import {
   buildEmployeePayload,
-  buildUpdatedSessionUserFromProfile,
   buildUpdatedSessionUser,
   consumeRequestedProfileTab,
   extractProfileExtras,
   findEmployeeForUser,
   getProfileStorageKey,
+  isRegularEmploymentStatus,
   isProfileDialogId,
   isProfileSectionId,
   isProfileTabId,
@@ -57,14 +61,17 @@ import {
   readProfileExtras,
   writeProfileExtras,
 } from "./profileUtils";
-import { normalizeRole, resolveUserRoleKey } from "../../utils/roleRoutes";
+import { resolveUserRoleKey } from "../../utils/roleRoutes";
+import {
+  formatGovernmentId,
+  GOVERNMENT_ID_FORMATS,
+  validateGovernmentId,
+} from "../../utils/governmentId";
 import PersonalDetailsSection from "./sections/PersonalDetailsSection";
 import AddressSection from "./sections/AddressSection";
 import GovernmentIdsSection from "./sections/GovernmentIdsSection";
 import EmploymentStatusSection from "./sections/EmploymentStatusSection";
-import ServiceRecordSection from "./sections/ServiceRecordSection";
 import EmergencyContactSection from "./sections/EmergencyContactSection";
-import DocumentsSection from "./sections/DocumentsSection";
 import SignatureSection from "./sections/SignatureSection";
 import SecuritySection from "./sections/SecuritySection";
 import PasswordChangeSection from "./sections/PasswordChangeSection";
@@ -72,35 +79,39 @@ import ProfileEmailChangeSection from "./sections/ProfileEmailChangeSection";
 import { downloadPersonalDataSheet } from "../../services/personalDataSheetService";
 import FamilyBackgroundSection from "./sections/FamilyBackgroundSection";
 import EducationalBackgroundSection from "./sections/EducationalBackgroundSection";
+import PdsRecordsSection from "./sections/PdsRecordsSection";
 import {
+  createEmptyPdsEligibility,
   createEmptyPdsProfile,
+  createEmptyPdsTraining,
   getPdsProfile,
+  pdsRecordLimits,
   savePdsEducation,
+  savePdsEligibility,
   savePdsFamily,
+  savePdsTraining,
+  validatePdsRecords,
 } from "../../services/pdsProfileService";
 
 /*
- * The PSGC address lists. They used to sit in `public/` and be fetched over HTTP at runtime; they
- * now live in `src/data/` and are compiled in, so they are present the moment this module loads and
- * there is no request to fail or 404. The trade is size -- barangay.json alone is 4.8 MB and it is
- * carried in the main bundle whether or not anyone opens this page.
+ * The PSGC address lists, compiled in from `src/data/`, with the addresses added in Settings > Add
+ * Address laid over them -- see utils/addressDirectory.js.
  */
-import barangayData from "../../data/philippines-addresses/barangay.json";
-import cityData from "../../data/philippines-addresses/city.json";
-import provinceData from "../../data/philippines-addresses/province.json";
-import regionData from "../../data/philippines-addresses/region.json";
+import useAddressDirectory from "../../hooks/useAddressDirectory";
 
 function clearSectionErrors(section, previousErrors) {
   const keysBySection = {
     personal: ["firstName", "middleName", "lastName", "suffix", "dateOfBirth", "gender", "civilStatus", "nationality", "phone"],
     address: ["regionCode", "provinceCode", "cityCode", "barangayCode", "address", "zipCode"],
     government: ["gsisIdNo", "philhealthIdNo", "pagibigIdNo", "tinNo"],
-    employment: ["employmentType", "employmentStatus", "dateHired", "divisionId", "designationId", "supervisor"],
     emergency: ["emergencyContactName", "emergencyRelationship", "emergencyPhone", "emergencyAddress"],
     signature: ["signatureDataUrl"],
   };
 
   const next = { ...previousErrors };
+  if (section === "eligibility" || section === "training") {
+    Object.keys(next).filter((key) => key === section || key.startsWith(`${section}-`)).forEach((key) => delete next[key]);
+  }
   (keysBySection[section] || []).forEach((key) => {
     delete next[key];
   });
@@ -129,12 +140,15 @@ function validateSection(section, profile) {
     if (!profile.zipCode.trim()) nextErrors.zipCode = "ZIP code is required.";
   }
 
-  if (section === "employment") {
-    if (!profile.employmentType) nextErrors.employmentType = "Employment type is required.";
-    if (!profile.employmentStatus) nextErrors.employmentStatus = "Employment status is required.";
-    if (!profile.dateHired) nextErrors.dateHired = "Date hired is required.";
-    if (!profile.divisionId) nextErrors.divisionId = "Division is required.";
-    if (!profile.designationId) nextErrors.designationId = "Designation is required.";
+  if (section === "government") {
+    Object.keys(GOVERNMENT_ID_FORMATS).forEach((name) => {
+      if (name === "gsisIdNo" && !isRegularEmploymentStatus(profile.employmentStatus)) {
+        return;
+      }
+
+      const message = validateGovernmentId(name, profile[name]);
+      if (message) nextErrors[name] = message;
+    });
   }
 
   if (section === "emergency") {
@@ -149,6 +163,24 @@ function validateSection(section, profile) {
   }
 
   return nextErrors;
+}
+
+/*
+ * The fields each editable tab owns, for telling which tabs Save Changes has to send. The derived
+ * address names travel with their codes, since picking a region rewrites both.
+ */
+const PERSONAL_FIELDS = ["firstName", "middleName", "lastName", "suffix", "dateOfBirth", "gender", "civilStatus", "nationality", "phone"];
+const ADDRESS_FIELDS = ["regionCode", "region", "provinceCode", "province", "cityCode", "city", "barangayCode", "barangay", "address", "zipCode"];
+const GOVERNMENT_FIELDS = Object.keys(GOVERNMENT_ID_FORMATS);
+const EMERGENCY_FIELDS = ["emergencyContactName", "emergencyRelationship", "emergencyPhone", "emergencyAddress"];
+const SAVED_ONE_BY_ONE_FIELDS = ["profileImage", "includeProfileImageInPds", "email"];
+
+function fieldsChanged(fields, current, original) {
+  return fields.some((field) => String(current?.[field] ?? "") !== String(original?.[field] ?? ""));
+}
+
+function pickFields(source, fields) {
+  return fields.reduce((picked, field) => ({ ...picked, [field]: source?.[field] }), {});
 }
 
 function hasSharedIdentityValue(leftValues = [], rightValues = []) {
@@ -182,7 +214,7 @@ function matchesCurrentProfileUser(candidateUser, sessionUser, linkedEmployee) {
 
 function buildDivisionChiefMap(users = [], sessionUser = null, linkedEmployee = null) {
   return users.reduce((current, candidateUser) => {
-    if (normalizeRole(candidateUser?.role) !== "chief") {
+    if (resolveUserRoleKey(candidateUser) !== "chief") {
       return current;
     }
 
@@ -213,11 +245,12 @@ const sectionIcons = {
   personal: UserRound,
   family: UsersRound,
   education: GraduationCap,
+  eligibility: BadgeCheck,
+  training: BookOpenCheck,
   address: MapPin,
   government: IdCard,
   employment: Briefcase,
   emergency: LifeBuoy,
-  documents: FolderOpen,
   signature: PenLine,
   security: ShieldCheck,
 };
@@ -227,21 +260,18 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
   const [loadError, setLoadError] = useState("");
   const [profile, setProfile] = useState(null);
   const [employeeRecord, setEmployeeRecord] = useState(null);
+  const [serviceRecords, setServiceRecords] = useState([]);
+  const [serviceRecordLoading, setServiceRecordLoading] = useState(false);
+  const [serviceRecordError, setServiceRecordError] = useState("");
   const [divisionChiefMap, setDivisionChiefMap] = useState({});
   const [options, setOptions] = useState({ divisions: [], designations: [] });
   const [errors, setErrors] = useState({});
   const [savingSection, setSavingSection] = useState("");
-  const [downloadingPds, setDownloadingPds] = useState(false);
+  const [downloadingPdsFormat, setDownloadingPdsFormat] = useState("");
   const [pdsProfile, setPdsProfile] = useState(createEmptyPdsProfile);
+  const [pdsProfileError, setPdsProfileError] = useState("");
   const [twoFactorProfile, setTwoFactorProfile] = useState(null);
   const [passwordExpiry, setPasswordExpiry] = useState(null);
-  /*
-   * Personal Details is the one section the employee does not own. It stays locked until an HR Head
-   * or Admin approves a request, and the approval covers a single save.
-   *
-   * The canEditDirectly flag comes from the endpoint rather than being decided here, so
-   * the lock on screen and the one the API enforces can never disagree about who is subject to it.
-   */
   const [personalEditGate, setPersonalEditGate] = useState({ canEditDirectly: null, request: null });
   const [requestingPersonalEdit, setRequestingPersonalEdit] = useState(false);
   /*
@@ -255,13 +285,56 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
   );
   const [openDialog, setOpenDialog] = useState(isProfileDialogId(requestedTarget) ? requestedTarget : "");
   const [readOnly, setReadOnly] = useState(true);
+  /* A drawn or uploaded signature waiting for Save Changes; see SignatureSection. */
+  const [pendingSignature, setPendingSignature] = useState(null);
+  /* The profile as it was when Edit Profile was pressed: what Save compares against and Cancel restores. */
+  const editSnapshotRef = useRef(null);
   const [profileImageOpen, setProfileImageOpen] = useState(false);
-  const [regions, setRegions] = useState([]);
-  const [allProvinces, setAllProvinces] = useState([]);
-  const [allCities, setAllCities] = useState([]);
-  const [allBarangays, setAllBarangays] = useState([]);
+  const {
+    regions,
+    provinces: allProvinces,
+    cities: allCities,
+    barangays: allBarangays,
+  } = useAddressDirectory();
   const normalizedRole = resolveUserRoleKey(user);
-  const canEditEmploymentSection = ["admin", "hrhead", "hrstaff"].includes(normalizedRole);
+  const canEditPersonalByRole = ["admin", "hrhead", "hrstaff"].includes(normalizedRole);
+
+  const loadServiceRecords = useCallback(async ({ background = false } = {}) => {
+    const employeeRecordId = employeeRecord?.id;
+
+    if (!employeeRecordId) {
+      setServiceRecords([]);
+      setServiceRecordError("");
+      setServiceRecordLoading(false);
+      return;
+    }
+
+    if (!background) {
+      setServiceRecordLoading(true);
+    }
+
+    try {
+      const result = await fetchServiceRecord(employeeRecordId);
+      setServiceRecords(Array.isArray(result?.records) ? result.records : []);
+      setServiceRecordError("");
+    } catch (requestError) {
+      setServiceRecordError(
+        requestError?.response?.data?.message || "Unable to load salary grade history."
+      );
+    } finally {
+      setServiceRecordLoading(false);
+    }
+  }, [employeeRecord?.id]);
+
+  useEffect(() => {
+    void loadServiceRecords();
+  }, [loadServiceRecords]);
+
+  useAutoRefreshOnChange(loadServiceRecords, {
+    enabled: Boolean(employeeRecord?.id),
+    topics: ["service_record"],
+    refreshOnMount: false,
+  });
 
   const loadPersonalEditGate = useCallback(async () => {
     try {
@@ -272,11 +345,6 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
         request: result?.request || null,
       });
     } catch {
-      /*
-       * A failed read leaves the section locked with no request on it, which is the safe end of the
-       * gate: the worst case is one wasted press of Request Edit, answered by the request that
-       * already exists.
-       */
       setPersonalEditGate((current) => ({ ...current, request: null }));
     }
   }, []);
@@ -285,49 +353,41 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
     void loadPersonalEditGate();
   }, [loadPersonalEditGate]);
 
-  /*
-   * HR decides the request on their own machine. Only the gate is re-read here -- reloading the
-   * profile itself would throw away whatever the user has typed into another section.
-   */
+  // module_access_requests is already part of this change-feed topic, so an approval on another
+  // machine unlocks the open profile without creating a profile-specific database table.
   useAutoRefreshOnChange(loadPersonalEditGate, {
-    topics: ["profile_edit_request"],
+    topics: ["access_request"],
     refreshOnMount: false,
   });
 
   const personalEditRequest = personalEditGate.request;
-  /*
-   * null means the gate has not answered yet -- or could not. Falling back to the role keeps HR out
-   * of a lock that was never meant for them: they edit these fields from Employee Management, and a
-   * failed status read must not strand them behind a request the API would refuse anyway.
-   */
-  const canEditPersonalDirectly = personalEditGate.canEditDirectly ?? canEditEmploymentSection;
+  const canEditPersonalDirectly = personalEditGate.canEditDirectly ?? canEditPersonalByRole;
   const canRequestPersonalEdit = !canEditPersonalDirectly;
-  const personalEditUnlocked = canEditPersonalDirectly
-    ? !readOnly
-    : personalEditRequest?.status === "approved";
+  /*
+   * Personal Details opens with the rest of the profile under Edit Profile, and only for a desk that
+   * may edit it directly or holds an approved edit request. It used to open on approval alone, with
+   * its own Save button; now that Save Changes is the one save, it waits for edit mode too.
+   */
+  const personalEditUnlocked = !readOnly && (
+    canEditPersonalDirectly || personalEditRequest?.status === "approved"
+  );
   const personalReadOnly = !personalEditUnlocked;
 
-  /** Sends the reason typed into the floating card. Resolves true once the card may close. */
-  const handleRequestPersonalEdit = async (reason) => {
+  const handleRequestPersonalEdit = async () => {
     if (requestingPersonalEdit) {
-      return false;
+      return;
     }
 
     setRequestingPersonalEdit(true);
 
     try {
-      const result = await requestProfileEdit({ reason });
-
+      const result = await requestProfileEdit();
       setPersonalEditGate((current) => ({ ...current, request: result?.request || null }));
-      toast.success(result?.message || "Your request has been sent to HR.");
-
-      return true;
+      toast.success(result?.message || "Your request has been sent to Admin and HR Head.");
     } catch (requestError) {
       toast.error(
-        requestError?.response?.data?.message || "Unable to send the request. Please try again."
+        requestError?.response?.data?.message || "Unable to send the edit request. Please try again."
       );
-
-      return false;
     } finally {
       setRequestingPersonalEdit(false);
     }
@@ -386,11 +446,14 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
           normalizedRole === "employee" ? getUsers().catch(() => null) : Promise.resolve(null),
           getTwoFactorProfile().catch(() => null),
           checkPasswordExpiry().catch(() => null),
-          getPdsProfile().catch(() => createEmptyPdsProfile()),
+          getPdsProfile().then((data) => ({ data, error: "" })).catch((error) => ({
+            data: createEmptyPdsProfile(),
+            error: error?.response?.data?.message || "Unable to load your saved PDS details. Refresh the page to try again.",
+          })),
         ]);
 
-        // The address lists are imported above rather than fetched, so there is nothing to await or
-        // to check for a failed response -- they are already in memory by the time this runs.
+        // The address lists come from useAddressDirectory() above, which loads on its own; the
+        // built-in part of them is in memory before this runs.
 
         if (!mounted) {
           return;
@@ -434,11 +497,8 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
         });
         setTwoFactorProfile(twoFactorResult?.twoFactor || null);
         setPasswordExpiry(passwordExpiryResult?.passwordExpiry || null);
-        setPdsProfile(pdsProfileResult);
-        setRegions(Array.isArray(regionData) ? regionData : []);
-        setAllProvinces(Array.isArray(provinceData) ? provinceData : []);
-        setAllCities(Array.isArray(cityData) ? cityData : []);
-        setAllBarangays(Array.isArray(barangayData) ? barangayData : []);
+        setPdsProfile(pdsProfileResult.data);
+        setPdsProfileError(pdsProfileResult.error);
       } catch (error) {
         if (mounted) {
           setLoadError(error?.message || "Unable to load profile.");
@@ -489,6 +549,10 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
       supervisor: chiefSupervisorName,
     };
   }, [divisionChiefMap, normalizedRole, profile]);
+  const currentSalaryGradeRecord = useMemo(
+    () => getCurrentSalaryGradeRecord(serviceRecords),
+    [serviceRecords]
+  );
 
   useEffect(() => {
     if (!profile || profile.regionCode || !profile.region) {
@@ -579,7 +643,13 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
       updateProfile({
         barangayCode: value,
         barangay: selected?.brgy_name || "",
+        // A barangay saved in Settings > Add Address brings its own ZIP code.
+        ...(selected?.zip_code ? { zipCode: String(selected.zip_code) } : {}),
       });
+
+      if (selected?.zip_code) {
+        setErrors((current) => ({ ...current, zipCode: "" }));
+      }
       return;
     }
 
@@ -603,111 +673,258 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
       return;
     }
 
+    if (GOVERNMENT_ID_FORMATS[name]) {
+      updateProfile({ [name]: formatGovernmentId(name, value) });
+      return;
+    }
+
     updateProfile({ [name]: value });
   };
 
-  const handleSaveSection = async (section) => {
+  /*
+   * Edit Profile opens every tab; Save Changes saves them together. Each tab is compared with the
+   * snapshot taken when editing began, so only the tabs that changed are validated and sent -- an
+   * untouched Personal Details tab never spends the edit approval that saving it would use up.
+   */
+  const handleStartEditing = () => {
     if (!profile) {
       return;
     }
 
-    if (section === "employment" && !canEditEmploymentSection) {
-      toast.error("Only HR or Admin can edit employment status details.");
-      return;
+    editSnapshotRef.current = { profile, pdsProfile };
+    setPendingSignature(null);
+    setReadOnly(false);
+  };
+
+  const handleCancelEditing = () => {
+    const snapshot = editSnapshotRef.current;
+
+    if (snapshot) {
+      // The photo and the email are saved the moment they change, so their current values stay.
+      setProfile((current) => ({ ...snapshot.profile, ...pickFields(current, SAVED_ONE_BY_ONE_FIELDS) }));
+      setPdsProfile(snapshot.pdsProfile);
     }
 
-    if (section === "personal" && personalReadOnly) {
-      toast.error("Personal details are locked. Ask HR to unlock the section first.");
-      return;
+    editSnapshotRef.current = null;
+    setPendingSignature(null);
+    setErrors({});
+    setReadOnly(true);
+  };
+
+  const persistSignature = async ({ dataUrl, uploadName }, baseProfile) => {
+    const nextProfile = {
+      ...baseProfile,
+      signatureDataUrl: dataUrl,
+      signatureUploadName: dataUrl ? (uploadName || baseProfile.signatureUploadName || "") : "",
+    };
+
+    // An account with no employee record keeps its signature in this browser only, as before.
+    if (!employeeRecord?.id) {
+      return nextProfile;
     }
 
-    const nextErrors = validateSection(section, profile);
+    const result = await updateEmployeeSignature(employeeRecord.id, dataUrl);
+    const storedSignature = String(result?.employee?.signatureDataUrl || dataUrl || "");
+
+    return {
+      ...nextProfile,
+      signatureDataUrl: storedSignature,
+      signatureUploadName: storedSignature ? (nextProfile.signatureUploadName || "Saved signature") : "",
+    };
+  };
+
+  /* Resolves true once the profile is saved (or had nothing to save), false when it stays in edit mode. */
+  const handleSaveProfile = async () => {
+    if (!profile || savingSection) {
+      return false;
+    }
+
+    const snapshot = editSnapshotRef.current || { profile, pdsProfile };
+    const changed = {
+      personal: fieldsChanged(PERSONAL_FIELDS, profile, snapshot.profile),
+      address: fieldsChanged(ADDRESS_FIELDS, profile, snapshot.profile),
+      government: fieldsChanged(GOVERNMENT_FIELDS, profile, snapshot.profile),
+      emergency: fieldsChanged(EMERGENCY_FIELDS, profile, snapshot.profile),
+      family: JSON.stringify(pdsProfile.family) !== JSON.stringify(snapshot.pdsProfile.family),
+      education: JSON.stringify(pdsProfile.education) !== JSON.stringify(snapshot.pdsProfile.education),
+      eligibility: JSON.stringify(pdsProfile.eligibility) !== JSON.stringify(snapshot.pdsProfile.eligibility),
+      training: JSON.stringify(pdsProfile.training) !== JSON.stringify(snapshot.pdsProfile.training),
+      signature: pendingSignature !== null,
+    };
+
+    const validatedSections = ["personal", "address", "government", "emergency", "eligibility", "training"].filter((section) => changed[section]);
+    const sectionErrors = validatedSections.map((section) => [section,
+      section === "eligibility" || section === "training"
+        ? validatePdsRecords(section, pdsProfile[section]) : validateSection(section, profile),
+    ]);
+    const nextErrors = Object.assign({}, ...sectionErrors.map(([, found]) => found));
+
     setErrors((current) => ({
-      ...clearSectionErrors(section, current),
+      ...validatedSections.reduce((remaining, section) => clearSectionErrors(section, remaining), current),
       ...nextErrors,
     }));
 
     if (Object.keys(nextErrors).length > 0) {
-      toast.error("Please complete the required fields before saving.");
-      return;
+      // Open the first tab with a problem, so the highlighted field is on screen.
+      const [firstSection] = sectionErrors.find(([, found]) => Object.keys(found).length > 0);
+      goToProfileTarget(firstSection);
+      toast.error(Object.values(nextErrors)[0] || "Please correct the highlighted fields.");
+      return false;
     }
 
-    setSavingSection(section);
+    if (!Object.values(changed).some(Boolean)) {
+      editSnapshotRef.current = null;
+      setReadOnly(true);
+      toast("No changes to save.");
+      return true;
+    }
+
+    setSavingSection("all");
 
     try {
-      let nextEmployee = employeeRecord;
-      const extras = extractProfileExtras(profile);
+      let workingProfile = profile;
 
-      if (["personal", "address", "government"].includes(section)) {
+      // One write carries all three: the endpoint saves the whole row either way.
+      if (changed.personal || changed.address || changed.government) {
         if (!employeeRecord?.id) {
           throw new Error("This account is not linked to an employee master record yet.");
         }
 
-        const result = await updateEmployee(employeeRecord.id, buildEmployeePayload(profile));
-        nextEmployee = result.employee;
+        const result = await updateEmployee(employeeRecord.id, {
+          ...buildEmployeePayload(profile),
+          profileSection: changed.personal ? "personal" : changed.address ? "address" : "government",
+        });
+        const nextEmployee = result.employee;
+        workingProfile = mergeEmployeeWithExtras(nextEmployee, extractProfileExtras(profile));
         setEmployeeRecord(nextEmployee);
-        setProfile((current) => mergeEmployeeWithExtras(nextEmployee, extractProfileExtras(current)));
+        setProfile(workingProfile);
+        editSnapshotRef.current = {
+          ...snapshot,
+          profile: { ...snapshot.profile, ...pickFields(workingProfile, [...PERSONAL_FIELDS, ...ADDRESS_FIELDS, ...GOVERNMENT_FIELDS]) },
+        };
 
         if (onUserChange) {
           onUserChange(buildUpdatedSessionUser(user, nextEmployee));
         }
-      }
 
-      if (section === "employment" && employeeRecord?.id) {
-        const result = await updateEmployee(employeeRecord.id, buildEmployeePayload(profile));
-        nextEmployee = result.employee;
-        setEmployeeRecord(nextEmployee);
-        setProfile((current) => mergeEmployeeWithExtras(nextEmployee, extractProfileExtras(current)));
-
-        if (onUserChange) {
-          onUserChange(buildUpdatedSessionUser(user, nextEmployee));
+        if (changed.personal && personalEditRequest?.status === "approved") {
+          setPersonalEditGate((current) => ({
+            ...current,
+            request: current.request ? { ...current.request, status: "used" } : null,
+          }));
         }
       }
 
-      /*
-       * The approval is spent here rather than when it was granted: only now is the correction
-       * actually written, and a save that failed above must leave the unlock intact for the retry.
-       */
-      if (section === "personal" && personalEditRequest?.status === "approved") {
-        try {
-          const spent = await markProfileEditUsed(personalEditRequest.id);
+      if (changed.family || changed.education || changed.eligibility || changed.training) {
+        if (!employeeRecord?.id) {
+          throw new Error("This account is not linked to an employee master record yet.");
+        }
 
-          setPersonalEditGate((current) => ({ ...current, request: spent?.request || null }));
-        } catch {
-          // The correction is already saved, so failing to close the request must not report an
-          // error over it. The next gate read returns the same approved row and the lock recovers.
+        let savedPds = pdsProfile;
+
+        const saveSections = { family: savePdsFamily, education: savePdsEducation, eligibility: savePdsEligibility, training: savePdsTraining };
+        for (const section of Object.keys(saveSections).filter((key) => changed[key])) {
+          const result = await saveSections[section](pdsProfile[section]);
+          // Merge only the section just saved so another tab's draft survives.
+          savedPds = { ...savedPds, [section]: result[section] };
+          setPdsProfile(savedPds);
+          const savedSnapshot = editSnapshotRef.current || snapshot;
+          editSnapshotRef.current = {
+            ...savedSnapshot, pdsProfile: { ...savedSnapshot.pdsProfile, [section]: result[section] },
+          };
         }
       }
 
-      writeProfileExtras(storageKey, extras);
-
-      if (section === "employment" && !employeeRecord?.id && onUserChange) {
-        onUserChange(buildUpdatedSessionUserFromProfile(user, profile));
+      if (changed.signature) {
+        workingProfile = await persistSignature(pendingSignature, workingProfile);
+        setProfile(workingProfile);
+        setPendingSignature(null);
       }
 
-      toast.success("Profile section saved successfully.");
+      // Emergency contact and the other extras live in this browser, alongside the saved row.
+      writeProfileExtras(storageKey, extractProfileExtras(workingProfile));
+
+      editSnapshotRef.current = null;
+      setReadOnly(true);
+      toast.success("Profile changes saved.");
+      return true;
     } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Unable to save this section.");
+      toast.error(error?.response?.data?.message || error?.message || "Unable to save your profile changes.");
+      return false;
     } finally {
       setSavingSection("");
     }
   };
 
-  const handleDownloadPds = async () => {
-    if (downloadingPds) {
+  /*
+   * While Edit Profile is open, leaving for another page -- a sidebar link, the header, a breadcrumb --
+   * asks first: save, discard, or stay. Reloading or closing the tab gets the browser's own prompt.
+   * The refs let the guard, registered once per edit session, call the current handlers.
+   */
+  const saveProfileRef = useRef(handleSaveProfile);
+  const cancelEditingRef = useRef(handleCancelEditing);
+  saveProfileRef.current = handleSaveProfile;
+  cancelEditingRef.current = handleCancelEditing;
+
+  useEffect(() => {
+    if (readOnly) {
+      return undefined;
+    }
+
+    const unregister = registerNavigationGuard(async () => {
+      const choice = await Swal.fire({
+        title: "Finish editing your profile first",
+        text: "You are still editing your profile. Save your changes or cancel editing before leaving this page.",
+        icon: "warning",
+        showDenyButton: true,
+        showCancelButton: true,
+        confirmButtonText: "Save Changes",
+        denyButtonText: "Cancel Editing",
+        cancelButtonText: "Keep Editing",
+        confirmButtonColor: "#D61E1E",
+        denyButtonColor: "#475569",
+        reverseButtons: true,
+      });
+
+      if (choice.isConfirmed) {
+        return saveProfileRef.current();
+      }
+
+      if (choice.isDenied) {
+        cancelEditingRef.current();
+        return true;
+      }
+
+      return false;
+    });
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      unregister();
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [readOnly]);
+
+  const handleDownloadPds = async (format = "xlsx") => {
+    if (downloadingPdsFormat) {
       return;
     }
 
-    setDownloadingPds(true);
-    const toastId = toast.loading("Preparing your Personal Data Sheet...");
+    setDownloadingPdsFormat(format);
+    const toastId = toast.loading(format === "pdf" ? "Preparing your Personal Data Sheet PDF..." : "Preparing your Personal Data Sheet...");
 
     try {
-      await downloadPersonalDataSheet(resolvedProfile || profile);
-      toast.success("Personal Data Sheet downloaded.", { id: toastId });
+      await downloadPersonalDataSheet(resolvedProfile || profile, { format });
+      toast.success(format === "pdf" ? "Personal Data Sheet PDF downloaded." : "Personal Data Sheet downloaded.", { id: toastId });
     } catch (error) {
       toast.error(error?.message || "Unable to download your Personal Data Sheet.", { id: toastId });
     } finally {
-      setDownloadingPds(false);
+      setDownloadingPdsFormat("");
     }
   };
 
@@ -772,86 +989,25 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
     }));
   };
 
-  const handleSavePdsSection = async (section) => {
-    if (!employeeRecord?.id) {
-      toast.error("This account is not linked to an employee master record yet.");
-      return;
-    }
-
-    setSavingSection(section);
-    try {
-      const result = section === "family"
-        ? await savePdsFamily(pdsProfile.family)
-        : await savePdsEducation(pdsProfile.education);
-
-      setPdsProfile({ family: result.family, education: result.education });
-      toast.success(result.message || "PDS profile section saved successfully.");
-    } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Unable to save this PDS section.");
-    } finally {
-      setSavingSection("");
-    }
+  const handlePdsRecordChange = (section, index, field, value) => {
+    setErrors((current) => ({ ...current, [`${section}-${index}-${field}`]: "" }));
+    setPdsProfile((current) => ({
+      ...current,
+      [section]: current[section].map((record, recordIndex) => recordIndex === index ? { ...record, [field]: value } : record),
+    }));
   };
 
-  const handleSaveSignature = async (dataUrl, uploadName) => {
-    if (!profile) {
-      return;
-    }
+  const handleAddPdsRecord = (section) => {
+    const empty = section === "eligibility" ? createEmptyPdsEligibility() : createEmptyPdsTraining();
+    const record = { ...empty, id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+    setPdsProfile((current) => current[section].length >= pdsRecordLimits[section] ? current : {
+      ...current, [section]: [...current[section], record],
+    });
+  };
 
-    const nextProfile = {
-      ...profile,
-      signatureDataUrl: dataUrl,
-      signatureUploadName: uploadName || profile.signatureUploadName || "",
-    };
-
-    // Skip validation if we're clearing the signature (empty dataUrl)
-    if (dataUrl) {
-      const nextErrors = validateSection("signature", nextProfile);
-      setErrors((current) => ({
-        ...clearSectionErrors("signature", current),
-        ...nextErrors,
-      }));
-
-      if (Object.keys(nextErrors).length > 0) {
-        toast.error("Please add a signature before saving.");
-        return;
-      }
-    } else {
-      // Clear any signature errors when clearing
-      setErrors((current) => clearSectionErrors("signature", current));
-    }
-
-    setSavingSection("signature");
-
-    try {
-      let savedProfile = nextProfile;
-
-      if (employeeRecord?.id) {
-        const result = await updateEmployeeSignature(employeeRecord.id, nextProfile.signatureDataUrl);
-        const storedSignature = String(result?.employee?.signatureDataUrl || nextProfile.signatureDataUrl || "");
-
-        savedProfile = {
-          ...nextProfile,
-          signatureDataUrl: storedSignature,
-          signatureUploadName: storedSignature ? (nextProfile.signatureUploadName || "Saved signature") : "",
-        };
-      }
-
-      setProfile(savedProfile);
-      writeProfileExtras(storageKey, extractProfileExtras(savedProfile));
-
-      toast.success(
-        dataUrl
-          ? (employeeRecord?.id
-            ? "Signature saved to the employee record."
-            : "Signature saved locally. Link this account to an employee record to save it in the database.")
-          : "Signature cleared successfully."
-      );
-    } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Unable to save the signature.");
-    } finally {
-      setSavingSection("");
-    }
+  const handleRemovePdsRecord = (section, index) => {
+    setErrors((current) => clearSectionErrors(section, current));
+    setPdsProfile((current) => ({ ...current, [section]: current[section].filter((_, recordIndex) => recordIndex !== index) }));
   };
 
   const handleTogglePersonalTwoFactor = async () => {
@@ -888,39 +1044,35 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
     onUserChange?.(nextUser);
   }, [onUserChange]);
 
-  const handleSaveProfileImage = (imageDataUrl) => {
+  const handleSaveProfileImage = async (imageDataUrl, includeProfileImageInPds) => {
     if (!profile || !employeeRecord?.id) {
-      toast.error("This account must be linked to an employee record before saving a profile picture.");
-      return;
+      throw new Error("This account must be linked to an employee record before saving a profile picture.");
     }
 
-    const saveProfileImage = async () => {
-      const loadingToastId = toast.loading(imageDataUrl ? "Uploading profile picture..." : "Removing profile picture...");
+    const preferenceOnly = imageDataUrl === null;
+    const loadingToastId = toast.loading(preferenceOnly ? "Saving PDS photo preference..." : imageDataUrl ? "Uploading profile picture..." : "Removing profile picture...");
 
-      try {
-        const result = await updateEmployeeProfileImage(employeeRecord.id, imageDataUrl);
-        const nextEmployee = result.employee;
-        const nextProfile = mergeEmployeeWithExtras(nextEmployee, extractProfileExtras(profile));
+    try {
+      const result = await updateEmployeeProfileImage(employeeRecord.id, imageDataUrl, includeProfileImageInPds);
+      const nextEmployee = result.employee;
+      const nextProfile = mergeEmployeeWithExtras(nextEmployee, extractProfileExtras(profile));
 
-        setEmployeeRecord(nextEmployee);
-        setProfile(nextProfile);
-        writeProfileExtras(storageKey, extractProfileExtras(nextProfile));
+      setEmployeeRecord(nextEmployee);
+      setProfile(nextProfile);
+      writeProfileExtras(storageKey, extractProfileExtras(nextProfile));
 
-        if (onUserChange) {
-          onUserChange(buildUpdatedSessionUser(user, nextEmployee));
-        }
-
-        toast.success(imageDataUrl ? "Profile picture updated." : "Profile picture removed.", {
-          id: loadingToastId,
-        });
-      } catch (error) {
-        toast.error(error?.response?.data?.message || error?.message || "Unable to save the profile picture.", {
-          id: loadingToastId,
-        });
+      if (onUserChange) {
+        onUserChange(buildUpdatedSessionUser(user, nextEmployee));
       }
-    };
 
-    saveProfileImage();
+      toast.success(preferenceOnly ? "PDS photo preference saved." : imageDataUrl ? "Profile picture updated." : "Profile picture removed.", {
+        id: loadingToastId,
+      });
+    } catch (error) {
+      const message = error?.response?.data?.message || error?.message || "Unable to save the profile picture.";
+      toast.error(message, { id: loadingToastId });
+      throw new Error(message);
+    }
   };
 
   const navSections = useMemo(
@@ -958,21 +1110,29 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
   }
 
   return (
-    <div className="profile-page">
-      <div className="grid items-start gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+    <div className="profile-page min-w-0 w-full">
+      <div className="grid min-w-0 grid-cols-1 items-start gap-3 sm:gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
         <ProfileHeaderCard
           className="lg:sticky lg:top-20 lg:self-start"
           profile={profile}
           readOnly={readOnly}
           user={user}
-          onToggleMode={() => setReadOnly((current) => !current)}
+          onEdit={handleStartEditing}
+          onSave={handleSaveProfile}
+          onCancel={handleCancelEditing}
+          saving={savingSection === "all"}
           onChangePhoto={() => !readOnly && setProfileImageOpen(true)}
-          onDownloadPds={handleDownloadPds}
-          downloadingPds={downloadingPds}
-          onOpenServiceRecord={() => setOpenDialog("serviceRecord")}
+          onDownloadPds={() => handleDownloadPds("xlsx")}
+          downloadingPds={downloadingPdsFormat === "xlsx"}
+          onDownloadPdsPdf={() => handleDownloadPds("pdf")}
+          downloadingPdsPdf={downloadingPdsFormat === "pdf"}
+          salaryGradeRecord={currentSalaryGradeRecord}
+          salaryGradeLoading={serviceRecordLoading}
+          salaryGradeError={serviceRecordError}
+          onOpenSalaryGradeHistory={() => setOpenDialog("salaryGradeHistory")}
         />
 
-        <div className="grid min-w-0 gap-4">
+        <div className="grid min-w-0 gap-3 sm:gap-4">
           <ProfileSectionNav
             sections={navSections}
             activeSection={activeSection}
@@ -984,6 +1144,9 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
             * section instead of one long scroll through all seven, and each tab's fields start at the top.
             */}
           <div className="profile-sections min-w-0">
+            {pdsProfileError && ["family", "education", "eligibility", "training"].includes(activeSection) ? (
+              <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-[#B41818]">{pdsProfileError}</p>
+            ) : null}
             <AnimatePresence mode="wait" initial={false}>
               <motion.div
                 key={activeSection}
@@ -991,7 +1154,7 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                className="space-y-4"
+                className="min-w-0 space-y-3 sm:space-y-4"
               >
             {activeSection === "personal" ? (
               <PersonalDetailsSection
@@ -1000,7 +1163,6 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
                 readOnly={personalReadOnly}
                 saving={savingSection === "personal"}
                 onChange={handleFieldChange}
-                onSave={() => handleSaveSection("personal")}
                 canRequestEdit={canRequestPersonalEdit}
                 editRequest={personalEditRequest}
                 requestingEdit={requestingPersonalEdit}
@@ -1015,7 +1177,6 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
                 readOnly={readOnly}
                 saving={savingSection === "address"}
                 onChange={handleFieldChange}
-                onSave={() => handleSaveSection("address")}
                 regionOptions={regions}
                 provinceOptions={filteredProvinces}
                 cityOptions={filteredCities}
@@ -1026,23 +1187,31 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
             {activeSection === "family" ? (
               <FamilyBackgroundSection
                 values={pdsProfile.family}
-                readOnly={readOnly}
+                readOnly={readOnly || Boolean(pdsProfileError)}
                 saving={savingSection === "family"}
                 onChange={handlePdsFamilyChange}
                 onChildChange={handlePdsChildChange}
                 onAddChild={handleAddPdsChild}
                 onRemoveChild={handleRemovePdsChild}
-                onSave={() => handleSavePdsSection("family")}
               />
             ) : null}
 
             {activeSection === "education" ? (
               <EducationalBackgroundSection
                 values={pdsProfile.education}
-                readOnly={readOnly}
+                readOnly={readOnly || Boolean(pdsProfileError)}
                 saving={savingSection === "education"}
                 onChange={handlePdsEducationChange}
-                onSave={() => handleSavePdsSection("education")}
+              />
+            ) : null}
+
+            {activeSection === "eligibility" || activeSection === "training" ? (
+              <PdsRecordsSection
+                section={activeSection} values={pdsProfile[activeSection]} errors={errors}
+                readOnly={readOnly || Boolean(pdsProfileError)} saving={savingSection === "all"}
+                onChange={(index, field, value) => handlePdsRecordChange(activeSection, index, field, value)}
+                onAdd={() => handleAddPdsRecord(activeSection)}
+                onRemove={(index) => handleRemovePdsRecord(activeSection, index)}
               />
             ) : null}
 
@@ -1053,19 +1222,12 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
                 readOnly={readOnly}
                 saving={savingSection === "government"}
                 onChange={handleFieldChange}
-                onSave={() => handleSaveSection("government")}
               />
             ) : null}
 
             {activeSection === "employment" ? (
               <EmploymentStatusSection
                 values={resolvedProfile}
-                errors={errors}
-                readOnly={readOnly || !canEditEmploymentSection}
-                canEditEmploymentSection={canEditEmploymentSection}
-                saving={savingSection === "employment"}
-                onChange={handleFieldChange}
-                onSave={() => handleSaveSection("employment")}
                 divisionOptions={divisionOptions}
                 designationOptions={filteredDesignations}
               />
@@ -1078,21 +1240,16 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
                 readOnly={readOnly}
                 saving={savingSection === "emergency"}
                 onChange={handleFieldChange}
-                onSave={() => handleSaveSection("emergency")}
               />
-            ) : null}
-
-            {activeSection === "documents" ? (
-              <DocumentsSection readOnly={readOnly} />
             ) : null}
 
             {activeSection === "signature" ? (
               <SignatureSection
                 values={resolvedProfile}
                 readOnly={readOnly}
-                saving={savingSection === "signature"}
                 error={errors.signatureDataUrl}
-                onSave={handleSaveSignature}
+                pendingSignature={pendingSignature}
+                onPendingSignatureChange={setPendingSignature}
               />
             ) : null}
 
@@ -1118,21 +1275,27 @@ export default function ProfilePage({ user, onUserChange, initialTab = "" }) {
       </div>
 
       <ProfileFloatingCard
-        open={openDialog === "serviceRecord"}
+        open={openDialog === "salaryGradeHistory"}
         onClose={() => setOpenDialog("")}
-        icon={ScrollText}
+        icon={History}
         badge={BadgeCheck}
-        title="Service Record"
-        subtitle="Chronological record of appointments, salaries, and separations (CS Form No. 1)."
-        maxWidth="max-w-5xl"
-        bodyClassName="px-4 pb-4 sm:px-4"
+        title="Salary Grade History"
+        subtitle="Review the employee’s salary grade and step increment across service appointments."
+        maxWidth="max-w-4xl"
+        bodyClassName="px-4 pb-4 sm:px-5 sm:pb-5"
+        closeLabel="Close salary grade history"
       >
-        <ServiceRecordSection values={resolvedProfile} variant="dialog" />
+        <SalaryGradeHistory
+          records={serviceRecords}
+          loading={serviceRecordLoading}
+          error={serviceRecordError}
+        />
       </ProfileFloatingCard>
 
       <ProfileImageModal
         open={profileImageOpen}
         currentImage={profile.profileImage}
+        currentIncludeInPds={profile.includeProfileImageInPds}
         onClose={() => setProfileImageOpen(false)}
         onSave={handleSaveProfileImage}
       />

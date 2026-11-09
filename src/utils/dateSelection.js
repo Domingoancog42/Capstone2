@@ -26,8 +26,8 @@ const DATE_PORTION_VALUES = {
   pm: 0.5,
 };
 
-/* The selection travels inside a notes column, so it is capped to keep that text manageable. */
-const MAX_SELECTED_DATES = 60;
+/* Long statutory leaves can span 105 calendar days; one year remains a conservative metadata cap. */
+const MAX_SELECTED_DATES = 366;
 
 /*
  * Compensatory time off and travel orders keep no structured answers of their own, so their day

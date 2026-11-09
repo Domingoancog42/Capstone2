@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { FileSpreadsheet, FileText, Printer, X } from "lucide-react";
 import { formatNumber } from "./reportsTheme";
 import { statusBadgeClasses } from "./ReportsDataTable";
+import { ORGANIZATION_NAME, ORGANIZATION_SUBTITLE, ORGANIZATION_LOGO } from "./reportDocument";
 
 const PREVIEW_ROW_LIMIT = 200;
 
@@ -12,9 +13,6 @@ const PREVIEW_ROW_LIMIT = 200;
  * order — so a printed report is recognisably from the same office as the rest of the paperwork. The
  * seal lives in `public/`, which means it survives the print dialog without needing to be inlined.
  */
-const ORGANIZATION_NAME = "Mines and Geosciences Bureau - 10";
-const ORGANIZATION_SUBTITLE = "DENR Region X, Macabalan, Cagayan de Oro City";
-const ORGANIZATION_LOGO = "/mgb.png";
 
 /**
  * Centred masthead: seal, office, then the report's own title.
@@ -25,18 +23,22 @@ const ORGANIZATION_LOGO = "/mgb.png";
  */
 function ReportLetterhead({ title, description }) {
   return (
-    <header className="relative mb-4 border-b border-slate-300 pb-4 text-center">
-      <img
-        src={ORGANIZATION_LOGO}
-        alt=""
-        aria-hidden="true"
-        className="absolute left-0 top-0 h-16 w-16 rounded-full border border-slate-200 object-contain"
-      />
-      <p className="m-0 text-base font-bold uppercase tracking-wide text-slate-900">{ORGANIZATION_NAME}</p>
-      <p className="m-0 mt-0.5 text-xs text-slate-600">{ORGANIZATION_SUBTITLE}</p>
+    <header className="mb-4 border-b border-slate-300 pb-4 text-center">
+      <div className="flex items-center justify-center gap-5">
+        <img
+          src={ORGANIZATION_LOGO}
+          alt=""
+          aria-hidden="true"
+          className="h-[130px] w-[130px] shrink-0 rounded-full object-contain"
+        />
+        <div className="text-left">
+          <p className="m-0 text-base font-bold uppercase tracking-wide text-slate-900">{ORGANIZATION_NAME}</p>
+          <p className="m-0 mt-1 text-xs text-slate-600">{ORGANIZATION_SUBTITLE}</p>
+        </div>
+      </div>
       <h1 className="m-0 mt-3 text-lg font-semibold uppercase tracking-wide text-slate-900">{title}</h1>
       {description ? (
-        <p className="m-0 mx-auto mt-1.5 max-w-2xl text-sm leading-relaxed text-slate-500">{description}</p>
+        <p className="reports-print-hide m-0 mx-auto mt-1.5 max-w-2xl text-sm leading-relaxed text-slate-500">{description}</p>
       ) : null}
     </header>
   );
@@ -76,7 +78,7 @@ export default function ReportPreviewDrawer({
 
   const columns = report?.columns || [];
   const rows = report?.rows || [];
-  const previewRows = rows.slice(0, PREVIEW_ROW_LIMIT);
+  const previewRows = printOnly ? rows : rows.slice(0, PREVIEW_ROW_LIMIT);
   /*
    * Status stays on screen and comes off the printed sheet, matching what the PDF, Excel and CSV
    * writers do (see reports_export_columns() in reports.php). The report is filtered to a status
@@ -89,7 +91,7 @@ export default function ReportPreviewDrawer({
    * Only the exact `status` key goes. `employmentStatus` and `approvalStatus` are different facts
    * that happen to share the word.
    */
-  const hideStatusOnPrint = !report?.isAggregate;
+  const hideStatusOnPrint = !report?.isAggregate && !report?.keepStatus;
 
   if (typeof document === "undefined") {
     return null;
@@ -195,7 +197,7 @@ export default function ReportPreviewDrawer({
                 <section className="rounded-xl border border-slate-200 bg-white p-5">
                   <ReportLetterhead title={report.label} description={report.description} />
 
-                  <dl className="m-0 flex flex-wrap justify-center gap-x-6 gap-y-1 border-b border-slate-200 pb-4 text-xs">
+                  <dl className="reports-print-hide m-0 flex flex-wrap justify-center gap-x-6 gap-y-1 border-b border-slate-200 pb-4 text-xs">
                     <div className="flex gap-2">
                       <dt className="m-0 font-semibold text-slate-500">Generated</dt>
                       <dd className="m-0 text-slate-800">{new Date().toLocaleString()}</dd>
@@ -249,7 +251,7 @@ export default function ReportPreviewDrawer({
                 <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                   <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3.5">
                     <h2 className="m-0 text-sm font-semibold text-slate-900">Report Data</h2>
-                    {rows.length > PREVIEW_ROW_LIMIT ? (
+                    {!printOnly && rows.length > PREVIEW_ROW_LIMIT ? (
                       <p className="m-0 text-xs text-slate-500">
                         {`Previewing the first ${PREVIEW_ROW_LIMIT} of ${formatNumber(rows.length)} records — exports include all rows.`}
                       </p>
@@ -311,7 +313,7 @@ export default function ReportPreviewDrawer({
                   </div>
                 </section>
 
-                <p className="m-0 pb-2 text-center text-[11px] text-slate-400">
+                <p className="reports-print-hide m-0 pb-2 text-center text-[11px] text-slate-400">
                   {`Generated from the HRIS Reports module on ${new Date().toLocaleString()}.`}
                 </p>
               </article>

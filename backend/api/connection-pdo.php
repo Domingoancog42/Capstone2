@@ -1,11 +1,225 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * The proxies whose forwarding headers this application believes.
+ *
+ * Only the loopback addresses, because the only proxy in this deployment is the React dev server's
+ * setupProxy.js, which runs on this machine. Put a real reverse proxy in front of Apache one day and
+ * its address belongs here -- and nowhere else, so that this stays the single place that decides what
+ * "trusted" means.
+ *
+ * This lived in audit_logs_helper.php until the HTTPS work needed it. The session cookie is
+ * configured a few lines below, long before that file is loaded (it arrives with settings.php, which
+ * is required further down), and request_is_https() cannot decide whether to mark the cookie Secure
+ * without knowing which proxies may be believed. It moved here rather than being copied, because two
+ * lists of trusted proxies is exactly one list too many.
+ */
+function hris_env_flag_enabled(string $name): bool
+{
+    $value = strtolower(trim((string)(getenv($name) ?: '')));
+
+    return in_array($value, ['1', 'true', 'on', 'yes'], true);
+}
+
+function trusted_proxy_addresses(): array
+{
+    $addresses = ['127.0.0.1', '::1'];
+
+    /*
+     * Railway terminates TLS before forwarding a request to this container. Its proxy address is
+     * not stable enough to hard-code, so production opts in explicitly and trusts only the direct
+     * peer for that request. The public container is reached through Railway's proxy; local XAMPP
+     * keeps the safer loopback-only default because this flag is absent there.
+     */
+    if (hris_env_flag_enabled('HRIS_TRUST_PROXY_HEADERS')) {
+        $remoteAddress = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+
+        if ($remoteAddress !== '' && filter_var($remoteAddress, FILTER_VALIDATE_IP) !== false) {
+            $addresses[] = $remoteAddress;
+        }
+    }
+
+    return array_values(array_unique($addresses));
+}
+
+/**
+ * Whether this request actually reached us over TLS.
+ *
+ * Three ways to arrive at yes, in descending order of how directly they are known:
+ *
+ *   1. $_SERVER['HTTPS'] -- set by Apache itself when mod_ssl terminated the connection. This is the
+ *      answer whenever Apache is the TLS endpoint, and it cannot be influenced by the client.
+ *
+ *   2. SERVER_PORT 443 -- the same fact from the other side, kept as a fallback because a handful of
+ *      SAPI/vhost combinations leave HTTPS unset.
+ *
+ *   3. X-Forwarded-Proto -- and only from a trusted proxy, on the same rule client_ip_address()
+ *      applies to X-Forwarded-For: a header naming the scheme is written by whoever sent the
+ *      request, so straight from a browser it is worth nothing.
+ *
+ * The third case is not hypothetical here. The reset-link builder in password-reset-utils.php has a
+ * devtunnels.ms address in it, and a tunnel terminates TLS at its own edge and forwards plain HTTP to
+ * Apache: HTTPS is unset and SERVER_PORT is 80 even though the user is unambiguously on https://.
+ * Without this branch every such request would be judged insecure, the session cookie would go out
+ * without Secure, and -- once enforcement is on -- enforce_https() would redirect to a URL that
+ * resolves straight back to itself.
+ */
+function request_is_https(): bool
+{
+    $https = strtolower(trim((string)($_SERVER['HTTPS'] ?? '')));
+
+    if ($https !== '' && $https !== 'off') {
+        return true;
+    }
+
+    if ((int)($_SERVER['SERVER_PORT'] ?? 0) === 443) {
+        return true;
+    }
+
+    $remoteAddress = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+
+    if ($remoteAddress === '' || !in_array($remoteAddress, trusted_proxy_addresses(), true)) {
+        return false;
+    }
+
+    /*
+     * A chain of proxies appends to this header the way it appends to X-Forwarded-For, so the entry
+     * that describes the hop the *client* made is the first one. Unlike X-Forwarded-For, that is the
+     * entry worth reading: what matters is whether the user's own leg of the journey was encrypted,
+     * not whether the trusted proxy behind it spoke plaintext to Apache -- which it always does.
+     */
+    $forwardedProto = (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '');
+
+    if ($forwardedProto !== '') {
+        $first = strtolower(trim((string)(explode(',', $forwardedProto)[0] ?? '')));
+
+        if ($first !== '') {
+            return $first === 'https';
+        }
+    }
+
+    // Some tunnels and load balancers send this instead of, or as well as, X-Forwarded-Proto.
+    $forwardedSsl = strtolower(trim((string)($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '')));
+
+    return $forwardedSsl === 'on';
+}
+
+/**
+ * The scheme this request came in on, for anywhere that has to build an absolute URL back to us.
+ */
+function request_scheme(): string
+{
+    return request_is_https() ? 'https' : 'http';
+}
+
+/**
+ * Whether plaintext HTTP should be turned away rather than merely tolerated.
+ *
+ * Off unless HRIS_FORCE_HTTPS says otherwise, and deliberately so. This application's normal home is
+ * XAMPP on http://localhost, which is how it is developed and how the capstone is demonstrated;
+ * defaulting this to on would mean a checkout that redirects every request to an https:// port
+ * nothing is listening on, which looks exactly like the server being down.
+ *
+ * The Secure cookie flag below is *not* gated on this, because it needs no decision: it is set from
+ * what the connection actually is, so it protects an HTTPS deployment without touching an HTTP one.
+ * This switch is only for the two things that would break a plaintext dev box -- the redirect and
+ * HSTS -- and it is what turns the pair on together when there is a certificate to turn them on for.
+ */
+function https_is_enforced(): bool
+{
+    $flag = strtolower(trim((string)(getenv('HRIS_FORCE_HTTPS') ?: '')));
+
+    return in_array($flag, ['1', 'true', 'on', 'yes'], true);
+}
+
+/**
+ * How long a browser should refuse to speak plaintext to this host, in seconds. Zero disables HSTS
+ * while leaving the redirect in place, which is the right setting while a certificate is still being
+ * sorted out -- a redirect is undone by fixing the server, an HSTS header is not.
+ */
+function hsts_max_age(): int
+{
+    $raw = getenv('HRIS_HSTS_MAX_AGE');
+
+    if ($raw === false || trim((string)$raw) === '') {
+        return 31536000; // One year, the value the preload list expects.
+    }
+
+    return max(0, (int)$raw);
+}
+
+/**
+ * Send plaintext callers to the encrypted address, and tell browsers not to come back plaintext.
+ *
+ * Ordered so that the redirect happens before the session cookie is issued: a Set-Cookie on a 308 is
+ * a session identifier that has already travelled in the clear, and the whole point of the exercise
+ * is that it never does.
+ *
+ * 308 rather than 301. A 301 is defined to let the client retry a POST as a GET, which turns a
+ * mistyped http:// on a payroll submission into a silently discarded request; 308 preserves the
+ * method and the body. It is worth being clear-eyed about what that costs: the body has *already*
+ * crossed the network unencrypted by the time PHP sees it, so this redirect salvages the request, not
+ * the secret in it. The header below is the part that actually fixes the problem, by making the
+ * browser refuse to send the plaintext request a second time.
+ *
+ * HSTS is withheld from loopback hostnames on purpose. XAMPP serves every project in htdocs from the
+ * same origin, so a max-age on `localhost` is not scoped to this application -- it would force every
+ * other site on the developer's machine to https for a year, and the only way back is a manual purge
+ * in chrome://net-internals/#hsts. A real hostname does not have that problem because it is not
+ * shared.
+ */
+function enforce_https(): void
+{
+    if (!https_is_enforced()) {
+        return;
+    }
+
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $hostName = strtolower(trim((string)(parse_url('http://' . $host, PHP_URL_HOST) ?: '')));
+    $isLoopbackHost = in_array($hostName, ['localhost', '127.0.0.1', '::1', '[::1]'], true);
+
+    if (!request_is_https()) {
+        if ($host === '') {
+            return;
+        }
+
+        $target = 'https://' . $host . (string)($_SERVER['REQUEST_URI'] ?? '/');
+
+        header('Location: ' . $target, true, 308);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit('This service requires HTTPS.');
+    }
+
+    $maxAge = hsts_max_age();
+
+    if ($maxAge > 0 && !$isLoopbackHost) {
+        header('Strict-Transport-Security: max-age=' . $maxAge . '; includeSubDomains');
+    }
+}
+
 function configure_cors(): void
 {
     $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    $allowedOrigins = [];
+    $configuredOrigins = (string)(getenv('HRIS_ALLOWED_ORIGINS') ?: '');
 
-    if ($origin !== '' && preg_match('#^https?://(localhost|127\.0\.0\.1)(:\d+)?$#', $origin) === 1) {
+    foreach (preg_split('/\s*,\s*/', $configuredOrigins, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $candidate) {
+        $candidate = rtrim(trim((string)$candidate), '/');
+        $scheme = strtolower((string)(parse_url($candidate, PHP_URL_SCHEME) ?: ''));
+        $host = (string)(parse_url($candidate, PHP_URL_HOST) ?: '');
+
+        if (in_array($scheme, ['http', 'https'], true) && $host !== '') {
+            $allowedOrigins[] = $candidate;
+        }
+    }
+
+    $isLocalOrigin = $origin !== ''
+        && preg_match('#^https?://(localhost|127\.0\.0\.1)(:\d+)?$#', $origin) === 1;
+    $isConfiguredOrigin = $origin !== ''
+        && in_array(rtrim($origin, '/'), array_unique($allowedOrigins), true);
+
+    if ($isLocalOrigin || $isConfiguredOrigin) {
         header("Access-Control-Allow-Origin: {$origin}");
         header('Vary: Origin');
     }
@@ -25,19 +239,120 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
     exit;
 }
 
+/*
+ * After the preflight short-circuit above, and before the session below.
+ *
+ * After, because a browser does not follow a redirect on a preflight -- it treats one as a failed
+ * CORS check. Redirecting OPTIONS would replace a legible "this service requires HTTPS" with a
+ * generic CORS error in the console, which hides the actual problem. A preflight carries no cookie
+ * and no body, so letting one complete over plaintext gives nothing away.
+ *
+ * Before, because the next thing this file does is hand out a session cookie.
+ */
+enforce_https();
+
 session_name('HRISSESSID');
 
 if (session_status() === PHP_SESSION_NONE) {
+    /*
+     * `secure` follows the connection rather than a setting. Hard-coding it true would be correct in
+     * production and catastrophic on the XAMPP box this is developed on -- a browser withholds a
+     * Secure cookie from a plaintext origin entirely, so every request would arrive without a
+     * session and sign-in would appear to succeed and then immediately fail. Reading it from
+     * request_is_https() means the flag is set exactly when it can be honoured, with no configuration
+     * to get wrong and no way for the two to disagree.
+     *
+     * SameSite defaults to Lax because the React app normally reaches this API through a same-origin
+     * proxy. HRIS_SESSION_SAMESITE may opt a deployment into None when it intentionally serves the
+     * API from another site; such a deployment must also be HTTPS so browsers accept the cookie.
+     */
+    $configuredSameSite = ucfirst(strtolower(trim((string)(getenv('HRIS_SESSION_SAMESITE') ?: 'Lax'))));
+    $sameSite = in_array($configuredSameSite, ['Lax', 'Strict', 'None'], true)
+        ? $configuredSameSite
+        : 'Lax';
+
     session_set_cookie_params([
         'lifetime' => 0,
         'path' => '/',
+        'secure' => request_is_https(),
         'httponly' => true,
-        'samesite' => 'Lax',
+        'samesite' => $sameSite,
     ]);
     session_start();
 }
 
-require_once __DIR__ . '/smtp-config.php';
+/*
+ * server-config.local.php is for hosts that cannot set environment variables -- InfinityFree and
+ * shared hosting generally. It may define HRIS_DB_HOST/NAME/USER/PASSWORD, GOOGLE_CLIENT_ID and
+ * HRIS_LOGIN_URL as constants; server-config.example.php shows the shape. It is gitignored
+ * (*.local.php) and absent on XAMPP and Docker, which therefore read exactly what they read before.
+ * Loaded ahead of google-config.php so a GOOGLE_CLIENT_ID defined here is the one that wins.
+ */
+$hrisServerConfig = __DIR__ . '/server-config.local.php';
+
+if (is_file($hrisServerConfig)) {
+    require_once $hrisServerConfig;
+}
+
+unset($hrisServerConfig);
+
+/*
+ * smtp-config.php holds a live Gmail app password and is gitignored, so it is absent
+ * on a fresh clone. Every SMTP_* constant is read through a defined() check where it
+ * is used, which means a missing file costs outgoing mail and nothing else -- whereas
+ * a bare require_once here would take down every endpoint in the API, since they all
+ * come through this file.
+ */
+$hrisSmtpConfig = __DIR__ . '/smtp-config.php';
+
+if (is_file($hrisSmtpConfig)) {
+    require_once $hrisSmtpConfig;
+}
+
+unset($hrisSmtpConfig);
+
+/*
+ * Container hosts inject SMTP settings as environment variables instead of shipping a credential
+ * file in the image. A local smtp-config.php keeps precedence so existing XAMPP installations are
+ * unchanged; every missing value can be supplied independently by Railway.
+ */
+$hrisSmtpEnvironment = [
+    'SMTP_HOST' => getenv('SMTP_HOST'),
+    'SMTP_PORT' => getenv('SMTP_PORT'),
+    'SMTP_USERNAME' => getenv('SMTP_USERNAME'),
+    'SMTP_PASSWORD' => getenv('SMTP_PASSWORD'),
+    'SMTP_FROM_EMAIL' => getenv('SMTP_FROM_EMAIL'),
+    'SMTP_FROM_NAME' => getenv('SMTP_FROM_NAME'),
+    'SMTP_ENCRYPTION' => getenv('SMTP_ENCRYPTION'),
+    'EMAIL_SUBJECT' => getenv('EMAIL_SUBJECT'),
+    'CODE_EXPIRY_MINUTES' => getenv('CODE_EXPIRY_MINUTES'),
+    // Railway blocks SMTP on its smaller plans; with this set, mail goes through Brevo's HTTPS API.
+    'BREVO_API_KEY' => getenv('BREVO_API_KEY'),
+];
+
+foreach ($hrisSmtpEnvironment as $constantName => $value) {
+    if (!defined($constantName) && $value !== false && trim((string)$value) !== '') {
+        define($constantName, $constantName === 'SMTP_PORT' || $constantName === 'CODE_EXPIRY_MINUTES'
+            ? (int)$value
+            : (string)$value);
+    }
+}
+
+unset($hrisSmtpEnvironment, $constantName, $value);
+
+/*
+ * google-config.php resolves the OAuth client id behind "Sign in with Google", and is included
+ * the same way for the same reason: its two readers (google_login.php and the public slice of
+ * settings.php) both go through defined('GOOGLE_CLIENT_ID'), so a checkout without the file has
+ * no Google button and loses nothing else.
+ */
+$hrisGoogleConfig = __DIR__ . '/google-config.php';
+
+if (is_file($hrisGoogleConfig)) {
+    require_once $hrisGoogleConfig;
+}
+
+unset($hrisGoogleConfig);
 
 /*
  * The office runs on Philippine time and so does MySQL, whose SYSTEM zone follows the host clock,
@@ -52,6 +367,15 @@ require_once __DIR__ . '/smtp-config.php';
  */
 const HRIS_TIMEZONE = 'Asia/Manila';
 const HRIS_TIMEZONE_OFFSET = '+08:00';
+
+/*
+ * The sql_mode XAMPP's my.ini gives MariaDB, which is what every query in this API was written
+ * against. It is pinned per connection, beside the time zone, because a managed server picks its own:
+ * Aiven's MySQL starts in ANSI mode, whose ANSI_QUOTES reads each of the hundreds of "double-quoted"
+ * string literals here as a column name, and whose ONLY_FULL_GROUP_BY and strict mode reject queries
+ * MariaDB has always accepted. On XAMPP this restates the server default and changes nothing.
+ */
+const HRIS_SQL_MODE = 'NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION';
 
 date_default_timezone_set(HRIS_TIMEZONE);
 
@@ -86,12 +410,26 @@ function normalize_user_status(mixed $value): string
  * getenv() returns false when a name is unset, which is why the password is
  * handled separately: `?:` would also discard a deliberately empty one, and an
  * empty password is the normal case rather than a mistake.
+ *
+ * Between the two sits server-config.local.php (loaded above): a host without
+ * environment variables defines the same names as constants. With no such file
+ * hris_configured_value() just returns the XAMPP literal it was handed.
  */
-$servername = getenv('HRIS_DB_HOST') ?: '127.0.0.1';
-$dbusername = getenv('HRIS_DB_USER') ?: 'root';
+function hris_configured_value(string $name, string $default): string
+{
+    return defined($name) ? (string)constant($name) : $default;
+}
+
+$servername = getenv('HRIS_DB_HOST') ?: hris_configured_value('HRIS_DB_HOST', '127.0.0.1');
+$dbusername = getenv('HRIS_DB_USER') ?: hris_configured_value('HRIS_DB_USER', 'root');
 $dbpassword = getenv('HRIS_DB_PASSWORD');
-$dbpassword = $dbpassword === false ? '' : $dbpassword;
-$dbname = getenv('HRIS_DB_NAME') ?: 'hris';
+$dbpassword = $dbpassword === false ? hris_configured_value('HRIS_DB_PASSWORD', '') : $dbpassword;
+$dbname = getenv('HRIS_DB_NAME') ?: hris_configured_value('HRIS_DB_NAME', 'hris');
+$dbport = trim((string)(getenv('HRIS_DB_PORT') ?: hris_configured_value('HRIS_DB_PORT', '')));
+
+if ($dbport !== '' && (!ctype_digit($dbport) || (int)$dbport < 1 || (int)$dbport > 65535)) {
+    $dbport = '';
+}
 
 $pdoOptions = [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -99,7 +437,18 @@ $pdoOptions = [
     PDO::ATTR_EMULATE_PREPARES => false,
 ];
 
-$dsn = "mysql:host={$servername};dbname={$dbname};charset=utf8mb4";
+$databaseServerDsn = "mysql:host={$servername}" . ($dbport !== '' ? ";port={$dbport}" : '');
+
+if (hris_env_flag_enabled('HRIS_DB_SSL')) {
+    $sslCa = trim((string)(getenv('HRIS_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt'));
+
+    if ($sslCa !== '') {
+        $pdoOptions[PDO::MYSQL_ATTR_SSL_CA] = $sslCa;
+        $pdoOptions[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = true;
+    }
+}
+
+$dsn = "{$databaseServerDsn};dbname={$dbname};charset=utf8mb4";
 
 /*
  * The database is named in the DSN, so an ordinary request opens its connection and does nothing
@@ -134,7 +483,7 @@ try {
             throw $exception;
         }
 
-        $bootstrap = new PDO("mysql:host={$servername};charset=utf8mb4", $dbusername, $dbpassword, $pdoOptions);
+        $bootstrap = new PDO("{$databaseServerDsn};charset=utf8mb4", $dbusername, $dbpassword, $pdoOptions);
         $bootstrap->exec(
             "CREATE DATABASE IF NOT EXISTS `{$dbname}`
              CHARACTER SET utf8mb4
@@ -145,7 +494,7 @@ try {
         $pdo = new PDO($dsn, $dbusername, $dbpassword, $pdoOptions);
     }
 
-    $pdo->exec("SET time_zone = '" . HRIS_TIMEZONE_OFFSET . "'");
+    $pdo->exec("SET time_zone = '" . HRIS_TIMEZONE_OFFSET . "', sql_mode = '" . HRIS_SQL_MODE . "'");
     $conn = $pdo;
 } catch (PDOException $exception) {
     error_log('Database connection failed: ' . $exception->getMessage());
@@ -241,7 +590,10 @@ function finish_request(?int $contentLength = null): void
 {
     $deferred = deferred_task_queue() !== [];
 
-    ignore_user_abort(true);
+    // Shared hosts may list it in disable_functions, and PHP 8 fatals on a disabled function.
+    if (function_exists('ignore_user_abort')) {
+        ignore_user_abort(true);
+    }
 
     /*
      * The session lock matters as much as the flush here. PHP holds the session file for the whole
@@ -287,8 +639,11 @@ function finish_request(?int $contentLength = null): void
     run_deferred_tasks();
 }
 
+/** @return never */
 function json_response(array $payload, int $status = 200): void
 {
+    global $pdo;
+
     /*
      * A single malformed byte anywhere in the payload — a name imported from a latin1 source, say —
      * used to make json_encode() return false, and `echo false` sends an empty body with a 200
@@ -308,6 +663,16 @@ function json_response(array $payload, int $status = 200): void
         exit;
     }
 
+    /*
+     * Detailed module logs are still preferred, but a state-changing endpoint must not disappear
+     * from the administrator's trail just because that endpoint forgot to write one. Queueing the
+     * fallback here gives every successful authenticated mutation the same safety net and lets the
+     * response reach the browser before the optional location lookup and INSERT run.
+     */
+    if ($pdo instanceof PDO) {
+        queue_automatic_activity_audit($pdo, $payload, $status);
+    }
+
     http_response_code($status);
     echo $json;
     finish_request(strlen($json));
@@ -316,15 +681,87 @@ function json_response(array $payload, int $status = 200): void
 
 function read_json_body(): array
 {
+    if (array_key_exists('hris_json_request_body', $GLOBALS)) {
+        return is_array($GLOBALS['hris_json_request_body']) ? $GLOBALS['hris_json_request_body'] : [];
+    }
+
     $rawBody = file_get_contents('php://input');
 
     if ($rawBody === false || trim($rawBody) === '') {
+        $GLOBALS['hris_json_request_body'] = [];
         return [];
     }
 
     $data = json_decode($rawBody, true);
 
-    return is_array($data) ? $data : [];
+    $GLOBALS['hris_json_request_body'] = is_array($data) ? $data : [];
+
+    return $GLOBALS['hris_json_request_body'];
+}
+
+function contains_disallowed_request_text(string $value): bool
+{
+    return preg_match(
+        '~<[^>]*>'
+        . '|(?:<|&lt;|&#0*60;|&#x0*3c;)\s*/?\s*(?:script|iframe|object|embed|svg|math|style|link|meta)\b'
+        . '|<[^>]*\bon[a-z]+\s*='
+        . '|\b(?:javascript|vbscript)\s*:~iu',
+        $value
+    ) === 1;
+}
+
+function collect_disallowed_request_fields(mixed $value, string $fieldName = 'input'): array
+{
+    if (is_string($value)) {
+        if (stripos($fieldName, 'password') !== false || !contains_disallowed_request_text($value)) {
+            return [];
+        }
+
+        return [$fieldName => 'This text cannot be used.'];
+    }
+
+    if (!is_array($value)) {
+        return [];
+    }
+
+    $errors = [];
+
+    foreach ($value as $key => $item) {
+        $nextFieldName = is_string($key) && $key !== '' ? $key : $fieldName;
+
+        if (stripos($nextFieldName, 'password') !== false) {
+            continue;
+        }
+
+        foreach (collect_disallowed_request_fields($item, $nextFieldName) as $errorField => $message) {
+            $errors[$errorField] = $message;
+        }
+    }
+
+    return $errors;
+}
+
+function validate_request_text_input(): void
+{
+    $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+    if (in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+        return;
+    }
+
+    $payload = $_POST !== [] ? $_POST : read_json_body();
+    $errors = collect_disallowed_request_fields($payload);
+
+    if ($errors === []) {
+        return;
+    }
+
+    json_response([
+        'success' => false,
+        'reason' => 'unsafe_input',
+        'message' => 'This text cannot be used.',
+        'errors' => $errors,
+    ], 422);
 }
 
 function require_method(string $method): void
@@ -358,10 +795,20 @@ function verify_csrf_token(): void
     }
 
     /*
-     * Every write is checked. There used to be an exemption here for a request that authenticated
-     * with a bearer token rather than a cookie -- forgery rides on the cookie the browser attaches by
-     * itself, and cannot set an Authorization header -- but bearer authentication has been removed,
-     * so the only callers left are cookie ones and all of them have ambient authority to forge.
+     * Sign-in and its anonymous captcha check explicitly opt out. They do not act with an
+     * authenticated user's authority, and requiring an anonymous-session token here can strand the
+     * login form after that session changes. Authenticated writes never define this constant and
+     * continue through the token comparison below.
+     */
+    if (defined('HRIS_CSRF_EXEMPT') && constant('HRIS_CSRF_EXEMPT') === true) {
+        return;
+    }
+
+    /*
+     * Every remaining write is checked. There used to be another exemption here for a request that
+     * authenticated with a bearer token rather than a cookie -- forgery rides on the cookie the
+     * browser attaches by itself, and cannot set an Authorization header -- but bearer authentication
+     * has been removed, so authenticated callers all have ambient cookie authority to protect.
      */
     $providedToken = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
     $sessionToken = csrf_token();
@@ -375,6 +822,7 @@ function verify_csrf_token(): void
 }
 
 verify_csrf_token();
+validate_request_text_input();
 
 /*
  * The general request ceiling, counted before any endpoint gets to run. It sits after the CSRF check
@@ -384,317 +832,17 @@ verify_csrf_token();
  */
 throttle_request($pdo);
 
-const HRIS_ACCOUNT_USE_SESSION_KEY = 'admin_account_use';
-
-/**
- * Server-owned context for an administrator temporarily viewing the application as another user.
- *
- * This deliberately lives beside (not inside) the effective `user` session value. The effective user
- * is refreshed from the database on every request, while the original administrator identity must
- * survive those refreshes so the browser can always return without asking for another password.
- */
-function session_account_use(): ?array
-{
-    $context = $_SESSION[HRIS_ACCOUNT_USE_SESSION_KEY] ?? null;
-
-    if (!is_array($context) || (int)($context['admin_user_id'] ?? 0) <= 0) {
-        return null;
-    }
-
-    return $context;
-}
-
-/** Add only the safe, displayable part of the server session context to a user response. */
-function session_user_with_account_use(array $user): array
-{
-    $context = session_account_use();
-
-    if ($context === null) {
-        unset($user['accountUse']);
-        return $user;
-    }
-
-    $user['accountUse'] = [
-        'active' => true,
-        'startedAt' => $context['started_at'] ?? null,
-        'targetUserId' => (int)($context['target_user_id'] ?? ($user['id'] ?? 0)),
-        'admin' => [
-            'id' => (int)$context['admin_user_id'],
-            'username' => $context['admin_username'] ?? null,
-            'fullName' => $context['admin_full_name'] ?? null,
-            'role' => $context['admin_role'] ?? 'Admin',
-        ],
-    ];
-
-    return $user;
-}
-
-function account_use_lock_token_hash(string $token): string
-{
-    return hash('sha256', $token);
-}
-
-function account_use_lock_ttl_seconds(PDO $pdo): int
-{
-    $timeoutMinutes = (int)(security_settings($pdo)['sessionTimeoutMinutes'] ?? 30);
-    return max(1, $timeoutMinutes) * 60;
-}
-
-/**
- * Store temporary-account locks outside MySQL so this feature requires no database table or migration.
- * The installation path and configured database name keep separate HRIS checkouts from sharing locks.
- */
-function account_use_lock_store_path(): string
-{
-    $databaseName = getenv('HRIS_DB_NAME') ?: 'hris';
-    $namespace = substr(hash('sha256', __DIR__ . '|' . $databaseName), 0, 20);
-
-    return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR)
-        . DIRECTORY_SEPARATOR
-        . "hris-account-use-{$namespace}.json";
-}
-
-/** Remove malformed and expired entries while the store's exclusive file lock is held. */
-function prune_expired_account_use_lock_entries(array &$locks, int $now): void
-{
-    foreach ($locks as $targetUserId => $lock) {
-        if (
-            !is_array($lock)
-            || (int)($lock['target_user_id'] ?? 0) <= 0
-            || (int)($lock['admin_user_id'] ?? 0) <= 0
-            || (int)($lock['expires_at'] ?? 0) <= $now
-        ) {
-            unset($locks[$targetUserId]);
-        }
-    }
-}
-
-/**
- * Read and update the shared lock registry under one OS-level exclusive lock.
- * A single locked read-modify-write operation gives concurrent Apache workers the same race safety
- * that the former database primary key supplied, without adding application state to the schema.
- */
-function with_account_use_lock_store(callable $callback): mixed
-{
-    $path = account_use_lock_store_path();
-    $wasCreated = !is_file($path);
-    $handle = @fopen($path, 'c+b');
-
-    if ($handle === false) {
-        throw new RuntimeException('Unable to open the temporary account lock store.');
-    }
-
-    if ($wasCreated) {
-        @chmod($path, 0600);
-    }
-
-    try {
-        if (!flock($handle, LOCK_EX)) {
-            throw new RuntimeException('Unable to lock the temporary account lock store.');
-        }
-
-        rewind($handle);
-        $contents = stream_get_contents($handle);
-
-        if ($contents === false) {
-            throw new RuntimeException('Unable to read the temporary account lock store.');
-        }
-
-        if (trim($contents) === '') {
-            $locks = [];
-        } else {
-            $locks = json_decode($contents, true);
-
-            if (!is_array($locks)) {
-                throw new RuntimeException('The temporary account lock store is invalid.');
-            }
-        }
-
-        prune_expired_account_use_lock_entries($locks, time());
-        $result = $callback($locks);
-        $encoded = json_encode($locks, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-
-        rewind($handle);
-
-        if (!ftruncate($handle, 0)) {
-            throw new RuntimeException('Unable to clear the temporary account lock store.');
-        }
-
-        $remaining = $encoded;
-
-        while ($remaining !== '') {
-            $written = fwrite($handle, $remaining);
-
-            if ($written === false || $written === 0) {
-                throw new RuntimeException('Unable to write the temporary account lock store.');
-            }
-
-            $remaining = substr($remaining, $written);
-        }
-
-        if (!fflush($handle)) {
-            throw new RuntimeException('Unable to flush the temporary account lock store.');
-        }
-
-        return $result;
-    } finally {
-        @flock($handle, LOCK_UN);
-        fclose($handle);
-    }
-}
-
-/** Return a live lock for a target account. */
-function active_account_use_lock(PDO $pdo, int $targetUserId): ?array
-{
-    if ($targetUserId <= 0) {
-        return null;
-    }
-
-    return with_account_use_lock_store(
-        static fn (array &$locks): ?array => $locks[(string)$targetUserId] ?? null
-    );
-}
-
-/**
- * Atomically reserve an account. The file lock makes two Admin clicks race safely: exactly one
- * write wins and the other caller is told the account is already in use.
- */
-function acquire_account_use_lock(PDO $pdo, int $adminUserId, int $targetUserId): ?array
-{
-    if ($adminUserId <= 0 || $targetUserId <= 0) {
-        return null;
-    }
-
-    $token = bin2hex(random_bytes(32));
-    $now = time();
-    $expiresAt = $now + account_use_lock_ttl_seconds($pdo);
-
-    $acquired = with_account_use_lock_store(
-        static function (array &$locks) use ($adminUserId, $targetUserId, $token, $now, $expiresAt): bool {
-            $key = (string)$targetUserId;
-
-            if (isset($locks[$key])) {
-                return false;
-            }
-
-            $locks[$key] = [
-                'target_user_id' => $targetUserId,
-                'admin_user_id' => $adminUserId,
-                'lock_token_hash' => account_use_lock_token_hash($token),
-                'started_at' => date('c', $now),
-                'last_seen_at' => date('c', $now),
-                'expires_at' => $expiresAt,
-            ];
-
-            return true;
-        }
-    );
-
-    if (!$acquired) {
-        return null;
-    }
-
-    return [
-        'target_user_id' => $targetUserId,
-        'admin_user_id' => $adminUserId,
-        'lock_token' => $token,
-        'started_at' => date('c', $now),
-        'lock_renewed_at' => $now,
-    ];
-}
-
-function touch_account_use_lock(PDO $pdo, array $context): bool
-{
-    $targetUserId = (int)($context['target_user_id'] ?? 0);
-    $adminUserId = (int)($context['admin_user_id'] ?? 0);
-    $token = (string)($context['lock_token'] ?? '');
-
-    if ($targetUserId <= 0 || $adminUserId <= 0 || $token === '') {
-        return false;
-    }
-
-    $now = time();
-
-    return with_account_use_lock_store(
-        static function (array &$locks) use ($pdo, $targetUserId, $adminUserId, $token, $now): bool {
-            $key = (string)$targetUserId;
-            $lock = $locks[$key] ?? null;
-
-            if (
-                !is_array($lock)
-                || (int)($lock['admin_user_id'] ?? 0) !== $adminUserId
-                || !hash_equals(
-                    (string)($lock['lock_token_hash'] ?? ''),
-                    account_use_lock_token_hash($token)
-                )
-            ) {
-                return false;
-            }
-
-            $locks[$key]['last_seen_at'] = date('c', $now);
-            $locks[$key]['expires_at'] = $now + account_use_lock_ttl_seconds($pdo);
-
-            return true;
-        }
-    );
-}
-
-function release_account_use_lock(PDO $pdo, ?array $context = null): void
-{
-    $context ??= session_account_use();
-
-    if ($context === null) {
-        return;
-    }
-
-    $targetUserId = (int)($context['target_user_id'] ?? 0);
-    $adminUserId = (int)($context['admin_user_id'] ?? 0);
-    $token = (string)($context['lock_token'] ?? '');
-
-    if ($targetUserId <= 0 || $adminUserId <= 0 || $token === '') {
-        return;
-    }
-
-    with_account_use_lock_store(
-        static function (array &$locks) use ($targetUserId, $adminUserId, $token): void {
-            $key = (string)$targetUserId;
-            $lock = $locks[$key] ?? null;
-
-            if (
-                is_array($lock)
-                && (int)($lock['admin_user_id'] ?? 0) === $adminUserId
-                && hash_equals(
-                    (string)($lock['lock_token_hash'] ?? ''),
-                    account_use_lock_token_hash($token)
-                )
-            ) {
-                unset($locks[$key]);
-            }
-        }
-    );
-}
-
 function session_user(): ?array
 {
     if (!isset($_SESSION['user']) || !is_array($_SESSION['user'])) {
         return null;
     }
 
-    return session_user_with_account_use($_SESSION['user']);
+    return $_SESSION['user'];
 }
 
 function destroy_session(): void
 {
-    global $pdo;
-
-    if ($pdo instanceof PDO) {
-        try {
-            release_account_use_lock($pdo);
-        } catch (Throwable $exception) {
-            error_log('Unable to release temporary account lock: ' . $exception->getMessage());
-        }
-    }
-
     $_SESSION = [];
 
     if (ini_get('session.use_cookies')) {
@@ -736,6 +884,8 @@ function full_name_from_row(array $row): string
 
 function find_employee_for_user(PDO $pdo, array $user): ?array
 {
+    ensure_employee_designation_column($pdo);
+
     $username = trimmed_text($user['username'] ?? '');
     $email = trimmed_text($user['email'] ?? '');
     $employeeId = trimmed_text($user['employee_id'] ?? '');
@@ -781,9 +931,11 @@ function find_employee_for_user(PDO $pdo, array $user): ?array
                     e.first_name,
                     e.middle_name,
                     e.last_name,
+                    e.gender,
                     e.profile_image,
                     d.name AS division,
-                    des.name AS designation
+                    des.name AS position,
+                    e.designation
                  FROM employees e
                  LEFT JOIN divisions d ON d.id = e.division_id
                  LEFT JOIN designations des ON des.id = e.designation_id
@@ -798,9 +950,11 @@ function find_employee_for_user(PDO $pdo, array $user): ?array
                     e.first_name,
                     e.middle_name,
                     e.last_name,
+                    e.gender,
                     e.profile_image,
                     d.name AS division,
-                    des.name AS designation
+                    des.name AS position,
+                    e.designation
                  FROM employees e
                  LEFT JOIN divisions d ON d.id = e.division_id
                  LEFT JOIN designations des ON des.id = e.designation_id
@@ -815,9 +969,11 @@ function find_employee_for_user(PDO $pdo, array $user): ?array
                     e.first_name,
                     e.middle_name,
                     e.last_name,
+                    e.gender,
                     e.profile_image,
                     d.name AS division,
-                    des.name AS designation
+                    des.name AS position,
+                    e.designation
                  FROM employees e
                  LEFT JOIN divisions d ON d.id = e.division_id
                  LEFT JOIN designations des ON des.id = e.designation_id
@@ -852,8 +1008,10 @@ function enrich_user_with_employee(PDO $pdo, array $user): array
         'first_name' => $employee['first_name'] ?? ($user['first_name'] ?? null),
         'middle_name' => $employee['middle_name'] ?? ($user['middle_name'] ?? null),
         'last_name' => $employee['last_name'] ?? ($user['last_name'] ?? null),
+        'gender' => $employee['gender'] ?? ($user['gender'] ?? null),
         'profile_image' => $employee['profile_image'] ?? ($user['profile_image'] ?? null),
         'division' => $employee['division'] ?? ($user['division'] ?? null),
+        'position' => $employee['position'] ?? ($user['position'] ?? null),
         'designation' => $employee['designation'] ?? ($user['designation'] ?? null),
     ]);
 }
@@ -862,6 +1020,7 @@ function session_user_record(PDO $pdo, int $id): ?array
 {
     ensure_two_factor_schema($pdo);
     ensure_email_verification_columns($pdo);
+    ensure_employee_designation_column($pdo);
 
     $statement = $pdo->prepare(
         'SELECT
@@ -878,9 +1037,11 @@ function session_user_record(PDO $pdo, int $id): ?array
             e.first_name,
             e.middle_name,
             e.last_name,
+            e.gender,
             e.profile_image,
             d.name AS division,
-            des.name AS designation
+            des.name AS position,
+            e.designation
          FROM users u
          LEFT JOIN roles r ON r.id = u.role_id
          LEFT JOIN employees e
@@ -916,7 +1077,7 @@ function refresh_session_user(array $user): ?array
         return null;
     }
 
-    return session_user_with_account_use(format_user($freshUser));
+    return format_user($freshUser);
 }
 
 /*
@@ -935,10 +1096,28 @@ function refresh_session_user(array $user): ?array
  * talking, not the user, so counting them as activity would keep every session alive indefinitely.
  * The expiry check itself always runs — an idle session still expires and still 401s.
  *
+ * Session extension is opt-in. Notification, chat, badge, and data-refresh pollers call most of the
+ * same endpoints as visible user actions, so counting every authenticated request as activity would
+ * keep an unattended dashboard signed in indefinitely. App.jsx sends a deliberate heartbeat to
+ * session.php after real browser activity, and that endpoint opts in to extension.
+ *
  * `$keepSessionOpen` is for the handful of endpoints that write to $_SESSION themselves; see the
  * note over the session_write_close() below for why every other endpoint wants the default.
+ *
+ * `$allowAnonymous` is reserved for session.php's identity probe. It performs the same expiry,
+ * database, and account-status checks but returns null instead of emitting a 401, allowing that one
+ * endpoint to describe both authenticated and anonymous states with a stable JSON response.
+ *
+ * `$allowPasswordChangeRequired` is deliberately true only for session.php and
+ * force_change_password.php. A temporary-password session may identify its user and replace that
+ * password, but it must not use any ordinary authenticated API until the requirement is cleared.
  */
-function require_session_user(bool $extendSession = true, bool $keepSessionOpen = false): array
+function require_session_user(
+    bool $extendSession = false,
+    bool $keepSessionOpen = false,
+    bool $allowAnonymous = false,
+    bool $allowPasswordChangeRequired = false
+): ?array
 {
     global $pdo;
 
@@ -950,6 +1129,14 @@ function require_session_user(bool $extendSession = true, bool $keepSessionOpen 
      * in and an Authorization header means nothing to this API any more.
      */
     if ($user === null) {
+        if ($allowAnonymous) {
+            if (session_status() === PHP_SESSION_ACTIVE) {
+                session_write_close();
+            }
+
+            return null;
+        }
+
         json_response([
             'success' => false,
             'message' => 'You need to sign in first.',
@@ -962,38 +1149,31 @@ function require_session_user(bool $extendSession = true, bool $keepSessionOpen 
 
     if ($lastActivityAt > 0 && (time() - $lastActivityAt) > $timeoutSeconds) {
         destroy_session();
+
+        if ($allowAnonymous) {
+            return null;
+        }
+
         json_response([
             'success' => false,
+            'reason' => 'session_timeout',
             'message' => 'Your session expired due to inactivity. Please sign in again.',
         ], 401);
     }
 
     if ($extendSession) {
         $_SESSION['last_activity_at'] = time();
-
-        $accountUse = session_account_use();
-        $lastRenewedAt = (int)($accountUse['lock_renewed_at'] ?? 0);
-
-        // A one-minute renewal cadence keeps the shared lock file aligned with the PHP session
-        // without rewriting it on every dashboard request.
-        if ($accountUse !== null && (time() - $lastRenewedAt) >= 60) {
-            if (!touch_account_use_lock($pdo, $accountUse)) {
-                destroy_session();
-                json_response([
-                    'success' => false,
-                    'reason' => 'account_use_expired',
-                    'message' => 'Temporary account access expired. Please sign in again.',
-                ], 401);
-            }
-
-            $_SESSION[HRIS_ACCOUNT_USE_SESSION_KEY]['lock_renewed_at'] = time();
-        }
     }
 
     $refreshedUser = refresh_session_user($user);
 
     if ($refreshedUser === null) {
         destroy_session();
+
+        if ($allowAnonymous) {
+            return null;
+        }
+
         json_response([
             'success' => false,
             'message' => 'Your session is no longer valid. Please sign in again.',
@@ -1016,6 +1196,11 @@ function require_session_user(bool $extendSession = true, bool $keepSessionOpen 
      */
     if (strcasecmp((string)($refreshedUser['status'] ?? ''), 'Active') !== 0) {
         destroy_session();
+
+        if ($allowAnonymous) {
+            return null;
+        }
+
         json_response([
             'success' => false,
             'reason' => 'account_inactive',
@@ -1023,31 +1208,24 @@ function require_session_user(bool $extendSession = true, bool $keepSessionOpen 
         ], 401);
     }
 
-    /*
-     * A user who was already signed in when an Admin reserved their account is ended on the next
-     * authenticated request. The Admin's effective session carries account-use context and is the
-     * only session allowed through the matching lock.
-     */
-    if (session_account_use() === null) {
-        $lastAccountUseCheckAt = (int)($_SESSION['account_use_check_at'] ?? 0);
+    if (!$allowPasswordChangeRequired && !empty($refreshedUser['must_change_password'])) {
+        // Retain the fresh database flag in the session so session.php and the next page reload both
+        // continue to show the mandatory password-change screen.
+        $_SESSION['user'] = $refreshedUser;
 
-        // One lookup per browser every ten seconds is enough to end an already-open employee
-        // session promptly without adding a query to every polling request on every dashboard.
-        if ((time() - $lastAccountUseCheckAt) >= 10) {
-            $_SESSION['account_use_check_at'] = time();
-
-            if (active_account_use_lock($pdo, (int)($refreshedUser['id'] ?? 0)) !== null) {
-                destroy_session();
-                json_response([
-                    'success' => false,
-                    'reason' => 'account_in_use_by_admin',
-                    'message' => 'This account is currently being used by an administrator. Please try again later.',
-                ], 401);
-            }
+        if (!$keepSessionOpen) {
+            session_write_close();
         }
+
+        json_response([
+            'success' => false,
+            'reason' => 'password_change_required',
+            'message' => 'You must change your temporary password before accessing the dashboard.',
+        ], 403);
     }
 
     $_SESSION['user'] = $refreshedUser;
+    audit_monitor_authenticated_user($refreshedUser);
 
     /*
      * Every write this request owed the session has now happened, so the lock on it can go.
@@ -1133,6 +1311,25 @@ function user_role_key(array $user): string
     }
 
     return $roleKey;
+}
+
+/**
+ * SQL for the role name of the user account linked to an employee row, for a SELECT list.
+ *
+ * A correlated subquery rather than a JOIN so a row is never duplicated when more than one
+ * account shares the employee's e-mail; the lowest user id wins, as login_user_query() does.
+ * Yields NULL for an employee with no active account.
+ */
+function employee_role_name_subselect(string $employeeAlias = 'e'): string
+{
+    /* Aliases no outer query uses, so the subquery never shadows a caller's `u` or `r`. */
+    return '(SELECT role_row.name
+             FROM users role_user
+             INNER JOIN roles role_row ON role_row.id = role_user.role_id
+             WHERE role_user.email COLLATE utf8mb4_unicode_ci = ' . $employeeAlias . '.email COLLATE utf8mb4_unicode_ci
+               AND role_user.is_archived = 0
+             ORDER BY role_user.id ASC
+             LIMIT 1)';
 }
 
 function session_employee_record_id(PDO $pdo, array $user): ?int
@@ -1304,13 +1501,179 @@ function format_user(array $user): array
         'first_name' => $firstName !== '' ? $firstName : null,
         'middle_name' => $middleName !== '' ? $middleName : null,
         'last_name' => $lastName !== '' ? $lastName : null,
+        'gender' => $user['gender'] ?? null,
         'division' => $user['division'] ?? null,
+        'position' => $user['position'] ?? null,
         'designation' => $user['designation'] ?? null,
         'profile_image' => $user['profile_image'] ?? null,
         'must_change_password' => (bool)($user['must_change_password'] ?? false),
         'two_factor_enabled' => (bool)($user['two_factor_enabled'] ?? false),
         'twoFactorEnabled' => (bool)($user['two_factor_enabled'] ?? false),
     ];
+}
+
+/** Remember the signed-in actor so json_response() can cover endpoints without a detailed log. */
+function audit_monitor_authenticated_user(array $user): void
+{
+    $GLOBALS['hris_audit_request_user'] = $user;
+}
+
+/** Mark this request as already represented by a detailed audit row. */
+function audit_mark_entry_written(): void
+{
+    $GLOBALS['hris_audit_entry_written'] = true;
+}
+
+function audit_request_has_entry(): bool
+{
+    return ($GLOBALS['hris_audit_entry_written'] ?? false) === true;
+}
+
+function automatic_audit_token(mixed $value, string $fallback): string
+{
+    $token = strtolower(trim((string)($value ?? '')));
+    $token = trim((string)preg_replace('/[^a-z0-9]+/', '_', $token), '_');
+
+    return $token !== '' ? $token : $fallback;
+}
+
+function automatic_audit_endpoint(): string
+{
+    $script = basename((string)($_SERVER['SCRIPT_NAME'] ?? $_SERVER['SCRIPT_FILENAME'] ?? 'activity.php'));
+    $endpoint = pathinfo($script, PATHINFO_FILENAME);
+
+    return automatic_audit_token($endpoint, 'activity');
+}
+
+function automatic_audit_request_action(string $method): string
+{
+    $body = isset($GLOBALS['hris_json_request_body']) && is_array($GLOBALS['hris_json_request_body'])
+        ? $GLOBALS['hris_json_request_body']
+        : [];
+    $requestedAction = $_GET['action'] ?? $_POST['action'] ?? ($body['action'] ?? '');
+    $requestedAction = automatic_audit_token($requestedAction, '');
+
+    if ($requestedAction !== '') {
+        return $requestedAction;
+    }
+
+    $endpointDefaults = [
+        'messages:POST' => 'message_sent',
+        'employee_documents:POST' => 'uploaded',
+        'employee_documents:DELETE' => 'deleted',
+        'employee_profile_image:POST' => 'updated',
+        'employee_signature:PUT' => 'updated',
+    ];
+    $default = $endpointDefaults[automatic_audit_endpoint() . ':' . $method] ?? null;
+
+    if ($default !== null) {
+        return $default;
+    }
+
+    return match ($method) {
+        'PUT', 'PATCH' => 'updated',
+        'DELETE' => 'deleted',
+        default => 'submitted',
+    };
+}
+
+/**
+ * Add one generic row for a successful authenticated mutation that did not write a detailed row.
+ * Request bodies are deliberately excluded: password, OTP, signature and document data must never
+ * be copied into an audit record. Only routing metadata and the HTTP result are retained.
+ */
+function write_automatic_activity_audit(
+    PDO $pdo,
+    array $user,
+    string $method,
+    string $endpoint,
+    string $operation,
+    string $responseMessage,
+    int $status
+): void {
+    try {
+        ensure_audit_logs_table($pdo);
+
+        $context = audit_request_context();
+        $userId = (int)($user['id'] ?? 0) ?: null;
+        $actorName = audit_user_display_name($user) ?? ($user['username'] ?? null);
+        $actorRole = $user['role'] ?? null;
+        $action = substr($endpoint . '.' . $operation, 0, 150);
+        $endpointLabel = ucwords(str_replace('_', ' ', $endpoint));
+        $operationLabel = strtolower(str_replace('_', ' ', $operation));
+        $summary = trim($responseMessage);
+
+        if ($summary === '') {
+            $summary = sprintf('%s completed %s in %s.', $actorName ?? 'A user', $operationLabel, $endpointLabel);
+        }
+
+        $statement = $pdo->prepare(
+            'INSERT INTO audit_logs
+                (user_id, action, ip_address, location, device, browser, os, actor_id, actor_name, actor_role, category, entity_type, entity_id, summary, details_json, user_agent)
+             VALUES
+                (:user_id, :action, :ip_address, :location, :device, :browser, :os, :actor_id, :actor_name, :actor_role, :category, :entity_type, :entity_id, :summary, :details_json, :user_agent)'
+        );
+        $statement->execute([
+            ':user_id' => $userId,
+            ':action' => $action,
+            ':ip_address' => $context['ipAddress'],
+            ':location' => $context['location'],
+            ':device' => $context['device'],
+            ':browser' => $context['browser'],
+            ':os' => $context['os'],
+            ':actor_id' => $userId,
+            ':actor_name' => $actorName,
+            ':actor_role' => $actorRole,
+            ':category' => 'activity',
+            ':entity_type' => $endpoint,
+            ':entity_id' => null,
+            ':summary' => $summary,
+            ':details_json' => audit_details_json([
+                'endpoint' => $endpoint . '.php',
+                'method' => $method,
+                'operation' => $operation,
+                'httpStatus' => $status,
+                'automatic' => true,
+            ], $context),
+            ':user_agent' => $context['userAgent'],
+        ]);
+        audit_mark_entry_written();
+    } catch (Throwable $exception) {
+        // A completed user action must not be reported as failed only because its optional log failed.
+    }
+}
+
+function queue_automatic_activity_audit(PDO $pdo, array $payload, int $status): void
+{
+    $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+    $user = $GLOBALS['hris_audit_request_user'] ?? null;
+
+    if (
+        !in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)
+        || !is_array($user)
+        || audit_request_has_entry()
+        || $status < 200
+        || $status >= 400
+        || (($payload['success'] ?? true) === false)
+    ) {
+        return;
+    }
+
+    $endpoint = automatic_audit_endpoint();
+    $operation = automatic_audit_request_action($method);
+    $responseMessage = is_string($payload['message'] ?? null) ? trim($payload['message']) : '';
+
+    defer(static function () use ($pdo, $user, $method, $endpoint, $operation, $responseMessage, $status): void {
+        write_automatic_activity_audit(
+            $pdo,
+            $user,
+            $method,
+            $endpoint,
+            $operation,
+            $responseMessage,
+            $status
+        );
+    });
 }
 
 function write_auth_audit(PDO $pdo, ?array $user, string $action, string $summary, array $details = []): void
@@ -1323,23 +1686,6 @@ function write_auth_audit(PDO $pdo, ?array $user, string $action, string $summar
         $actorId = $userId;
         $actorName = $user['username'] ?? null;
         $actorRole = $user['role'] ?? null;
-        $accountUse = session_account_use();
-
-        /*
-         * The effective account stays in user_id/entity_id so the audit says which account was used,
-         * while actor_* names the administrator who actually clicked. This prevents temporary use
-         * from making an admin's changes indistinguishable from the employee's own actions.
-         */
-        if ($accountUse !== null) {
-            $actorId = (int)$accountUse['admin_user_id'];
-            $actorName = $accountUse['admin_username'] ?? $actorName;
-            $actorRole = $accountUse['admin_role'] ?? 'Admin';
-            $details['accountUse'] = [
-                'adminUserId' => $actorId,
-                'effectiveUserId' => $userId,
-                'startedAt' => $accountUse['started_at'] ?? null,
-            ];
-        }
 
         $statement = $pdo->prepare(
             'INSERT INTO audit_logs
@@ -1366,6 +1712,7 @@ function write_auth_audit(PDO $pdo, ?array $user, string $action, string $summar
             ':os' => $context['os'],
             ':user_agent' => $context['userAgent'],
         ]);
+        audit_mark_entry_written();
     } catch (Throwable $exception) {
         // Login should not fail just because the optional audit write failed.
     }
@@ -1497,7 +1844,7 @@ function archived_view_requested(): bool
  *
  * Adding them here rather than in a migration script keeps an existing install repairing itself on
  * the first request that touches the module, which is how the rest of this codebase handles schema
- * drift (see ensure_payroll_meta_table). The static cache means the INFORMATION_SCHEMA lookups
+ * drift (see ensure_payroll_meta_column). The static cache means the INFORMATION_SCHEMA lookups
  * happen at most once per table per request.
  */
 function ensure_archive_columns(PDO $pdo, string $table): void
@@ -1540,6 +1887,30 @@ function ensure_archive_columns(PDO $pdo, string $table): void
     }
 }
 
+/** Persist the employee's PDS photo preference on existing installations. */
+function ensure_employee_pds_photo_column(PDO $pdo): void
+{
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+    $ensured = true;
+
+    if (!database_table_exists($pdo, 'employees') || database_column_exists($pdo, 'employees', 'include_profile_image_in_pds')) {
+        return;
+    }
+
+    try {
+        // Keep existing PDS photo behavior until the employee changes their preference.
+        $pdo->exec('ALTER TABLE employees ADD COLUMN include_profile_image_in_pds TINYINT(1) NOT NULL DEFAULT 1 AFTER profile_image');
+    } catch (Throwable $exception) {
+        // Another request may have added the column first.
+        if (!database_column_exists($pdo, 'employees', 'include_profile_image_in_pds')) {
+            throw $exception;
+        }
+    }
+}
+
 /**
  * The name extension ("Jr.", "III", …), kept in its own column rather than tacked onto the last
  * name so a CS form can print it in its own box and a surname stays sortable.
@@ -1573,16 +1944,12 @@ function ensure_employee_suffix_column(PDO $pdo): void
 }
 
 /**
- * Payroll computation snapshots — the JSON a payslip is rebuilt from — used to live in `settings`
- * under a `payroll_meta:<payroll_id>` key. That left the application settings store mostly full of
- * payroll data, and orphaned a row every time a payroll run was deleted, because a key/value table
- * has no foreign key to cascade through.
- *
- * They have their own table now. This creates it and carries anything still sitting in `settings`
- * across on the first request that touches payroll, so an existing install repairs itself instead of
- * needing a migration run by hand.
+ * A user created from User Management gets its linked employee row before anyone has decided where
+ * that person sits, so division and designation have to be allowed to stay empty until the record is
+ * completed from Employee Management. Both columns shipped NOT NULL, which is what used to force a
+ * placeholder "Unassigned" division and designation into existence on every such account.
  */
-function ensure_payroll_meta_table(PDO $pdo): void
+function ensure_employee_assignment_optional(PDO $pdo): void
 {
     static $ensured = false;
 
@@ -1590,28 +1957,429 @@ function ensure_payroll_meta_table(PDO $pdo): void
         return;
     }
 
-    // The foreign key needs its parent; on a database without payroll there is nothing to move yet.
-    if (!database_table_exists($pdo, 'Payroll')) {
+    $ensured = true;
+
+    if (!database_table_exists($pdo, 'employees')) {
         return;
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = "employees"
+           AND COLUMN_NAME IN ("division_id", "designation_id")
+           AND IS_NULLABLE = "NO"'
+    );
+    $statement->execute();
+
+    foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $column) {
+        try {
+            $pdo->exec("ALTER TABLE employees MODIFY {$column} INT(10) UNSIGNED NULL DEFAULT NULL");
+        } catch (Throwable $exception) {
+            // A parallel request that won the race already relaxed it; the next check sees it.
+            error_log("Employee {$column} nullability setup skipped: " . $exception->getMessage());
+        }
+    }
+}
+
+/**
+ * An employee's designation: the assignment given on top of their position, such as "OIC, Finance
+ * Section" or "Chief, Administrative Section". Optional free text on the employee row.
+ *
+ * `employees.designation_id` is older than this column and, despite its name, points at the
+ * employee's *position*. The `designations` table is the position catalog (title, hierarchy level,
+ * salary grade), and changing an employee's entry there is an appointment change: it opens a service
+ * record and counts toward promotions. A designation is neither, so it lives here and nothing is
+ * keyed on it.
+ *
+ * Nearly every endpoint prints an employee's title, so this runs where the session user is loaded --
+ * which every signed-in request does -- instead of module by module. One INFORMATION_SCHEMA read
+ * answers both "is there an employees table" and "does it have the column yet".
+ */
+function ensure_employee_designation_column(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    $ensured = true;
+
+    $present = (int)$pdo->query(
+        "SELECT COUNT(*)
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'employees'
+           AND COLUMN_NAME IN ('designation_id', 'designation')"
+    )->fetchColumn();
+
+    // 0: no employees table yet (a fresh, empty database). 2: already migrated.
+    if ($present !== 1) {
+        return;
+    }
+
+    try {
+        $pdo->exec('ALTER TABLE employees ADD COLUMN designation VARCHAR(150) NULL DEFAULT NULL AFTER designation_id');
+    } catch (Throwable $exception) {
+        // A parallel request that won the race added it, and runs the split below itself.
+        error_log('Employee designation column setup skipped: ' . $exception->getMessage());
+
+        return;
+    }
+
+    employee_designation_split_combined_titles($pdo);
+}
+
+/**
+ * "Engineer IV / Chief, Mineral Land Survey Section" -> ["Engineer IV", "Chief, Mineral Land Survey
+ * Section"]. Null unless the part after " / " reads as a designation, so "Driver / Mechanic" -- one
+ * position title -- is left whole.
+ */
+function employee_designation_split_title(string $name): ?array
+{
+    if (!preg_match('~^(.+?)\s+/\s+((?:chief|oic|officer[\s-]+in[\s-]+charge)\b.*)$~i', trim($name), $match)) {
+        return null;
+    }
+
+    return [trim($match[1]), trim($match[2])];
+}
+
+/**
+ * Before positions and designations were separate, a catalog entry could carry both in one name.
+ * This runs once, when the designation column is first added, and takes them apart:
+ *
+ *  - the part before " / " is the position. It is matched case-insensitively against the division's
+ *    other active entries, and added to the catalog (at the combined entry's level) when there is none;
+ *  - anyone holding the combined entry moves to that position and gets the part after " / " as their
+ *    designation. This is a direct update, so no service record is opened: the appointment is the same;
+ *  - the combined entry is archived rather than deleted. Service records and promotions may still
+ *    point at it, and the archive keeps its full name on file.
+ */
+function employee_designation_split_combined_titles(PDO $pdo): void
+{
+    if (!database_table_exists($pdo, 'designations')) {
+        return;
+    }
+
+    ensure_organization_structure_columns($pdo);
+
+    $combined = [];
+
+    foreach ($pdo->query(
+        'SELECT id, division_id, name, hierarchy_level, salary_grade
+         FROM designations
+         WHERE is_archived = 0
+           AND name LIKE "% / %"
+         ORDER BY hierarchy_level, id'
+    )->fetchAll() as $row) {
+        $parts = employee_designation_split_title((string)$row['name']);
+
+        if ($parts !== null) {
+            $combined[] = $row + ['position' => $parts[0], 'designation' => $parts[1]];
+        }
+    }
+
+    if ($combined === []) {
+        return;
+    }
+
+    $findPosition = $pdo->prepare(
+        'SELECT id
+         FROM designations
+         WHERE division_id = :division_id
+           AND is_archived = 0
+           AND LOWER(TRIM(name)) = LOWER(:name)
+         ORDER BY id
+         LIMIT 1'
+    );
+    $addPosition = $pdo->prepare(
+        'INSERT INTO designations (division_id, name, hierarchy_level, salary_grade, is_archived)
+         VALUES (:division_id, :name, :hierarchy_level, :salary_grade, 0)'
+    );
+    $moveHolders = $pdo->prepare(
+        'UPDATE employees
+         SET designation_id = :position_id,
+             designation = COALESCE(NULLIF(TRIM(designation), ""), :designation)
+         WHERE designation_id = :combined_id'
+    );
+    $archive = $pdo->prepare('UPDATE designations SET is_archived = 1 WHERE id = :id');
+
+    try {
+        $pdo->beginTransaction();
+
+        foreach ($combined as $row) {
+            $findPosition->execute([
+                ':division_id' => (int)$row['division_id'],
+                ':name' => $row['position'],
+            ]);
+            $positionId = (int)$findPosition->fetchColumn();
+            $findPosition->closeCursor();
+
+            if ($positionId <= 0) {
+                $addPosition->execute([
+                    ':division_id' => (int)$row['division_id'],
+                    ':name' => $row['position'],
+                    ':hierarchy_level' => (int)($row['hierarchy_level'] ?? 1) ?: 1,
+                    ':salary_grade' => $row['salary_grade'] ?? null,
+                ]);
+                $positionId = (int)$pdo->lastInsertId();
+            }
+
+            $moveHolders->execute([
+                ':position_id' => $positionId,
+                ':designation' => $row['designation'],
+                ':combined_id' => (int)$row['id'],
+            ]);
+            $archive->execute([':id' => (int)$row['id']]);
+        }
+
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        error_log('Combined position titles were not split: ' . $exception->getMessage());
+    }
+}
+
+/**
+ * The title printed under someone's signature: their designation when they have one, since that is
+ * the capacity they sign in ("Chief, Administrative Section"), otherwise their position.
+ */
+function employee_signatory_title(mixed $position, mixed $designation): string
+{
+    $designation = trim((string)($designation ?? ''));
+
+    return $designation !== '' ? $designation : trim((string)($position ?? ''));
+}
+
+/**
+ * Payroll computation snapshots — the JSON a payslip is rebuilt from — live on their parent
+ * `payroll` row. Keeping the snapshot there removes the one-to-one `payrollmeta` table without
+ * losing historical inputs, and deleting a payroll row cannot leave snapshot data behind.
+ *
+ * Very old installations stored snapshots in `settings` under `payroll_meta:<payroll_id>`. Carry
+ * those values across on the first payroll request, but delete a settings value only after an exact
+ * copy is present on its payroll row.
+ */
+function ensure_payroll_meta_column(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    // A fresh, empty database may not have been imported yet.
+    if (!database_table_exists($pdo, 'payroll')) {
+        return;
+    }
+
+    if (!database_column_exists($pdo, 'payroll', 'meta_json')) {
+        try {
+            $pdo->exec('ALTER TABLE payroll ADD COLUMN meta_json LONGTEXT NULL AFTER net_pay');
+        } catch (Throwable $exception) {
+            // Another request may have completed the same idempotent schema repair first.
+            if (!database_column_exists($pdo, 'payroll', 'meta_json')) {
+                throw $exception;
+            }
+        }
     }
 
     if (database_table_exists($pdo, 'settings')) {
         /*
          * `payroll_meta:` is 13 characters, so the id starts at 14. The join drops orphans — rows
-         * whose payroll run is already gone — rather than migrating them: the foreign key would
-         * reject them anyway, and they describe a run nobody can open.
+         * whose payroll run is already gone — rather than attaching them to an unrelated run.
          */
         $pdo->exec(
-            'INSERT IGNORE INTO PayrollMeta (payroll_id, meta_json)
-             SELECT CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED), s.setting_value
-             FROM settings s
-             INNER JOIN Payroll p ON p.payroll_id = CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED)
-             WHERE s.setting_key LIKE "payroll_meta:%"'
+            'UPDATE payroll p
+             INNER JOIN settings s
+                ON p.payroll_id = CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED)
+               AND s.setting_key LIKE "payroll_meta:%"
+             SET p.meta_json = s.setting_value
+             WHERE p.meta_json IS NULL OR TRIM(p.meta_json) = ""'
         );
-        $pdo->exec('DELETE FROM settings WHERE setting_key LIKE "payroll_meta:%"');
+        $pdo->exec(
+            'DELETE s
+             FROM settings s
+             INNER JOIN payroll p
+                ON p.payroll_id = CAST(SUBSTRING(s.setting_key, 14) AS UNSIGNED)
+               AND s.setting_key LIKE "payroll_meta:%"
+             WHERE BINARY p.meta_json = BINARY s.setting_value'
+        );
     }
 
     $ensured = true;
+}
+
+/**
+ * Ensure the parent payroll row can carry its approval trail, itemised deductions, and the moment
+ * the payout desk released it.
+ *
+ * `released_at` / `released_by` are stamped on the row when the Cashier marks it Paid (see
+ * payroll_transition_status() in payroll.php), so the Released Payroll report can list a batch by
+ * the day the money went out rather than by the pay period it covered. A row released before these
+ * columns existed carries the same fact in its approval trail, which is what the backfill reads.
+ */
+function ensure_payroll_embedded_detail_columns(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    ensure_payroll_meta_column($pdo);
+
+    if (!database_table_exists($pdo, 'payroll')) {
+        return;
+    }
+
+    $columns = [
+        'approval_history_json' => 'LONGTEXT NULL AFTER meta_json',
+        'deduction_items_json' => 'LONGTEXT NULL AFTER approval_history_json',
+        'released_at' => 'DATETIME NULL AFTER deduction_items_json',
+        'released_by' => 'INT UNSIGNED NULL AFTER released_at',
+    ];
+    $added = [];
+
+    foreach ($columns as $column => $definition) {
+        if (database_column_exists($pdo, 'payroll', $column)) {
+            continue;
+        }
+
+        try {
+            $pdo->exec("ALTER TABLE payroll ADD COLUMN {$column} {$definition}");
+            $added[] = $column;
+        } catch (Throwable $exception) {
+            // A parallel request may have completed the same idempotent repair first.
+            if (!database_column_exists($pdo, 'payroll', $column)) {
+                throw $exception;
+            }
+        }
+    }
+
+    if (in_array('released_at', $added, true)) {
+        backfill_payroll_release_columns($pdo);
+    }
+
+    $ensured = true;
+}
+
+/**
+ * Stamp the release onto payroll rows the Cashier marked Paid before `released_at` existed, reading
+ * it back out of the approval trail the transition wrote at the time. Runs once, when the column is
+ * first added. Only the `Paid` action counts: restoring an archived batch lands on the Paid status
+ * too, but through a `Restored` entry, and that is not when the money went out.
+ */
+function backfill_payroll_release_columns(PDO $pdo): void
+{
+    $statement = $pdo->query(
+        'SELECT payroll_id, approval_history_json
+         FROM payroll
+         WHERE released_at IS NULL
+           AND COALESCE(approval_history_json, "") <> ""'
+    );
+    $update = $pdo->prepare(
+        'UPDATE payroll
+         SET released_at = :released_at, released_by = :released_by
+         WHERE payroll_id = :payroll_id'
+    );
+
+    foreach ($statement as $row) {
+        $release = null;
+
+        foreach (payroll_decode_embedded_json_list($row['approval_history_json'] ?? null) as $entry) {
+            if (is_array($entry) && strcasecmp(trim((string)($entry['action'] ?? '')), 'Paid') === 0) {
+                $release = $entry;
+            }
+        }
+
+        $releasedAt = $release !== null ? strtotime((string)($release['actionDate'] ?? '')) : false;
+
+        if ($releasedAt === false) {
+            continue;
+        }
+
+        $releasedBy = (int)($release['approverUserId'] ?? 0);
+        $update->execute([
+            ':released_at' => date('Y-m-d H:i:s', $releasedAt),
+            ':released_by' => $releasedBy > 0 ? $releasedBy : null,
+            ':payroll_id' => (int)$row['payroll_id'],
+        ]);
+    }
+}
+
+function payroll_embedded_json_column_is_allowed(string $column): bool
+{
+    return in_array($column, ['approval_history_json', 'deduction_items_json'], true);
+}
+
+/** Decode an embedded payroll list; malformed legacy data is treated as an empty list. */
+function payroll_decode_embedded_json_list(mixed $value): array
+{
+    if (!is_string($value) || trim($value) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($value, true);
+
+    $isList = is_array($decoded)
+        && ($decoded === [] || array_keys($decoded) === range(0, count($decoded) - 1));
+
+    return $isList ? $decoded : [];
+}
+
+function payroll_read_embedded_json_list(PDO $pdo, int $payrollId, string $column): array
+{
+    if ($payrollId <= 0 || !payroll_embedded_json_column_is_allowed($column)) {
+        return [];
+    }
+
+    $statement = $pdo->prepare("SELECT `{$column}` FROM payroll WHERE payroll_id = :payroll_id LIMIT 1");
+    $statement->execute([':payroll_id' => $payrollId]);
+
+    return payroll_decode_embedded_json_list($statement->fetchColumn());
+}
+
+function payroll_write_embedded_json_list(PDO $pdo, int $payrollId, string $column, array $items): void
+{
+    if ($payrollId <= 0 || !payroll_embedded_json_column_is_allowed($column)) {
+        throw new InvalidArgumentException('Invalid embedded payroll list target.');
+    }
+
+    $statement = $pdo->prepare(
+        "UPDATE payroll SET `{$column}` = :payload WHERE payroll_id = :payroll_id"
+    );
+    $statement->execute([
+        ':payload' => json_encode(
+            array_values($items),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+        ),
+        ':payroll_id' => $payrollId,
+    ]);
+}
+
+/** Allocate ids that remain unique across all embedded lists of the requested kind. */
+function payroll_next_embedded_item_id(PDO $pdo, string $column, string $idKey = 'id'): int
+{
+    if (!payroll_embedded_json_column_is_allowed($column)) {
+        throw new InvalidArgumentException('Invalid embedded payroll list target.');
+    }
+
+    $maximum = 0;
+    foreach ($pdo->query("SELECT `{$column}` FROM payroll WHERE `{$column}` IS NOT NULL") as $row) {
+        foreach (payroll_decode_embedded_json_list($row[$column] ?? null) as $item) {
+            if (is_array($item)) {
+                $maximum = max($maximum, (int)($item[$idKey] ?? 0));
+            }
+        }
+    }
+
+    return $maximum + 1;
 }
 
 function normalize_notification_type(string $type): string
@@ -1639,8 +2407,16 @@ function notification_type_label(string $type): string
         'permission_updated' => 'Permission Updated',
         'access_request' => 'Access Requested',
         'access_granted' => 'Access Granted',
-        'service_record_print_request' => 'Service Record Print Requested',
-        'service_record_print_approved' => 'Service Record Print Approved',
+        'promotion_submitted' => 'Promotion Submitted',
+        'promotion_recommended' => 'Promotion Recommended',
+        'promotion_approved' => 'Promotion Approved',
+        'promotion_rejected' => 'Promotion Rejected',
+        'ipcr_for_approval' => 'IPCR For Approval',
+        'ipcr_approved' => 'IPCR Approved',
+        'ipcr_returned' => 'IPCR Returned',
+        'ipcr_assigned' => 'IPCR Assigned',
+        'ipcr_submitted' => 'IPCR For Validation',
+        'ipcr_validated' => 'IPCR Validated',
         'system_alert' => 'System Alert',
         'custom' => 'Custom Notification',
         default => ucwords(str_replace('_', ' ', normalize_notification_type($type))),
@@ -1705,6 +2481,65 @@ function user_id_for_employee_record(PDO $pdo, int $employeeRecordId): ?int
     return $userId > 0 ? $userId : null;
 }
 
+/**
+ * Restore AUTO_INCREMENT on an integer primary key that an incomplete SQL import left without it,
+ * as leave_request.php's ensure_leave_request_ids() does for the leave tables. Existing rows keep
+ * their IDs: NO_AUTO_VALUE_ON_ZERO stops MySQL from renumbering a stored 0 that other tables may
+ * already reference. A column that is not the primary key is only logged, since AUTO_INCREMENT
+ * needs a key and failing here would take the whole endpoint down with it.
+ */
+function restore_auto_increment_primary_key(PDO $pdo, string $table, string $column): void
+{
+    $definition = $pdo->query("SHOW COLUMNS FROM `$table` LIKE " . $pdo->quote($column))->fetch(PDO::FETCH_ASSOC);
+    if (!$definition || str_contains(strtolower((string)$definition['Extra']), 'auto_increment')) {
+        return;
+    }
+
+    $type = (string)$definition['Type'];
+    if ($definition['Key'] !== 'PRI'
+        || !preg_match('/^(tinyint|smallint|mediumint|int|bigint)(\(\d+\))?( unsigned)?$/i', $type)) {
+        error_log("$table.$column is not an integer primary key; AUTO_INCREMENT was not restored.");
+        return;
+    }
+
+    $sqlMode = (string)$pdo->query('SELECT @@SESSION.sql_mode')->fetchColumn();
+    $repairMode = $sqlMode === '' ? 'NO_AUTO_VALUE_ON_ZERO' : $sqlMode . ',NO_AUTO_VALUE_ON_ZERO';
+    $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($repairMode));
+    try {
+        $pdo->exec("ALTER TABLE `$table` MODIFY COLUMN `$column` $type NOT NULL AUTO_INCREMENT");
+    } finally {
+        $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($sqlMode));
+    }
+}
+
+function ensure_notification_ids(PDO $pdo): void
+{
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+
+    $idColumn = $pdo->query(
+        'SELECT COLUMN_KEY, EXTRA FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "notifications" AND COLUMN_NAME = "id"'
+    )->fetch();
+
+    if ($idColumn && !str_contains((string)$idColumn['EXTRA'], 'auto_increment')) {
+        // Preserve imported notifications stored with id 0, one at a time: without a key there can be several.
+        $nextId = (int)$pdo->query('SELECT COALESCE(MAX(id), 0) + 1 FROM notifications')->fetchColumn();
+        $repair = $pdo->prepare('UPDATE notifications SET id = :id WHERE id = 0 LIMIT 1');
+        do {
+            $repair->execute([':id' => $nextId++]);
+        } while ($repair->rowCount() > 0);
+
+        // AUTO_INCREMENT needs the column to be a key, and an interrupted import can lose the primary key too.
+        $primaryKey = $idColumn['COLUMN_KEY'] === 'PRI' ? '' : ', ADD PRIMARY KEY (id)';
+        $pdo->exec('ALTER TABLE notifications MODIFY id INT UNSIGNED NOT NULL AUTO_INCREMENT' . $primaryKey);
+    }
+
+    $ensured = true;
+}
+
 function notification_insert(PDO $pdo, int $userId, string $title, string $message, string $type, ?string $referenceId = null): ?int
 {
     $userId = (int)$userId;
@@ -1716,6 +2551,8 @@ function notification_insert(PDO $pdo, int $userId, string $title, string $messa
     if ($userId <= 0 || $title === '' || $message === '' || $type === '') {
         return null;
     }
+
+    ensure_notification_ids($pdo);
 
     $duplicateStatement = $pdo->prepare(
         'SELECT id

@@ -55,7 +55,7 @@ export default function WorkspaceShell({
 
   return (
     // Transparent so the page gradient on <html> shows through; dark mode paints over it there.
-    <div className="min-h-screen bg-transparent">
+    <div className="app-workspace min-h-screen bg-transparent">
       <Header
         user={user}
         onOpenProfile={profilePath && onNavigate ? (tabId) => {
@@ -104,7 +104,7 @@ export default function WorkspaceShell({
       <main
         className={`pt-14 transition-all duration-300 ${
           fitViewport ? "lg:overflow-hidden" : "flex min-h-screen flex-col"
-        } ${sidebarCollapsed ? "lg:ml-16" : "lg:ml-64"}`}
+        } ${sidebarCollapsed ? "lg:ml-16" : "lg:ml-72"}`}
       >
         <div
           className={

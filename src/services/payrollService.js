@@ -79,13 +79,14 @@ export async function updatePayroll(id, payload, { notify = true } = {}) {
 /**
  * Asks payroll.php to email an authorization code, spending a solved captcha to do it.
  *
- * This is step one of the two-step check in front of submitting and approving: the sum buys the
- * send, and the code it mails is what the transition itself will ask for. `otpAction` is "submit" or
- * "approve", and the code is bound to whichever it was -- one mailed out to submit a batch cannot be
- * spent approving one. Call it again with the same action to resend; the server keeps the ticket and
- * replaces the code, and enforces its own floor on how often and how many times that can happen.
+ * This is step one of the two-step check in front of submitting, approving, and releasing payslips:
+ * the sum buys the send, and the code it mails is what the transition itself will ask for.
+ * `otpAction` is "submit", "approve", or "paid", and the code is bound to whichever it was. Call it
+ * again with the same action to resend; the server keeps the ticket and replaces the code, and
+ * enforces its own floor on how often and how many times that can happen.
  *
- * Resolves to `{ otpTicket, maskedEmail, expiresInSeconds, resendAvailableInSeconds, ... }`. It
+ * Resolves to `{ otpRequired: false }` when the administrator has disabled payroll email OTP, or to
+ * `{ otpRequired: true, otpTicket, maskedEmail, expiresInSeconds, ... }` after sending a code. It
  * never returns the code: only the mailbox gets that, which is the entire point of the second step.
  */
 export async function requestPayrollWorkflowOtp(otpAction, captcha = {}) {
@@ -101,10 +102,10 @@ export async function requestPayrollWorkflowOtp(otpAction, captcha = {}) {
  * The one-way steps of the payroll workflow, each carrying the security credential payroll.php
  * refuses them without.
  *
- * Submitting and approving carry `{ otpTicket, otpCode }` -- the emailed code from the step-up
- * above, which could only have been sent because a sum was solved first. Marking paid carries
- * `{ captchaId, captchaAnswer }` on its own. Returning a batch for correction carries nothing and is
- * deliberately ungated: it is the one move here that can be walked back. See
+ * Submitting, approving, and marking paid carry `{ otpTicket, otpCode }` -- the emailed code from
+ * the step-up above, which could only have been sent because a sum was solved first. Returning a
+ * batch for correction carries nothing and is deliberately ungated: it is the one move here that
+ * can be walked back. See
  * payroll_require_workflow_otp() and payroll_require_workflow_captcha() in payroll.php for which is
  * which and why.
  *
@@ -145,10 +146,10 @@ export async function rejectPayroll(id, reason) {
   return response.data;
 }
 
-export async function markPayrollPaid(id, captcha = {}) {
+export async function markPayrollPaid(id, credential = {}) {
   const response = await api.post("/payroll.php", {
     id,
-    ...captcha,
+    ...credential,
     action: "mark_paid",
   });
   notifyNotificationsChanged();
@@ -191,10 +192,10 @@ export async function bulkRejectPayroll(payrollIds, reason) {
   return response.data;
 }
 
-export async function bulkMarkPaid(payrollIds, captcha = {}) {
+export async function bulkMarkPaid(payrollIds, credential = {}) {
   const response = await api.post("/payroll.php", {
     payrollIds,
-    ...captcha,
+    ...credential,
     action: "bulk_mark_paid",
   }, {
     timeout: PAYROLL_ACTION_TIMEOUT_MS,

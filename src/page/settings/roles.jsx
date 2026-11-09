@@ -527,7 +527,6 @@ export default function RoleSettings({ onRolesChanged }) {
               <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
                 <p className="m-0 text-xs text-slate-400">You can refine role permissions at any time.</p>
                 <div className="flex flex-col-reverse gap-2 sm:flex-row">
-                <button type="button" onClick={closeEditor} disabled={saving} className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">Cancel</button>
                 <button type="submit" disabled={saving} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-indigo-600 bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:opacity-70">
                   {saving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
                   {saving ? "Saving..." : form.id ? "Save Changes" : "Create Role"}

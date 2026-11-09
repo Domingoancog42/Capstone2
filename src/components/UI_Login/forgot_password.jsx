@@ -1,6 +1,6 @@
-import React, { useState } from "react";
-import { Check, KeyRound, Mail, RotateCw, Send, ShieldCheck } from "lucide-react";
-import { forgotPassword, resetPassword } from "../../services/api";
+import React, { useEffect, useState } from "react";
+import { ArrowLeft, Check, KeyRound, Mail, RotateCw, Send, ShieldCheck } from "lucide-react";
+import { forgotPassword, resetPassword, verifyPasswordResetCode } from "../../services/api";
 import {
   evaluatePasswordPolicy,
   PASSWORD_POLICY_DEFAULT_MAX_LENGTH,
@@ -13,7 +13,16 @@ import { AUTH_LABEL_CLASS, cx, getStrengthTone } from "./ui/authTheme";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-const TOTAL_STEPS = 2;
+const STEPS = [
+  { key: "request", label: "Email" },
+  { key: "verify", label: "Verify" },
+  { key: "password", label: "Password" },
+];
+
+const TOTAL_STEPS = STEPS.length;
+
+/** How long Resend code stays locked after a code goes out, so the inbox has time to receive it. */
+const RESEND_COOLDOWN_SECONDS = 60;
 
 /**
  * Only the server can tell whether a password is the one already on the account -- the browser has
@@ -47,7 +56,7 @@ function policyChips(policy) {
   ];
 }
 
-/** Two-step account recovery: request a 6-digit code, then set a new password with it. */
+/** Three-step account recovery: request a code, verify it, then reveal the password form. */
 export default function ForgotPassword({ onBack, onResetSuccess, securitySettings = {} }) {
   const [identifier, setIdentifier] = useState("");
   const [code, setCode] = useState("");
@@ -59,6 +68,20 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendAvailableInSeconds, setResendAvailableInSeconds] = useState(0);
+
+  useEffect(() => {
+    if (resendAvailableInSeconds <= 0) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setResendAvailableInSeconds((current) => Math.max(0, current - 1));
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [resendAvailableInSeconds]);
 
   const maximumPasswordLength =
     Number(securitySettings.maximumPasswordLength) || PASSWORD_POLICY_DEFAULT_MAX_LENGTH;
@@ -91,7 +114,8 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
 
     try {
       const result = await forgotPassword({ identifier: trimmedIdentifier });
-      setStep("reset");
+      setResendAvailableInSeconds(RESEND_COOLDOWN_SECONDS);
+      setStep("verify");
       setCode("");
       setPassword("");
       setConfirmPassword("");
@@ -105,6 +129,47 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
           ? "Request timed out. Check the SMTP settings and try again."
           : requestError.response?.data?.message || "Unable to send the reset code."
       );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyCode = async (event) => {
+    event.preventDefault();
+
+    if (!trimmedIdentifier) {
+      setError("Email is required.");
+      setStep("request");
+      return;
+    }
+
+    if (code.length !== 6) {
+      setError("Enter the 6-digit code.");
+      return;
+    }
+
+    setLoading(true);
+    clearFeedback();
+
+    try {
+      const result = await verifyPasswordResetCode({
+        identifier: trimmedIdentifier,
+        code,
+      });
+      setPassword("");
+      setConfirmPassword("");
+      setPasswordInUse("");
+      setIsPasswordFieldActive(false);
+      setStep("password");
+      setMessage(result.message || "Code verified. Create your new password.");
+    } catch (requestError) {
+      const rejection = requestError.response?.data;
+
+      if (rejection?.codeExhausted) {
+        setCode("");
+      }
+
+      setError(rejection?.message || "Unable to verify the reset code.");
     } finally {
       setLoading(false);
     }
@@ -174,24 +239,68 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
         setPasswordInUse(password);
       }
 
-      /*
-       * The code was destroyed after too many wrong guesses, so there is nothing left for this step to
-       * accept. Going back to the request step is not decoration -- leaving the user on a form whose
-       * code can no longer be right means every further attempt fails for a reason the screen is not
-       * showing. The message is carried across by hand because clearFeedback() runs on the way in.
-       */
-      if (rejection?.codeExhausted) {
+      // A code can expire after the verification step, so return to the code screen if that happens.
+      if (rejection?.codeInvalid) {
         setCode("");
         setPassword("");
         setConfirmPassword("");
         setPasswordInUse("");
         setIsPasswordFieldActive(false);
-        setStep("request");
+        setStep("verify");
       }
 
       setError(rejection?.message || "Unable to reset the password.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    if (resendAvailableInSeconds > 0 || resending) {
+      return;
+    }
+
+    if (!trimmedIdentifier) {
+      setError("Email is required.");
+      setStep("request");
+      return;
+    }
+
+    if (!EMAIL_PATTERN.test(trimmedIdentifier)) {
+      setError("Enter a valid email address.");
+      setStep("request");
+      return;
+    }
+
+    setResending(true);
+    clearFeedback();
+
+    try {
+      const result = await forgotPassword({ identifier: trimmedIdentifier });
+      setResendAvailableInSeconds(RESEND_COOLDOWN_SECONDS);
+      setCode("");
+      setPassword("");
+      setConfirmPassword("");
+      setPasswordInUse("");
+      setIsPasswordFieldActive(false);
+      setStep("verify");
+      setMessage(result.message || "A new reset code was sent. Check your inbox and spam folder.");
+    } catch (requestError) {
+      const rejection = requestError.response?.data;
+      const retryAfter = Math.max(0, Number(rejection?.retryAfter) || 0);
+
+      // Rate limited: the button stays locked for as long as the server will refuse it anyway.
+      if (rejection?.reason === "rate_limited" && retryAfter > 0) {
+        setResendAvailableInSeconds((current) => Math.max(current, retryAfter));
+      }
+
+      setError(
+        requestError.code === "ECONNABORTED"
+          ? "Request timed out. Check the SMTP settings and try again."
+          : requestError.response?.data?.message || "Unable to resend the reset code."
+      );
+    } finally {
+      setResending(false);
     }
   };
 
@@ -205,8 +314,21 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
     clearFeedback();
   };
 
+  const handleBackToCode = () => {
+    setStep("verify");
+    setPassword("");
+    setConfirmPassword("");
+    setPasswordInUse("");
+    setIsPasswordFieldActive(false);
+    clearFeedback();
+  };
+
   const isRequestStep = step === "request";
-  const activeStepIndex = isRequestStep ? 0 : 1;
+  const isVerifyStep = step === "verify";
+  const activeStepIndex = Math.max(
+    0,
+    STEPS.findIndex((item) => item.key === step)
+  );
   const tone = getStrengthTone(passwordPolicy.strength, hasPasswordInput);
   const confirmMatches = confirmPassword.length > 0 && password === confirmPassword;
   const confirmMismatch = confirmPassword.length > 0 && password !== confirmPassword;
@@ -222,31 +344,73 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
       backLabel="Back to sign in"
       badge={ShieldCheck}
       highlight={isRequestStep ? undefined : trimmedIdentifier}
-      icon={isRequestStep ? Mail : KeyRound}
+      icon={isRequestStep ? Mail : isVerifyStep ? ShieldCheck : KeyRound}
       onBack={onBack}
       subtitle={
         isRequestStep
-          ? "We'll send a 6-digit code to your email."
-          : "Enter the code, then set a new password."
+          ? "We'll send a 6-digit verification code to your email."
+          : isVerifyStep
+            ? "Enter the code we sent to continue securely."
+            : "Your code is verified. Choose a strong new password."
       }
-      title={isRequestStep ? "Forgot password" : "Reset password"}
+      title={isRequestStep ? "Forgot password" : isVerifyStep ? "Verify your code" : "Create new password"}
     >
-      <div className="flex items-center gap-3">
-        <div className="flex min-w-0 flex-1 gap-1.5">
-          {Array.from({ length: TOTAL_STEPS }, (_, index) => (
-            <span
-              className={cx(
-                "h-1.5 min-w-0 flex-1 rounded-full transition-colors duration-300",
-                index <= activeStepIndex ? "bg-[#D61E1E]" : "bg-slate-200"
-              )}
-              key={index}
-            />
-          ))}
-        </div>
-        <span className="shrink-0 text-[11px] font-bold tabular-nums text-slate-400">
-          {activeStepIndex + 1}/{TOTAL_STEPS}
-        </span>
-      </div>
+      <nav aria-label="Password recovery progress">
+        <ol className="m-0 grid list-none grid-cols-3 p-0">
+          {STEPS.map((item, index) => {
+            const isComplete = index < activeStepIndex;
+            const isActive = index === activeStepIndex;
+
+            return (
+              <li
+                aria-current={isActive ? "step" : undefined}
+                className="relative flex min-w-0 flex-col items-center gap-2"
+                key={item.key}
+              >
+                {index > 0 ? (
+                  <span
+                    aria-hidden="true"
+                    className={cx(
+                      "absolute right-1/2 top-4 h-0.5 w-1/2 transition-colors duration-300",
+                      index <= activeStepIndex ? "bg-[#D61E1E]" : "bg-slate-200"
+                    )}
+                  />
+                ) : null}
+                {index < TOTAL_STEPS - 1 ? (
+                  <span
+                    aria-hidden="true"
+                    className={cx(
+                      "absolute left-1/2 top-4 h-0.5 w-1/2 transition-colors duration-300",
+                      index < activeStepIndex ? "bg-[#D61E1E]" : "bg-slate-200"
+                    )}
+                  />
+                ) : null}
+
+                <span
+                  className={cx(
+                    "relative z-10 grid h-8 w-8 place-items-center rounded-full border-2 text-xs font-extrabold transition-all duration-300",
+                    isComplete
+                      ? "border-[#D61E1E] bg-[#D61E1E] text-white"
+                      : isActive
+                        ? "border-[#D61E1E] bg-[#FEF1F1] text-[#D61E1E] shadow-[0_0_0_4px_rgba(214,30,30,0.10)]"
+                        : "border-slate-200 bg-white text-slate-400"
+                  )}
+                >
+                  {isComplete ? <Check aria-hidden="true" size={15} strokeWidth={3} /> : index + 1}
+                </span>
+                <span
+                  className={cx(
+                    "truncate text-[10px] font-extrabold uppercase tracking-[0.08em] transition-colors",
+                    isActive ? "text-[#D61E1E]" : isComplete ? "text-slate-700" : "text-slate-400"
+                  )}
+                >
+                  {item.label}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+      </nav>
 
       {error ? (
         <AuthAlert className="mt-4" tone="error">
@@ -263,7 +427,9 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
       <form
         className="mt-5 grid gap-4"
         noValidate
-        onSubmit={isRequestStep ? handleRequestCode : handleResetPassword}
+        onSubmit={
+          isRequestStep ? handleRequestCode : isVerifyStep ? handleVerifyCode : handleResetPassword
+        }
       >
         {isRequestStep ? (
           <AuthField
@@ -283,7 +449,7 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
             type="email"
             value={identifier}
           />
-        ) : (
+        ) : isVerifyStep ? (
           <>
             <div>
               <label className={AUTH_LABEL_CLASS} htmlFor="forgotResetCode">
@@ -294,12 +460,12 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
                 autoFocus
                 className={cx(
                   "h-[62px] w-full rounded-xl border text-center font-mono text-[28px] font-extrabold leading-none shadow-sm outline-none transition",
-                  // indent offsets the trailing letter-space so the digits stay optically centred
                   "tracking-[0.32em] indent-[0.32em] placeholder:text-slate-300",
                   codeComplete
                     ? "border-emerald-400 bg-emerald-50/60 text-emerald-900 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100"
                     : "border-slate-300 bg-white text-slate-900 focus:border-[#D61E1E] focus:ring-4 focus:ring-[#D61E1E]/15"
                 )}
+                disabled={loading || resending}
                 id="forgotResetCode"
                 inputMode="numeric"
                 maxLength={6}
@@ -314,6 +480,41 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
               />
             </div>
 
+            <AuthButton
+              disabled={resending || !codeComplete}
+              icon={ShieldCheck}
+              loading={loading}
+              loadingLabel="Verifying..."
+              type="submit"
+            >
+              Verify code
+            </AuthButton>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <AuthButton
+                disabled={loading || resendAvailableInSeconds > 0}
+                icon={RotateCw}
+                loading={resending}
+                loadingLabel="Resending..."
+                onClick={handleResendCode}
+                size="sm"
+                variant="secondary"
+              >
+                {resendAvailableInSeconds > 0 ? `Resend code (${resendAvailableInSeconds}s)` : "Resend code"}
+              </AuthButton>
+              <AuthButton
+                disabled={loading || resending}
+                icon={Mail}
+                onClick={handleRestart}
+                size="sm"
+                variant="secondary"
+              >
+                Use another email
+              </AuthButton>
+            </div>
+          </>
+        ) : (
+          <>
             <div
               onBlur={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget)) {
@@ -324,6 +525,7 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
             >
               <PasswordField
                 autoComplete="new-password"
+                autoFocus
                 error={passwordIsInUse ? PASSWORD_IN_USE_MESSAGE : undefined}
                 id="forgotNewPassword"
                 label="New password"
@@ -404,19 +606,39 @@ export default function ForgotPassword({ onBack, onResetSuccess, securitySetting
           </>
         )}
 
-        <AuthButton
-          icon={isRequestStep ? Send : KeyRound}
-          loading={loading}
-          loadingLabel={isRequestStep ? "Sending..." : "Resetting..."}
-          type="submit"
-        >
-          {isRequestStep ? "Send code" : "Reset password"}
-        </AuthButton>
-
-        {isRequestStep ? null : (
-          <AuthButton icon={RotateCw} onClick={handleRestart} size="sm" variant="secondary">
-            Use another email
+        {isVerifyStep ? null : (
+          <AuthButton
+            icon={isRequestStep ? Send : KeyRound}
+            disabled={resending}
+            loading={loading}
+            loadingLabel={isRequestStep ? "Sending..." : "Resetting..."}
+            type="submit"
+          >
+            {isRequestStep ? "Send code" : "Reset password"}
           </AuthButton>
+        )}
+
+        {isRequestStep || isVerifyStep ? null : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <AuthButton
+              disabled={loading || resending}
+              icon={ArrowLeft}
+              onClick={handleBackToCode}
+              size="sm"
+              variant="secondary"
+            >
+              Back to code
+            </AuthButton>
+            <AuthButton
+              disabled={loading || resending}
+              icon={Mail}
+              onClick={handleRestart}
+              size="sm"
+              variant="secondary"
+            >
+              Use another email
+            </AuthButton>
+          </div>
         )}
       </form>
     </AuthCard>

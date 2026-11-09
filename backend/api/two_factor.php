@@ -193,7 +193,7 @@ function two_factor_send_otp_email(string $recipientEmail, string $code, int $ex
     $logoContentId = password_reset_embed_logo($mail);
     $mail->Body = two_factor_html_body($code, $expiresInMinutes, $logoContentId);
     $mail->AltBody = two_factor_text_body($code, $expiresInMinutes);
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 /**
@@ -221,7 +221,7 @@ function two_factor_send_alert_email(
     $logoContentId = password_reset_embed_logo($mail);
     $mail->Body = mail_notification_document($subject, $message, $tone, $logoContentId, $recipientName);
     $mail->AltBody = mail_notification_text($subject, $message);
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 function two_factor_safe_alert_email(
@@ -333,6 +333,13 @@ function two_factor_issue_code(PDO $pdo, array $user, bool $enforceResendDelay =
 
             throw new TwoFactorRateLimitException('Please wait before requesting another verification code.', $secondsRemaining);
         }
+    }
+
+    // The resend delay controls cadence; the administrator's Two-factor codes rule controls the
+    // total allowed inside its configured window. It has its own bucket, so these requests do not
+    // consume the user's separate OTP-submission allowance.
+    if ($enforceResendDelay) {
+        throttle_two_factor_resend($pdo);
     }
 
     $code = two_factor_generate_code();
@@ -628,9 +635,6 @@ function two_factor_handle_resend(PDO $pdo): void
 {
     require_method('POST');
 
-    // Resending a code is unthrottled so a user whose first email never arrives is not locked
-    // out; the twoFactor group still guards code entry on ?action=verify.
-
     $pending = two_factor_pending_login();
     $userId = (int)($pending['user_id'] ?? 0);
 
@@ -732,20 +736,6 @@ function two_factor_handle_verify(PDO $pdo): void
             'success' => false,
             'message' => 'Your account is no longer available for verification.',
         ], 403);
-    }
-
-    if (active_account_use_lock($pdo, $userId) !== null) {
-        two_factor_invalidate_open_codes($userId);
-        two_factor_clear_pending_login();
-        write_auth_audit($pdo, $user, 'login.account_in_use', 'A 2FA login was blocked because an administrator is temporarily using the account.', [
-            'username' => $user['username'] ?? null,
-        ]);
-
-        json_response([
-            'success' => false,
-            'reason' => 'account_in_use_by_admin',
-            'message' => 'This account is currently being used by an administrator. Please try again later.',
-        ], 423);
     }
 
     $emailPolicyViolation = email_domain_policy_violation($pdo, (string)($user['email'] ?? ''));
@@ -863,21 +853,6 @@ function two_factor_handle_verify(PDO $pdo): void
             'attemptsRemaining' => $remainingAttempts,
             'twoFactor' => $freshCode ? two_factor_code_payload($pdo, $user, $freshCode) : null,
         ], 401);
-    }
-
-    // Close the small race in which an Admin reserves the account while its owner is typing the OTP.
-    if (active_account_use_lock($pdo, $userId) !== null) {
-        two_factor_invalidate_open_codes($userId);
-        two_factor_clear_pending_login();
-        write_auth_audit($pdo, $user, 'login.account_in_use', 'A 2FA login was blocked because an administrator is temporarily using the account.', [
-            'username' => $user['username'] ?? null,
-        ]);
-
-        json_response([
-            'success' => false,
-            'reason' => 'account_in_use_by_admin',
-            'message' => 'This account is currently being used by an administrator. Please try again later.',
-        ], 423);
     }
 
     two_factor_invalidate_open_codes($userId);

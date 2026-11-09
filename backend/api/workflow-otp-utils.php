@@ -6,9 +6,9 @@ declare(strict_types=1);
  *
  * The math captcha in captcha-utils.php answers "is someone deliberately doing this?". It cannot
  * answer "is it the person whose session this is?" -- anything holding the session cookie can read
- * the sum and type it. Submitting a payroll for approval and approving one are the transitions
- * where that distinction is worth paying for, so they now ask for something the session alone does
- * not carry: a code that only reaches the account's registered mailbox.
+ * the sum and type it. Submitting, approving, and releasing payslips are the transitions where that
+ * distinction is worth paying for, so they ask for something the session alone does not carry: a
+ * code that only reaches the account's registered mailbox.
  *
  * The two checks are chained rather than offered side by side, and the order is what makes the pair
  * worth having:
@@ -36,10 +36,8 @@ declare(strict_types=1);
  *
  * WHAT IS DELIBERATELY NOT GATED
  *
- * Returning a batch for correction, and marking one paid. The first is the move that can be walked
- * back, so it stays the quick one, for the reason payroll.php has always left it ungated. The
- * second still asks for the captcha alone: it is the Cashier's desk rather than the approval chain,
- * and it was not part of what this step-up was asked to cover.
+ * Returning a batch for correction. It is the move that can be walked back, so it stays the quick
+ * one. Marking a payroll paid publishes its payslips and is deliberately covered by this OTP gate.
  */
 
 require_once __DIR__ . '/captcha-utils.php';
@@ -71,7 +69,7 @@ const PAYROLL_WORKFLOW_OTP_SESSION_KEY = 'payroll_workflow_otp';
  * mailed out to submit a batch cannot be turned around and spent approving one -- two different
  * decisions, two different desks, and the mailbox only consented to the one it was told about.
  */
-const PAYROLL_WORKFLOW_OTP_ACTIONS = ['submit', 'approve'];
+const PAYROLL_WORKFLOW_OTP_ACTIONS = ['submit', 'approve', 'paid'];
 
 /**
  * How long a code stays answerable. Longer than the captcha's two minutes because this step asks
@@ -103,6 +101,12 @@ const PAYROLL_WORKFLOW_OTP_MAX_SENDS = 3;
  * mail per click, so the floor is fixed in code where a settings change cannot remove it.
  */
 const PAYROLL_WORKFLOW_OTP_RESEND_DELAY_SECONDS = 30;
+
+/** The administrator-controlled switch for the emailed step; payroll math verification is separate. */
+function payroll_workflow_otp_enabled(PDO $pdo): bool
+{
+    return get_boolean_application_setting($pdo, 'payroll_workflow_otp_enabled', true);
+}
 
 /**
  * Re-acquires the session so a ticket can be stored or spent.
@@ -194,7 +198,11 @@ function payroll_workflow_otp_payload(array $ticket, string $email): array
 
 function payroll_workflow_otp_action_label(string $action): string
 {
-    return $action === 'submit' ? 'submit a payroll batch for approval' : 'approve a payroll batch';
+    return match ($action) {
+        'submit' => 'submit a payroll batch for approval',
+        'paid' => 'release the payslips and mark a payroll batch as paid',
+        default => 'approve a payroll batch',
+    };
 }
 
 function payroll_workflow_otp_html_body(string $code, string $action, ?string $logoContentId = null): string
@@ -240,7 +248,7 @@ function payroll_workflow_otp_send_email(string $recipientEmail, string $code, s
     $logoContentId = password_reset_embed_logo($mail);
     $mail->Body = payroll_workflow_otp_html_body($code, $action, $logoContentId);
     $mail->AltBody = payroll_workflow_otp_text_body($code, $action);
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 /**
@@ -267,7 +275,7 @@ function payroll_workflow_otp_issue(PDO $pdo, array $sessionUser, string $action
 
     if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
         throw new RuntimeException(
-            'Your account has no valid email address on file, so an authorization code cannot be sent. Ask an administrator to set one before approving payroll.'
+            'Your account has no valid email address on file, so an authorization code cannot be sent. Ask an administrator to set one before continuing with payroll.'
         );
     }
 
@@ -320,7 +328,7 @@ function payroll_workflow_otp_issue(PDO $pdo, array $sessionUser, string $action
         error_log('Payroll workflow OTP email error: ' . $exception->getMessage());
 
         throw new RuntimeException(
-            'The authorization code could not be emailed, so nothing was sent for approval. Try again in a moment.'
+            'The authorization code could not be emailed, so no payroll action was completed. Try again in a moment.'
         );
     }
 
@@ -447,8 +455,12 @@ function payroll_workflow_otp_verify(string $action, string $ticketId, string $c
  * written and the batch is untouched. `captchaFailed` rides along with it so the existing client
  * handling, which already knows a security refusal is not an update failure, keeps working.
  */
-function payroll_require_workflow_otp(array $body, string $action): void
+function payroll_require_workflow_otp(PDO $pdo, array $body, string $action): void
 {
+    if (!payroll_workflow_otp_enabled($pdo)) {
+        return;
+    }
+
     $result = payroll_workflow_otp_verify(
         $action,
         captcha_body_text($body, 'otpTicket'),

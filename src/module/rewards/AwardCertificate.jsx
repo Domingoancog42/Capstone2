@@ -1,4 +1,4 @@
-import React, { forwardRef, useMemo, useRef } from "react";
+import React, { forwardRef, useCallback, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
@@ -8,6 +8,7 @@ import {
   CERTIFICATE_HEIGHT,
   CERTIFICATE_WIDTH,
   normalizeCertificateTemplate,
+  resolveCertificateText,
 } from "./certificateTemplate";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 
@@ -57,6 +58,7 @@ export async function exportCertificatePdf(node, fileName) {
   }
 
   await waitForImages(node);
+  if (document.fonts?.ready) await document.fonts.ready;
 
   const canvas = await html2canvas(node, {
     scale: 2,
@@ -125,7 +127,8 @@ export function printCertificate(node) {
     printWindow.addEventListener("afterprint", () => printWindow.close(), { once: true });
   };
 
-  waitForImages(printWindow.document).then(() => window.setTimeout(finish, 150));
+  Promise.all([waitForImages(printWindow.document), printWindow.document.fonts?.ready])
+    .then(() => window.setTimeout(finish, 150));
 }
 
 function CertificateBackdrop({ template }) {
@@ -413,6 +416,159 @@ function CertificateSignatureImage({
   );
 }
 
+function CanvasElement({
+  item,
+  certificate,
+  editable,
+  selected,
+  onSelectElement,
+  onElementPointerDown,
+  onElementKeyDown,
+  onElementDoubleClick,
+  onElementResizePointerDown,
+}) {
+  const label = item.type === "text" ? item.text.slice(0, 70) || "Text" : item.type === "image" ? "Image" : item.shape;
+  const fullSize = { display: "block", width: "100%", height: "100%", boxSizing: "border-box" };
+  let content;
+  if (item.type === "text") {
+    content = (
+      <div style={{
+        ...fullSize,
+        overflow: "hidden",
+        fontSize: item.fontSize,
+        fontFamily: item.fontFamily,
+        fontWeight: item.fontWeight,
+        fontStyle: item.fontStyle,
+        textAlign: item.textAlign,
+        color: item.color,
+        letterSpacing: item.letterSpacing,
+        lineHeight: item.lineHeight,
+        textTransform: item.textTransform,
+        whiteSpace: "pre-wrap",
+        overflowWrap: "anywhere",
+        opacity: item.opacity,
+      }}>
+        {resolveCertificateText(item.text, certificate)}
+      </div>
+    );
+  } else if (item.type === "image") {
+    content = item.src ? (
+      <img
+        src={resolveBackendAssetUrl(item.src)}
+        alt=""
+        draggable="false"
+        crossOrigin="anonymous"
+        style={{ ...fullSize, objectFit: item.fit, pointerEvents: "none", opacity: item.opacity }}
+      />
+    ) : editable ? (
+      <div style={{ ...fullSize, display: "grid", placeItems: "center", border: "1px dashed #94a3b8", color: "#64748b", fontFamily: "Arial, sans-serif", fontSize: 14 }}>Upload an image</div>
+    ) : null;
+  } else if (item.shape === "line") {
+    content = <div style={{ position: "absolute", top: "50%", left: 0, width: "100%", height: item.strokeWidth, background: item.stroke, opacity: item.opacity, transform: "translateY(-50%)" }} />;
+  } else {
+    content = <div style={{ ...fullSize, background: item.fill, border: `${item.strokeWidth}px solid ${item.stroke}`, borderRadius: item.shape === "ellipse" ? "50%" : item.borderRadius, opacity: item.opacity }} />;
+  }
+
+  return (
+    <div
+      data-certificate-element={item.id}
+      data-certificate-element-type={item.type}
+      role={editable ? "button" : undefined}
+      tabIndex={editable ? 0 : undefined}
+      aria-label={editable ? `Select ${label}${item.locked ? " (locked)" : ""}` : undefined}
+      onPointerDown={editable ? (event) => {
+        event.stopPropagation();
+        onSelectElement?.(item.id);
+        if (!item.locked) onElementPointerDown?.(event, item.id);
+      } : undefined}
+      onDoubleClick={editable && !item.locked ? (event) => onElementDoubleClick?.(event, item.id) : undefined}
+      onKeyDown={editable ? (event) => onElementKeyDown?.(event, item.id) : undefined}
+      style={{
+        position: "absolute",
+        left: item.x,
+        top: item.y,
+        width: item.width,
+        height: item.height,
+        boxSizing: "border-box",
+        transform: `rotate(${item.rotation}deg)`,
+        transformOrigin: "center center",
+        outline: selected ? "2px solid #0ea5e9" : undefined,
+        outlineOffset: selected ? 2 : undefined,
+        cursor: editable ? item.locked ? "default" : "move" : "default",
+        touchAction: editable ? "none" : "auto",
+      }}
+    >
+      {content}
+      {selected && !item.locked && onElementResizePointerDown ? (
+        <span
+          data-certificate-resize={item.id}
+          role="button"
+          aria-label={`Resize ${label}`}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            onElementResizePointerDown(event, item.id);
+          }}
+          style={{ position: "absolute", right: -6, bottom: -6, width: 12, height: 12, boxSizing: "border-box", border: "2px solid #0ea5e9", background: "#ffffff", cursor: "nwse-resize", touchAction: "none" }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const FreeCertificateCanvas = forwardRef(function FreeCertificateCanvas({
+  certificate,
+  template,
+  editable,
+  selectedElementId,
+  onSelectElement,
+  ...elementHandlers
+}, ref) {
+  return (
+    <div
+      ref={ref}
+      data-certificate-canvas="true"
+      data-certificate-version="2"
+      onPointerDown={(event) => {
+        if (editable && !event.target.closest?.("[data-certificate-element]")) onSelectElement?.("");
+      }}
+      style={{
+        position: "relative",
+        width: CERTIFICATE_WIDTH,
+        height: CERTIFICATE_HEIGHT,
+        flex: "0 0 auto",
+        overflow: "hidden",
+        boxSizing: "border-box",
+        background: template.paper.backgroundColor,
+        boxShadow: editable ? "0 20px 50px rgba(15, 23, 42, 0.18)" : "none",
+        WebkitPrintColorAdjust: "exact",
+        printColorAdjust: "exact",
+        userSelect: editable ? "none" : "text",
+      }}
+    >
+      {template.backgroundImage ? (
+        <img
+          src={resolveBackendAssetUrl(template.backgroundImage)}
+          alt=""
+          crossOrigin="anonymous"
+          draggable="false"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: template.backgroundImageFit, pointerEvents: "none" }}
+        />
+      ) : null}
+      {template.elements.map((item) => (
+        <CanvasElement
+          key={item.id}
+          item={item}
+          certificate={certificate}
+          editable={editable}
+          selected={editable && selectedElementId === item.id}
+          onSelectElement={onSelectElement}
+          {...elementHandlers}
+        />
+      ))}
+    </div>
+  );
+});
+
 /**
  * Shared visual canvas used by the editor and by issued certificates. Editor-only selection handles
  * are never rendered in previews, PDFs, or printouts.
@@ -425,11 +581,30 @@ export const CertificateCanvas = forwardRef(function CertificateCanvas({
   onSelectElement,
   onElementPointerDown,
   onElementKeyDown,
+  onElementDoubleClick,
+  onElementResizePointerDown,
 }, ref) {
   const resolvedTemplate = useMemo(() => normalizeCertificateTemplate(template), [template]);
 
   if (!certificate) {
     return null;
+  }
+
+  if (resolvedTemplate.version === 2) {
+    return (
+      <FreeCertificateCanvas
+        ref={ref}
+        certificate={certificate}
+        template={resolvedTemplate}
+        editable={editable}
+        selectedElementId={selectedElementId}
+        onSelectElement={onSelectElement}
+        onElementPointerDown={onElementPointerDown}
+        onElementKeyDown={onElementKeyDown}
+        onElementDoubleClick={onElementDoubleClick}
+        onElementResizePointerDown={onElementResizePointerDown}
+      />
+    );
   }
 
   return (
@@ -578,7 +753,68 @@ export const AwardCertificatePaper = forwardRef(function AwardCertificatePaper({
   return <CertificateCanvas ref={ref} certificate={certificate} template={template} />;
 });
 
-/** Preview overlay shared by My Awards and certificate downloads. */
+/**
+ * The scale at which the 960px certificate fits the element the returned ref is attached to, kept
+ * current as that element resizes (a phone turned sideways, a sidebar collapsing). A callback ref
+ * rather than an effect, so an element that mounts late -- after a loading state -- is still
+ * measured.
+ */
+export function useCertificateFitScale({ min = 0.2, max = 1 } = {}) {
+  const [scale, setScale] = useState(max);
+  const observerRef = useRef(null);
+
+  const ref = useCallback((node) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+
+    if (!node || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect?.width || 0;
+      if (width > 0) {
+        setScale(Math.max(min, Math.min(max, Math.floor((width / CERTIFICATE_WIDTH) * 100) / 100)));
+      }
+    });
+    observer.observe(node);
+    observerRef.current = observer;
+  }, [min, max]);
+
+  return [ref, scale];
+}
+
+/**
+ * The certificate shrunk to the width it is given, so a phone sees the whole page instead of a
+ * corner of it. Only the view is scaled; print and download work from an unscaled paper.
+ */
+function FittedCertificate({ certificate, template }) {
+  const [frameRef, scale] = useCertificateFitScale();
+
+  return (
+    <div ref={frameRef} className="w-full">
+      <div
+        className="mx-auto shadow-lg"
+        style={{ width: CERTIFICATE_WIDTH * scale, height: CERTIFICATE_HEIGHT * scale }}
+      >
+        <div
+          data-testid="fitted-certificate"
+          style={{ width: CERTIFICATE_WIDTH, height: CERTIFICATE_HEIGHT, transform: `scale(${scale})`, transformOrigin: "top left" }}
+        >
+          <CertificateCanvas certificate={certificate} template={template} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Preview overlay shared by My Rewards, the winners tally, and certificate downloads.
+ *
+ * A certificate marked `isPreview` has not been issued yet — the tally shows what first place will
+ * receive — so it carries no number and offers no print or download: only an issued certificate
+ * should ever leave the screen as a document.
+ */
 export default function AwardCertificateModal({
   open = false,
   certificate = null,
@@ -603,29 +839,39 @@ export default function AwardCertificateModal({
       />
 
       <div className="relative z-10 max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-[28px] bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-4">
-          <div className="min-w-0">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-4 py-4">
+          <div className="min-w-0 flex-1 basis-48">
             <h2 className="m-0 truncate text-lg font-semibold text-slate-950">{certificate.awardTitle}</h2>
-            <p className="m-0 mt-1 text-sm text-slate-500">
-              Certificate No. {certificate.certificateNumber || "—"}
-            </p>
+            {certificate.isPreview ? (
+              <p className="m-0 mt-1 text-sm text-amber-700">
+                Preview — not yet issued. The official certificate is issued to the winner when the cycle closes.
+              </p>
+            ) : (
+              <p className="m-0 mt-1 text-sm text-slate-500">
+                Certificate No. {certificate.certificateNumber || "—"}
+              </p>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => printCertificate(paperRef.current)}
-              className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              Print
-            </button>
-            <button
-              type="button"
-              disabled={downloading}
-              onClick={() => onDownload?.(paperRef.current)}
-              className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-900 bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {downloading ? "Preparing..." : "Download PDF"}
-            </button>
+            {certificate.isPreview ? null : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => printCertificate(paperRef.current)}
+                  className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Print
+                </button>
+                <button
+                  type="button"
+                  disabled={downloading}
+                  onClick={() => onDownload?.(paperRef.current)}
+                  className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-900 bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {downloading ? "Preparing..." : "Download PDF"}
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -637,11 +883,21 @@ export default function AwardCertificateModal({
           </div>
         </div>
 
-        <div className="max-h-[calc(92vh-74px)] overflow-auto bg-slate-100 p-4">
-          <div className="mx-auto w-max shadow-lg">
-            <AwardCertificatePaper ref={paperRef} certificate={certificate} template={template} />
-          </div>
+        <div className="max-h-[calc(92vh-74px)] overflow-auto bg-slate-100 p-3 sm:p-4">
+          <FittedCertificate certificate={certificate} template={template} />
         </div>
+      </div>
+
+      {/*
+        Print and Download work from this full-size copy. html2canvas measures the node it is given,
+        and one sitting inside the scaled preview would be captured at the preview's reduced size.
+        Off-screen rather than hidden, because a `display: none` paper has no layout to paint.
+      */}
+      <div
+        aria-hidden="true"
+        style={{ position: "fixed", top: 0, left: "-10000px", width: CERTIFICATE_WIDTH, pointerEvents: "none" }}
+      >
+        <AwardCertificatePaper ref={paperRef} certificate={certificate} template={template} />
       </div>
     </div>
   );

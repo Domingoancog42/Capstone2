@@ -14,6 +14,7 @@ export function readStoredUser() {
 }
 export const MANAGED_USER_ROLE_KEYS = [
   "chief",
+  "chiefadmin",
   "planningofficer",
   "cashier",
   "employee",
@@ -24,7 +25,8 @@ export const MANAGED_USER_ROLE_KEYS = [
 
 const ROLE_LABELS = {
   admin: "Admin",
-  chief: "Chief",
+  chief: "Division Chief",
+  chiefadmin: "Chief Admin",
   planningofficer: "Planning Officer",
   cashier: "Cashier",
   employee: "Employee",
@@ -36,6 +38,7 @@ const ROLE_LABELS = {
 const ROLE_BADGE_CLASSES = {
   admin: "border-rose-200 bg-rose-50 text-rose-700",
   chief: "border-violet-200 bg-violet-50 text-violet-700",
+  chiefadmin: "border-purple-200 bg-purple-50 text-purple-700",
   planningofficer: "border-teal-200 bg-teal-50 text-teal-700",
   cashier: "border-cyan-200 bg-cyan-50 text-cyan-700",
   employee: "border-emerald-200 bg-emerald-50 text-emerald-700",
@@ -52,6 +55,7 @@ const STATUS_LABELS = {
 const DEFAULT_ROLE_PATHS = {
   admin: "/admin/dashboard",
   chief: "/chief/dashboard",
+  chiefadmin: "/chiefadmin/dashboard",
   planningofficer: "/planningofficer/dashboard",
   cashier: "/cashier/dashboard",
   employee: "/employee/dashboard",
@@ -59,6 +63,9 @@ const DEFAULT_ROLE_PATHS = {
   hrhead: "/hrhead/dashboard",
   hrstaff: "/hrstaff/dashboard",
 };
+
+/** The public pass slip scan station opened on the guard's device. No sign-in is needed to open it. */
+export const PASS_SLIP_SCANNER_PATH = "/guard-scanner-qr";
 
 const LEGACY_PATHS = {
   "/admindashboard": "/admin/dashboard",
@@ -90,6 +97,8 @@ export function normalizeRole(value) {
       return "admin";
     case "chief":
       return "chief";
+    case "chiefadmin":
+      return "chiefadmin";
     case "planningofficer":
     case "planning":
       return "planningofficer";
@@ -107,6 +116,24 @@ export function normalizeRole(value) {
     default:
       return token;
   }
+}
+
+const FAD_DIVISION_KEYS = new Set([
+  "fad",
+  "fam",
+  "financeadministrativedivision",
+  "financeandadministrativedivision",
+  "financeadministrativemanagement",
+  "financeandadministrativemanagement",
+  "financialandadministrativedivision",
+]);
+
+/** Only the built-in Division Chief assigned to FAD/FAM owns the payroll approval desk. */
+export function isFadDivisionChiefUser(user = {}) {
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  const divisionKey = normalizeToken(user?.division || user?.department);
+
+  return exactRoleKey === "chief" && FAD_DIVISION_KEYS.has(divisionKey);
 }
 
 export function normalizeStatus(value) {
@@ -147,11 +174,30 @@ export function resolveBaseRole(role, baseRole = null) {
   const baseKey = normalizeRole(baseRole);
 
   if (baseKey && DEFAULT_ROLE_PATHS[baseKey]) {
-    return baseKey;
+    return baseKey === "chiefadmin" ? "chief" : baseKey;
   }
 
   const key = normalizeRole(role);
-  return DEFAULT_ROLE_PATHS[key] ? key : "";
+  if (!DEFAULT_ROLE_PATHS[key]) {
+    return "";
+  }
+
+  return key === "chiefadmin" ? "chief" : key;
+}
+
+/**
+ * The workspace prefix a signed-in account owns. Chief Admin deliberately has its own address and
+ * page wrapper while its capability/base role remains Chief; ordinary custom roles continue to use
+ * the route of the built-in role they were based on.
+ */
+export function resolveRoutingRole(role, baseRole = null) {
+  const exactRole = normalizeRole(role);
+
+  if (exactRole === "chiefadmin") {
+    return exactRole;
+  }
+
+  return resolveBaseRole(exactRole, baseRole);
 }
 
 /**
@@ -170,12 +216,12 @@ export function resolveUserRoleKey(user) {
 }
 
 export function getDefaultPathForRole(role, baseRole = null) {
-  const key = resolveBaseRole(role, baseRole);
+  const key = resolveRoutingRole(role, baseRole);
   return DEFAULT_ROLE_PATHS[key] || "/";
 }
 
 export function getProfilePathForRole(role, baseRole = null) {
-  const key = resolveBaseRole(role, baseRole);
+  const key = resolveRoutingRole(role, baseRole);
   return key ? `/${key}/profile` : "/";
 }
 
@@ -190,10 +236,18 @@ export function normalizePath(pathname) {
 
 export function isPathAllowedForRole(pathname, role, baseRole = null) {
   const normalizedPath = normalizePath(pathname);
-  const normalizedRole = resolveBaseRole(role, baseRole);
+  const normalizedRole = resolveRoutingRole(role, baseRole);
 
-  if (!normalizedRole || normalizedPath === "/") {
+  if (normalizedPath === PASS_SLIP_SCANNER_PATH) {
+    return true;
+  }
+
+  if (!normalizedRole || normalizedPath === "/" || normalizedPath === "/login") {
     return false;
+  }
+
+  if (normalizedPath === "/dashboard") {
+    return true;
   }
 
   if (normalizedRole === "admin") {
@@ -208,13 +262,12 @@ export function isPathAllowedForRole(pathname, role, baseRole = null) {
  * recognised by the UI here gives App one authoritative way to distinguish a real HRIS address
  * from a misspelled one before a dashboard gets the chance to fall back to its default module.
  */
-const REPORT_ROUTE_SEGMENTS = ["employee", "payroll", "leave", "attendance", "performance", "audit"];
+const REPORT_ROUTE_SEGMENTS = ["employee", "payroll", "leave", "travel", "cto", "attendance", "performance", "audit"];
 const SELF_SERVICE_ROUTE_SEGMENTS = [
   "my-attendance",
   "my-payslip",
   "my-ipcr",
   "my-service-record",
-  "nominate",
 ];
 const MANAGER_ROUTE_SEGMENTS = [
   "dashboard",
@@ -231,17 +284,15 @@ const MANAGER_ROUTE_SEGMENTS = [
   "payroll/generate",
   "payroll/payslip",
 ];
-/*
- * A Planning Officer works the same division desk a Chief does, but takes no part in the payroll
- * chain (HR Head -> Chief -> Regional Director), so none of the payroll addresses are theirs. Any
- * `/planningofficer/payroll/...` URL is therefore an unknown path and lands them on their dashboard.
- */
-const PLANNING_OFFICER_ROUTE_SEGMENTS = MANAGER_ROUTE_SEGMENTS.filter(
+/* Planning Officers and ordinary Division Chiefs have no payroll route. ChiefDashboard exposes the
+ * two Chief routes below only when the signed-in built-in Chief belongs to FAD/FAM. */
+const DIVISION_DESK_ROUTE_SEGMENTS = MANAGER_ROUTE_SEGMENTS.filter(
   (segment) => !segment.startsWith("payroll/")
 );
 /*
- * The Cashier is the mirror image: the payout desk owns the money screens and nothing else. No
- * leave, attendance or overtime addresses, because releasing an approved batch is the whole job.
+ * The Cashier's operational desk owns the money screens. Leave, travel orders, pass slips, and CTO
+ * are personal filing pages rather than management queues; attendance and overtime management
+ * remain unavailable.
  */
 const CASHIER_ROUTE_SEGMENTS = [
   "dashboard",
@@ -249,9 +300,14 @@ const CASHIER_ROUTE_SEGMENTS = [
   "calendar",
   "messages",
   "notifications",
+  "leave",
+  "leave/travel-order",
+  "leave/pass-slips",
+  "leave/compensatory-time-off",
   "payroll/generate",
   "payroll/payslip",
   "payroll/loan",
+  "payroll/archived",
 ];
 
 function prefixedPaths(role, segments) {
@@ -260,14 +316,24 @@ function prefixedPaths(role, segments) {
 
 const KNOWN_APP_PATHS = new Set([
   "/",
+  "/login",
+  PASS_SLIP_SCANNER_PATH,
+  // Stable landing address used by global actions such as the 404 page. App resolves it to the
+  // signed-in user's role dashboard without trusting any client-side role claim.
+  "/dashboard",
   ...prefixedPaths("admin", [
     "dashboard",
     "users",
     "employees",
+    "divisions",
+    "designations",
+    "rbac",
+    "signatories",
     "calendar",
     "messages",
     "notifications",
     "service-record",
+    "promotions",
     "rewards-recognition",
     "rewards-recognition/nomination",
     "rewards-recognition/loyalty",
@@ -297,14 +363,29 @@ const KNOWN_APP_PATHS = new Set([
   ]),
   ...prefixedPaths("admin", REPORT_ROUTE_SEGMENTS.map((segment) => `reports/${segment}`)),
   ...prefixedPaths("chief", [
-    ...MANAGER_ROUTE_SEGMENTS,
+    ...DIVISION_DESK_ROUTE_SEGMENTS,
+    "payroll/generate",
+    "payroll/archived",
     "employees",
     "team",
-    "payroll/loan",
+    "promotions",
+    "rewards-recognition/nomination",
+    "masterfiles/performance-management/opcr",
+    "masterfiles/performance-management/ipcr",
+    ...SELF_SERVICE_ROUTE_SEGMENTS,
+  ]),
+  ...prefixedPaths("chiefadmin", [
+    ...DIVISION_DESK_ROUTE_SEGMENTS,
+    "employees",
+    "team",
+    "promotions",
+    "rewards-recognition/nomination",
+    "masterfiles/performance-management/opcr",
+    "masterfiles/performance-management/ipcr",
     ...SELF_SERVICE_ROUTE_SEGMENTS,
   ]),
   ...prefixedPaths("planningofficer", [
-    ...PLANNING_OFFICER_ROUTE_SEGMENTS,
+    ...DIVISION_DESK_ROUTE_SEGMENTS,
     "employees",
     "team",
     ...SELF_SERVICE_ROUTE_SEGMENTS,
@@ -315,6 +396,10 @@ const KNOWN_APP_PATHS = new Set([
   ]),
   ...prefixedPaths("regionaldirector", [
     ...MANAGER_ROUTE_SEGMENTS,
+    "promotions",
+    "payroll/archived",
+    // Where the Director validates the accomplishments and MOVs the division chiefs submit.
+    "masterfiles/performance-management/opcr",
     ...SELF_SERVICE_ROUTE_SEGMENTS,
   ]),
   ...prefixedPaths("hrhead", [
@@ -326,12 +411,13 @@ const KNOWN_APP_PATHS = new Set([
     "payroll/loan",
     "payroll/archived",
     "service-record",
+    "promotions",
     "rewards-recognition/nomination",
     "rewards-recognition/loyalty",
     "rewards-recognition/certificate-template",
     "masterfiles/performance-management/opcr",
     "masterfiles/performance-management/ipcr",
-    ...SELF_SERVICE_ROUTE_SEGMENTS.slice(0, -1),
+    ...SELF_SERVICE_ROUTE_SEGMENTS,
   ]),
   ...prefixedPaths("hrstaff", [
     ...MANAGER_ROUTE_SEGMENTS,
@@ -342,12 +428,12 @@ const KNOWN_APP_PATHS = new Set([
     "payroll/loan",
     "payroll/archived",
     "service-record",
-    "rewards-recognition/nomination",
+    "promotions",
     "rewards-recognition/loyalty",
     "rewards-recognition/certificate-template",
     "masterfiles/performance-management/opcr",
     "masterfiles/performance-management/ipcr",
-    ...SELF_SERVICE_ROUTE_SEGMENTS.slice(0, -1),
+    ...SELF_SERVICE_ROUTE_SEGMENTS,
   ]),
   ...prefixedPaths("employee", [
     "dashboard",
@@ -360,10 +446,13 @@ const KNOWN_APP_PATHS = new Set([
     "travel-order",
     "pass-slips",
     "compensatory-time-off",
+    "overtime",
     "payslip",
     "ipcr",
     "service-record",
-    "nominate",
+    "promotions",
+    "rewards",
+    "voting",
   ]),
   ...prefixedPaths("hrhead", REPORT_ROUTE_SEGMENTS.map((segment) => `reports/${segment}`)),
   ...prefixedPaths("hrstaff", REPORT_ROUTE_SEGMENTS.map((segment) => `reports/${segment}`)),
@@ -373,6 +462,11 @@ const KNOWN_APP_PATHS = new Set([
 export function isKnownAppPath(pathname) {
   return KNOWN_APP_PATHS.has(normalizePath(pathname));
 }
+
+/** Exact React Router paths. Legacy addresses remain valid until their callers are retired. */
+export const APP_ROUTE_PATHS = Object.freeze([
+  ...new Set([...KNOWN_APP_PATHS, ...Object.keys(LEGACY_PATHS)]),
+]);
 
 export function normalizeUser(user) {
   if (!user) {

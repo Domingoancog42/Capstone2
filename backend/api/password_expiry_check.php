@@ -3,21 +3,12 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
-require_once __DIR__ . '/session.php';
-require_once __DIR__ . '/settings.php';
 
 header('Content-Type: application/json; charset=utf-8');
+require_method('GET');
 
 try {
-    $pdo = get_pdo_connection();
-    $sessionUser = get_session_user($pdo);
-
-    if (!$sessionUser) {
-        json_response([
-            'success' => false,
-            'message' => 'You are not signed in.',
-        ], 401);
-    }
+    $sessionUser = require_session_user();
 
     ensure_user_security_columns($pdo);
 

@@ -12,8 +12,25 @@ export async function fetchLeaveBalanceRows(year = null, { archived = false } = 
     params.archived = 1;
   }
 
-  const response = await api.get("/leave_credit.php", { params });
-  return response.data;
+  try {
+    const response = await api.get("/leave_credit.php", { params });
+    return response.data;
+  } catch (error) {
+    /*
+     * Some installations answer an empty archive with 404 instead of the list endpoint's normal
+     * `{ rows: [] }` response. An empty archive is a valid view, not a missing screen, so normalize
+     * only that exact read. Active-registry failures and every other status still reach the caller.
+     */
+    if (archived && error?.response?.status === 404) {
+      return {
+        success: true,
+        year: year || new Date().getFullYear(),
+        rows: [],
+      };
+    }
+
+    throw error;
+  }
 }
 
 export async function fetchLeaveBalanceHistory(employeeRecordId, year = null, leaveTypeCode = "") {

@@ -13,7 +13,8 @@ async function blobErrorMessage(blob, fallbackMessage) {
   }
 }
 
-export async function downloadPersonalDataSheet(profile = {}) {
+export async function downloadPersonalDataSheet(profile = {}, { format = "xlsx" } = {}) {
+  if (!["xlsx", "pdf"].includes(format)) throw new Error("Choose an Excel or PDF PDS download.");
   const url = exportApiBaseUrl();
   url.pathname = `${url.pathname.replace(/\/?$/, "/")}personal_data_sheet.php`;
 
@@ -42,6 +43,13 @@ export async function downloadPersonalDataSheet(profile = {}) {
     const contentType = String(response.headers?.["content-type"] || "");
     if (contentType.includes("application/json")) {
       throw new Error(await blobErrorMessage(response.data, fallbackMessage));
+    }
+
+    if (format === "pdf") {
+      const { buildPersonalDataSheetPdf } = await import("../utils/personalDataSheetPdf");
+      const pdf = await buildPersonalDataSheetPdf(response.data);
+      pdf.save(`PDS-${employeeCode}.pdf`);
+      return;
     }
 
     const objectUrl = window.URL.createObjectURL(response.data);

@@ -1,12 +1,10 @@
 import React from "react";
 import { Filter, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
-import { getLeaveStatusDisplayLabel } from "./LeaveStatusBadge";
 
 export default function LeaveFilters({
   values,
   divisions = [],
   statuses = [],
-  roleKey = "",
   onChange,
   onClear,
 }) {
@@ -47,7 +45,7 @@ export default function LeaveFilters({
             type="text"
             value={values.search}
             onChange={handleChange("search")}
-            placeholder="Name, type, reason, or rejected note"
+            placeholder="Name, type, reason, or disapproval note"
             className="h-9 w-full rounded-xl border border-slate-200 bg-white px-8 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
           />
         </label>
@@ -82,7 +80,7 @@ export default function LeaveFilters({
             <option value="">All statuses</option>
             {statuses.map((status) => (
               <option key={status} value={status}>
-                {getLeaveStatusDisplayLabel(status, roleKey)}
+                {status}
               </option>
             ))}
           </select>
@@ -97,7 +95,7 @@ export default function LeaveFilters({
             onChange={handleChange("rowsPerPage")}
             className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
           >
-            {[5, 10, 15, 25].map((size) => (
+            {[10, 20, 50, 100, 200].map((size) => (
               <option key={size} value={size}>
                 {size} rows
               </option>

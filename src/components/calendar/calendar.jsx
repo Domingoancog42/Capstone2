@@ -73,6 +73,10 @@ const COLOR_TAGS = [
 const HOLIDAY_TYPES = ["Regular Holiday", "Special Holiday", "Local Holiday"];
 const ANNOUNCEMENT_PRIORITIES = ["Low", "Medium", "High"];
 
+function openDatePicker(event) {
+  event.currentTarget.showPicker?.();
+}
+
 function startOfDay(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -410,20 +414,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
     }
 
     if (!form.startDate) {
-      nextErrors.startDate = mode === "holiday" ? "Holiday date is required." : "Start date is required.";
-    }
-
-    if (mode === "announcement" && !form.endDate) {
-      nextErrors.endDate = "End date is required.";
-    }
-
-    if (
-      mode === "announcement"
-      && form.startDate
-      && form.endDate
-      && parseLocalDate(form.endDate)?.getTime() < parseLocalDate(form.startDate)?.getTime()
-    ) {
-      nextErrors.endDate = "End date must not be earlier than start date.";
+      nextErrors.startDate = mode === "holiday" ? "Holiday date is required." : "Announcement date is required.";
     }
 
     setErrors(nextErrors);
@@ -437,7 +428,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
       kind: mode,
       title: form.title.trim(),
       startDate: form.startDate,
-      endDate: mode === "holiday" ? form.startDate : form.endDate,
+      endDate: form.startDate,
       description: form.description.trim(),
       holidayType: mode === "holiday" ? form.holidayType : undefined,
       priority: mode === "announcement" ? form.priority : undefined,
@@ -453,7 +444,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
       description={
         mode === "holiday"
           ? "Capture official holiday details and tag them with a visible calendar color."
-          : "Publish an internal announcement across a selected date range with priority tagging."
+          : "Publish an internal announcement on the selected date with priority tagging."
       }
       variant="plain"
     >
@@ -472,31 +463,21 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
             {errors.title ? <p className="m-0 mt-1.5 text-xs font-medium text-rose-700">{errors.title}</p> : null}
           </div>
 
-          <div>
+          <div className={mode === "announcement" ? "sm:col-span-2" : undefined}>
             <label className="mb-1.5 block text-sm font-semibold text-slate-700">
-              {mode === "holiday" ? "Holiday Date" : "Start Date"}
+              {mode === "holiday" ? "Holiday Date" : "Select Date"}
             </label>
             <input
               type="date"
               value={form.startDate}
               onChange={updateField("startDate")}
-              className={inputClasses}
+              onClick={openDatePicker}
+              className={`${inputClasses} cursor-pointer`}
             />
             {errors.startDate ? <p className="m-0 mt-1.5 text-xs font-medium text-rose-700">{errors.startDate}</p> : null}
           </div>
 
-          {mode === "announcement" ? (
-            <div>
-              <label className="mb-1.5 block text-sm font-semibold text-slate-700">End Date</label>
-              <input
-                type="date"
-                value={form.endDate}
-                onChange={updateField("endDate")}
-                className={inputClasses}
-              />
-              {errors.endDate ? <p className="m-0 mt-1.5 text-xs font-medium text-rose-700">{errors.endDate}</p> : null}
-            </div>
-          ) : (
+          {mode === "holiday" ? (
             <div>
               <label className="mb-1.5 block text-sm font-semibold text-slate-700">Holiday Type</label>
               <select
@@ -518,7 +499,7 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
                 ))}
               </select>
             </div>
-          )}
+          ) : null}
 
           {mode === "announcement" ? (
             <div className="sm:col-span-2">
@@ -576,9 +557,6 @@ function EventEditorModal({ open, mode, entry, onClose, onSave }) {
         </div>
 
         <div className="flex flex-wrap justify-end gap-3 border-t border-slate-200 pt-4">
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
           <Button type="submit">
             {entry ? "Save Changes" : mode === "holiday" ? "Add Holiday" : "Add Announcement"}
           </Button>

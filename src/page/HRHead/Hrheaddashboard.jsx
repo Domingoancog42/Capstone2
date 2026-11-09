@@ -1,9 +1,8 @@
+import ResponsiveContainer from "../../components/chart/ResponsiveChartContainer";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CalendarDays,
   CalendarRange,
   Clock3,
-  ClipboardCheck,
   ClipboardList,
   FileText,
   LayoutDashboard,
@@ -23,7 +22,6 @@ import {
   LineChart as RechartsLineChart,
   Pie,
   PieChart,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
@@ -62,11 +60,13 @@ import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalis
 import { getEmployees, getUsers } from "../../services/api";
 import { fetchAttendanceRecords } from "../../services/attendanceService";
 import { fetchLeaveRequests } from "../../services/leaveService";
-import { normalizeLeaveStatus } from "../../utils/leaveHelpers";
+import { getRequestTableStatusLabel, normalizeLeaveStatus } from "../../utils/leaveHelpers";
 import { saveEmployeeProfileHandoff } from "../../utils/employeeProfileHandoff";
 import { numberFormatter } from "../../utils/format";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 import { getRoleLabel } from "../../utils/roleRoutes";
+
+const HR_HEAD_HIDDEN_REPORT_CATEGORIES = ["employee", "audit"];
 
 const shortDateFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -75,8 +75,11 @@ const shortDateFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 const leaveStatusColors = {
+  Submitted: "#f97316",
   Pending: "#f59e0b",
+  Endorsed: "#6366f1",
   Reviewed: "#0ea5e9",
+  "Chief Reviewed": "#8b5cf6",
   Approved: "#16a34a",
   Rejected: "#ef4444",
   Cancelled: "#64748b",
@@ -211,8 +214,11 @@ function HrHeadDashboardOverview({ user }) {
 
   const statusCounts = useMemo(() => {
     const counts = {
+      Submitted: 0,
       Pending: 0,
+      Endorsed: 0,
       Reviewed: 0,
+      "Chief Reviewed": 0,
       Approved: 0,
       Rejected: 0,
       Cancelled: 0,
@@ -244,7 +250,7 @@ function HrHeadDashboardOverview({ user }) {
   const leavePieData = useMemo(
     () => Object.entries(statusCounts)
       .filter(([, value]) => value > 0)
-      .map(([name, value]) => ({ name, value })),
+      .map(([status, value]) => ({ name: getRequestTableStatusLabel(status), status, value })),
     [statusCounts]
   );
 
@@ -264,10 +270,13 @@ function HrHeadDashboardOverview({ user }) {
     <div className="mx-auto max-w-7xl space-y-4">
       <DashboardWelcomeBanner
         name={welcomeName}
-        position={user?.position || user?.designation || "Not assigned"}
+        position={user?.position || "Not assigned"}
         role={getRoleLabel(user?.role || user?.roleKey || "hrhead")}
-        division={user?.division || user?.department || "Not assigned"}
+        division="All Divisions"
+        divisionHelper="Organization-wide access"
         imageUrl={resolveBackendAssetUrl(user?.profile_image || user?.profileImage)}
+        showCalendar
+        canManageCalendar
       />
 
       {error ? (
@@ -347,7 +356,7 @@ function HrHeadDashboardOverview({ user }) {
                       color: leaveStatusColors[status] || "#64748b",
                     }}
                   >
-                    {status}
+                    {getRequestTableStatusLabel(status)}
                   </span>
                 </div>
               );
@@ -377,7 +386,7 @@ function HrHeadDashboardOverview({ user }) {
                     paddingAngle={4}
                   >
                     {leavePieData.map((entry) => (
-                      <Cell key={entry.name} fill={leaveStatusColors[entry.name] || "#64748b"} />
+                      <Cell key={entry.name} fill={leaveStatusColors[entry.status] || "#64748b"} />
                     ))}
                   </Pie>
                   <Tooltip />
@@ -683,7 +692,7 @@ function HrHeadPayrollWorkspace({ view = "generate", user, onNavigate }) {
       ) : null}
 
       {view === "payslip" ? (
-        <PayslipWorkspace employees={employees} />
+        <PayslipWorkspace />
       ) : view === "archived" ? (
         <PayrollManagementWorkspace employees={employees} view="archived" user={user} onNavigate={onNavigate} />
       ) : (
@@ -747,8 +756,6 @@ const navigationItems = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/hrhead/dashboard" },
   { key: "profile", label: "My Profile", icon: UserRound, path: "/hrhead/profile" },
   { key: "employees", label: "Employee Directory", icon: Users, path: "/hrhead/employees" },
-  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/hrhead/calendar" },
-  { type: "section", label: "Communication" },
   { key: "messages", label: "Messages", icon: MessageCircle, path: "/hrhead/messages" },
   { key: "notifications", label: "Notifications", path: "/hrhead/notifications", hidden: true },
   { type: "section", label: "HR Operations" },
@@ -762,24 +769,16 @@ const navigationItems = [
     permissionModule: "leaveBalance",
   },
   {
-    key: "attendance",
-    label: "Time & Attendance",
-    icon: ClipboardCheck,
-    path: "/hrhead/attendance/overtime",
-    children: [
-      { key: "overtime", label: "Overtime", path: "/hrhead/attendance/overtime" },
-    ],
-  },
-  {
     key: "leave",
-    label: "Leave Management",
+    label: "File Request",
     icon: CalendarRange,
     path: "/hrhead/leave",
     children: [
-      { key: "leave", label: "Leave", path: "/hrhead/leave", exact: true },
-      { key: "travel", label: "Travel Order", path: "/hrhead/leave/travel-order" },
+      { key: "leave", label: "Leave Request", path: "/hrhead/leave", exact: true },
+      { key: "travel", label: "Travel Order Request", path: "/hrhead/leave/travel-order" },
       { key: "cto", label: "Compensatory Time Off", path: "/hrhead/leave/compensatory-time-off" },
       { key: "passSlip", label: "Pass Slips", path: "/hrhead/leave/pass-slips" },
+      { key: "overtime", label: "Overtime", path: "/hrhead/attendance/overtime" },
     ],
   },
   {
@@ -793,6 +792,8 @@ const navigationItems = [
       { key: "payrollLoan", label: "Loan", path: "/hrhead/payroll/loan" },
     ],
   },
+  /* Reached from the Archive toggle on the registry, not from the sidebar. */
+  { key: "archivedPayroll", label: "Archived Payroll", path: "/hrhead/payroll/archived", hidden: true },
 
   { type: "section", label: "Reports & Analytics" },
   {
@@ -800,10 +801,10 @@ const navigationItems = [
     label: "Reports & Analytics",
     icon: FileText,
     path: "/hrhead/reports",
-    children: buildReportNavChildren("/hrhead/reports"),
+    children: buildReportNavChildren("/hrhead/reports", { exclude: HR_HEAD_HIDDEN_REPORT_CATEGORIES }),
   },
   { key: "leaveBalance", label: "Set Leave Balance", icon: ClipboardList, path: "/hrhead/leave-balance", hidden: true },
-  ...buildSelfServiceNavItems("/hrhead", { includeNomination: false }),
+  ...buildSelfServiceNavItems("/hrhead"),
 ];
 
 const modules = {
@@ -833,8 +834,8 @@ const modules = {
     ),
   },
   travel: {
-    title: "Travel Order",
-    description: "Review submitted travel orders and update request outcomes from the HR head workspace.",
+    title: "Travel Order Request",
+    description: "File and monitor travel orders under your employee account.",
     hidePageIntro: true,
     render: ({ user }) => (
       <LeaveDashboard
@@ -847,7 +848,7 @@ const modules = {
   },
   cto: {
     title: "Compensatory Time Off",
-    description: "Review compensatory time off requests and monitor employee CTO records.",
+    description: "Review Chief-approved compensatory requests from every division and forward them for final approval.",
     hidePageIntro: true,
     render: ({ user }) => (
       <LeaveDashboard
@@ -898,7 +899,7 @@ const modules = {
   },
   attendance: {
     title: "Attendance Management",
-    description: "Import DAT attendance, monitor employee logs, approve adjustments, and generate DTR forms.",
+    description: "Monitor employee logs and generate DTR forms.",
     hidePageIntro: true,
     render: ({ user }) => <AttendanceManagementWorkspace user={user} mode="hrhead" />,
   },
@@ -909,18 +910,17 @@ const modules = {
       <LeaveBalanceManagementWorkspace
         user={user}
         showEmployeeIdColumn={false}
-        showRowNumberColumn
       />
     ),
   },
   leaveBalances: {
     title: "Set Balances",
     description: "Manage employee leave credits and compensatory overtime credits, with their updates and history logs.",
+    hidePageIntro: true,
     render: ({ user }) => (
       <LeaveBalanceManagementWorkspace
         user={user}
         showEmployeeIdColumn={false}
-        showRowNumberColumn
       />
     ),
   },
@@ -989,9 +989,10 @@ const modules = {
     hidePageIntro: true,
     render: ({ user }) => <AdminReports user={user} />,
   },
-  ...buildReportCategoryModules((categoryKey, { user }) => (
-    <AdminReports user={user} category={categoryKey} />
-  )),
+  ...buildReportCategoryModules(
+    (categoryKey, { user }) => <AdminReports user={user} category={categoryKey} />,
+    { exclude: HR_HEAD_HIDDEN_REPORT_CATEGORIES }
+  ),
   ...PERFORMANCE_REWARDS_MODULES,
   ...SELF_SERVICE_MODULES,
 };

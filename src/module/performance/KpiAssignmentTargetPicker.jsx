@@ -11,10 +11,13 @@ export default function KpiAssignmentTargetPicker({
   description,
   query,
   onQueryChange,
+  searchLabel = "Search Employees",
   searchPlaceholder,
   divisionFilter,
   onDivisionFilterChange,
   divisions = [],
+  // A desk confined to one division (a chief's) shows that division alone and cannot change it.
+  divisionLocked = false,
   items = [],
   selectedCount = 0,
   allVisibleSelected = false,
@@ -32,34 +35,53 @@ export default function KpiAssignmentTargetPicker({
       <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="m-0 text-base font-semibold text-slate-950">KPI Assignment</h3>
+            <h3 className="m-0 flex items-center gap-2 text-base font-semibold text-slate-950">
+              <span className="h-2 w-2 rounded-full bg-accent-500" aria-hidden="true" />
+              KPI Assignment
+            </h3>
             <p className="mb-0 mt-1 text-sm leading-5 text-slate-500">{description}</p>
           </div>
-          <span className="shrink-0 rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+          <span
+            className={`shrink-0 rounded-md border px-2.5 py-1 text-xs font-semibold tabular-nums ${
+              selectedCount > 0
+                ? "border-accent-200 bg-accent-50 text-accent-700 dark:border-accent-800 dark:bg-accent-950/60 dark:text-accent-300"
+                : "border-slate-200 bg-slate-100 text-slate-600"
+            }`}
+          >
             {selectedCount} selected
           </span>
         </div>
 
-        <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_180px]">
+        <div className="app-optional-field mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_180px]">
           <InputField
+            label={searchLabel}
             name="assignmentTargetSearch"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder={searchPlaceholder}
             aria-label="Search assignment targets"
-            inputClassName="text-sm"
+            inputClassName="text-sm focus:ring-2 focus:ring-accent-500/15"
           />
-          <select
-            value={divisionFilter}
-            onChange={(event) => onDivisionFilterChange(event.target.value)}
-            aria-label="Filter assignment targets by division"
-            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-          >
-            <option value="">All divisions</option>
-            {divisions.map((division) => (
-              <option key={division} value={division}>{division}</option>
-            ))}
-          </select>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Division</span>
+            <select
+              value={divisionFilter}
+              disabled={divisionLocked}
+              onChange={(event) => onDivisionFilterChange(event.target.value)}
+              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/15 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-600"
+            >
+              {divisionLocked ? (
+                <option value={divisionFilter}>{divisionFilter || "No assigned division"}</option>
+              ) : (
+                <>
+                  <option value="">All divisions</option>
+                  {divisions.map((division) => (
+                    <option key={division} value={division}>{division}</option>
+                  ))}
+                </>
+              )}
+            </select>
+          </label>
         </div>
       </div>
 
@@ -70,7 +92,7 @@ export default function KpiAssignmentTargetPicker({
             checked={allVisibleSelected}
             onChange={onToggleAll}
             disabled={items.length === 0}
-            className="h-4 w-4 rounded border-slate-300 accent-slate-900"
+            className="h-4 w-4 rounded border-slate-300 accent-accent-600"
           />
           Select all shown
         </label>
@@ -90,7 +112,7 @@ export default function KpiAssignmentTargetPicker({
                   key={key}
                   className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 transition ${
                     selected
-                      ? "border-slate-400 bg-slate-50"
+                      ? "border-accent-300 bg-accent-50/60 dark:border-accent-800 dark:bg-accent-950/30"
                       : "border-transparent hover:border-slate-200 hover:bg-slate-50"
                   }`}
                 >
@@ -98,7 +120,7 @@ export default function KpiAssignmentTargetPicker({
                     type="checkbox"
                     checked={selected}
                     onChange={() => onToggle(item)}
-                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 accent-slate-900"
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 accent-accent-600"
                     aria-label={`Select ${itemTitle(item)}`}
                   />
                   <span className="min-w-0 flex-1">

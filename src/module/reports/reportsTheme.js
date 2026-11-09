@@ -22,6 +22,7 @@ const LIGHT_THEME = {
   textMuted: "#64748b",
   series: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
   sequential: ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#2a78d6", "#256abf", "#184f95"],
+  ordinal: ["#86b6ef", "#599be8", "#307edc", "#2164b7", "#164c91", "#0d366b"],
   status: {
     good: "#0ca30c",
     warning: "#fab219",
@@ -44,6 +45,7 @@ const DARK_THEME = {
   textMuted: "#94a3b8",
   series: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
   sequential: ["#0d366b", "#104281", "#184f95", "#256abf", "#2a78d6", "#3987e5", "#6da7ec"],
+  ordinal: ["#184f95", "#256abf", "#3987e5", "#6da7ec", "#9dc5f4", "#cde2fb"],
   status: {
     good: "#0ca30c",
     warning: "#fab219",
@@ -140,6 +142,74 @@ export function assignEntitySlots(names, pinned = {}) {
   return slots;
 }
 
+/**
+ * Gives each bar of a single-series chart the hue of the entity it stands for (a division, an
+ * appointment type, a leave type), keyed to its name through `assignEntitySlots`.
+ *
+ * The rows come back in **slot order**, not value order. Only neighbouring bars touch, and
+ * consecutive slots are what the eight-slot order was validated for; sorting by value would put
+ * arbitrary slots side by side (yellow beside orange fails the floors). Bar length still carries
+ * the ranking. Entities past the eighth take the muted token rather than a ninth hue.
+ *
+ * Pass `names` when another chart colours the same entities, so both resolve against one set.
+ */
+export function colorEntityRows(rows, theme, names = rows.map((row) => row.label)) {
+  const slots = assignEntitySlots(names);
+
+  return rows
+    .map((row) => {
+      const slot = slots.get(normalizeEntityKey(row.label));
+      const hasSlot = slot !== null && slot !== undefined;
+
+      return {
+        ...row,
+        slot: hasSlot ? slot : SERIES_SLOT_COUNT,
+        color: hasSlot ? theme.series[slot] : theme.textMuted,
+      };
+    })
+    .sort((left, right) => left.slot - right.slot || (Number(right.value) || 0) - (Number(left.value) || 0));
+}
+
+/**
+ * Colours ordered bands (age bands, years of service, salary brackets, balance ranges) with the
+ * ordinal ramp: one hue, light to dark in the order the bands run, so the colour reads as the order.
+ *
+ * `theme.ordinal` holds six steps spaced evenly in OKLab lightness along the documented blue ramp,
+ * validated with `validate_palette.js --ordinal` against each mode's surface (monotone, every
+ * adjacent gap >= 0.06, the step nearest the surface >= 2:1). Fewer bands take evenly spaced steps
+ * from it; past six the steps would blur, so the bands fall back to one hue.
+ *
+ * `order` lists the band labels in their natural order, for series the API does not return in that
+ * order. Labels outside it -- "Unspecified" -- are not a band: they go last, in the muted token.
+ */
+export function colorOrdinalRows(rows, theme, order = null) {
+  const isBand = (row) => (
+    order ? order.includes(row.label) : normalizeEntityKey(row.label) !== "unspecified"
+  );
+  const bands = rows.filter(isBand);
+  const rest = rows.filter((row) => !isBand(row));
+
+  if (order) {
+    bands.sort((left, right) => order.indexOf(left.label) - order.indexOf(right.label));
+  }
+
+  const ramp = theme.ordinal;
+  const stepFor = (index) => {
+    if (bands.length > ramp.length) {
+      return theme.series[0];
+    }
+
+    return bands.length === 1
+      ? ramp[ramp.length - 1]
+      : ramp[Math.round((index * (ramp.length - 1)) / (bands.length - 1))];
+  };
+
+  return [
+    ...bands.map((row, index) => ({ ...row, color: stepFor(index) })),
+    ...rest.map((row) => ({ ...row, color: theme.textMuted })),
+  ];
+}
+
 /** Resolves `assignEntitySlots` against a theme. Overflow entities fall back to the muted token. */
 export function resolveEntityColors(names, theme, pinned = {}) {
   const slots = assignEntitySlots(names, pinned);
@@ -189,10 +259,11 @@ export function prefersReducedMotion() {
  * Smoothly counts a KPI value up to its target. Honours reduced-motion by
  * jumping straight to the final value.
  */
-export function useCountUp(target, duration = 900) {
+export function useCountUp(target, duration = 900, startFromZero = false) {
   const numericTarget = Number.isFinite(Number(target)) ? Number(target) : 0;
-  const [display, setDisplay] = useState(numericTarget);
-  const fromRef = useRef(numericTarget);
+  const initialValue = startFromZero ? 0 : numericTarget;
+  const [display, setDisplay] = useState(initialValue);
+  const fromRef = useRef(initialValue);
   const frameRef = useRef(0);
 
   useEffect(() => {

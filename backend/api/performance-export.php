@@ -380,6 +380,33 @@ function perf_text(mixed $value, string $fallback = 'N/A'): string
     return $normalized !== '' ? $normalized : $fallback;
 }
 
+/**
+ * A KPI's success indicators, one per line in the stored column (see
+ * frontend/src/module/performance/successIndicators.js). Several are numbered the way the screen
+ * lists them; a lone one is left as plain text. The cells wrap, so the newlines survive in Excel.
+ */
+function perf_success_indicators_text(mixed $value, string $fallback = 'N/A'): string
+{
+    $lines = array_values(array_filter(
+        array_map('trim', preg_split('/\r?\n/', (string)($value ?? ''))),
+        static fn (string $line): bool => $line !== ''
+    ));
+
+    if ($lines === []) {
+        return $fallback;
+    }
+
+    if (count($lines) === 1) {
+        return $lines[0];
+    }
+
+    return implode("\n", array_map(
+        static fn (string $line, int $index): string => ($index + 1) . '. ' . $line,
+        $lines,
+        array_keys($lines)
+    ));
+}
+
 function perf_number(mixed $value): float
 {
     return is_numeric($value) ? (float)$value : 0.0;
@@ -443,6 +470,27 @@ function perf_category_label(array $record): string
     return strtoupper(perf_text($record['category'] ?? $record['kpiCategory'] ?? null, 'Program'));
 }
 
+/**
+ * The semester column of an OPCR row. A row with no semester target prints the form's own wording
+ * for that, "NO TARGET FOR 2ND SEMESTER", rather than an empty cell.
+ */
+function perf_opcr_semester_target(array $record): string
+{
+    $target = perf_success_indicators_text($record['semesterIndicator'] ?? null, '');
+
+    return $target !== ''
+        ? $target
+        : 'NO TARGET FOR ' . strtoupper(perf_text($record['semester'] ?? null, 'THE SEMESTER'));
+}
+
+/** Two adjacent form rows print under one output cell when they share the band and the output. */
+function perf_same_output_cell(array $left, array $right): bool
+{
+    $output = static fn (array $record): string => mb_strtolower(perf_text($record['output'] ?? $record['kpiTitle'] ?? null));
+
+    return perf_category_label($left) === perf_category_label($right) && $output($left) === $output($right);
+}
+
 /** A rating cell: numeric when rated, an empty ruled cell when not, exactly as the form prints. */
 function perf_rating_cell(mixed $value): array
 {
@@ -488,8 +536,17 @@ function perf_opcr_form_sheet(array $records): array
     $fiscalYear = perf_first_value($records, 'period', 'FY ' . date('Y'));
     $semester = perf_first_value($records, 'semester', 'Semester');
     $period = trim(implode(' - ', array_filter([$fiscalYear, $semester]))) ?: 'Rating Period';
-    $headOfOffice = 'FELIZARDO A. GACAD, JR.';
-    $approvedBy = perf_first_value($records, 'approvedBy', 'ATTY. WILFREDO G. MONCANO');
+    // The division's chief commits and assesses, the HR Head signs beside, and the Regional Director
+    // gives the final rating; all come with the records (opcr_attach_signatories()). Nobody in the
+    // role prints a blank line.
+    $blankName = '______________________________';
+    $division = mb_strtoupper(perf_first_value($records, 'division', 'DIVISION'));
+    $chiefName = mb_strtoupper(perf_first_value($records, 'divisionChiefName', $blankName));
+    $chiefPosition = perf_first_value($records, 'divisionChiefPosition', 'Division Chief');
+    $hrHeadName = mb_strtoupper(perf_first_value($records, 'hrHeadName', $blankName));
+    $hrHeadPosition = perf_first_value($records, 'hrHeadPosition', 'HR Head');
+    $directorName = mb_strtoupper(perf_first_value($records, 'regionalDirectorName', $blankName));
+    $directorPosition = perf_first_value($records, 'regionalDirectorPosition', 'Regional Director');
     $finalAverage = perf_final_average_rating($records);
 
     $rows = [];
@@ -502,21 +559,15 @@ function perf_opcr_form_sheet(array $records): array
 
     $rows[] = perf_xlsx_row([
         0 => perf_xlsx_text(
-            'I, ' . $headOfOffice . ', Head of the MINES AND GEOSCIENCES BUREAU REGIONAL OFFICE No. X, commit to deliver'
-            . ' and agree to be rated on the attainment of the following targets in accordance with the indicated measures'
-            . ' for the period ' . $period . '.',
+            'I, ' . $chiefName . ', Head of the ' . $division . ', MINES AND GEOSCIENCES BUREAU REGIONAL OFFICE No. X,'
+            . ' commit to deliver and agree to be rated on the attainment of the following targets in accordance with the'
+            . ' indicated measures for the period ' . $period . '.',
             PERF_XLSX_STYLE_TEXT,
             6
         ),
-        7 => perf_xlsx_text($headOfOffice . "\nHead of Office\n\nDate: __________", PERF_XLSX_STYLE_CENTER, 3),
+        7 => perf_xlsx_text($chiefName . "\n" . $chiefPosition . "\n\nDate: __________", PERF_XLSX_STYLE_CENTER, 3),
     ], $columns);
     $rowHeights[count($rows) - 1] = 78;
-
-    $rows[] = perf_xlsx_row([
-        0 => perf_xlsx_text("Approved by:\n\n" . $approvedBy . "\nActing Director", PERF_XLSX_STYLE_CENTER, 6),
-        7 => perf_xlsx_text('Date: ' . $period, PERF_XLSX_STYLE_TEXT, 3),
-    ], $columns);
-    $rowHeights[count($rows) - 1] = 62;
 
     $rows[] = perf_xlsx_row([
         0 => perf_xlsx_blank(PERF_XLSX_STYLE_TEXT, 6),
@@ -550,7 +601,11 @@ function perf_opcr_form_sheet(array $records): array
 
     $previousCategory = null;
 
-    foreach ($records as $record) {
+    $records = array_values($records);
+    $count = count($records);
+
+    for ($index = 0; $index < $count; $index++) {
+        $record = $records[$index];
         $category = perf_category_label($record);
 
         if ($category !== $previousCategory) {
@@ -560,16 +615,30 @@ function perf_opcr_form_sheet(array $records): array
             $previousCategory = $category;
         }
 
-        $budget = perf_number($record['budget'] ?? null);
+        // Adjacent rows of one OO/PAP share its cell and its budget, merged down over the run the
+        // way the form prints "Mineral Reservation Program" once beside its three indicators. The
+        // budget is allotted to the OO/PAP, so the run's rows are added into that one cell.
+        $continuesOutput = $index > 0 && perf_same_output_cell($records[$index - 1], $record);
+        $outputRun = 0;
+        $runBudget = perf_number($record['budget'] ?? null);
+        while (!$continuesOutput && $index + $outputRun + 1 < $count && perf_same_output_cell($record, $records[$index + $outputRun + 1])) {
+            $outputRun++;
+            $runBudget += perf_number($records[$index + $outputRun]['budget'] ?? null);
+        }
+
         $average = perf_average_rating($record);
-        $successIndicator = perf_text($record['successIndicator'] ?? null);
 
         $rows[] = perf_xlsx_row([
-            0 => perf_xlsx_text(perf_text($record['output'] ?? $record['kpiTitle'] ?? null), PERF_XLSX_STYLE_BOLD),
-            1 => perf_xlsx_text($successIndicator),
-            2 => perf_xlsx_text($successIndicator),
-            3 => $budget > 0 ? perf_xlsx_number($budget, PERF_XLSX_STYLE_MONEY) : perf_xlsx_blank(PERF_XLSX_STYLE_MONEY),
-            4 => perf_xlsx_text(perf_text($record['accountableName'] ?? null), PERF_XLSX_STYLE_CENTER),
+            0 => $continuesOutput
+                ? perf_xlsx_blank(PERF_XLSX_STYLE_BOLD)
+                : perf_xlsx_text(perf_text($record['output'] ?? $record['kpiTitle'] ?? null), PERF_XLSX_STYLE_BOLD, 0, $outputRun),
+            1 => perf_xlsx_text(perf_success_indicators_text($record['successIndicator'] ?? null)),
+            2 => perf_xlsx_text(perf_opcr_semester_target($record)),
+            3 => $continuesOutput
+                ? perf_xlsx_blank(PERF_XLSX_STYLE_MONEY)
+                : ($runBudget > 0 ? perf_xlsx_number($runBudget, PERF_XLSX_STYLE_MONEY, 0, $outputRun) : perf_xlsx_blank(PERF_XLSX_STYLE_MONEY, 0, $outputRun)),
+            // Every division sharing the KPI, as opcr.php prints it; older rows carry only their own name.
+            4 => perf_xlsx_text(perf_text($record['accountableLabel'] ?? $record['accountableName'] ?? null), PERF_XLSX_STYLE_CENTER),
             5 => perf_xlsx_text(perf_text($record['actualAccomplishment'] ?? null, '')),
             6 => perf_rating_cell($record['q1Rating'] ?? null),
             7 => perf_rating_cell($record['e2Rating'] ?? null),
@@ -605,19 +674,11 @@ function perf_opcr_form_sheet(array $records): array
     ], $columns);
 
     $rows[] = perf_xlsx_row([
-        0 => perf_xlsx_text(
-            "Assessed by:\n\nENGR. TEODORICO A. SANDOVAL\nChief, Planning, Policy and International Affairs Division",
-            PERF_XLSX_STYLE_CENTER,
-            2
-        ),
+        0 => perf_xlsx_text("Assessed by:\n\n" . $chiefName . "\n" . $chiefPosition, PERF_XLSX_STYLE_CENTER, 2),
         3 => perf_xlsx_text('Date', PERF_XLSX_STYLE_CENTER),
-        4 => perf_xlsx_text(
-            "\nENGR. JUANCHO PABLO S. CALVEZ\nChief, Metallurgical Technology Division\nOIC, Assistant Director in concurrent capacity",
-            PERF_XLSX_STYLE_CENTER,
-            2
-        ),
+        4 => perf_xlsx_text("\n\n" . $hrHeadName . "\n" . $hrHeadPosition, PERF_XLSX_STYLE_CENTER, 2),
         7 => perf_xlsx_text('Date', PERF_XLSX_STYLE_CENTER),
-        8 => perf_xlsx_text("Final Rating:\n\n" . $approvedBy . "\nDirector", PERF_XLSX_STYLE_CENTER, 1),
+        8 => perf_xlsx_text("Final Rating:\n\n" . $directorName . "\n" . $directorPosition, PERF_XLSX_STYLE_CENTER, 1),
         10 => perf_xlsx_text('Date', PERF_XLSX_STYLE_CENTER),
     ], $columns);
     $rowHeights[count($rows) - 1] = 92;
@@ -641,7 +702,7 @@ function perf_opcr_form_sheet(array $records): array
  * The IPCR form. Mirrors IpcrFormDocument in IpcrManagementWorkspace.jsx.
  * -------------------------------------------------------------------------------------------- */
 
-const PERF_IPCR_COLUMNS = 8;
+const PERF_IPCR_COLUMNS = 9;
 
 function perf_long_date(mixed $value): string
 {
@@ -700,9 +761,9 @@ function perf_ipcr_form_sheet(array $records): array
             . ' commit to deliver and agree to be rated on the attainment of the following targets in accordance with the'
             . ' indicated measures for the period ' . perf_commitment_period_label($anchor) . '.',
             PERF_XLSX_STYLE_TEXT,
-            5
+            6
         ),
-        6 => perf_xlsx_text($employee . "\nRatee\n\nDate: " . $commitmentDate, PERF_XLSX_STYLE_CENTER, 1),
+        7 => perf_xlsx_text($employee . "\nRatee\n\nDate: " . $commitmentDate, PERF_XLSX_STYLE_CENTER, 1),
     ], $columns);
     $rowHeights[count($rows) - 1] = 78;
 
@@ -710,14 +771,14 @@ function perf_ipcr_form_sheet(array $records): array
         0 => perf_xlsx_text('Reviewed by:', PERF_XLSX_STYLE_HEADER_PINK, 1),
         2 => perf_xlsx_text('Date', PERF_XLSX_STYLE_HEADER_PINK, 1),
         4 => perf_xlsx_text('Approved by:', PERF_XLSX_STYLE_HEADER_PINK, 1),
-        6 => perf_xlsx_text('Date', PERF_XLSX_STYLE_HEADER_PINK, 1),
+        6 => perf_xlsx_text('Date', PERF_XLSX_STYLE_HEADER_PINK, 2),
     ], $columns, PERF_XLSX_STYLE_HEADER_PINK);
 
     $rows[] = perf_xlsx_row([
         0 => perf_xlsx_text($reviewedBy . "\n" . $reviewerPosition, PERF_XLSX_STYLE_CENTER, 1),
         2 => perf_xlsx_text($commitmentDate, PERF_XLSX_STYLE_CENTER, 1),
         4 => perf_xlsx_text($reviewedBy . "\n" . $reviewerPosition, PERF_XLSX_STYLE_CENTER, 1),
-        6 => perf_xlsx_text($commitmentDate, PERF_XLSX_STYLE_CENTER, 1),
+        6 => perf_xlsx_text($commitmentDate, PERF_XLSX_STYLE_CENTER, 2),
     ], $columns);
     $rowHeights[count($rows) - 1] = 44;
 
@@ -725,50 +786,79 @@ function perf_ipcr_form_sheet(array $records): array
 
     $rows[] = perf_xlsx_row([
         0 => perf_xlsx_text('OUTPUT', PERF_XLSX_STYLE_HEADER_BLUE, 0, 1),
-        1 => perf_xlsx_text("SUCCESS INDICATOR\n(Target + Measure)", PERF_XLSX_STYLE_HEADER_BLUE, 0, 1),
-        2 => perf_xlsx_text('Actual Accomplishments', PERF_XLSX_STYLE_HEADER_BLUE, 0, 1),
-        3 => perf_xlsx_text('Rating', PERF_XLSX_STYLE_HEADER_BLUE, 3),
-        7 => perf_xlsx_text('Remarks', PERF_XLSX_STYLE_HEADER_BLUE, 0, 1),
+        1 => perf_xlsx_text("SUCCESS INDICATOR\n(Target + Measure)", PERF_XLSX_STYLE_HEADER_BLUE, 1, 1),
+        3 => perf_xlsx_text('Actual Accomplishments', PERF_XLSX_STYLE_HEADER_BLUE, 0, 1),
+        4 => perf_xlsx_text('Rating', PERF_XLSX_STYLE_HEADER_BLUE, 3),
+        8 => perf_xlsx_text('Remarks', PERF_XLSX_STYLE_HEADER_BLUE, 0, 1),
     ], $columns, PERF_XLSX_STYLE_HEADER_BLUE);
     $rowHeights[count($rows) - 1] = 32;
 
     $rows[] = perf_xlsx_row([
-        3 => perf_xlsx_text('Q1', PERF_XLSX_STYLE_HEADER_BLUE),
-        4 => perf_xlsx_text('E2', PERF_XLSX_STYLE_HEADER_BLUE),
-        5 => perf_xlsx_text('T3', PERF_XLSX_STYLE_HEADER_BLUE),
-        6 => perf_xlsx_text('A4', PERF_XLSX_STYLE_HEADER_BLUE),
+        4 => perf_xlsx_text('Q1', PERF_XLSX_STYLE_HEADER_BLUE),
+        5 => perf_xlsx_text('E2', PERF_XLSX_STYLE_HEADER_BLUE),
+        6 => perf_xlsx_text('T3', PERF_XLSX_STYLE_HEADER_BLUE),
+        7 => perf_xlsx_text('A4', PERF_XLSX_STYLE_HEADER_BLUE),
     ], $columns, PERF_XLSX_STYLE_HEADER_BLUE);
 
+    $previousProgram = null;
     $previousCategory = null;
+    $records = array_values($records);
+    $count = count($records);
 
-    foreach ($records as $record) {
+    for ($index = 0; $index < $count; $index++) {
+        $record = $records[$index];
         $category = perf_category_label($record);
+
+        /*
+         * The organizational outcome and program band, printed once above the categories filed
+         * under it. Optional: a KPI without one prints its category band alone, as every record
+         * assigned before the column existed does.
+         */
+        $program = perf_text($record['program'] ?? null, '');
+        if ($program !== '' && $program !== $previousProgram) {
+            $rows[] = perf_xlsx_row([
+                0 => perf_xlsx_text($program, PERF_XLSX_STYLE_SECTION, $columns - 1),
+            ], $columns, PERF_XLSX_STYLE_SECTION);
+            $previousCategory = null;
+        }
+        $previousProgram = $program;
 
         if ($category !== $previousCategory) {
             $rows[] = perf_xlsx_row([
-                0 => perf_xlsx_text($category, PERF_XLSX_STYLE_SECTION, $columns - 1),
-            ], $columns, PERF_XLSX_STYLE_SECTION);
+                0 => perf_xlsx_text($category, PERF_XLSX_STYLE_BOLD, $columns - 1),
+            ], $columns, PERF_XLSX_STYLE_BOLD);
             $previousCategory = $category;
+        }
+
+        // Adjacent rows with the same output share one output cell, as the preview and the printed
+        // form do: the cell on the first row is merged down over the rest, which stay blank.
+        $continuesOutput = $index > 0 && perf_same_output_cell($records[$index - 1], $record);
+        $outputRun = 0;
+        while (!$continuesOutput && $index + $outputRun + 1 < $count && perf_same_output_cell($record, $records[$index + $outputRun + 1])) {
+            $outputRun++;
         }
 
         $average = perf_average_rating($record);
 
         $rows[] = perf_xlsx_row([
-            0 => perf_xlsx_text(perf_text($record['output'] ?? $record['kpiTitle'] ?? null)),
-            1 => perf_xlsx_text(perf_text($record['successIndicator'] ?? null)),
-            2 => perf_xlsx_text(perf_text($record['actualAccomplishment'] ?? null, 'No accomplishment submitted yet.')),
-            3 => perf_rating_cell($record['q1Rating'] ?? null),
-            4 => perf_rating_cell($record['e2Rating'] ?? null),
-            5 => perf_rating_cell($record['t3Rating'] ?? null),
-            6 => $average !== null ? perf_xlsx_number($average) : perf_xlsx_blank(PERF_XLSX_STYLE_RATING),
-            7 => perf_xlsx_text(perf_text($record['remarks'] ?? null, '')),
+            0 => $continuesOutput
+                ? perf_xlsx_blank(PERF_XLSX_STYLE_TEXT)
+                : perf_xlsx_text(perf_text($record['output'] ?? $record['kpiTitle'] ?? null), PERF_XLSX_STYLE_TEXT, 0, $outputRun),
+            1 => perf_xlsx_text(perf_success_indicators_text($record['successIndicator'] ?? null)),
+            2 => perf_xlsx_text(perf_success_indicators_text($record['secondIndicator'] ?? null, '')),
+            3 => perf_xlsx_text(perf_text($record['actualAccomplishment'] ?? null, 'No accomplishment submitted yet.')),
+            4 => perf_rating_cell($record['q1Rating'] ?? null),
+            5 => perf_rating_cell($record['e2Rating'] ?? null),
+            6 => perf_rating_cell($record['t3Rating'] ?? null),
+            7 => $average !== null ? perf_xlsx_number($average) : perf_xlsx_blank(PERF_XLSX_STYLE_RATING),
+            8 => perf_xlsx_text(perf_text($record['remarks'] ?? null, '')),
         ], $columns);
         $rowHeights[count($rows) - 1] = 44;
     }
 
     $rows[] = perf_xlsx_row([
         0 => perf_xlsx_text('Final Average Rating', PERF_XLSX_STYLE_BOLD),
-        6 => $finalAverage !== null ? perf_xlsx_number($finalAverage) : perf_xlsx_blank(PERF_XLSX_STYLE_RATING),
+        7 => $finalAverage !== null ? perf_xlsx_number($finalAverage) : perf_xlsx_blank(PERF_XLSX_STYLE_RATING),
     ], $columns);
 
     $rows[] = perf_xlsx_row([
@@ -783,8 +873,8 @@ function perf_ipcr_form_sheet(array $records): array
         2 => perf_xlsx_text('Date', PERF_XLSX_STYLE_BOLD_CENTER),
         3 => perf_xlsx_text('Assessed by:', PERF_XLSX_STYLE_BOLD_CENTER, 1),
         5 => perf_xlsx_text('Date', PERF_XLSX_STYLE_BOLD_CENTER),
-        6 => perf_xlsx_text('Final Rating by:', PERF_XLSX_STYLE_BOLD_CENTER),
-        7 => perf_xlsx_text('Date', PERF_XLSX_STYLE_BOLD_CENTER),
+        6 => perf_xlsx_text('Final Rating by:', PERF_XLSX_STYLE_BOLD_CENTER, 1),
+        8 => perf_xlsx_text('Date', PERF_XLSX_STYLE_BOLD_CENTER),
     ], $columns);
 
     $rows[] = perf_xlsx_row([
@@ -795,7 +885,7 @@ function perf_ipcr_form_sheet(array $records): array
             PERF_XLSX_STYLE_CENTER,
             1
         ),
-        6 => perf_xlsx_text("\n" . $reviewedBy . "\n" . $reviewerPosition, PERF_XLSX_STYLE_CENTER),
+        6 => perf_xlsx_text("\n" . $reviewedBy . "\n" . $reviewerPosition, PERF_XLSX_STYLE_CENTER, 1),
     ], $columns);
     $rowHeights[count($rows) - 1] = 96;
 
@@ -809,7 +899,7 @@ function perf_ipcr_form_sheet(array $records): array
 
     return [
         'rows' => $rows,
-        'cols' => [28, 32, 36, 6, 6, 6, 6, 26],
+        'cols' => [28, 30, 30, 34, 6, 6, 6, 6, 26],
         'rowHeights' => $rowHeights,
     ];
 }

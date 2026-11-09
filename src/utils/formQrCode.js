@@ -104,7 +104,7 @@ export function buildTravelOrderQrPayload(request, { travelOrderNumber = "", per
     ["Name", truncate(request?.employeeName)],
     // No employee ID line here: the travel order carries more fields than the leave form, and the
     // reference plus name already identify the record without spending modules on it.
-    ["Position", truncate(request?.position || request?.designation)],
+    ["Position", truncate(request?.position)],
     ["Division", truncate(request?.division)],
     ["Destination", truncate(request?.destination)],
     ["Purpose", truncate(request?.purpose)],

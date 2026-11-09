@@ -25,6 +25,7 @@ const PAYSLIP_DEDUCTION_ROWS = [
     ['label' => 'Withholding Tax', 'aliases' => ['Withholding Tax', 'W-TAX', 'Tax']],
     ['label' => 'Additional Withholding Tax (PBB 2020)', 'aliases' => ['Additional Withholding Tax (PBB 2020)']],
     ['label' => 'Leave Without Pay (LWOP)', 'aliases' => ['Leave Without Pay (LWOP)', 'LWOP', 'Absence Deduction']],
+    ['label' => 'Pass Slip', 'aliases' => ['Pass Slip', 'Pass Slip Deduction']],
     ['label' => 'GSIS Consolidated Loan', 'aliases' => ['GSIS CONSO LOAN', 'GSIS Consolidated Loan', 'Conso Loan']],
     ['label' => 'GSIS Policy Loan', 'aliases' => ['GSIS POLICY LOAN', 'GSIS Policy Loan', 'Policy Loan']],
     ['label' => 'GSIS Emergency Loan', 'aliases' => ['GSIS EMERGENCY LOAN', 'GSIS Emergency Loan', 'Emergency Loan']],

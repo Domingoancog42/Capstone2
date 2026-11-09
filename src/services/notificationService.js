@@ -1,8 +1,9 @@
 import api from "./api";
+import { scalePollInterval } from "../components/auto/autorefreshconfig";
 import { getProfilePathForRole, normalizeRole } from "../utils/roleRoutes";
 
 export const NOTIFICATIONS_CHANGED_EVENT = "hris:notifications:changed";
-export const NOTIFICATION_BELL_POLL_INTERVAL_MS = 30000;
+export const NOTIFICATION_BELL_POLL_INTERVAL_MS = scalePollInterval(30000);
 
 export const NOTIFICATION_TYPE_OPTIONS = [
   { value: "all", label: "All types" },
@@ -11,6 +12,7 @@ export const NOTIFICATION_TYPE_OPTIONS = [
   { value: "leave_request_submitted", label: "Leave Request Submitted" },
   { value: "leave_request_approved", label: "Leave Request Approved" },
   { value: "leave_request_rejected", label: "Leave Request Rejected" },
+  { value: "leave_medical_certificate_reminder", label: "Medical Certificate Reminder" },
   { value: "leave_monetization_submitted", label: "Leave Monetization Filed" },
   { value: "leave_monetization_approved", label: "Leave Monetization Approved" },
   { value: "leave_monetization_rejected", label: "Leave Monetization Rejected" },
@@ -30,8 +32,6 @@ export const NOTIFICATION_TYPE_OPTIONS = [
   { value: "permission_updated", label: "Permission Updated" },
   { value: "access_request", label: "Access Requested" },
   { value: "access_granted", label: "Access Granted" },
-  { value: "service_record_print_request", label: "Service Record Print Requested" },
-  { value: "service_record_print_approved", label: "Service Record Print Approved" },
   { value: "profile_edit_request", label: "Personal Details Edit Requested" },
   { value: "profile_edit_approved", label: "Personal Details Edit Decided" },
   { value: "system_alert", label: "System Alerts" },
@@ -100,6 +100,8 @@ export function getNotificationTypeLabel(value) {
       return "Leave Request Approved";
     case "leave_request_rejected":
       return "Leave Request Rejected";
+    case "leave_medical_certificate_reminder":
+      return "Medical Certificate Reminder";
     case "leave_monetization_submitted":
       return "Leave Monetization Filed";
     case "leave_monetization_approved":
@@ -138,16 +140,36 @@ export function getNotificationTypeLabel(value) {
       return "Access Requested";
     case "access_granted":
       return "Access Granted";
-    case "service_record_print_request":
-      return "Service Record Print Requested";
-    case "service_record_print_approved":
-      return "Service Record Print Approved";
     case "profile_edit_request":
       return "Personal Details Edit Requested";
     case "profile_edit_approved":
       return "Personal Details Edit Decided";
+    case "ipcr_for_approval":
+      return "IPCR For Approval";
+    case "ipcr_approved":
+      return "IPCR Approved";
+    case "ipcr_returned":
+      return "IPCR Returned";
+    case "ipcr_assigned":
+      return "IPCR Assigned";
+    case "ipcr_submitted":
+      return "IPCR For Validation";
+    case "ipcr_validated":
+      return "IPCR Validated";
+    case "opcr_assigned":
+      return "OPCR Assigned";
+    case "opcr_submitted":
+      return "OPCR For Validation";
+    case "opcr_validated":
+      return "OPCR Validated";
+    case "opcr_returned":
+      return "OPCR Returned";
     case "system_alert":
       return "System Alerts";
+    case "award_received":
+      return "Award Received";
+    case "award_voting_open":
+      return "Voting Open";
     case "custom":
       return "Custom Notification";
     default:
@@ -273,6 +295,7 @@ export function getNotificationRoute(notification = {}, roleKey = "") {
     case "leave_request_submitted":
     case "leave_request_approved":
     case "leave_request_rejected":
+    case "leave_medical_certificate_reminder":
       return role === "employee" ? "/employee/leave-request" : `/${role}/leave`;
     /* Monetization is filed and reviewed in the leave list, alongside the leave requests. */
     case "leave_monetization_submitted":
@@ -295,23 +318,50 @@ export function getNotificationRoute(notification = {}, roleKey = "") {
       return role === "employee" ? "/employee/travel-order" : `/${role}/leave/travel-order`;
     case "attendance_updated":
       return `/${role}/attendance`;
-    /*
-     * The two ends of a print request. Approvers land on Employee Records, where they issue the
-     * form; the employee lands on the screen whose Print button the approval just unlocked, which
-     * is the self-service module for every role except Employee, who has it in their own sidebar.
-     */
-    case "service_record_print_request":
-      return `/${role}/service-record`;
-    case "service_record_print_approved":
-      return role === "employee" ? "/employee/service-record" : `/${role}/my-service-record`;
-    /*
-     * Both ends of a personal details edit request land on the same screen: the approver reads the
-     * reason from the notification itself, and the requester needs the section the decision was
-     * about. Every role reaches their own profile at the same path.
-     */
     case "profile_edit_request":
     case "profile_edit_approved":
       return `/${role}/profile`;
+    /*
+     * Submitted KPIs waiting on their rater, who validates them on the IPCR desk. The approval
+     * types are from the retired chief-assignment workflow, kept so old rows still open the desk.
+     */
+    case "ipcr_submitted":
+    case "ipcr_for_approval":
+    case "ipcr_approved":
+      return ["admin", "hrhead", "hrstaff", "chief", "chiefadmin"].includes(role)
+        ? `/${role}/masterfiles/performance-management/ipcr`
+        : "";
+    /* The rater's decision, and new KPIs: the employee reads all of them on My IPCR. */
+    case "ipcr_validated":
+    case "ipcr_returned":
+    case "ipcr_assigned":
+      if (role === "employee") return "/employee/ipcr";
+      /* Admin has no My IPCR page. */
+      return role === "admin" ? "" : `/${role}/my-ipcr`;
+    /*
+     * The OPCR workflow: the HR Head assigns KPIs to a division, its chief submits the
+     * accomplishments and MOVs, and the Regional Director validates them. Every step is worked on
+     * the OPCR desk, which sits at the same address under each of those roles.
+     */
+    case "opcr_assigned":
+    case "opcr_submitted":
+    case "opcr_validated":
+    case "opcr_returned":
+      return ["admin", "hrhead", "hrstaff", "chief", "chiefadmin", "regionaldirector"].includes(role)
+        ? `/${role}/masterfiles/performance-management/opcr`
+        : "";
+    /*
+     * A won award: the employee's My Rewards page. The roles that run nominations reach the same
+     * list through the My Rewards button on their Nomination screen.
+     */
+    case "award_received":
+      if (role === "employee") return "/employee/rewards";
+      return ["admin", "hrhead", "chief", "chiefadmin"].includes(role)
+        ? `/${role}/rewards-recognition/nomination`
+        : "";
+    /* Only employees vote, so only they are sent this — straight to the ballot. */
+    case "award_voting_open":
+      return role === "employee" ? "/employee/voting" : "";
     default:
       return "";
   }

@@ -2,15 +2,24 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
+require_once __DIR__ . '/employee-id-utils.php';
 require_once __DIR__ . '/email-domain-policy.php';
 require_once __DIR__ . '/leave-credit-utils.php';
 require_once __DIR__ . '/password-reset-utils.php';
+require_once __DIR__ . '/profile-edit-request-utils.php';
+require_once __DIR__ . '/xlsx-reader.php';
 
 $sessionUser = require_session_user();
+// Imported schemas can lose AUTO_INCREMENT. Document attachments and linked accounts
+// need the positive employee ID returned by lastInsertId() after creation.
+restore_auto_increment_primary_key($pdo, 'employees', 'id');
 ensure_organization_structure_columns($pdo);
 ensure_user_security_columns($pdo);
 ensure_email_verification_columns($pdo);
 ensure_employee_suffix_column($pdo);
+ensure_employee_pds_photo_column($pdo);
+ensure_employee_assignment_optional($pdo);
+migrate_legacy_employee_ids($pdo);
 
 /**
  * Who may write to the employee master list.
@@ -67,6 +76,32 @@ function employees_require_manager_or_self(PDO $pdo, array $sessionUser, int $em
     ], 403);
 }
 
+/** Personal fields protected by the Admin / HR Head edit-approval workflow. */
+function employee_personal_details_changed(array $existingEmployee, array $employee): bool
+{
+    $fieldMap = [
+        'firstName' => 'first_name',
+        'middleName' => 'middle_name',
+        'lastName' => 'last_name',
+        'suffix' => 'suffix',
+        'dateOfBirth' => 'date_of_birth',
+        'gender' => 'gender',
+        'phone' => 'phone',
+        'civilStatus' => 'civil_status',
+    ];
+
+    foreach ($fieldMap as $existingKey => $payloadKey) {
+        $before = trim((string)($existingEmployee[$existingKey] ?? ''));
+        $after = trim((string)($employee[$payloadKey] ?? ''));
+
+        if ($before !== $after) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function employee_null_if_empty(mixed $value): mixed
 {
     if ($value === null) {
@@ -100,6 +135,17 @@ function employee_date_or_null(mixed $value): ?string
     return $date && $date->format('Y-m-d') === $value ? (string)$value : null;
 }
 
+/** Longest designation the column takes. */
+const EMPLOYEE_DESIGNATION_MAX_LENGTH = 150;
+
+/** "  OIC,   Finance Section " -> "OIC, Finance Section"; blank becomes null (no designation). */
+function employee_designation_text(mixed $value): ?string
+{
+    $text = trim(preg_replace('/\s+/u', ' ', (string)($value ?? '')) ?? '');
+
+    return $text === '' ? null : $text;
+}
+
 function employee_bool(mixed $value): bool
 {
     if (is_bool($value)) {
@@ -114,7 +160,7 @@ function employee_bool(mixed $value): bool
 function employee_payload(array $body): array
 {
     return [
-        'employee_id' => trim((string)($body['employeeId'] ?? '')),
+        'employee_id' => normalize_employee_id($body['employeeId'] ?? ''),
         'first_name' => trim((string)($body['firstName'] ?? '')),
         'middle_name' => employee_null_if_empty($body['middleName'] ?? null),
         'last_name' => trim((string)($body['lastName'] ?? '')),
@@ -128,7 +174,9 @@ function employee_payload(array $body): array
         'email' => trim((string)($body['email'] ?? '')),
         'phone' => employee_null_if_empty($body['phone'] ?? null),
         'division_id' => (int)($body['divisionId'] ?? 0),
+        // designationId is the position; `designation` is the optional assignment on top of it.
         'designation_id' => (int)($body['designationId'] ?? 0),
+        'designation' => employee_designation_text($body['designation'] ?? null),
         'basic_salary' => employee_decimal_or_null($body['basicSalary'] ?? null),
         'salary_rate' => employee_null_if_empty($body['salaryRate'] ?? null),
         'date_hired' => employee_date_or_null($body['dateHired'] ?? null),
@@ -187,7 +235,7 @@ function employee_payload_errors(PDO $pdo, array $employee): array
         $errors[] = 'Division is required.';
     }
     if ($employee['designation_id'] <= 0) {
-        $errors[] = 'Designation is required.';
+        $errors[] = 'Position is required.';
     }
 
     if ($employee['division_id'] > 0 && $employee['designation_id'] > 0) {
@@ -203,8 +251,12 @@ function employee_payload_errors(PDO $pdo, array $employee): array
         ]);
 
         if ((int)$statement->fetchColumn() === 0) {
-            $errors[] = 'Selected designation does not belong to the selected division.';
+            $errors[] = 'Selected position does not belong to the selected division.';
         }
+    }
+
+    if (mb_strlen((string)($employee['designation'] ?? '')) > EMPLOYEE_DESIGNATION_MAX_LENGTH) {
+        $errors[] = sprintf('Designation must be %d characters or fewer.', EMPLOYEE_DESIGNATION_MAX_LENGTH);
     }
 
     return $errors;
@@ -224,20 +276,7 @@ function validate_employee_payload(PDO $pdo, array $employee): void
 
 function generate_employee_id(PDO $pdo): string
 {
-    $year = date('Y');
-    $prefix = 'EMP' . $year . '-';
-    $statement = $pdo->prepare(
-        'SELECT MAX(CAST(SUBSTRING(employee_id, :offset) AS UNSIGNED))
-         FROM employees
-         WHERE employee_id LIKE :prefix'
-    );
-    $statement->execute([
-        ':offset' => strlen($prefix) + 1,
-        ':prefix' => $prefix . '%',
-    ]);
-
-    $nextNumber = ((int)$statement->fetchColumn()) + 1;
-    return $prefix . str_pad((string)$nextNumber, 4, '0', STR_PAD_LEFT);
+    return next_employee_id($pdo);
 }
 
 function employee_role_exists(PDO $pdo, int $roleId): bool
@@ -246,10 +285,32 @@ function employee_role_exists(PDO $pdo, int $roleId): bool
         return false;
     }
 
+    static $cache = [];
+    $cacheKey = spl_object_id($pdo) . ':' . $roleId;
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
+    }
+
     $statement = $pdo->prepare('SELECT COUNT(*) FROM roles WHERE id = :id');
     $statement->execute([':id' => $roleId]);
 
-    return (int)$statement->fetchColumn() > 0;
+    $cache[$cacheKey] = (int)$statement->fetchColumn() > 0;
+    return $cache[$cacheKey];
+}
+
+/** The login role assigned automatically whenever a single employee record is created. */
+function employee_default_role_id(PDO $pdo): int
+{
+    $statement = $pdo->query(
+        'SELECT id
+         FROM roles
+         WHERE LOWER(REPLACE(name, " ", "")) = "employee"
+         ORDER BY id
+         LIMIT 1'
+    );
+
+    return $statement !== false ? (int)$statement->fetchColumn() : 0;
 }
 
 /*
@@ -296,12 +357,14 @@ function fetch_employee(PDO $pdo, int $id): ?array
             d.name AS department,
             e.designation_id AS designationId,
             des.name AS position,
+            e.designation,
             e.basic_salary AS basicSalary,
             e.salary_rate AS salaryRate,
             e.date_hired AS dateHired,
             e.status,
             e.employment_status AS employmentStatus,
             e.profile_image AS profileImage,
+            e.include_profile_image_in_pds AS includeProfileImageInPds,
             CAST(e.pwd AS CHAR) AS pwd,
             e.civil_status AS civilStatus,
             e.height,
@@ -312,8 +375,8 @@ function fetch_employee(PDO $pdo, int $id): ?array
             e.emp_philhealth_id_no AS philhealthIdNo,
             e.tin_no AS tinNo
          FROM employees e
-         INNER JOIN divisions d ON d.id = e.division_id
-         INNER JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE e.id = :id
            AND e.is_archived = 0
          LIMIT 1'
@@ -328,8 +391,8 @@ function fetch_employee(PDO $pdo, int $id): ?array
  * Appends a service record entry when an edit changes the employee's appointment.
  *
  * `employees` keeps only current state, so without this a promotion silently overwrites the previous
- * designation and salary and the history is gone. Only the four fields that appear on CS Form No. 1
- * are watched — editing a phone number is not an appointment change.
+ * position and salary and the history is gone. Only the four fields that appear on CS Form No. 1
+ * are watched — editing a phone number is not an appointment change, and neither is a designation.
  *
  * The effective date is NOT the date of the edit. HR records promotions late and corrects typos, so
  * the client sends `serviceEffectiveDate` (what the appointment document says) and
@@ -351,7 +414,7 @@ function employee_append_service_record(
     }
 
     $watched = [
-        'designationId' => 'designation',
+        'designationId' => 'position',
         'basicSalary' => 'salary',
         'employmentStatus' => 'employment status',
         'divisionId' => 'division',
@@ -486,6 +549,9 @@ const EMPLOYEE_SEPARATION_TYPES = [
 
 /** GSIS optional retirement age (RA 8291), matching RETIREMENT_ELIGIBLE_AGE on the client. */
 const EMPLOYEE_RETIREMENT_AGE = 60;
+
+/** Shared first-login credential for employee accounts created by CSV import. */
+const EMPLOYEE_CSV_IMPORT_TEMPORARY_PASSWORD = '123';
 
 /**
  * Age bounds a birth date has to fall inside. The floor is the minimum age for government
@@ -798,7 +864,8 @@ function fetch_employee_linked_user(PDO $pdo, int $id): ?array
             e.employee_id,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS full_name,
             d.name AS division,
-            des.name AS designation
+            des.name AS position,
+            e.designation
          FROM users u
          INNER JOIN roles r ON r.id = u.role_id
          LEFT JOIN employees e
@@ -1213,18 +1280,18 @@ function employee_linked_account_response(?array $linkedAccount, array $employee
     ];
 }
 
-function insert_employee_record(PDO $pdo, array $employee): int
+function insert_employee_record(PDO $pdo, array $employee, bool $initializeLeaveCredits = true): int
 {
     $statement = $pdo->prepare(
         'INSERT INTO employees
             (employee_id, first_name, middle_name, last_name, suffix, date_of_birth, address, city,
-             province, zip_code, gender, email, phone, division_id, designation_id,
+             province, zip_code, gender, email, phone, division_id, designation_id, designation,
              basic_salary, salary_rate, date_hired, status, employment_status, pwd,
              civil_status, height, weight, blood_type, emp_gsis_id_no, emp_pagibig_id_no,
              emp_philhealth_id_no, tin_no)
          VALUES
             (:employee_id, :first_name, :middle_name, :last_name, :suffix, :date_of_birth, :address, :city,
-             :province, :zip_code, :gender, :email, :phone, :division_id, :designation_id,
+             :province, :zip_code, :gender, :email, :phone, :division_id, :designation_id, :designation,
              :basic_salary, :salary_rate, :date_hired, :status, :employment_status, :pwd,
              :civil_status, :height, :weight, :blood_type, :emp_gsis_id_no, :emp_pagibig_id_no,
              :emp_philhealth_id_no, :tin_no)'
@@ -1235,10 +1302,61 @@ function insert_employee_record(PDO $pdo, array $employee): int
     ));
 
     $employeeId = (int)$pdo->lastInsertId();
-    ensure_employee_default_leave_credits($pdo, $employeeId);
-    recalculate_employee_leave_credit_usage($pdo, $employeeId);
+
+    if ($initializeLeaveCredits) {
+        ensure_employee_default_leave_credits($pdo, $employeeId, null, true);
+        recalculate_employee_leave_credit_usage($pdo, $employeeId);
+    }
 
     return $employeeId;
+}
+
+/**
+ * New imports cannot have leave requests yet, so their opening balances are known to have zero
+ * usage. Insert all of those balances in a few bulk statements instead of running the full
+ * leave-credit recalculation (and its lookup queries) for every row. They are new employees, so
+ * vacation and sick leave open at 0 (leave_credit_new_employee_opening_totals()).
+ */
+function initialize_imported_employee_leave_credits(PDO $pdo, array $employeeIds): void
+{
+    $employeeIds = array_values(array_unique(array_filter(
+        array_map('intval', $employeeIds),
+        static fn (int $employeeId): bool => $employeeId > 0
+    )));
+
+    if ($employeeIds === []) {
+        return;
+    }
+
+    $trackedTypes = leave_credit_type_rows($pdo);
+    if ($trackedTypes === []) {
+        return;
+    }
+
+    $year = leave_credit_resolve_year();
+
+    foreach (array_chunk($employeeIds, 100) as $employeeIdChunk) {
+        $valueSql = [];
+        $params = [];
+
+        foreach ($employeeIdChunk as $employeeId) {
+            foreach ($trackedTypes as $definitionCode => $trackedType) {
+                $valueSql[] = '(?, ?, ?, ?, 0.00)';
+                $params[] = $employeeId;
+                $params[] = (int)$trackedType['leave_type_id'];
+                $params[] = $year;
+                $params[] = leave_credit_opening_total((string)$definitionCode, $trackedType, true);
+            }
+        }
+
+        $statement = $pdo->prepare(
+            'INSERT INTO leave_credits
+                (employee_id, leave_type_id, year, total_credits, used_credits)
+             VALUES ' . implode(', ', $valueSql) . '
+             ON DUPLICATE KEY UPDATE total_credits = total_credits'
+        );
+        $statement->execute($params);
+    }
 }
 
 function employee_csv_header_key(mixed $value): string
@@ -1287,13 +1405,15 @@ function employee_csv_canonical_key(mixed $value): string
         'department' => 'divisionName',
         'divisionname' => 'divisionName',
         'departmentname' => 'divisionName',
+        // designationId / designationName are the position (see employee_payload()).
         'designationid' => 'designationId',
         'positionid' => 'designationId',
-        'designation' => 'designationName',
         'position' => 'designationName',
+        'positiontitle' => 'designationName',
         'jobtitle' => 'designationName',
         'designationname' => 'designationName',
         'positionname' => 'designationName',
+        'designation' => 'designation',
         'basicsalary' => 'basicSalary',
         'salaryrate' => 'salaryRate',
         'datehired' => 'dateHired',
@@ -1321,6 +1441,26 @@ function employee_csv_canonical_key(mixed $value): string
     return $aliases[$key] ?? '';
 }
 
+/**
+ * Files exported before positions and designations were separate carry the position in a column
+ * headed "Designation". A file with no position column of its own is one of those, so its
+ * "Designation" column is read as the position rather than dropped.
+ */
+function employee_csv_legacy_position_header(array $headers): array
+{
+    if (in_array('designationName', $headers, true) || in_array('designationId', $headers, true)) {
+        return $headers;
+    }
+
+    $legacyIndex = array_search('designation', $headers, true);
+
+    if ($legacyIndex !== false) {
+        $headers[$legacyIndex] = 'designationName';
+    }
+
+    return $headers;
+}
+
 function employee_csv_text(mixed $value): string
 {
     return trim((string)($value ?? ''));
@@ -1339,10 +1479,30 @@ function employee_csv_date(mixed $value): string
         return '';
     }
 
+    /*
+     * XLSX stores normal date cells as a day count from Excel's 1900 epoch.  The workbook reader
+     * intentionally returns raw cell values, so convert plausible serial dates here where the
+     * column is known to be date_of_birth or date_hired.  The lower bound avoids interpreting a
+     * four-digit year such as "2026" as a date in 1905.
+     */
+    if (is_numeric($text)) {
+        $serial = (float)$text;
+        if ($serial >= 10_000 && $serial <= 100_000) {
+            $days = (int)floor($serial);
+            $excelEpoch = new DateTimeImmutable('1899-12-30', new DateTimeZone('UTC'));
+
+            return $excelEpoch->modify("+{$days} days")->format('Y-m-d');
+        }
+    }
+
     $formats = ['Y-m-d', 'm/d/Y', 'n/j/Y', 'd/m/Y', 'j/n/Y', 'm-d-Y', 'n-j-Y'];
     foreach ($formats as $format) {
-        $date = DateTime::createFromFormat($format, $text);
-        if ($date instanceof DateTime) {
+        $date = DateTimeImmutable::createFromFormat('!' . $format, $text);
+        $errors = DateTimeImmutable::getLastErrors();
+        $isValid = $errors === false
+            || ((int)$errors['warning_count'] === 0 && (int)$errors['error_count'] === 0);
+
+        if ($date instanceof DateTimeImmutable && $isValid) {
             return $date->format('Y-m-d');
         }
     }
@@ -1362,6 +1522,13 @@ function employee_csv_find_division_id(PDO $pdo, string $value): int
         return (int)$text;
     }
 
+    static $cache = [];
+    $cacheKey = spl_object_id($pdo) . ':' . strtolower($text);
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
+    }
+
     // Native prepares are on, so the same placeholder cannot fill two markers — bind one per marker.
     $statement = $pdo->prepare(
         'SELECT id
@@ -1377,7 +1544,8 @@ function employee_csv_find_division_id(PDO $pdo, string $value): int
         ':code_value' => $text,
     ]);
 
-    return (int)$statement->fetchColumn();
+    $cache[$cacheKey] = (int)$statement->fetchColumn();
+    return $cache[$cacheKey];
 }
 
 function employee_csv_find_designation_id(PDO $pdo, string $value, int $divisionId): int
@@ -1389,6 +1557,13 @@ function employee_csv_find_designation_id(PDO $pdo, string $value, int $division
 
     if (ctype_digit($text)) {
         return (int)$text;
+    }
+
+    static $cache = [];
+    $cacheKey = spl_object_id($pdo) . ':' . $divisionId . ':' . strtolower($text);
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
     }
 
     $sql = 'SELECT id
@@ -1407,13 +1582,21 @@ function employee_csv_find_designation_id(PDO $pdo, string $value, int $division
     $statement = $pdo->prepare($sql);
     $statement->execute($params);
 
-    return (int)$statement->fetchColumn();
+    $cache[$cacheKey] = (int)$statement->fetchColumn();
+    return $cache[$cacheKey];
 }
 
 function employee_csv_designation_belongs_to_division(PDO $pdo, int $designationId, int $divisionId): bool
 {
     if ($designationId <= 0 || $divisionId <= 0) {
         return false;
+    }
+
+    static $cache = [];
+    $cacheKey = spl_object_id($pdo) . ':' . $designationId . ':' . $divisionId;
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
     }
 
     $statement = $pdo->prepare(
@@ -1428,13 +1611,21 @@ function employee_csv_designation_belongs_to_division(PDO $pdo, int $designation
         ':division_id' => $divisionId,
     ]);
 
-    return (int)$statement->fetchColumn() > 0;
+    $cache[$cacheKey] = (int)$statement->fetchColumn() > 0;
+    return $cache[$cacheKey];
 }
 
 function employee_csv_default_designation_id(PDO $pdo, int $divisionId): int
 {
     if ($divisionId <= 0) {
         return 0;
+    }
+
+    static $cache = [];
+    $cacheKey = spl_object_id($pdo) . ':' . $divisionId;
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
     }
 
     $statement = $pdo->prepare(
@@ -1447,11 +1638,19 @@ function employee_csv_default_designation_id(PDO $pdo, int $divisionId): int
     );
     $statement->execute([':division_id' => $divisionId]);
 
-    return (int)$statement->fetchColumn();
+    $cache[$cacheKey] = (int)$statement->fetchColumn();
+    return $cache[$cacheKey];
 }
 
 function employee_csv_default_division_id(PDO $pdo): int
 {
+    static $cache = [];
+    $cacheKey = spl_object_id($pdo);
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
+    }
+
     $statement = $pdo->query(
         'SELECT id
          FROM divisions
@@ -1460,7 +1659,8 @@ function employee_csv_default_division_id(PDO $pdo): int
          LIMIT 1'
     );
 
-    return $statement !== false ? (int)$statement->fetchColumn() : 0;
+    $cache[$cacheKey] = $statement !== false ? (int)$statement->fetchColumn() : 0;
+    return $cache[$cacheKey];
 }
 
 function employee_csv_find_role_id(PDO $pdo, string $value): int
@@ -1479,6 +1679,13 @@ function employee_csv_find_role_id(PDO $pdo, string $value): int
         return 0;
     }
 
+    static $cache = [];
+    $cacheKey = spl_object_id($pdo) . ':' . $roleKey;
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
+    }
+
     $statement = $pdo->prepare(
         'SELECT id
          FROM roles
@@ -1488,7 +1695,8 @@ function employee_csv_find_role_id(PDO $pdo, string $value): int
     );
     $statement->execute([':role_key' => $roleKey]);
 
-    return (int)$statement->fetchColumn();
+    $cache[$cacheKey] = (int)$statement->fetchColumn();
+    return $cache[$cacheKey];
 }
 
 function employee_csv_body(PDO $pdo, array $headers, array $row): array
@@ -1569,10 +1777,88 @@ function employee_import_employee_role_id(PDO $pdo): int
     return $statement !== false ? (int)$statement->fetchColumn() : 0;
 }
 
-function employee_import_duplicate_reason(PDO $pdo, array $employee): ?string
+/**
+ * Read the existing unique values once for the whole file. The database constraints remain the
+ * final protection against concurrent imports, while this index avoids up to three SELECTs for
+ * every ordinary row and also catches duplicates within the uploaded file.
+ */
+function employee_import_duplicate_index(PDO $pdo): array
+{
+    $index = [
+        'employeeIds' => [],
+        'employeeEmails' => [],
+        'userEmails' => [],
+        'usernames' => [],
+    ];
+
+    $employeeStatement = $pdo->query('SELECT employee_id, email FROM employees');
+    if ($employeeStatement !== false) {
+        foreach ($employeeStatement->fetchAll() as $row) {
+            $employeeId = strtolower(trim((string)($row['employee_id'] ?? '')));
+            $email = strtolower(trim((string)($row['email'] ?? '')));
+
+            if ($employeeId !== '') {
+                $index['employeeIds'][$employeeId] = true;
+            }
+            if ($email !== '') {
+                $index['employeeEmails'][$email] = true;
+            }
+        }
+    }
+
+    $userStatement = $pdo->query('SELECT email, username FROM users');
+    if ($userStatement !== false) {
+        foreach ($userStatement->fetchAll() as $row) {
+            $email = strtolower(trim((string)($row['email'] ?? '')));
+            $username = strtolower(trim((string)($row['username'] ?? '')));
+
+            if ($email !== '') {
+                $index['userEmails'][$email] = true;
+            }
+            if ($username !== '') {
+                $index['usernames'][$username] = true;
+            }
+        }
+    }
+
+    return $index;
+}
+
+function employee_import_duplicate_reason(PDO $pdo, array $employee, ?array &$duplicateIndex = null): ?string
 {
     $employeeId = trim((string)($employee['employee_id'] ?? ''));
     $email = trim((string)($employee['email'] ?? ''));
+
+    if ($duplicateIndex !== null) {
+        $employeeIdKey = strtolower($employeeId);
+        $emailKey = strtolower($email);
+
+        if ($employeeIdKey !== '' && isset($duplicateIndex['employeeIds'][$employeeIdKey])) {
+            return "Employee ID {$employeeId} already exists.";
+        }
+
+        if ($emailKey !== '' && isset($duplicateIndex['employeeEmails'][$emailKey])) {
+            return "Employee email {$email} already exists.";
+        }
+
+        if (
+            $emailKey !== ''
+            && (isset($duplicateIndex['userEmails'][$emailKey]) || isset($duplicateIndex['usernames'][$emailKey]))
+        ) {
+            return "User account for {$email} already exists.";
+        }
+
+        if ($employeeIdKey !== '') {
+            $duplicateIndex['employeeIds'][$employeeIdKey] = true;
+        }
+        if ($emailKey !== '') {
+            $duplicateIndex['employeeEmails'][$emailKey] = true;
+            $duplicateIndex['userEmails'][$emailKey] = true;
+            $duplicateIndex['usernames'][$emailKey] = true;
+        }
+
+        return null;
+    }
 
     if ($employeeId !== '') {
         $statement = $pdo->prepare(
@@ -1667,7 +1953,7 @@ function employee_import_apply_defaults(PDO $pdo, array $employee): array
     return $employee;
 }
 
-function employee_import_payload_errors(PDO $pdo, array $employee): array
+function employee_import_payload_errors(PDO $pdo, array $employee, ?array $emailDomainPolicy = null): array
 {
     $errors = [];
 
@@ -1689,7 +1975,11 @@ function employee_import_payload_errors(PDO $pdo, array $employee): array
     ) {
         $errors[] = 'Valid email is required.';
     } else {
-        $emailPolicyViolation = email_domain_policy_violation($pdo, (string)$employee['email']);
+        $emailPolicyViolation = email_domain_policy_violation(
+            $pdo,
+            (string)$employee['email'],
+            $emailDomainPolicy
+        );
         if ($emailPolicyViolation !== null) {
             $errors[] = $emailPolicyViolation;
         }
@@ -1700,24 +1990,21 @@ function employee_import_payload_errors(PDO $pdo, array $employee): array
     }
 
     if ((int)($employee['designation_id'] ?? 0) <= 0) {
-        $errors[] = 'Designation is required or no active default designation is available.';
+        $errors[] = 'Position is required or no active default position is available.';
     }
 
     if ((int)($employee['division_id'] ?? 0) > 0 && (int)($employee['designation_id'] ?? 0) > 0) {
-        $statement = $pdo->prepare(
-            'SELECT COUNT(*) FROM designations
-             WHERE id = :designation_id
-               AND division_id = :division_id
-               AND is_archived = 0'
-        );
-        $statement->execute([
-            ':designation_id' => (int)$employee['designation_id'],
-            ':division_id' => (int)$employee['division_id'],
-        ]);
-
-        if ((int)$statement->fetchColumn() === 0) {
-            $errors[] = 'Selected designation does not belong to the selected division.';
+        if (!employee_csv_designation_belongs_to_division(
+            $pdo,
+            (int)$employee['designation_id'],
+            (int)$employee['division_id']
+        )) {
+            $errors[] = 'Selected position does not belong to the selected division.';
         }
+    }
+
+    if (mb_strlen((string)($employee['designation'] ?? '')) > EMPLOYEE_DESIGNATION_MAX_LENGTH) {
+        $errors[] = sprintf('Designation must be %d characters or fewer.', EMPLOYEE_DESIGNATION_MAX_LENGTH);
     }
 
     return $errors;
@@ -1779,7 +2066,7 @@ function create_imported_employee_user(PDO $pdo, array $employee, int $roleId, s
 
 /**
  * Account details for the activation email, read back from the row fetch_employee_linked_user()
- * returns so the division, designation and role names match what was actually saved.
+ * returns so the division, position and role names match what was actually saved.
  */
 function employee_import_activation_details(array $user): array
 {
@@ -1787,10 +2074,122 @@ function employee_import_activation_details(array $user): array
         'employeeName' => trim((string)($user['full_name'] ?? $user['username'] ?? '')),
         'employeeId' => trim((string)($user['employee_id'] ?? '')),
         'employeeEmail' => trim((string)($user['email'] ?? '')),
-        'position' => trim((string)($user['designation'] ?? '')),
+        'position' => trim((string)($user['position'] ?? '')),
         'division' => trim((string)($user['division'] ?? '')),
         'accessRole' => trim((string)($user['role'] ?? 'Employee')),
     ];
+}
+
+/**
+ * Finish the parts of an import that do not affect whether its rows were saved. defer() runs this
+ * only after json_response() has delivered the result and released the session lock, so SMTP and
+ * notification delivery no longer keep the Import button spinning.
+ */
+function complete_employee_import_delivery(
+    PDO $pdo,
+    array $createdAccounts,
+    array $createdUserIds,
+    ?array $actor
+): void {
+    // Shared hosts may disable it; `@` does not stop PHP 8's fatal for a disabled function.
+    if (function_exists('set_time_limit')) {
+        @set_time_limit(0);
+    }
+
+    try {
+        if ($createdUserIds !== []) {
+            notify_roles(
+                $pdo,
+                ['admin', 'hrhead', 'hrstaff'],
+                'Employees Imported',
+                sprintf(
+                    '%d employee record%s imported from CSV/XLSX.',
+                    count($createdUserIds),
+                    count($createdUserIds) === 1 ? '' : 's'
+                ),
+                'employee_added',
+                'employee-import'
+            );
+
+        }
+    } catch (Throwable $notificationException) {
+        error_log('Employee import notification error: ' . $notificationException->getMessage());
+    }
+
+    if ($createdAccounts === []) {
+        return;
+    }
+
+    $recipients = [];
+
+    foreach ($createdAccounts as $index => $account) {
+        $linkedUser = fetch_employee_linked_user($pdo, (int)$account['userId']);
+        $recipients[$index] = [
+            'email' => $linkedUser !== null
+                ? trim((string)($linkedUser['email'] ?? $account['email']))
+                : (string)$account['email'],
+            'employee' => $linkedUser !== null
+                ? employee_import_activation_details($linkedUser)
+                : ['employeeEmail' => (string)$account['email']],
+            'temporaryPassword' => (string)$account['temporaryPassword'],
+        ];
+    }
+
+    try {
+        $failures = send_employee_account_activation_emails($recipients);
+    } catch (Throwable $exception) {
+        error_log('Employee import activation email error: ' . $exception->getMessage());
+        $failures = array_fill_keys(array_keys($recipients), $exception->getMessage());
+    }
+
+    foreach ($failures as $index => $reason) {
+        $account = $createdAccounts[$index] ?? [];
+        error_log(sprintf(
+            'Employee import line %d activation email to %s failed: %s',
+            (int)($account['line'] ?? 0),
+            (string)($account['email'] ?? ''),
+            (string)$reason
+        ));
+    }
+
+    $sentCount = count($recipients) - count($failures);
+    $failedCount = count($failures);
+
+    if ($failedCount > 0) {
+        try {
+            notify_roles(
+                $pdo,
+                ['admin', 'hrhead', 'hrstaff'],
+                'Activation Emails Need Attention',
+                sprintf(
+                    '%d employee activation email%s could not be sent. Reissue credentials from the employee record.',
+                    $failedCount,
+                    $failedCount === 1 ? '' : 's'
+                ),
+                'user_created',
+                'employee-import-email-failed'
+            );
+        } catch (Throwable $notificationException) {
+            error_log('Employee import email-failure notification error: ' . $notificationException->getMessage());
+        }
+    }
+
+    write_auth_audit(
+        $pdo,
+        $actor,
+        'employee.import.activation_emails',
+        sprintf(
+            '%d employee activation email%s sent; %d failed.',
+            $sentCount,
+            $sentCount === 1 ? '' : 's',
+            $failedCount
+        ),
+        [
+            'queued' => count($recipients),
+            'sent' => $sentCount,
+            'failed' => $failedCount,
+        ]
+    );
 }
 
 function import_employees_csv(PDO $pdo): void
@@ -1800,14 +2199,14 @@ function import_employees_csv(PDO $pdo): void
     if (!is_array($file)) {
         json_response([
             'success' => false,
-            'message' => 'Choose a CSV file to import.',
+            'message' => 'Choose a CSV or Excel workbook to import.',
         ], 422);
     }
 
     if ((int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
         json_response([
             'success' => false,
-            'message' => 'Unable to upload the employee CSV file.',
+            'message' => 'Unable to upload the employee import file.',
         ], 422);
     }
 
@@ -1815,19 +2214,41 @@ function import_employees_csv(PDO $pdo): void
     $fileType = strtolower(trim((string)($file['type'] ?? '')));
     $isCsvFile = preg_match('/\.csv$/i', $fileName) === 1
         || in_array($fileType, ['text/csv', 'application/csv', 'application/vnd.ms-excel', 'text/plain'], true);
+    $isXlsxFile = preg_match('/\.xlsx$/i', $fileName) === 1
+        || $fileType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-    if (!$isCsvFile) {
+    if (!$isCsvFile && !$isXlsxFile) {
         json_response([
             'success' => false,
-            'message' => 'Choose a valid CSV file.',
+            'message' => 'Choose a valid CSV or XLSX file.',
         ], 422);
     }
 
-    $handle = fopen((string)($file['tmp_name'] ?? ''), 'rb');
+    if ($isXlsxFile) {
+        try {
+            $workbookRows = employee_xlsx_read_rows((string)($file['tmp_name'] ?? ''));
+        } catch (Throwable $exception) {
+            json_response([
+                'success' => false,
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        $handle = fopen('php://temp/maxmemory:5242880', 'w+b');
+        if ($handle !== false) {
+            foreach ($workbookRows as $workbookRow) {
+                fputcsv($handle, $workbookRow);
+            }
+            rewind($handle);
+        }
+    } else {
+        $handle = fopen((string)($file['tmp_name'] ?? ''), 'rb');
+    }
+
     if ($handle === false) {
         json_response([
             'success' => false,
-            'message' => 'Unable to read the employee CSV file.',
+            'message' => 'Unable to read the employee import file.',
         ], 422);
     }
 
@@ -1836,16 +2257,16 @@ function import_employees_csv(PDO $pdo): void
         fclose($handle);
         json_response([
             'success' => false,
-            'message' => 'The CSV file is empty.',
+            'message' => 'The employee import file is empty.',
         ], 422);
     }
 
-    $headers = array_map('employee_csv_canonical_key', $rawHeaders);
+    $headers = employee_csv_legacy_position_header(array_map('employee_csv_canonical_key', $rawHeaders));
     if (!in_array('employeeId', $headers, true) || !in_array('email', $headers, true)) {
         fclose($handle);
         json_response([
             'success' => false,
-            'message' => 'The CSV header must include employee_id and email columns.',
+            'message' => 'The import header must include employee_id and email columns.',
         ], 422);
     }
 
@@ -1859,25 +2280,28 @@ function import_employees_csv(PDO $pdo): void
     }
 
     /*
-     * Every imported account gets its own temporary password, mailed to the employee and stored
-     * only as a hash. The length comes from the security settings once, up front: checking it per
-     * row would be a query each time, and a maximum below the generator's floor has to stop the
-     * whole import rather than fail row by row inside the transaction.
+     * CSV imports use the shared temporary password requested for bulk onboarding. XLSX imports
+     * retain the existing generated-password behavior. Both paths store only a password hash and
+     * imported users must replace the temporary password on their first sign-in.
      */
-    $temporaryPasswordLength = employee_temporary_password_length($pdo);
-    $temporaryPasswordError = password_length_error(
-        $pdo,
-        employee_generate_temporary_password($temporaryPasswordLength),
-        6
-    );
+    $temporaryPassword = EMPLOYEE_CSV_IMPORT_TEMPORARY_PASSWORD;
 
-    if ($temporaryPasswordError !== null) {
-        fclose($handle);
-        json_response([
-            'success' => false,
-            'message' => 'Temporary passwords cannot be generated. ' . $temporaryPasswordError,
-        ], 422);
+    if (!$isCsvFile) {
+        $temporaryPasswordLength = employee_temporary_password_length($pdo);
+        $temporaryPassword = employee_generate_temporary_password($temporaryPasswordLength);
+        $temporaryPasswordError = password_length_error($pdo, $temporaryPassword, 6);
+
+        if ($temporaryPasswordError !== null) {
+            fclose($handle);
+            json_response([
+                'success' => false,
+                'message' => 'Temporary passwords cannot be generated. ' . $temporaryPasswordError,
+            ], 422);
+        }
     }
+
+    $emailDomainPolicy = email_domain_policy($pdo);
+    $duplicateIndex = employee_import_duplicate_index($pdo);
 
     $summary = [
         'totalRows' => 0,
@@ -1885,6 +2309,7 @@ function import_employees_csv(PDO $pdo): void
         'userAccountsCreated' => 0,
         'duplicatesSkipped' => 0,
         'invalidRows' => 0,
+        'activationEmailsQueued' => 0,
         'activationEmailsSent' => 0,
         'activationEmailsFailed' => 0,
     ];
@@ -1914,7 +2339,7 @@ function import_employees_csv(PDO $pdo): void
                 $employee['employee_id'] = generate_employee_id($pdo);
             }
 
-            $validationErrors = employee_import_payload_errors($pdo, $employee);
+            $validationErrors = employee_import_payload_errors($pdo, $employee, $emailDomainPolicy);
             if ($rowRoleId <= 0) {
                 $validationErrors[] = 'Selected account role is not available.';
             }
@@ -1934,7 +2359,7 @@ function import_employees_csv(PDO $pdo): void
                 continue;
             }
 
-            $duplicateReason = employee_import_duplicate_reason($pdo, $employee);
+            $duplicateReason = employee_import_duplicate_reason($pdo, $employee, $duplicateIndex);
             if ($duplicateReason !== null) {
                 $summary['duplicatesSkipped']++;
                 if (count($importErrors) < 50) {
@@ -1949,12 +2374,12 @@ function import_employees_csv(PDO $pdo): void
                 $pdo->exec('SAVEPOINT employee_import_row');
                 $rowSavepointStarted = true;
 
-                $employeeRecordId = insert_employee_record($pdo, $employee);
+                $employeeRecordId = insert_employee_record($pdo, $employee, false);
                 $createdUser = create_imported_employee_user(
                     $pdo,
                     $employee,
                     $rowRoleId,
-                    employee_generate_temporary_password($temporaryPasswordLength)
+                    $temporaryPassword
                 );
 
                 $pdo->exec('RELEASE SAVEPOINT employee_import_row');
@@ -1993,6 +2418,8 @@ function import_employees_csv(PDO $pdo): void
             }
         }
 
+        initialize_imported_employee_leave_credits($pdo, $createdIds);
+
         fclose($handle);
         $pdo->commit();
     } catch (Throwable $exception) {
@@ -2007,92 +2434,21 @@ function import_employees_csv(PDO $pdo): void
         throw $exception;
     }
 
-    /*
-     * Activation emails go out only after the commit: the temporary passwords they carry have to be
-     * the ones actually stored, and a mail server that hangs must never hold the import transaction
-     * open. A large roster can outlast the browser's patience, so the batch keeps running even if
-     * the client has already given up on the response.
-     */
-    $activationEmailErrors = [];
+    $summary['activationEmailsQueued'] = count($createdAccounts);
+    $importActor = session_user();
 
-    if ($createdAccounts !== []) {
-        @ignore_user_abort(true);
-        @set_time_limit(0);
-
-        $recipients = [];
-
-        foreach ($createdAccounts as $index => $account) {
-            $linkedUser = fetch_employee_linked_user($pdo, (int)$account['userId']);
-            $recipients[$index] = [
-                'email' => $linkedUser !== null
-                    ? trim((string)($linkedUser['email'] ?? $account['email']))
-                    : (string)$account['email'],
-                'employee' => $linkedUser !== null
-                    ? employee_import_activation_details($linkedUser)
-                    : ['employeeEmail' => (string)$account['email']],
-                'temporaryPassword' => (string)$account['temporaryPassword'],
-            ];
-        }
-
-        try {
-            $failures = send_employee_account_activation_emails($recipients);
-        } catch (Throwable $exception) {
-            error_log('Employee import activation email error: ' . $exception->getMessage());
-            $failures = array_fill_keys(array_keys($recipients), $exception->getMessage());
-        }
-
-        $summary['activationEmailsFailed'] = count($failures);
-        $summary['activationEmailsSent'] = count($recipients) - count($failures);
-
-        foreach ($failures as $index => $reason) {
-            $account = $createdAccounts[$index];
-            $message = sprintf(
-                'Line %d: Activation email to %s could not be sent. %s',
-                (int)$account['line'],
-                (string)$account['email'],
-                $reason
-            );
-
-            $activationEmailErrors[] = $message;
-
-            if (count($importErrors) < 50) {
-                $importErrors[] = $message;
-            }
-        }
-    }
-
-    try {
-        if ((int)$summary['created'] > 0) {
-            notify_roles(
-                $pdo,
-                ['admin', 'hrhead', 'hrstaff'],
-                'Employees Imported',
-                sprintf('%d employee record%s imported from CSV.', (int)$summary['created'], (int)$summary['created'] === 1 ? '' : 's'),
-                'employee_added',
-                'employee-import'
-            );
-
-            notify_users(
-                $pdo,
-                $createdUserIds,
-                'Account Created',
-                'Your employee profile has been imported. Check your email for the activation message with your temporary password.',
-                'user_created',
-                'employee-import'
-            );
-        }
-    } catch (Throwable $notificationException) {
-        error_log('Employee import notification error: ' . $notificationException->getMessage());
-    }
-
-    write_auth_audit($pdo, session_user(), 'employee.imported', 'Employees were imported from CSV.', [
+    write_auth_audit($pdo, $importActor, 'employee.imported', 'Employees were imported from CSV/XLSX.', [
         'summary' => $summary,
         'createdIds' => $createdIds,
         'createdUserIds' => $createdUserIds,
     ]);
 
+    defer(static function () use ($pdo, $createdAccounts, $createdUserIds, $importActor): void {
+        complete_employee_import_delivery($pdo, $createdAccounts, $createdUserIds, $importActor);
+    });
+
     $message = sprintf(
-        'Employee import completed. %d employee%s and %d user account%s created, %d duplicate%s skipped, %d invalid row%s. %d activation email%s sent.',
+        'Employee import completed. %d employee%s and %d user account%s created, %d duplicate%s skipped, %d invalid row%s. %d activation email%s queued for delivery.',
         (int)$summary['created'],
         (int)$summary['created'] === 1 ? '' : 's',
         (int)$summary['userAccountsCreated'],
@@ -2101,17 +2457,9 @@ function import_employees_csv(PDO $pdo): void
         (int)$summary['duplicatesSkipped'] === 1 ? '' : 's',
         (int)$summary['invalidRows'],
         (int)$summary['invalidRows'] === 1 ? '' : 's',
-        (int)$summary['activationEmailsSent'],
-        (int)$summary['activationEmailsSent'] === 1 ? '' : 's'
+        (int)$summary['activationEmailsQueued'],
+        (int)$summary['activationEmailsQueued'] === 1 ? '' : 's'
     );
-
-    if ((int)$summary['activationEmailsFailed'] > 0) {
-        $message .= sprintf(
-            ' %d activation email%s could not be sent — reissue those credentials from the employee record.',
-            (int)$summary['activationEmailsFailed'],
-            (int)$summary['activationEmailsFailed'] === 1 ? '' : 's'
-        );
-    }
 
     json_response([
         'success' => true,
@@ -2122,9 +2470,10 @@ function import_employees_csv(PDO $pdo): void
             'created' => (int)$summary['userAccountsCreated'],
         ],
         'activationEmails' => [
+            'queued' => (int)$summary['activationEmailsQueued'],
             'sent' => (int)$summary['activationEmailsSent'],
             'failed' => (int)$summary['activationEmailsFailed'],
-            'errors' => $activationEmailErrors,
+            'errors' => [],
         ],
         'message' => $message,
         'summary' => $summary,
@@ -2157,12 +2506,14 @@ function list_employees(PDO $pdo, bool $archived = false): void
             d.name AS department,
             e.designation_id AS designationId,
             des.name AS position,
+            e.designation,
             e.basic_salary AS basicSalary,
             e.salary_rate AS salaryRate,
             e.date_hired AS dateHired,
             e.status,
             e.employment_status AS employmentStatus,
             e.profile_image AS profileImage,
+            e.include_profile_image_in_pds AS includeProfileImageInPds,
             CAST(e.pwd AS CHAR) AS pwd,
             e.civil_status AS civilStatus,
             e.height,
@@ -2173,8 +2524,8 @@ function list_employees(PDO $pdo, bool $archived = false): void
             e.emp_philhealth_id_no AS philhealthIdNo,
             e.tin_no AS tinNo
          FROM employees e
-         INNER JOIN divisions d ON d.id = e.division_id
-         INNER JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE e.is_archived = :is_archived
          ORDER BY e.created_at DESC, e.id DESC'
     );
@@ -2186,6 +2537,62 @@ function list_employees(PDO $pdo, bool $archived = false): void
         'success' => true,
         'employees' => $statement->fetchAll(),
     ]);
+}
+
+/**
+ * The designations the employee form offers to pick from, so the same assignment is spelled the same
+ * way on every record (typing a new one is still allowed). Designations are free text with no catalog
+ * behind them, so the list is what is already in use, plus the designation halves of combined
+ * catalog names ("Engineer IV / Chief, Mineral Land Survey Section"). Include both active and
+ * archived titles: imported databases may have the designation column before the title split ran.
+ *
+ * Each carries the division it was seen in, so the form can list the employee's own division first.
+ * A designation used in two divisions is listed under both.
+ *
+ * @return list<array{name: string, division: string}>
+ */
+function employee_designation_suggestions(PDO $pdo): array
+{
+    $suggestions = [];
+    $add = static function (string $name, string $division) use (&$suggestions): void {
+        $name = trim($name);
+
+        if ($name !== '') {
+            $suggestions[strtolower($division . "\n" . $name)] ??= ['name' => $name, 'division' => trim($division)];
+        }
+    };
+
+    foreach ($pdo->query(
+        'SELECT DISTINCT TRIM(e.designation) AS name, COALESCE(d.name, "") AS division
+         FROM employees e
+         LEFT JOIN divisions d ON d.id = e.division_id
+         WHERE e.is_archived = 0
+           AND TRIM(COALESCE(e.designation, "")) <> ""'
+    )->fetchAll() as $row) {
+        $add((string)$row['name'], (string)$row['division']);
+    }
+
+    foreach ($pdo->query(
+        'SELECT des.name, COALESCE(d.name, "") AS division
+         FROM designations des
+         LEFT JOIN divisions d ON d.id = des.division_id
+         WHERE des.name LIKE "% / %"'
+    )->fetchAll() as $row) {
+        $parts = employee_designation_split_title((string)$row['name']);
+
+        if ($parts !== null) {
+            $add($parts[1], (string)$row['division']);
+        }
+    }
+
+    $suggestions = array_values($suggestions);
+    usort(
+        $suggestions,
+        static fn (array $a, array $b): int => strnatcasecmp($a['division'], $b['division'])
+            ?: strnatcasecmp($a['name'], $b['name'])
+    );
+
+    return $suggestions;
 }
 
 function list_options(PDO $pdo): void
@@ -2206,14 +2613,45 @@ function list_options(PDO $pdo): void
          ORDER BY d.name, des.name'
     )->fetchAll();
 
+    /*
+     * Employment status is free text on the employee row with no lookup table behind it, so the
+     * statuses on active employees are the database's own list of them. Filters read this instead
+     * of collecting the values off whatever rows a screen happens to have loaded.
+     */
+    $employmentStatuses = array_values(array_filter(array_map(
+        static fn (array $row): string => trim((string)($row['employment_status'] ?? '')),
+        $pdo->query(
+            'SELECT DISTINCT TRIM(employment_status) AS employment_status
+             FROM employees
+             WHERE is_archived = 0
+               AND TRIM(COALESCE(employment_status, "")) <> ""
+             ORDER BY employment_status'
+        )->fetchAll()
+    )));
+
     json_response([
         'success' => true,
         'divisions' => $divisions,
         'designations' => $designations,
+        'designationSuggestions' => employee_designation_suggestions($pdo),
+        'employmentStatuses' => $employmentStatuses,
+        // The values users.status accepts -- the same pair user.php reports to User Management.
+        'accountStatuses' => [HRIS_USER_STATUS_ACTIVE, HRIS_USER_STATUS_INACTIVE],
+        'emailDomainPolicy' => email_domain_policy($pdo),
     ]);
 }
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+if ($method === 'GET' && isset($_GET['self'])) {
+    $employeeRecordId = session_employee_record_id($pdo, $sessionUser);
+    $employee = $employeeRecordId !== null ? fetch_employee($pdo, $employeeRecordId) : null;
+
+    json_response([
+        'success' => true,
+        'employee' => $employee,
+    ]);
+}
 
 if ($method === 'GET' && isset($_GET['options'])) {
     list_options($pdo);
@@ -2237,7 +2675,15 @@ if ($method === 'POST') {
     if ($employee['employee_id'] === '') {
         $employee['employee_id'] = generate_employee_id($pdo);
     }
-    $roleId = (int)($body['roleId'] ?? 0);
+    // Creating a roster entry always creates a standard Employee login account. Role changes, when
+    // needed later, continue through the existing Edit Employee flow.
+    $roleId = employee_default_role_id($pdo);
+    if ($roleId <= 0) {
+        json_response([
+            'success' => false,
+            'message' => 'Default Employee role is not available.',
+        ], 422);
+    }
     $sendActivationEmail = employee_bool($body['sendActivationEmail'] ?? false);
     validate_employee_payload($pdo, $employee);
     validate_employee_account_payload($pdo, $roleId);
@@ -2286,34 +2732,20 @@ if ($method === 'POST') {
     $accountResponse = employee_linked_account_response($linkedAccount, $savedEmployee ?? [], $sendActivationEmail);
 
     try {
-        $employeeName = (string)($savedEmployee['fullName'] ?? trim((string)($savedEmployee['firstName'] ?? '')) . ' ' . trim((string)($savedEmployee['lastName'] ?? '')));
-        $employeeName = trim($employeeName);
-        $employeeLabel = (string)($savedEmployee['employeeId'] ?? ('#' . $employeeId));
-        $divisionName = (string)($savedEmployee['division'] ?? 'the division');
-
-        notify_roles(
-            $pdo,
-            ['admin', 'hrhead', 'hrstaff'],
-            'Employee Added',
-            sprintf('%s (%s) was added to %s.', $employeeName !== '' ? $employeeName : 'A new employee', $employeeLabel, $divisionName),
-            'employee_added',
-            (string)$employeeId
-        );
-
         if ($linkedAccount !== null && !empty($linkedAccount['user']['id'])) {
             $linkedUserId = (int)$linkedAccount['user']['id'];
             $accountCreated = (bool)($linkedAccount['created'] ?? false);
 
-            notify_users(
-                $pdo,
-                [$linkedUserId],
-                $accountCreated ? 'Account Created' : 'Account Updated',
-                $accountCreated
-                    ? 'Your employee profile has been created. Check your email for your temporary password.'
-                    : 'Your linked account role has been updated to match your employee record.',
-                $accountCreated ? 'user_created' : 'role_updated',
-                (string)$employeeId
-            );
+            if (!$accountCreated) {
+                notify_users(
+                    $pdo,
+                    [$linkedUserId],
+                    'Account Updated',
+                    'Your linked account role has been updated to match your employee record.',
+                    'role_updated',
+                    (string)$employeeId
+                );
+            }
         }
     } catch (Throwable $notificationException) {
         error_log('Employee creation notification error: ' . $notificationException->getMessage());
@@ -2337,7 +2769,14 @@ if ($method === 'PUT') {
     }
 
     employees_require_manager_or_self($pdo, $sessionUser, $id);
-    $isSelfServiceEdit = !employees_can_manage($sessionUser);
+    $profileSection = strtolower(trim((string)($body['profileSection'] ?? '')));
+    $ownRecordId = session_employee_record_id($pdo, $sessionUser);
+    $isOwnEmployeeRecord = $ownRecordId !== null && $ownRecordId === $id;
+    $isManagerEdit = employees_can_manage($sessionUser);
+    $isOwnProtectedProfileEdit = $isOwnEmployeeRecord
+        && !profile_edit_can_edit_directly($sessionUser)
+        && in_array($profileSection, ['personal', 'address', 'government'], true);
+    $isSelfServiceEdit = !$isManagerEdit || $isOwnProtectedProfileEdit;
 
     $employee = employee_payload($body);
     $roleId = (int)($body['roleId'] ?? 0);
@@ -2359,7 +2798,7 @@ if ($method === 'PUT') {
         $sendActivationEmail = false;
 
         $protectedStatement = $pdo->prepare(
-            'SELECT employee_id, email, division_id, designation_id, basic_salary,
+            'SELECT employee_id, email, division_id, designation_id, designation, basic_salary,
                     salary_rate, date_hired, status, employment_status
              FROM employees
              WHERE id = :id
@@ -2380,9 +2819,6 @@ if ($method === 'PUT') {
         }
     }
 
-    validate_employee_payload($pdo, $employee);
-    validate_employee_account_payload($pdo, $roleId);
-
     $existingEmployee = fetch_employee($pdo, $id);
 
     if ($existingEmployee === null) {
@@ -2392,11 +2828,44 @@ if ($method === 'PUT') {
         ], 404);
     }
 
+    // The designation is newer than most of the screens that save this row. One that does not send
+    // it is not clearing it, so an absent key keeps what is stored.
+    if (!array_key_exists('designation', $body)) {
+        $employee['designation'] = employee_designation_text($existingEmployee['designation'] ?? null);
+    }
+
+    validate_employee_payload($pdo, $employee);
+    validate_employee_account_payload($pdo, $roleId);
+
+    $requiresPersonalEditApproval = $isOwnEmployeeRecord
+        && !profile_edit_can_edit_directly($sessionUser)
+        && (
+            $profileSection === 'personal'
+            || employee_personal_details_changed($existingEmployee, $employee)
+        );
+
     $savedEmployee = null;
     $linkedAccount = null;
+    $personalEditApproval = null;
 
     try {
         $pdo->beginTransaction();
+
+        if ($requiresPersonalEditApproval) {
+            $personalEditApproval = profile_edit_request_approved_for_user(
+                $pdo,
+                (int)($sessionUser['id'] ?? 0),
+                true
+            );
+
+            if ($personalEditApproval === null) {
+                $pdo->rollBack();
+                json_response([
+                    'success' => false,
+                    'message' => 'Admin or HR Head approval is required before editing Personal Details.',
+                ], 403);
+            }
+        }
 
         $statement = $pdo->prepare(
             'UPDATE employees
@@ -2415,6 +2884,7 @@ if ($method === 'PUT') {
                  phone = :phone,
                  division_id = :division_id,
                  designation_id = :designation_id,
+                 designation = :designation,
                  basic_salary = :basic_salary,
                  salary_rate = :salary_rate,
                  date_hired = :date_hired,
@@ -2432,13 +2902,13 @@ if ($method === 'PUT') {
              WHERE id = :id
                AND is_archived = 0'
         );
-        $statement->execute([
-            ...array_combine(
+        $statement->execute(array_merge(
+            array_combine(
                 array_map(fn (string $key): string => ':' . $key, array_keys($employee)),
                 array_values($employee)
             ),
-            ':id' => $id,
-        ]);
+            [':id' => $id]
+        ));
 
         $savedEmployee = fetch_employee($pdo, $id);
 
@@ -2469,6 +2939,13 @@ if ($method === 'PUT') {
                 $savedEmployee,
                 (string)($existingEmployee['email'] ?? '')
             );
+        }
+
+        if (
+            $personalEditApproval !== null
+            && !profile_edit_request_mark_used($pdo, (int)$personalEditApproval['id'])
+        ) {
+            throw new RuntimeException('The Personal Details edit approval is no longer available.');
         }
 
         $pdo->commit();
@@ -2514,16 +2991,16 @@ if ($method === 'PUT') {
             $linkedUserId = (int)$linkedAccount['user']['id'];
             $accountCreated = (bool)($linkedAccount['created'] ?? false);
 
-            notify_users(
-                $pdo,
-                [$linkedUserId],
-                $accountCreated ? 'Account Created' : 'Account Updated',
-                $accountCreated
-                    ? 'Your employee profile has been created and your account is ready to use.'
-                    : 'Your linked account role has been updated to match your employee record.',
-                $accountCreated ? 'user_created' : 'role_updated',
-                (string)$id
-            );
+            if (!$accountCreated) {
+                notify_users(
+                    $pdo,
+                    [$linkedUserId],
+                    'Account Updated',
+                    'Your linked account role has been updated to match your employee record.',
+                    'role_updated',
+                    (string)$id
+                );
+            }
         }
     } catch (Throwable $notificationException) {
         error_log('Employee update notification error: ' . $notificationException->getMessage());

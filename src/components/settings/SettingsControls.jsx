@@ -1,4 +1,5 @@
 import React from "react";
+import { decorateRequiredFieldLabel } from "../UI/RequiredFieldLabel";
 
 /**
  * The form controls settings screens need that the shared UI kit does not cover.
@@ -18,10 +19,10 @@ function borderClass(error) {
 
 function FieldShell({ id, label, helper, error, children, className = "" }) {
   return (
-    <div className={className}>
+    <div className={className} data-validation-field>
       {label ? (
         <label htmlFor={id} className="mb-1.5 block text-sm font-semibold text-slate-700">
-          {label}
+          {decorateRequiredFieldLabel(label)}
         </label>
       ) : null}
       {children}

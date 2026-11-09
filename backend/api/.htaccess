@@ -7,8 +7,8 @@
 # others only define functions and emit nothing. The reason to deny them is the
 # case where PHP is not executing -- a bad php_module line, a renamed handler, a
 # copy of the tree served by something that is not this Apache -- and .php files
-# get sent as plain text. smtp-credentials.local.php is the one that matters:
-# it holds a live Gmail app password.
+# get sent as plain text. smtp-config.php is the one that matters: it holds a
+# live Gmail app password.
 #
 # Adding an endpoint means leaving it OUT of this list. The list is explicit,
 # not a pattern, precisely because a pattern would have caught the real
@@ -19,7 +19,7 @@
 # app_settings.php was on this list until its library was folded into settings.php.
 # settings.php is an endpoint and has to stay reachable, so that code is now served
 # by a file the front end requests. It holds no credentials -- the case this list
-# guards against is smtp-credentials.local.php -- but it is one more file that would
+# guards against is smtp-config.php -- but it is one more file that would
 # be readable as text if PHP ever stopped executing.
 #
 # two-factor-utils.php left this list the same way. Its library, together with the
@@ -27,7 +27,7 @@
 # is now two_factor.php -- an endpoint, so it must NOT be added back here. It guards
 # itself the way settings.php does: the router only runs when the file is the script
 # that was actually requested, so a require_once gets the library and nothing else.
-<FilesMatch "^(?i:connection-pdo|audit_logs_helper|auth|deduction-catalog|email-domain-policy|employee-pds-profile-utils|hris-mail|leave-credit-utils|password-reset-utils|pds-xlsx|rate-limit|throttle|smtp-config|smtp-credentials\.local|smtp-credentials\.example)\.php$">
+<FilesMatch "^(?i:connection-pdo|audit_logs_helper|auth|deduction-catalog|email-domain-policy|employee-pds-profile-utils|faq-assistant-utils|hris-mail|leave-credit-utils|overtime-accomplishment-utils|password-reset-utils|pds-xlsx|rate-limit|throttle|smtp-config|google-config|login-utils)\.php$">
     Require all denied
 </FilesMatch>
 
@@ -43,10 +43,11 @@
 # SetEnvIf that used to sit here, forcing the Authorization header through to PHP under CGI, went with
 # them -- there is nothing left in this API that reads that header.
 
-# Developer tooling that triggers the password-expiry path by hand. Harmless
-# locally, but it is not part of the application and there is no reason for it
-# to answer a request from outside.
-<FilesMatch "^(?i:test_password_expiry)\.php$">
+# Settings for hosts without environment variables (InfinityFree): the filled-in
+# server-config.local.php carries the database password, and the .example is its
+# template. Both are only ever require_once'd by connection-pdo.php. The rule for
+# test_password_expiry.php that used to sit here went with the file.
+<FilesMatch "^(?i:(server-config|ai-config)\.(local|example))\.php$">
     Require all denied
 </FilesMatch>
 

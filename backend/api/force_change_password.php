@@ -6,8 +6,11 @@ require_once __DIR__ . '/connection-pdo.php';
 require_method('POST');
 ensure_user_security_columns($pdo);
 
-// Keeps the session open: a successful change rewrites $_SESSION['user'] and can destroy the session.
-$sessionUser = require_session_user(keepSessionOpen: true);
+// Keeps the session open: a successful change destroys the session so the user signs in again.
+$sessionUser = require_session_user(
+    keepSessionOpen: true,
+    allowPasswordChangeRequired: true
+);
 $userId = (int)($sessionUser['id'] ?? 0);
 $body = read_json_body();
 $currentPassword = (string)($body['currentPassword'] ?? '');
@@ -112,15 +115,20 @@ if ($freshUser === null) {
 }
 
 $formattedUser = format_user($freshUser);
-$_SESSION['user'] = $formattedUser;
-$_SESSION['last_activity_at'] = time();
 
 write_auth_audit($pdo, $formattedUser, 'password.force_change_completed', 'A required password change was completed.', [
     'username' => $formattedUser['username'] ?? null,
 ]);
 
+/*
+ * The session that carried the temporary password ends here rather than being upgraded to a
+ * signed-in one: the user goes back to the login page and signs in with the password they just
+ * chose, which is the only real proof they typed what they think they typed. Ending it server-side
+ * also means the old session cannot open a dashboard if the browser is pointed there directly.
+ */
+destroy_session();
+
 json_response([
     'success' => true,
-    'message' => 'Password changed successfully.',
-    'user' => $formattedUser,
+    'message' => 'Password changed successfully. Sign in with your new password to continue.',
 ]);

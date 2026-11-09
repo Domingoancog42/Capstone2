@@ -1,15 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { faEye } from "@fortawesome/free-solid-svg-icons";
 import {
   AlertTriangle,
   ArrowUpRight,
   CalendarRange,
+  CheckCircle2,
   ClipboardList,
   Clock3,
+  Ellipsis,
   Plane,
   Search,
+  UserRound,
   Users,
   UserRoundCheck,
 } from "lucide-react";
+import ActionIconButton from "../UI/ActionIconButton";
+import ActionsMenu from "../UI/ActionsMenu";
 import Card, {
   CardContent,
   CardDescription,
@@ -19,6 +25,9 @@ import Card, {
 import Table from "../UI/table";
 import AdminStatCard from "./AdminStatCard";
 import DashboardWelcomeBanner from "./DashboardWelcomeBanner";
+import DashboardLeaveManagementAnalytics from "./DashboardLeaveManagementAnalytics";
+import ProfileFloatingCard from "../profile/ProfileFloatingCard";
+import TeamEmployeeProfile from "../employee/TeamEmployeeProfile";
 import {
   DistributionPieChart,
   RankedBarChart,
@@ -48,16 +57,19 @@ import { numberFormatter } from "../../utils/format";
 /**
  * The dashboard shared by the Chief and Planning Officer workspaces.
  *
- * Both desks supervise one division, so this shows that division and nothing else. It deliberately
- * does *not* mount `RoleAnalyticsOverview`: that panel is the HR/Admin view — payroll expense,
- * org-wide headcount growth, the division share pie, and the workforce demographic cards — none of
- * which a division head acts on, and payroll in particular is HR's alone. What replaces it is the
- * two rosters these desks actually work from: who is in the division, and what leave and travel
- * they have filed.
+ * The Chief supervises one division, so by default this shows that division and nothing else. The
+ * Planning Officer is an organization-wide desk (travel dispatch for every division), so it mounts
+ * this with `organizationWide` and the same rosters and KPIs cover every employee instead. Either
+ * way it deliberately does *not* mount `RoleAnalyticsOverview`: that panel is the HR/Admin view —
+ * payroll expense, org-wide headcount growth, the division share pie, and the workforce demographic
+ * cards — none of which these desks act on, and payroll in particular is HR's alone. What replaces
+ * it is the two rosters these desks actually work from: who they oversee, and what leave and
+ * travel those people have filed.
  *
- * Division scoping happens here rather than in the API: `leave_can_view_all()` hands every
- * non-employee role the full org list, and the employee endpoint is unscoped too, so each list is
- * filtered against the signed-in user's division name the same way `TeamOverview` does it.
+ * Division scoping happens here rather than in the API: the employee endpoint is unscoped, so the
+ * roster is filtered against the signed-in user's division name the same way `TeamOverview` does
+ * it. The leave and travel lists arrive already scoped to what the role may see, and are narrowed
+ * to the division again here for the Chief.
  */
 
 const DASHBOARD_REFRESH_TOPICS = ["employee", "leave_request", "travel_order", "compensatory", "overtime", "user"];
@@ -78,6 +90,13 @@ const OUTCOME_BUCKETS = [
   { key: "awaiting", label: "Awaiting approval", slot: 1 },
   { key: "declined", label: "Rejected / Cancelled", slot: 2 },
 ];
+
+/* Five cards are too narrow for one row beside the sidebar until 2xl, so they sit 3 + 2 before that. */
+const STAT_GRID_COLUMNS = {
+  3: "xl:grid-cols-3",
+  4: "xl:grid-cols-4",
+  5: "xl:grid-cols-3 2xl:grid-cols-5",
+};
 
 const REQUEST_TYPE_FILTERS = [
   { key: "all", label: "All" },
@@ -149,6 +168,28 @@ function startsWithinDays(startDate, days) {
   return start >= today && start <= limit;
 }
 
+function searchEmployees(employees, query) {
+  const search = normalizeKey(query);
+
+  if (!search) {
+    return employees;
+  }
+
+  return employees.filter((employee) => (
+    [
+      employee.employeeId,
+      employee.fullName,
+      employee.position,
+      employee.email,
+      employee.phone,
+      employee.employmentStatus,
+      employee.status,
+    ]
+      .filter(Boolean)
+      .some((value) => normalizeKey(value).includes(search))
+  ));
+}
+
 const shortMonthFormatter = new Intl.DateTimeFormat("en-US", { month: "short" });
 
 /* Compensatory credits are counted in hours, never days — the CTO form spends them by the hour. */
@@ -191,7 +232,7 @@ function buildTravelRow(record) {
     typeLabel: "Travel Order",
     employeeName: firstText(record?.employeeName, "Employee"),
     employeeId: firstText(record?.employeeId),
-    position: firstText(record?.position, record?.designation),
+    position: firstText(record?.position),
     profileImage: record?.profileImage || "",
     detail: purpose ? `${destination} — ${purpose}` : destination,
     startDate: record?.startDate || "",
@@ -310,8 +351,16 @@ function OpenModuleButton({ label, onClick }) {
 export default function DivisionDashboardOverview({
   user,
   onNavigate,
-  directoryPath = "",
   leavePath = "",
+  /* Show every division's employees and requests instead of only the signed-in user's division. */
+  organizationWide = false,
+  showTeamDivisionSection = true,
+  showTravelLeaveSection = true,
+  /* The Requests Filed by Month, Leave Types Used, and Request Outcomes charts. */
+  showRequestCharts = true,
+  showOutTodayCard = true,
+  pendingCardLabel = "Awaiting Approval",
+  showApprovedCard = false,
 }) {
   const [employees, setEmployees] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
@@ -320,6 +369,11 @@ export default function DivisionDashboardOverview({
   const [loadError, setLoadError] = useState("");
   const [creditBalance, setCreditBalance] = useState(null);
   const [rosterQuery, setRosterQuery] = useState("");
+  /* The floating roster opened from the employee count card keeps its own search. */
+  const [rosterCardOpen, setRosterCardOpen] = useState(false);
+  const [rosterCardQuery, setRosterCardQuery] = useState("");
+  const [viewingEmployee, setViewingEmployee] = useState(null);
+  const viewingEmployeeRef = useRef(null);
   const [requestQuery, setRequestQuery] = useState("");
   const [requestType, setRequestType] = useState("all");
   const [requestView, setRequestView] = useState("all");
@@ -368,6 +422,22 @@ export default function DivisionDashboardOverview({
     void loadDashboard();
   }, [loadDashboard]);
 
+  useEffect(() => {
+    viewingEmployeeRef.current = viewingEmployee;
+  }, [viewingEmployee]);
+
+  /*
+   * Each floating card locks page scroll and restores it on close, re-running whenever its
+   * `onClose` changes, so both handlers stay stable to keep the two stacked cards' locks in order.
+   * Both cards close on Escape; with a profile open over the roster, only the profile should.
+   */
+  const closeRosterCard = useCallback(() => {
+    if (!viewingEmployeeRef.current) {
+      setRosterCardOpen(false);
+    }
+  }, []);
+  const closeEmployeeProfile = useCallback(() => setViewingEmployee(null), []);
+
   useAutoRefreshOnChange(loadDashboard, {
     topics: DASHBOARD_REFRESH_TOPICS,
     refreshOnMount: false,
@@ -375,6 +445,9 @@ export default function DivisionDashboardOverview({
 
   const divisionName = firstText(user?.division, user?.department);
   const divisionKey = normalizeKey(divisionName);
+  /* What the rosters cover, for the banner and the section copy. */
+  const scopeLabel = organizationWide ? "All Divisions" : divisionName;
+  const hasScope = organizationWide || Boolean(divisionKey);
 
   /*
    * `compensatory_can_view_all()` treats every non-employee role as a supervisor, so unlike the
@@ -413,30 +486,34 @@ export default function DivisionDashboardOverview({
   }, [ownEmployeeRecordId]);
 
   const divisionEmployees = useMemo(() => {
-    if (!divisionKey) {
+    if (!hasScope) {
       return [];
     }
 
     return employees
-      .filter((employee) => normalizeKey(resolveEmployeeDivision(employee)) === divisionKey)
+      .filter((employee) => organizationWide || normalizeKey(resolveEmployeeDivision(employee)) === divisionKey)
       .sort((left, right) => String(left.fullName || "").localeCompare(String(right.fullName || "")));
-  }, [divisionKey, employees]);
+  }, [divisionKey, employees, hasScope, organizationWide]);
 
   const divisionRequests = useMemo(() => {
-    if (!divisionKey) {
+    if (!hasScope) {
       return [];
     }
 
-    const inDivision = (request) => normalizeKey(resolveRequestDivision(request)) === divisionKey;
+    const inScope = (request) => organizationWide || normalizeKey(resolveRequestDivision(request)) === divisionKey;
 
     return [
-      ...leaveRequests.filter(inDivision).map(buildLeaveRow),
-      ...travelOrders.filter(inDivision).map(buildTravelRow),
+      ...leaveRequests.filter(inScope).map(buildLeaveRow),
+      ...travelOrders.filter(inScope).map(buildTravelRow),
     ].sort((left, right) => right.timestamp - left.timestamp);
-  }, [divisionKey, leaveRequests, travelOrders]);
+  }, [divisionKey, hasScope, leaveRequests, organizationWide, travelOrders]);
 
   const pendingCount = useMemo(
     () => divisionRequests.filter((row) => isPendingRequestStatus(row.status)).length,
+    [divisionRequests]
+  );
+  const approvedCount = useMemo(
+    () => divisionRequests.filter((row) => row.status === "Approved").length,
     [divisionRequests]
   );
   const outTodayCount = useMemo(
@@ -453,33 +530,46 @@ export default function DivisionDashboardOverview({
 
   const statCards = [
     {
-      label: "Division Employees",
+      label: organizationWide ? "Total Employees" : "Division Employees",
       value: numberFormatter.format(divisionEmployees.length),
       icon: Users,
       accent: "from-teal-500 via-teal-600 to-emerald-500",
       iconTone: "bg-gradient-to-br from-teal-500 to-emerald-600",
       glow: "bg-teal-200",
-      onClick: directoryPath && onNavigate ? () => onNavigate(directoryPath) : undefined,
+      /* Opens the roster over the dashboard rather than leaving it for the employee directory. */
+      onClick: () => {
+        setRosterCardQuery("");
+        setRosterCardOpen(true);
+      },
     },
     {
-      /* Pending *and* Reviewed — a reviewed record is still open, just parked at a later desk. */
-      label: "Awaiting Approval",
+      /* Every non-final status is still open, even after the Chief or HR has signed it. */
+      label: pendingCardLabel,
       value: numberFormatter.format(pendingCount),
       icon: ClipboardList,
       accent: "from-amber-400 via-amber-500 to-orange-500",
       iconTone: "bg-gradient-to-br from-amber-400 to-orange-500",
       glow: "bg-amber-200",
-      onClick: () => focusRequests("pending"),
+      onClick: showTravelLeaveSection ? () => focusRequests("pending") : undefined,
     },
-    {
+    ...(showApprovedCard ? [{
+      label: "Approved",
+      value: numberFormatter.format(approvedCount),
+      icon: CheckCircle2,
+      accent: "from-emerald-400 via-green-500 to-lime-500",
+      iconTone: "bg-gradient-to-br from-emerald-500 to-green-600",
+      glow: "bg-emerald-200",
+      onClick: showTravelLeaveSection ? () => focusRequests("approved") : undefined,
+    }] : []),
+    ...(showOutTodayCard ? [{
       label: "Out Today",
       value: numberFormatter.format(outTodayCount),
       icon: UserRoundCheck,
       accent: "from-rose-500 via-rose-600 to-pink-500",
       iconTone: "bg-gradient-to-br from-rose-500 to-pink-600",
       glow: "bg-rose-200",
-      onClick: () => focusRequests("today"),
-    },
+      onClick: showTravelLeaveSection ? () => focusRequests("today") : undefined,
+    }] : []),
     {
       /* The signed-in user's own compensatory overtime credits, not the division's. */
       label: "My Overtime Credits",
@@ -553,27 +643,14 @@ export default function DivisionDashboardOverview({
       .filter((slice) => slice.value > 0);
   }, [chartTheme, divisionRequests]);
 
-  const filteredEmployees = useMemo(() => {
-    const search = normalizeKey(rosterQuery);
-
-    if (!search) {
-      return divisionEmployees;
-    }
-
-    return divisionEmployees.filter((employee) => (
-      [
-        employee.employeeId,
-        employee.fullName,
-        employee.position,
-        employee.email,
-        employee.phone,
-        employee.employmentStatus,
-        employee.status,
-      ]
-        .filter(Boolean)
-        .some((value) => normalizeKey(value).includes(search))
-    ));
-  }, [divisionEmployees, rosterQuery]);
+  const filteredEmployees = useMemo(
+    () => searchEmployees(divisionEmployees, rosterQuery),
+    [divisionEmployees, rosterQuery]
+  );
+  const rosterCardEmployees = useMemo(
+    () => searchEmployees(divisionEmployees, rosterCardQuery),
+    [divisionEmployees, rosterCardQuery]
+  );
 
   const filteredRequests = useMemo(() => {
     const search = normalizeKey(requestQuery);
@@ -620,10 +697,13 @@ export default function DivisionDashboardOverview({
     },
     {
       key: "position",
-      header: "Designation",
+      header: "Position",
       cardRole: "subtitle",
       render: (row) => (
-        <span className="text-sm text-slate-700">{row.position || "Unassigned"}</span>
+        <span className="text-sm text-slate-700">
+          {row.position || "Unassigned"}
+          {row.designation ? <span className="block text-xs text-slate-500">{row.designation}</span> : null}
+        </span>
       ),
     },
     {
@@ -650,6 +730,24 @@ export default function DivisionDashboardOverview({
         );
       },
     },
+    {
+      key: "actions",
+      header: "Actions",
+      cardRole: "actions",
+      /* The menu is drawn here with horizontal dots, so the table must not wrap it in its own. */
+      actionMenu: false,
+      render: (row) => (
+        <ActionsMenu icon={Ellipsis} label={`Actions for ${row.fullName || "employee"}`}>
+          <ActionIconButton
+            label={`View ${row.fullName || "employee"} profile`}
+            icon={faEye}
+            tone="view"
+            onClick={() => setViewingEmployee(row)}
+          />
+        </ActionsMenu>
+      ),
+    },
+    /* `setViewingEmployee` is a setter, so it is stable and the empty dep list still holds. */
   ]), []);
 
   const requestColumns = useMemo(() => ([
@@ -713,7 +811,15 @@ export default function DivisionDashboardOverview({
     },
   ]), []);
 
-  const missingDivisionNotice = !divisionName ? (
+  /* Shared by the Team / Division section and the floating roster. */
+  const rosterScopeDescription = organizationWide
+    ? "Employees across all divisions."
+    : `Employees assigned to ${divisionName || "your division"}.`;
+  const employeeEmptyMessage = divisionName && !organizationWide
+    ? `No employees are currently assigned to ${divisionName}.`
+    : "No employees found.";
+
+  const missingDivisionNotice = !hasScope ? (
     <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
       This account is not linked to a division yet, so no division records can be shown.
     </div>
@@ -723,10 +829,12 @@ export default function DivisionDashboardOverview({
     <div className="w-full space-y-6">
       <DashboardWelcomeBanner
         name={resolveFirstName(user)}
-        position={user?.position || user?.designation || "Not assigned"}
+        position={user?.position || "Not assigned"}
         role={getRoleLabel(user?.role || user?.roleKey || "chief")}
-        division={divisionName || "Not assigned"}
+        division={scopeLabel || "Not assigned"}
+        divisionHelper={organizationWide ? "Organization-wide access" : "Your assigned division"}
         imageUrl={resolveBackendAssetUrl(user?.profile_image || user?.profileImage)}
+        showCalendar
       />
 
       {loadError ? (
@@ -736,172 +844,233 @@ export default function DivisionDashboardOverview({
         </div>
       ) : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className={`grid gap-4 sm:grid-cols-2 ${STAT_GRID_COLUMNS[statCards.length] || STAT_GRID_COLUMNS[4]}`}>
         {statCards.map((stat, index) => (
           <AdminStatCard key={stat.label} stat={stat} index={index} />
         ))}
       </section>
 
-      <section className="grid items-stretch gap-4 lg:grid-cols-3">
-        <ChartCard
-          title="Requests Filed by Month"
-          description={`Leave and travel orders filed across ${new Date().getFullYear()}.`}
-          isEmpty={!hasTrendData}
-          emptyMessage="No requests filed this year."
-          loading={loading}
-        >
-          <TrendLineChart data={requestTrend} series={TREND_SERIES} theme={chartTheme} height={196} />
-        </ChartCard>
+      <DashboardLeaveManagementAnalytics
+        user={user}
+        requests={leaveRequests}
+        travelOrders={travelOrders}
+        loading={loading}
+      />
 
-        <ChartCard
-          title="Leave Types Used"
-          description="Which leave types the division files most."
-          isEmpty={leaveTypeRanking.length === 0}
-          emptyMessage="No leave requests to rank yet."
-          loading={loading}
-        >
-          <RankedBarChart
-            data={leaveTypeRanking}
-            theme={chartTheme}
-            height={196}
-            labelWidth={116}
-            seriesLabel="Requests"
-          />
-        </ChartCard>
-
-        <ChartCard
-          title="Request Outcomes"
-          description="Where every division request has landed."
-          isEmpty={outcomeBreakdown.length === 0}
-          emptyMessage="No requests to summarise yet."
-          loading={loading}
-        >
-          <DistributionPieChart data={outcomeBreakdown} theme={chartTheme} height={150} />
-        </ChartCard>
-      </section>
-
-      <SectionCard
-        title="Team / Division"
-        description={`Employees assigned to ${divisionName || "your division"}.`}
-        count={filteredEmployees.length}
-        countLabel={filteredEmployees.length === 1 ? "employee" : "employees"}
-        action={
-          <OpenModuleButton
-            label="Team/Division Employee"
-            onClick={directoryPath && onNavigate ? () => onNavigate(directoryPath) : undefined}
-          />
-        }
-      >
-        {missingDivisionNotice}
-
-        <SearchField
-          value={rosterQuery}
-          onChange={setRosterQuery}
-          label="Search division employees"
-          placeholder="Search employee, position, or email"
-        />
-
-        <div className="lg:overflow-hidden lg:rounded-2xl lg:border lg:border-slate-200">
-          <Table
-            columns={employeeColumns}
-            data={filteredEmployees}
-            rowKey="id"
+      {showRequestCharts ? (
+        <section className="grid items-stretch gap-4 lg:grid-cols-3">
+          <ChartCard
+            title="Requests Filed by Month"
+            description={`Leave and travel orders filed across ${new Date().getFullYear()}.`}
+            isEmpty={!hasTrendData}
+            emptyMessage="No requests filed this year."
             loading={loading}
-            loadingRows={4}
-            stickyHeader
-            className="max-h-[300px] overflow-y-auto"
-            minWidthClassName="min-w-[620px]"
-            emptyMessage={
-              divisionName
-                ? `No employees are currently assigned to ${divisionName}.`
-                : "No employees found."
-            }
-            cardsClassName="lg:hidden"
-            tableWrapperClassName="hidden lg:block"
-          />
-        </div>
-      </SectionCard>
+          >
+            <TrendLineChart data={requestTrend} series={TREND_SERIES} theme={chartTheme} height={196} />
+          </ChartCard>
 
-      <div ref={requestSectionRef}>
-        <SectionCard
-          title="Travel & Leave"
-          description={`Leave requests and travel orders filed by ${divisionName || "your division"}.`}
-          count={filteredRequests.length}
-          countLabel={filteredRequests.length === 1 ? "request" : "requests"}
-          action={
-            <OpenModuleButton
-              label="Leave Management"
-              onClick={leavePath && onNavigate ? () => onNavigate(leavePath) : undefined}
+          <ChartCard
+            title="Leave Types Used"
+            description={organizationWide ? "Which leave types are filed most." : "Which leave types the division files most."}
+            isEmpty={leaveTypeRanking.length === 0}
+            emptyMessage="No leave requests to rank yet."
+            loading={loading}
+          >
+            <RankedBarChart
+              data={leaveTypeRanking}
+              theme={chartTheme}
+              height={196}
+              labelWidth={116}
+              seriesLabel="Requests"
             />
-          }
+          </ChartCard>
+
+          <ChartCard
+            title="Request Outcomes"
+            description={organizationWide ? "Where every request has landed." : "Where every division request has landed."}
+            isEmpty={outcomeBreakdown.length === 0}
+            emptyMessage="No requests to summarise yet."
+            loading={loading}
+          >
+            <DistributionPieChart data={outcomeBreakdown} theme={chartTheme} height={150} />
+          </ChartCard>
+        </section>
+      ) : null}
+
+      {showTeamDivisionSection ? (
+        <SectionCard
+          title={organizationWide ? "Employees" : "Team / Division"}
+          description={rosterScopeDescription}
+          count={filteredEmployees.length}
+          countLabel={filteredEmployees.length === 1 ? "employee" : "employees"}
         >
           {missingDivisionNotice}
 
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="inline-flex w-fit rounded-full border border-slate-200 bg-slate-50 p-1">
-              {REQUEST_TYPE_FILTERS.map((filter) => (
-                <button
-                  key={filter.key}
-                  type="button"
-                  onClick={() => setRequestType(filter.key)}
-                  className={`min-h-8 rounded-full px-3.5 text-sm font-semibold transition ${
-                    requestType === filter.key
-                      ? "bg-white text-[#D61E1E] shadow-sm"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  {filter.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <label className="sr-only" htmlFor="division-request-view">
-                Filter requests
-              </label>
-              <select
-                id="division-request-view"
-                value={requestView}
-                onChange={(event) => setRequestView(event.target.value)}
-                className="h-9 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-              >
-                {REQUEST_VIEW_FILTERS.map((filter) => (
-                  <option key={filter.key} value={filter.key}>
-                    {filter.label}
-                  </option>
-                ))}
-              </select>
-
-              <SearchField
-                value={requestQuery}
-                onChange={setRequestQuery}
-                label="Search leave and travel requests"
-                placeholder="Search employee, type, or details"
-              />
-            </div>
-          </div>
+          <SearchField
+            value={rosterQuery}
+            onChange={setRosterQuery}
+            label={organizationWide ? "Search employees" : "Search division employees"}
+            placeholder="Search employee, position, or email"
+          />
 
           <div className="lg:overflow-hidden lg:rounded-2xl lg:border lg:border-slate-200">
             <Table
-              columns={requestColumns}
-              data={filteredRequests}
+              columns={employeeColumns}
+              data={filteredEmployees}
               rowKey="id"
               loading={loading}
               loadingRows={4}
               stickyHeader
-              className="max-h-[320px] overflow-y-auto"
-              minWidthClassName="min-w-[820px]"
-              emptyMessage={
-                divisionName
-                  ? "No leave requests or travel orders match this filter."
-                  : "No requests found."
-              }
+              className="max-h-[300px] overflow-y-auto"
+              minWidthClassName="min-w-[620px]"
+              emptyMessage={employeeEmptyMessage}
               cardsClassName="lg:hidden"
               tableWrapperClassName="hidden lg:block"
             />
           </div>
         </SectionCard>
-      </div>
+      ) : null}
+
+      {showTravelLeaveSection ? (
+        <div ref={requestSectionRef}>
+          <SectionCard
+            title="Travel & Leave"
+            description={
+              organizationWide
+                ? "Leave requests and travel orders filed across all divisions."
+                : `Leave requests and travel orders filed by ${divisionName || "your division"}.`
+            }
+            count={filteredRequests.length}
+            countLabel={filteredRequests.length === 1 ? "request" : "requests"}
+            action={
+              <OpenModuleButton
+                label="Leave Management"
+                onClick={leavePath && onNavigate ? () => onNavigate(leavePath) : undefined}
+              />
+            }
+          >
+            {missingDivisionNotice}
+
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="inline-flex w-fit rounded-full border border-slate-200 bg-slate-50 p-1">
+                {REQUEST_TYPE_FILTERS.map((filter) => (
+                  <button
+                    key={filter.key}
+                    type="button"
+                    onClick={() => setRequestType(filter.key)}
+                    className={`min-h-8 rounded-full px-3.5 text-sm font-semibold transition ${
+                      requestType === filter.key
+                        ? "bg-white text-[#D61E1E] shadow-sm"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <label className="sr-only" htmlFor="division-request-view">
+                  Filter requests
+                </label>
+                <select
+                  id="division-request-view"
+                  value={requestView}
+                  onChange={(event) => setRequestView(event.target.value)}
+                  className="h-9 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                >
+                  {REQUEST_VIEW_FILTERS.map((filter) => (
+                    <option key={filter.key} value={filter.key}>
+                      {filter.label}
+                    </option>
+                  ))}
+                </select>
+
+                <SearchField
+                  value={requestQuery}
+                  onChange={setRequestQuery}
+                  label="Search leave and travel requests"
+                  placeholder="Search employee, type, or details"
+                />
+              </div>
+            </div>
+
+            <div className="lg:overflow-hidden lg:rounded-2xl lg:border lg:border-slate-200">
+              <Table
+                columns={requestColumns}
+                data={filteredRequests}
+                rowKey="id"
+                loading={loading}
+                loadingRows={4}
+                stickyHeader
+                className="max-h-[320px] overflow-y-auto"
+                minWidthClassName="min-w-[820px]"
+                emptyMessage={
+                  hasScope
+                    ? "No leave requests or travel orders match this filter."
+                    : "No requests found."
+                }
+                cardsClassName="lg:hidden"
+                tableWrapperClassName="hidden lg:block"
+              />
+            </div>
+          </SectionCard>
+        </div>
+      ) : null}
+
+      <ProfileFloatingCard
+        open={rosterCardOpen}
+        onClose={closeRosterCard}
+        title={organizationWide ? "Total Employees" : "Division Employees"}
+        subtitle={rosterScopeDescription}
+        icon={Users}
+        maxWidth="max-w-[860px]"
+        closeLabel={organizationWide ? "Close employees" : "Close division employees"}
+      >
+        <div className="space-y-4">
+          {missingDivisionNotice}
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <SearchField
+              value={rosterCardQuery}
+              onChange={setRosterCardQuery}
+              label={organizationWide ? "Search employees" : "Search division employees"}
+              placeholder="Search employee, position, or email"
+            />
+            <span className="inline-flex w-fit items-center rounded-full bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700">
+              {numberFormatter.format(rosterCardEmployees.length)} {rosterCardEmployees.length === 1 ? "employee" : "employees"}
+            </span>
+          </div>
+
+          <div className="lg:overflow-hidden lg:rounded-2xl lg:border lg:border-slate-200">
+            <Table
+              columns={employeeColumns}
+              data={rosterCardEmployees}
+              rowKey="id"
+              loading={loading}
+              loadingRows={4}
+              stickyHeader
+              className="max-h-[60vh] overflow-y-auto"
+              minWidthClassName="min-w-[620px]"
+              emptyMessage={employeeEmptyMessage}
+              cardsClassName="lg:hidden"
+              tableWrapperClassName="hidden lg:block"
+            />
+          </div>
+        </div>
+      </ProfileFloatingCard>
+
+      {/* Rendered after the roster card so it stacks above it when opened from there. */}
+      <ProfileFloatingCard
+        open={Boolean(viewingEmployee)}
+        onClose={closeEmployeeProfile}
+        title="Employee Profile"
+        icon={UserRound}
+        maxWidth="max-w-[760px]"
+        closeLabel="Close employee profile"
+      >
+        {viewingEmployee ? <TeamEmployeeProfile employee={viewingEmployee} /> : null}
+      </ProfileFloatingCard>
     </div>
   );
 }

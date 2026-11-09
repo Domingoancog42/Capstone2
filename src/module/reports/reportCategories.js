@@ -29,6 +29,20 @@ export const REPORT_CATEGORIES = [
     description: "Leave applications, balances, utilisation, and monetisation.",
   },
   {
+    key: "travel",
+    navKey: "reportsTravel",
+    label: "Travel Order Report",
+    title: "Travel Order Reports",
+    description: "Travel orders, destinations, days away, and approval status.",
+  },
+  {
+    key: "cto",
+    navKey: "reportsCto",
+    label: "CTO Report",
+    title: "Compensatory Time Off Reports",
+    description: "CTO requests, hours taken, unpaid hours, and approval status.",
+  },
+  {
     key: "attendance",
     navKey: "reportsAttendance",
     label: "Attendance Report",
@@ -51,11 +65,25 @@ export const REPORT_CATEGORIES = [
   },
 ];
 
-const REPORT_CATEGORY_KEYS = REPORT_CATEGORIES.map((category) => category.key);
+/** Report categories the Admin desk does not show. The sidebar and the admin page share it. */
+export const ADMIN_HIDDEN_REPORT_CATEGORIES = ["audit"];
+
+/**
+ * The categories a role's sidebar and module map are built from. `exclude` names the category keys
+ * a role does not get -- the HR Staff desk has no Audit tab -- and must agree with
+ * reports_blocked_category_keys() in reports.php, which refuses those reports at the API too.
+ * The Admin and HR Head desks also leave Audit out, but only from their screens; the API still
+ * serves it to them.
+ */
+function reportCategoriesFor({ exclude = [] } = {}) {
+  const excluded = new Set(exclude);
+
+  return REPORT_CATEGORIES.filter((category) => !excluded.has(category.key));
+}
 
 /** Sidebar children for a role's Reports item, e.g. `buildReportNavChildren("/admin/reports")`. */
-export function buildReportNavChildren(basePath) {
-  return REPORT_CATEGORIES.map((category) => ({
+export function buildReportNavChildren(basePath, options = {}) {
+  return reportCategoriesFor(options).map((category) => ({
     key: category.navKey,
     label: category.label,
     path: `${basePath}/${category.key}`,
@@ -64,9 +92,10 @@ export function buildReportNavChildren(basePath) {
 
 /**
  * Returns "" for the bare reports route or an unknown segment, which is the signal the screen uses
- * to show its "pick a category" state rather than guessing at a report.
+ * to show its "pick a category" state rather than guessing at a report. A category in
+ * `options.exclude` counts as unknown, so a typed-in URL cannot reach a tab the role does not have.
  */
-export function reportCategoryFromPath(pathname, basePath) {
+export function reportCategoryFromPath(pathname, basePath, options = {}) {
   const path = String(pathname || "");
   const prefix = `${basePath}/`;
 
@@ -76,16 +105,17 @@ export function reportCategoryFromPath(pathname, basePath) {
 
   const [candidate] = path.slice(prefix.length).split("/");
 
-  return REPORT_CATEGORY_KEYS.includes(candidate) ? candidate : "";
+  return reportCategoriesFor(options).some((category) => category.key === candidate) ? candidate : "";
 }
 
 /**
  * Workspace module entries, one per category, each rendering the same reports screen scoped to its
  * own category. `renderCategory` receives the category key and the workspace render context
  * (`{ user, currentPath, onNavigate }`), so a role can pass `user` through for export attribution.
+ * `options.exclude` leaves a category's module out, the same way it leaves its sidebar entry out.
  */
-export function buildReportCategoryModules(renderCategory) {
-  return REPORT_CATEGORIES.reduce((modules, category) => {
+export function buildReportCategoryModules(renderCategory, options = {}) {
+  return reportCategoriesFor(options).reduce((modules, category) => {
     modules[category.navKey] = {
       title: category.title,
       description: category.description,

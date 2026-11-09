@@ -14,20 +14,24 @@ import {
   UserRound,
 } from "lucide-react";
 import Button from "../../components/UI/button";
+import ComboboxField from "../../components/UI/ComboboxField";
 import InputField from "../../components/UI/InputField";
-import { suffixOptions } from "../../components/profile/profileUtils";
+import {
+  isRegularEmploymentStatus,
+  suffixOptions,
+} from "../../components/profile/profileUtils";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
+import {
+  getEmailDomainPolicyViolation,
+  normalizeEmailDomainPolicy,
+} from "../../utils/emailDomainPolicy";
+import { normalizeRole } from "../../utils/roleRoutes";
 /*
- * The PSGC address lists. They used to sit in `public/` and be fetched over HTTP at runtime; they
- * now live in `src/data/` and are compiled in, so they are present the moment this module loads and
- * there is no request to fail or 404. The trade is size -- barangay.json alone is 4.8 MB and it is
- * carried in the main bundle whether or not anyone opens this form.
+ * The PSGC address lists, compiled in from `src/data/`, with the addresses added in Settings > Add
+ * Address laid over them -- see utils/addressDirectory.js.
  */
-import barangayData from "../../data/philippines-addresses/barangay.json";
-import cityData from "../../data/philippines-addresses/city.json";
-import provinceData from "../../data/philippines-addresses/province.json";
-import regionData from "../../data/philippines-addresses/region.json";
-import zipCodeData from "../../data/philippines-addresses/zipcodes.json";
+import useAddressDirectory from "../../hooks/useAddressDirectory";
+import { resolveStoredAddress, resolveZipCode } from "../../utils/addressDirectory";
 
 const defaultValues = {
   employeeId: "",
@@ -50,6 +54,7 @@ const defaultValues = {
   roleId: "",
   divisionId: "",
   designationId: "",
+  designation: "",
   basicSalary: "",
   salaryRate: "",
   dateHired: "",
@@ -68,6 +73,8 @@ const defaultValues = {
 
 const MINIMUM_EMPLOYEE_AGE = 18;
 const MAXIMUM_EMPLOYEE_AGE = 100;
+// Same cap as EMPLOYEE_DESIGNATION_MAX_LENGTH in employee.php (the column is VARCHAR(150)).
+const DESIGNATION_MAX_LENGTH = 150;
 const genderOptions = ["Male", "Female"];
 const salaryRates = ["Semi-monthly", "Monthly"];
 const employmentStatuses = ["Regular", "Contract of Service"];
@@ -96,6 +103,22 @@ function parseDateInput(value) {
   }
 
   return parsed;
+}
+
+const FOUR_DIGIT_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/*
+ * Native date inputs do not honor maxLength and some browsers accept years with more than four
+ * digits. Keep the calendar control, but trim an extended year as soon as the browser exposes the
+ * completed value to React.
+ */
+function limitDateInputYear(value) {
+  const dateValue = String(value || "");
+  const extendedYearMatch = /^(\d{4})\d+(-\d{2}-\d{2})$/.exec(dateValue);
+
+  return extendedYearMatch
+    ? `${extendedYearMatch[1]}${extendedYearMatch[2]}`
+    : dateValue;
 }
 
 function shiftDateByYears(date, years) {
@@ -159,106 +182,6 @@ function getAgeFromDateOfBirth(value) {
   return age;
 }
 
-function normalizePlaceText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function uniqueValues(values) {
-  return Array.from(new Set(values.filter(Boolean)));
-}
-
-function placeNameVariants(value) {
-  const original = String(value || "").trim();
-
-  if (!original) {
-    return [];
-  }
-
-  const withoutParentheses = original.replace(/\([^)]*\)/g, " ");
-  const normalized = normalizePlaceText(original);
-  const normalizedWithoutParentheses = normalizePlaceText(withoutParentheses);
-  const withoutCityOfPrefix = normalizedWithoutParentheses.replace(/^city of\s+/, "");
-  const withoutCitySuffix = normalizedWithoutParentheses.replace(/\s+city$/, "");
-  const cityOfPrefixWithoutSuffix = withoutCityOfPrefix.replace(/\s+city$/, "");
-
-  return uniqueValues([
-    normalized,
-    normalizedWithoutParentheses,
-    withoutCityOfPrefix,
-    withoutCitySuffix,
-    cityOfPrefixWithoutSuffix,
-  ]);
-}
-
-function zipValueToText(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.join(" ");
-  }
-
-  if (value && typeof value === "object") {
-    return Object.values(value).join(" ");
-  }
-
-  return "";
-}
-
-function resolveZipCode(zipEntries, cityName, barangayName, provinceName, regionName) {
-  const cityNeedles = placeNameVariants(cityName);
-  const barangayNeedles = placeNameVariants(barangayName);
-  const provinceNeedles = placeNameVariants(provinceName);
-  const regionNeedles = placeNameVariants(regionName);
-  const preferredNeedles = [...cityNeedles, ...barangayNeedles];
-  const fallbackNeedles = [...provinceNeedles, ...regionNeedles];
-
-  if (preferredNeedles.length === 0 && fallbackNeedles.length === 0) {
-    return "";
-  }
-
-  const exactEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return preferredNeedles.some((needle) => needle === haystack);
-  });
-
-  if (exactEntry) {
-    return exactEntry[0];
-  }
-
-  const cityEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return cityNeedles.some((needle) => haystack.includes(needle) || needle.includes(haystack));
-  });
-
-  if (cityEntry) {
-    return cityEntry[0];
-  }
-
-  const barangayEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return barangayNeedles.some((needle) => haystack.includes(needle) || needle.includes(haystack));
-  });
-
-  if (barangayEntry) {
-    return barangayEntry[0];
-  }
-
-  const fallbackEntry = zipEntries.find(([, place]) => {
-    const haystack = normalizePlaceText(zipValueToText(place));
-    return fallbackNeedles.some((needle) => haystack.includes(needle));
-  });
-
-  return fallbackEntry?.[0] || "";
-}
-
 // Lifts the trailing "*" out of a label string so required fields read as a red
 // marker instead of plain text. Labels without one are passed through untouched.
 function decorateLabel(label) {
@@ -271,7 +194,7 @@ function decorateLabel(label) {
   return (
     <>
       {text.slice(0, -2)}
-      <span className="ml-0.5 font-bold text-[#D61E1E]" aria-hidden="true">*</span>
+      <span className="app-required-marker ml-0.5 font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
     </>
   );
 }
@@ -427,7 +350,7 @@ function ProfileImageUpload({
   fileInputRef,
   isEditing = false,
   divisionName = "",
-  designationName = "",
+  positionName = "",
 }) {
   const fullName = [form.firstName, form.middleName, form.lastName, form.suffix]
     .map((value) => String(value || "").trim())
@@ -485,12 +408,13 @@ function ProfileImageUpload({
 
         <dl className="grid gap-2.5 border-t border-slate-100 px-4 py-3.5">
           <SummaryRow label="Division" value={divisionName} />
-          <SummaryRow label="Designation" value={designationName} />
+          <SummaryRow label="Position" value={positionName} />
+          <SummaryRow label="Designation" value={String(form.designation || "").trim()} />
           <SummaryRow label="Employment" value={form.employmentStatus} />
         </dl>
 
         <p className="m-0 border-t border-slate-100 px-4 py-3 text-[11px] leading-4 text-slate-500">
-          <span className="font-bold text-[#D61E1E]">*</span> Required fields
+          <span className="app-required-marker font-bold !text-[#D61E1E]">*</span> Required fields
         </p>
       </div>
 
@@ -515,21 +439,27 @@ export default function CreateEmployee({
   formId = "employee-form",
   showActions = true,
   submitting = false,
+  additionalFields = null,
 }) {
   const [form, setForm] = useState(defaultValues);
   const [profileImagePreview, setProfileImagePreview] = useState("");
   const [profileImageDataUrl, setProfileImageDataUrl] = useState("");
   const [removeProfileImage, setRemoveProfileImage] = useState(false);
   const [errors, setErrors] = useState({});
-  const [addressLoading, setAddressLoading] = useState(true);
-  const [addressError, setAddressError] = useState("");
-  const [regionOptions, setRegionOptions] = useState([]);
-  const [allProvinceOptions, setAllProvinceOptions] = useState([]);
-  const [allCityOptions, setAllCityOptions] = useState([]);
-  const [allBarangayOptions, setAllBarangayOptions] = useState([]);
-  const [zipEntries, setZipEntries] = useState([]);
-  const [zipCodeTouched, setZipCodeTouched] = useState(false);
-  const [lastAutoFilledZipCode, setLastAutoFilledZipCode] = useState("");
+  const addressDirectory = useAddressDirectory();
+  const {
+    regions: regionOptions,
+    provinces: allProvinceOptions,
+    cities: allCityOptions,
+    barangays: allBarangayOptions,
+    zipEntries,
+  } = addressDirectory;
+  // The built-in lists are compiled in, so the only way to have none is a broken bundle.
+  const addressError = regionOptions.length === 0 ? "Unable to load address options." : "";
+  // Read through a ref so a refreshed list does not reset the form; see the effects below.
+  const addressDirectoryRef = useRef(addressDirectory);
+  // The record's address as it was matched before the added addresses had loaded, if it was.
+  const pendingAddressRef = useRef(null);
   const profileImageInputRef = useRef(null);
   const dateOfBirthBounds = useMemo(() => getDateOfBirthBounds(), []);
   const enteredAge = useMemo(() => getAgeFromDateOfBirth(form.dateOfBirth), [form.dateOfBirth]);
@@ -538,7 +468,33 @@ export default function CreateEmployee({
   const divisions = useMemo(() => options?.divisions || [], [options?.divisions]);
   const designations = useMemo(() => options?.designations || [], [options?.designations]);
   const roles = useMemo(() => options?.roles || [], [options?.roles]);
-  const roleRequired = roles.length > 0 && !isEditing;
+  const employeeRole = useMemo(
+    () => roles.find((role) => normalizeRole(role.key || role.name) === "employee") || null,
+    [roles]
+  );
+  const emailDomainPolicy = useMemo(
+    () => normalizeEmailDomainPolicy(options?.emailDomainPolicy),
+    [options?.emailDomainPolicy]
+  );
+  const emailPlaceholder = useMemo(() => {
+    if (
+      emailDomainPolicy.enabled
+      && emailDomainPolicy.allowListedOnly
+      && emailDomainPolicy.allowedDomains.length === 1
+    ) {
+      return `Enter @${emailDomainPolicy.allowedDomains[0]} email address`;
+    }
+
+    if (
+      emailDomainPolicy.enabled
+      && emailDomainPolicy.allowListedOnly
+      && emailDomainPolicy.allowedDomains.length > 1
+    ) {
+      return "Enter an email using an allowed domain";
+    }
+
+    return "Enter email address";
+  }, [emailDomainPolicy]);
   const filteredDesignations = useMemo(
     () => designations.filter((item) => String(item.division_id) === String(form.divisionId)),
     [designations, form.divisionId]
@@ -559,50 +515,90 @@ export default function CreateEmployee({
     () => divisions.find((item) => String(item.id) === String(form.divisionId))?.name || "",
     [divisions, form.divisionId]
   );
-  const selectedDesignationName = useMemo(
+  const selectedPositionName = useMemo(
     () => designations.find((item) => String(item.id) === String(form.designationId))?.name || "",
     [designations, form.designationId]
   );
+  // Designations already in use, grouped by the division they were seen in. Typing a new one is fine.
+  const designationSuggestions = useMemo(
+    () => (Array.isArray(options?.designationSuggestions) ? options.designationSuggestions : [])
+      .map((item) => (typeof item === "string"
+        ? { value: item, group: "" }
+        : { value: String(item?.name || ""), group: String(item?.division || "") }))
+      .filter((item) => item.value.trim()),
+    [options?.designationSuggestions]
+  );
+
+  useEffect(() => {
+    addressDirectoryRef.current = addressDirectory;
+  }, [addressDirectory]);
 
   useEffect(() => {
     const normalizedValues = Object.fromEntries(
       Object.entries(initialValues || {}).map(([key, value]) => [key, value ?? ""])
     );
+    const resolvedAddress = resolveStoredAddress(normalizedValues, addressDirectoryRef.current);
+    pendingAddressRef.current = addressDirectoryRef.current.status === "loading"
+      ? { values: normalizedValues, resolved: resolvedAddress }
+      : null;
     setForm({
       ...defaultValues,
       employeeId: initialValues?.id ? defaultValues.employeeId : nextEmployeeId,
       ...normalizedValues,
+      ...resolvedAddress,
     });
     setProfileImagePreview(resolveBackendAssetUrl(initialValues?.profileImage));
     setProfileImageDataUrl("");
     setRemoveProfileImage(false);
     setErrors({});
-    setZipCodeTouched(false);
-    setLastAutoFilledZipCode("");
   }, [initialValues, nextEmployeeId]);
 
   /*
-   * The lists are imported, so they are in memory before this component ever renders -- there is no
-   * request to await, fail, or race a cancelled mount against. The state is still populated here
-   * rather than initialised inline so the pickers keep their existing shape (and the loading and
-   * error flags stay for the empty-data case, which is the only failure left).
+   * New employee records always receive the built-in Employee account role. Keep the value in the
+   * existing payload for compatibility with older API deployments, while the current API also
+   * enforces the same default. Editing remains unchanged so an existing account can retain or
+   * update its assigned role.
    */
   useEffect(() => {
-    setAddressLoading(true);
-    setAddressError("");
-
-    setRegionOptions(Array.isArray(regionData) ? regionData : []);
-    setAllProvinceOptions(Array.isArray(provinceData) ? provinceData : []);
-    setAllCityOptions(Array.isArray(cityData) ? cityData : []);
-    setAllBarangayOptions(Array.isArray(barangayData) ? barangayData : []);
-    setZipEntries(zipCodeData && typeof zipCodeData === "object" ? Object.entries(zipCodeData) : []);
-
-    if (!Array.isArray(regionData) || regionData.length === 0) {
-      setAddressError("Unable to load address options.");
+    if (isEditing || !employeeRole?.id) {
+      return;
     }
 
-    setAddressLoading(false);
-  }, []);
+    const employeeRoleId = String(employeeRole.id);
+    setForm((current) => (
+      current.roleId === employeeRoleId
+        ? current
+        : { ...current, roleId: employeeRoleId }
+    ));
+  }, [employeeRole, isEditing]);
+
+  /*
+   * The built-in lists are in memory before this form renders, but the addresses added in Settings
+   * arrive with a request, so the first time the form is used a record can open before them. Match
+   * that record's address again once they are here, so it comes out the same as it would have with
+   * them -- unless the address has been changed in the meantime, since a pick already made stays made.
+   */
+  useEffect(() => {
+    const pending = pendingAddressRef.current;
+
+    if (!pending || addressDirectory.status === "loading") {
+      return;
+    }
+
+    pendingAddressRef.current = null;
+
+    if (addressDirectory.addresses.length === 0) {
+      return;
+    }
+
+    setForm((current) => {
+      const untouched = Object.keys(pending.resolved).every((key) => current[key] === pending.resolved[key]);
+
+      return untouched
+        ? { ...current, ...resolveStoredAddress(pending.values, addressDirectory) }
+        : current;
+    });
+  }, [addressDirectory]);
 
   useEffect(() => {
     if (form.regionCode || !form.region || regionOptions.length === 0) {
@@ -638,13 +634,11 @@ export default function CreateEmployee({
   }, [form.city, form.cityCode, cityOptions]);
 
   useEffect(() => {
-    const canAutoFillZipCode = !zipCodeTouched && (!form.zipCode || form.zipCode === lastAutoFilledZipCode);
-
-    if (!canAutoFillZipCode) {
-      return;
-    }
-
-    const matchedZipCode = resolveZipCode(zipEntries, form.city, form.address, form.province, form.region);
+    // A barangay saved in Settings > Add Address carries its own ZIP code; any other is matched
+    // from the place names.
+    const selectedBarangay = barangayOptions.find((item) => item.brgy_name === form.address);
+    const matchedZipCode = selectedBarangay?.zip_code
+      || resolveZipCode(zipEntries, form.city, form.address, form.province, form.region);
     if (!matchedZipCode) {
       return;
     }
@@ -654,21 +648,50 @@ export default function CreateEmployee({
     }
 
     setForm((current) => ({ ...current, zipCode: matchedZipCode }));
-    setLastAutoFilledZipCode(matchedZipCode);
+    setErrors((current) => ({ ...current, zipCode: "" }));
   }, [
+    barangayOptions,
     zipEntries,
     form.city,
     form.address,
     form.province,
     form.region,
     form.zipCode,
-    lastAutoFilledZipCode,
-    zipCodeTouched,
   ]);
 
   const updateField = (field) => (event) => {
     setForm((current) => ({ ...current, [field]: event.target.value }));
     setErrors((current) => ({ ...current, [field]: "" }));
+  };
+
+  // The designation box hands back the value itself (typed or picked), not an input event.
+  const updateDesignation = (designation) => {
+    setForm((current) => ({ ...current, designation }));
+    setErrors((current) => ({ ...current, designation: "" }));
+  };
+
+  const updateEmploymentStatus = (event) => {
+    const employmentStatus = event.target.value;
+
+    setForm((current) => ({
+      ...current,
+      employmentStatus,
+      gsisIdNo: isRegularEmploymentStatus(employmentStatus) ? current.gsisIdNo : "",
+    }));
+    setErrors((current) => ({ ...current, employmentStatus: "", gsisIdNo: "" }));
+  };
+
+  const updateDateHired = (event) => {
+    const nextDateHired = limitDateInputYear(event.target.value);
+
+    // Update the native control immediately as well as React state so an oversized pasted/typed
+    // year never remains visible until the next render.
+    if (event.target.value !== nextDateHired) {
+      event.target.value = nextDateHired;
+    }
+
+    setForm((current) => ({ ...current, dateHired: nextDateHired }));
+    setErrors((current) => ({ ...current, dateHired: "" }));
   };
 
   const updateGovernmentId = (field) => (event) => {
@@ -698,8 +721,6 @@ export default function CreateEmployee({
 
   const updateRegion = (event) => {
     const selected = regionOptions.find((item) => item.region_code === event.target.value);
-    setZipCodeTouched(false);
-    setLastAutoFilledZipCode("");
     setForm((current) => ({
       ...current,
       regionCode: selected?.region_code || "",
@@ -715,8 +736,6 @@ export default function CreateEmployee({
 
   const updateProvince = (event) => {
     const selected = provinceOptions.find((item) => item.province_code === event.target.value);
-    setZipCodeTouched(false);
-    setLastAutoFilledZipCode("");
     setForm((current) => ({
       ...current,
       provinceCode: selected?.province_code || "",
@@ -730,8 +749,6 @@ export default function CreateEmployee({
 
   const updateCity = (event) => {
     const selected = cityOptions.find((item) => item.city_code === event.target.value);
-    setZipCodeTouched(false);
-    setLastAutoFilledZipCode("");
     setForm((current) => ({
       ...current,
       cityCode: selected?.city_code || "",
@@ -743,15 +760,7 @@ export default function CreateEmployee({
 
   const updateBarangay = (event) => {
     const selected = barangayOptions.find((item) => item.brgy_name === event.target.value);
-    setZipCodeTouched(false);
-    setLastAutoFilledZipCode("");
     setForm((current) => ({ ...current, address: selected?.brgy_name || "", zipCode: "" }));
-  };
-
-  const updateZipCode = (event) => {
-    setZipCodeTouched(true);
-    setForm((current) => ({ ...current, zipCode: event.target.value }));
-    setErrors((current) => ({ ...current, zipCode: "" }));
   };
 
   const handleProfileImageChange = (event) => {
@@ -803,9 +812,12 @@ export default function CreateEmployee({
     if (!form.dateOfBirth) nextErrors.dateOfBirth = "Date of birth is required.";
     if (!form.email.trim()) nextErrors.email = "Email is required.";
     if (!form.phone.trim()) nextErrors.phone = "Phone is required.";
-    if (roleRequired && !form.roleId) nextErrors.roleId = "Role is required.";
+    if (!form.zipCode.trim()) nextErrors.zipCode = "ZIP code is required.";
     if (!form.divisionId) nextErrors.divisionId = "Division is required.";
-    if (!form.designationId) nextErrors.designationId = "Designation is required.";
+    if (!form.designationId) nextErrors.designationId = "Position is required.";
+    if (String(form.designation || "").trim().length > DESIGNATION_MAX_LENGTH) {
+      nextErrors.designation = `Designation must be ${DESIGNATION_MAX_LENGTH} characters or fewer.`;
+    }
 
     if (form.dateOfBirth && (!birthDate || birthDate > dateOfBirthBounds.latestDate)) {
       nextErrors.dateOfBirth = `Employee must be at least ${MINIMUM_EMPLOYEE_AGE} years old.`;
@@ -815,14 +827,34 @@ export default function CreateEmployee({
 
     if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
       nextErrors.email = "Enter a valid email address.";
+    } else if (trimmedEmail) {
+      const emailPolicyViolation = getEmailDomainPolicyViolation(
+        trimmedEmail,
+        emailDomainPolicy
+      );
+
+      if (emailPolicyViolation) {
+        nextErrors.email = emailPolicyViolation;
+      }
     }
 
     if (trimmedPhone && !/^\d{11}$/.test(trimmedPhone)) {
       nextErrors.phone = "Phone number must be exactly 11 digits.";
     }
 
+    if (form.zipCode.trim() && !/^\d{4}$/.test(form.zipCode.trim())) {
+      nextErrors.zipCode = "ZIP code must be exactly 4 digits.";
+    }
+
     if (form.salaryRate && !salaryRates.includes(form.salaryRate)) {
       nextErrors.salaryRate = "Salary rate must be Semi-monthly or Monthly.";
+    }
+
+    if (
+      form.dateHired
+      && (!FOUR_DIGIT_DATE_PATTERN.test(form.dateHired) || !parseDateInput(form.dateHired))
+    ) {
+      nextErrors.dateHired = "Date hired must be a valid date with a four-digit year.";
     }
 
     setErrors(nextErrors);
@@ -849,9 +881,12 @@ export default function CreateEmployee({
       email: form.email.trim(),
       phone: form.phone.trim(),
       zipCode: form.zipCode.trim(),
+      designation: String(form.designation || "").trim(),
       basicSalary: form.basicSalary === "" ? null : form.basicSalary,
       height: form.height === "" ? null : form.height,
       weight: form.weight === "" ? null : form.weight,
+      gsisIdNo: isRegularEmploymentStatus(form.employmentStatus) ? form.gsisIdNo : "",
+      roleId: isEditing ? form.roleId : String(employeeRole?.id || form.roleId || ""),
       profileImageDataUrl,
       removeProfileImage,
     });
@@ -869,7 +904,7 @@ export default function CreateEmployee({
         fileInputRef={profileImageInputRef}
         isEditing={isEditing}
         divisionName={selectedDivisionName}
-        designationName={selectedDesignationName}
+        positionName={selectedPositionName}
         onUploadClick={() => profileImageInputRef.current?.click()}
         onRemove={handleRemoveProfileImage}
         onFileChange={handleProfileImageChange}
@@ -886,7 +921,7 @@ export default function CreateEmployee({
             name="employeeId"
             value={form.employeeId}
             readOnly
-            placeholder="EMP2026-0001"
+            placeholder="0001"
             error={errors.employeeId}
             className="md:col-span-2"
             inputClassName="cursor-not-allowed bg-slate-50 font-semibold text-slate-600"
@@ -905,6 +940,7 @@ export default function CreateEmployee({
             value={form.middleName}
             onChange={updateField("middleName")}
             placeholder="Leave blank if none"
+            className="app-optional-field"
           />
           <TextField
             label="Last Name *"
@@ -919,6 +955,7 @@ export default function CreateEmployee({
             name="suffix"
             value={form.suffix}
             onChange={updateField("suffix")}
+            className="app-optional-field"
           >
             <option value="">None</option>
             {suffixOptions.map((item) => <option key={item} value={item}>{item}</option>)}
@@ -954,30 +991,33 @@ export default function CreateEmployee({
               {addressError}
             </p>
           ) : null}
-          <SelectField label="Region" name="region" value={form.regionCode} onChange={updateRegion} disabled={addressLoading}>
-            <option value="">{addressLoading ? "Loading regions..." : "Select region"}</option>
+          <SelectField label="Region *" name="region" value={form.regionCode} onChange={updateRegion}>
+            <option value="">{form.region || "Select region"}</option>
             {regionOptions.map((item) => <option key={item.region_code} value={item.region_code}>{item.region_name}</option>)}
           </SelectField>
-          <SelectField label="Province" name="province" value={form.provinceCode} onChange={updateProvince} disabled={!form.regionCode}>
-            <option value="">{form.regionCode ? "Select province" : "Select region first"}</option>
+          <SelectField label="Province *" name="province" value={form.provinceCode} onChange={updateProvince} disabled={!form.regionCode}>
+            <option value="">{form.province || (form.regionCode ? "Select province" : "Select region first")}</option>
             {provinceOptions.map((item) => <option key={item.province_code} value={item.province_code}>{item.province_name}</option>)}
           </SelectField>
-          <SelectField label="City / Municipality" name="city" value={form.cityCode} onChange={updateCity} disabled={!form.provinceCode}>
-            <option value="">{form.provinceCode ? "Select city / municipality" : "Select province first"}</option>
+          <SelectField label="City / Municipality *" name="city" value={form.cityCode} onChange={updateCity} disabled={!form.provinceCode}>
+            <option value="">{form.city || (form.provinceCode ? "Select city / municipality" : "Select province first")}</option>
             {cityOptions.map((item) => <option key={item.city_code} value={item.city_code}>{item.city_name}</option>)}
           </SelectField>
-          <SelectField label="Address" name="address" value={form.address} onChange={updateBarangay} disabled={!form.cityCode}>
+          <SelectField label="Address *" name="address" value={form.address} onChange={updateBarangay} disabled={!form.cityCode}>
             <option value="">{form.cityCode ? "Select barangay" : "Select city first"}</option>
+            {form.address && !barangayOptions.some((item) => item.brgy_name === form.address) ? (
+              <option value={form.address}>{form.address}</option>
+            ) : null}
             {barangayOptions.map((item) => <option key={item.brgy_code} value={item.brgy_name}>{item.brgy_name}</option>)}
           </SelectField>
           <TextField
-            label="Zip Code"
+            label="Zip Code *"
             name="zipCode"
             value={form.zipCode}
-            onChange={updateZipCode}
             placeholder="Auto-filled from selected location"
-            inputMode="numeric"
-            maxLength={10}
+            disabled
+            error={errors.zipCode}
+            inputClassName="cursor-not-allowed bg-slate-50 text-slate-600 disabled:text-slate-600"
           />
         </Section>
 
@@ -996,7 +1036,7 @@ export default function CreateEmployee({
             type="email"
             value={form.email}
             onChange={updateField("email")}
-            placeholder="Enter email address"
+            placeholder={emailPlaceholder}
             error={errors.email}
           />
           <TextField
@@ -1014,26 +1054,34 @@ export default function CreateEmployee({
         <Section
           icon={Briefcase}
           title="Employment Information"
-          description="Division and role assignment details."
+          description="Division, position, and any designation on top of it."
         >
-          {roles.length > 0 ? (
-            <SelectField label={`Role${roleRequired ? " *" : ""}`} name="roleId" value={form.roleId} onChange={updateField("roleId")} error={errors.roleId}>
-              <option value="">Select role</option>
-              {roles.map((role) => (
-                <option key={role.id} value={role.id}>
-                  {role.label || role.name}
-                </option>
-              ))}
-            </SelectField>
-          ) : null}
           <SelectField label="Division *" name="divisionId" value={form.divisionId} onChange={updateDivision} error={errors.divisionId}>
             <option value="">Select division</option>
             {divisions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </SelectField>
-          <SelectField label="Designation *" name="designationId" value={form.designationId} onChange={updateField("designationId")} error={errors.designationId} disabled={!form.divisionId}>
-            <option value="">{form.divisionId ? "Select designation" : "Select division first"}</option>
+          <SelectField label="Position *" name="designationId" value={form.designationId} onChange={updateField("designationId")} error={errors.designationId} disabled={!form.divisionId}>
+            <option value="">{form.divisionId ? "Select position" : "Select division first"}</option>
             {filteredDesignations.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </SelectField>
+          <div className="md:col-span-2">
+            <ComboboxField
+              label="Designation"
+              name="designation"
+              value={form.designation ?? ""}
+              onChange={updateDesignation}
+              options={designationSuggestions}
+              preferredGroup={selectedDivisionName}
+              placeholder="Select a designation or type a new one"
+              emptyOptionLabel="No designation"
+              maxLength={DESIGNATION_MAX_LENGTH}
+              error={errors.designation}
+              className={FIELD_FOCUS_CLASS}
+            />
+            <p className="m-0 mt-1.5 text-xs leading-5 text-slate-500">
+              An extra assignment on top of the position. Pick one from the list or type a new one; leave blank if there is none.
+            </p>
+          </div>
         </Section>
 
         <Section
@@ -1042,7 +1090,7 @@ export default function CreateEmployee({
           description="Salary and work status details used for payroll processing."
         >
           <TextField
-            label="Basic Salary"
+            label="Basic Salary *"
             name="basicSalary"
             type="number"
             min="0"
@@ -1051,18 +1099,20 @@ export default function CreateEmployee({
             onChange={updateField("basicSalary")}
             placeholder="Enter basic salary"
           />
-          <SelectField label="Salary Rate" name="salaryRate" value={form.salaryRate} onChange={updateField("salaryRate")} error={errors.salaryRate}>
+          <SelectField label="Salary Rate *" name="salaryRate" value={form.salaryRate} onChange={updateField("salaryRate")} error={errors.salaryRate}>
             <option value="">Select salary rate</option>
             {salaryRates.map((item) => <option key={item} value={item}>{item}</option>)}
           </SelectField>
           <TextField
-            label="Date Hired"
+            label="Date Hired *"
             name="dateHired"
             type="date"
+            max="9999-12-31"
             value={form.dateHired || ""}
-            onChange={updateField("dateHired")}
+            onChange={updateDateHired}
+            error={errors.dateHired}
           />
-          <SelectField label="Employment Status" name="employmentStatus" value={form.employmentStatus} onChange={updateField("employmentStatus")}>
+          <SelectField label="Employment Status *" name="employmentStatus" value={form.employmentStatus} onChange={updateEmploymentStatus}>
             <option value="">Select employment status</option>
             {employmentStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
           </SelectField>
@@ -1073,17 +1123,18 @@ export default function CreateEmployee({
           title="Additional Personal Details"
           description="Supplemental employee profile information."
         >
-          <SelectField label="PWD" name="pwd" value={form.pwd} onChange={updateField("pwd")}>
+          <SelectField label="PWD" name="pwd" value={form.pwd} onChange={updateField("pwd")} className="app-optional-field">
             <option value="0">No</option>
             <option value="1">Yes</option>
           </SelectField>
-          <SelectField label="Civil Status" name="civilStatus" value={form.civilStatus} onChange={updateField("civilStatus")}>
+          <SelectField label="Civil Status *" name="civilStatus" value={form.civilStatus} onChange={updateField("civilStatus")}>
             <option value="">Select civil status</option>
             {civilStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
           </SelectField>
           <TextField
             label="Height"
             name="height"
+            className="app-optional-field"
             type="number"
             min="0"
             step="0.01"
@@ -1094,6 +1145,7 @@ export default function CreateEmployee({
           <TextField
             label="Weight"
             name="weight"
+            className="app-optional-field"
             type="number"
             min="0"
             step="0.01"
@@ -1101,7 +1153,7 @@ export default function CreateEmployee({
             onChange={updateField("weight")}
             placeholder="Select weight"
           />
-          <SelectField label="Blood Type" name="bloodType" value={form.bloodType} onChange={updateField("bloodType")}>
+          <SelectField label="Blood Type" name="bloodType" value={form.bloodType} onChange={updateField("bloodType")} className="app-optional-field">
             <option value="">Select blood type</option>
             {bloodTypes.map((item) => <option key={item} value={item}>{item}</option>)}
           </SelectField>
@@ -1112,11 +1164,15 @@ export default function CreateEmployee({
           title="Government IDs"
           description="Contribution and tax identification numbers."
         >
-          <GovernmentIdField label="GSIS ID No." name="gsisIdNo" value={form.gsisIdNo} onChange={updateGovernmentId("gsisIdNo")} />
+          {isRegularEmploymentStatus(form.employmentStatus) ? (
+            <GovernmentIdField label="GSIS ID No." name="gsisIdNo" value={form.gsisIdNo} onChange={updateGovernmentId("gsisIdNo")} />
+          ) : null}
           <GovernmentIdField label="Pag-IBIG ID No." name="pagibigIdNo" value={form.pagibigIdNo} onChange={updateGovernmentId("pagibigIdNo")} />
           <GovernmentIdField label="PhilHealth ID No." name="philhealthIdNo" value={form.philhealthIdNo} onChange={updateGovernmentId("philhealthIdNo")} />
           <GovernmentIdField label="TIN No." name="tinNo" value={form.tinNo} onChange={updateGovernmentId("tinNo")} />
         </Section>
+
+        {additionalFields}
 
         {showActions ? (
           <div className="flex flex-col-reverse gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:justify-end">

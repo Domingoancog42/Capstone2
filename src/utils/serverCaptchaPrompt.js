@@ -142,11 +142,15 @@ export async function promptServerCaptcha({
     title,
     html: challengeHtml(challenge, message || note, headerHtml),
     input: "text",
+    inputPlaceholder: "Answer",
     inputAttributes: {
       "aria-label": "Answer to the security check",
       autocomplete: "off",
       inputmode: "numeric",
       maxlength: "2",
+    },
+    customClass: {
+      input: "security-check-answer-input",
     },
     // Only what this browser can judge on its own. Whether the number is the RIGHT one is the
     // server's call, and asking it here would mean this file knew the answer.

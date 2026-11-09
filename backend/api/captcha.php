@@ -1,6 +1,11 @@
 <?php
 declare(strict_types=1);
 
+// POST on this endpoint only pre-verifies the anonymous login captcha (see the method branch below).
+if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'POST') {
+    define('HRIS_CSRF_EXEMPT', true);
+}
+
 /*
  * Deals a captcha challenge.
  *
@@ -9,8 +14,8 @@ declare(strict_types=1);
  *
  * The login purpose runs before authentication but still uses the anonymous browser session that
  * holds its challenge. GET deals the image; POST checks a completed one-digit answer for the login
- * field. The POST is CSRF-protected by connection-pdo.php, and both methods count against the general
- * API rate limit.
+ * field. Both methods count against the general API rate limit; the anonymous POST is intentionally
+ * CSRF-exempt so an expired pre-login session cannot block the form before credentials are submitted.
  *
  * Every other purpose guards an action only a signed-in user can reach, so it asks for a session
  * first -- a challenge dealt to nobody is a challenge nobody can spend, and dealing them to anonymous
@@ -92,9 +97,8 @@ if ($purpose !== CAPTCHA_PURPOSE_LOGIN) {
  * already sitting in the session is dropped rather than left to expire on its own. login.php reads
  * the same setting, so the two cannot disagree about whether an answer is expected.
  *
- * The switch is deliberately login-only: the payroll challenge is a deliberateness gate on an
- * irreversible action rather than an anti-robot measure at the door, so it is not something an
- * administrator turns off from the Security tab.
+ * This switch is deliberately login-only: payroll and approval challenges are deliberateness gates
+ * on consequential actions, so the Captcha settings screen cannot turn those checks off.
  */
 if (!login_captcha_enabled($pdo)) {
     captcha_session_reopen();

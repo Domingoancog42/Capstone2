@@ -3,7 +3,7 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import { toast } from "react-hot-toast";
-import { CalendarDays, ExternalLink, Mail, Megaphone, PartyPopper, Phone, Plane, Plus } from "lucide-react";
+import { CalendarClock, CalendarDays, ExternalLink, Mail, Megaphone, PartyPopper, Phone, Plane, Plus } from "lucide-react";
 import Button from "../UI/button";
 import Modal from "../UI/modal";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
@@ -40,6 +40,14 @@ const ACTIVITY_META = {
     text: "#6d28d9",
     icon: Megaphone,
   },
+  event: {
+    label: "Event",
+    color: "#0891b2",
+    bg: "#ecfeff",
+    border: "#a5f3fc",
+    text: "#0e7490",
+    icon: CalendarClock,
+  },
   /*
    * Regular holidays and special days are kept apart rather than sharing one "Holiday" colour: a
    * regular holiday is a paid day off and a special working day is an ordinary day at work, and
@@ -69,14 +77,45 @@ function holidayActivityKey(holiday) {
 }
 
 const emptyAnnouncementForm = {
+  entryType: "announcement",
   title: "",
   startDate: "",
+  startTime: "",
   endDate: "",
+  endTime: "",
+  audience: "all",
+  location: "",
   description: "",
 };
 
+const EVENT_AUDIENCE_OPTIONS = [
+  { value: "all", label: "All Users" },
+  { value: "employees", label: "Employees" },
+  { value: "admin", label: "Administrators" },
+  { value: "hr", label: "HR Head and HR Staff" },
+  { value: "chief", label: "Division Chiefs" },
+  { value: "planningofficer", label: "Planning Officers" },
+  { value: "regionaldirector", label: "Regional Director" },
+  { value: "cashier", label: "Cashiers" },
+];
+
+function openDatePicker(event) {
+  event.currentTarget.showPicker?.();
+}
+
 function firstText(...values) {
   return values.find((value) => String(value || "").trim()) || "";
+}
+
+function formatTimeDisplay(value) {
+  const match = String(value || "").match(/^(\d{2}):(\d{2})/);
+
+  if (!match) {
+    return "N/A";
+  }
+
+  const date = new Date(2000, 0, 1, Number(match[1]), Number(match[2]));
+  return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(date);
 }
 
 function addDays(dateValue, days) {
@@ -150,7 +189,7 @@ function resolveEmployeeForRecord(record, employeeLookup) {
     employeeId: record?.employeeId || matchedEmployee?.employeeId || "",
     fullName: matchedEmployee?.fullName || record?.employeeName || record?.fullName || "",
     employeeName: record?.employeeName || matchedEmployee?.fullName || "",
-    position: matchedEmployee?.position || matchedEmployee?.designation || record?.position || record?.designation || "",
+    position: matchedEmployee?.position || record?.position || "",
     division: matchedEmployee?.department || matchedEmployee?.division || record?.division || "",
     department: matchedEmployee?.department || matchedEmployee?.division || record?.division || "",
     email: matchedEmployee?.email || record?.employeeEmail || record?.email || "",
@@ -236,25 +275,34 @@ function buildEventFromAnnouncement(announcement) {
     return null;
   }
 
-  const meta = ACTIVITY_META.announcement;
+  const entryType = announcement?.entryType === "event" ? "event" : "announcement";
+  const meta = ACTIVITY_META[entryType];
+  const startTime = firstText(announcement?.startTime);
+  const endTime = firstText(announcement?.endTime);
+  const isTimedEvent = entryType === "event" && Boolean(startTime);
 
   return {
     // Prefixed because leave and travel events are keyed the same way and ids must not collide.
-    id: `announcement-${announcement?.id || `${startDate}-${announcement?.title || ""}`}`,
-    title: announcement?.title || "Announcement",
-    start: startDate,
-    end: endDate ? addDays(endDate, 1) : undefined,
-    allDay: true,
+    id: `${entryType}-${announcement?.id || `${startDate}-${announcement?.title || ""}`}`,
+    title: announcement?.title || (entryType === "event" ? "Event" : "Announcement"),
+    start: isTimedEvent ? `${startDate}T${startTime}` : startDate,
+    end: isTimedEvent && endDate && endTime ? `${endDate}T${endTime}` : (endDate ? addDays(endDate, 1) : undefined),
+    allDay: !isTimedEvent,
     backgroundColor: meta.color,
     borderColor: meta.color,
     textColor: "#ffffff",
     extendedProps: {
-      type: "announcement",
+      type: entryType,
       activityLabel: meta.label,
-      activityType: "Announcement",
-      status: "Published",
+      activityType: entryType === "event" ? "Event" : "Announcement",
+      status: entryType === "event" ? "Scheduled" : "Published",
       startDate,
       endDate,
+      startTime,
+      endTime,
+      audience: announcement?.audience || "all",
+      audienceLabel: announcement?.audienceLabel || "All Users",
+      location: announcement?.location || "",
       detail: announcement?.description || "No details added.",
       record: announcement,
       color: meta.color,
@@ -323,11 +371,15 @@ function OfficeEventDetails({ title, props, detailLabel }) {
   const meta = ACTIVITY_META[props.type === "holiday" ? holidayActivityKey(props.record) : props.type]
     || ACTIVITY_META.announcement;
   const Icon = meta.icon;
+  const isEvent = props.type === "event";
   const isSingleDay = !props.endDate || props.endDate === props.startDate;
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border p-4" style={{ borderColor: meta.border, backgroundColor: meta.bg }}>
+      <div
+        className="calendar-activity-tone rounded-2xl border p-4"
+        style={{ "--activity-color": meta.color, borderColor: meta.border, backgroundColor: meta.bg }}
+      >
         <div className="flex items-start gap-3">
           <div
             className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-white"
@@ -338,9 +390,11 @@ function OfficeEventDetails({ title, props, detailLabel }) {
           <div>
             <h3 className="m-0 text-base font-semibold text-slate-950">{title}</h3>
             <p className="m-0 mt-1 text-sm text-slate-600">
-              {isSingleDay
-                ? formatDateDisplay(props.startDate)
-                : `${formatDateDisplay(props.startDate)} - ${formatDateDisplay(props.endDate)}`}
+              {isEvent
+                ? `${formatDateDisplay(props.startDate)}, ${formatTimeDisplay(props.startTime)} - ${isSingleDay ? "" : `${formatDateDisplay(props.endDate)}, `}${formatTimeDisplay(props.endTime)}`
+                : isSingleDay
+                  ? formatDateDisplay(props.startDate)
+                  : `${formatDateDisplay(props.startDate)} - ${formatDateDisplay(props.endDate)}`}
             </p>
           </div>
         </div>
@@ -351,6 +405,10 @@ function OfficeEventDetails({ title, props, detailLabel }) {
         <DetailRow label="Status" value={props.status} />
         <DetailRow label="Start Date" value={formatDateDisplay(props.startDate)} />
         <DetailRow label="End Date" value={formatDateDisplay(props.endDate)} />
+        {isEvent ? <DetailRow label="Start Time" value={formatTimeDisplay(props.startTime)} /> : null}
+        {isEvent ? <DetailRow label="End Time" value={formatTimeDisplay(props.endTime)} /> : null}
+        {isEvent ? <DetailRow label="Audience" value={props.audienceLabel} /> : null}
+        {isEvent ? <DetailRow label="Location" value={props.location} /> : null}
       </dl>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -434,8 +492,10 @@ export default function DashboardLeaveTravelCalendar({
   const selectedEmployee = selectedProps.employee || {};
   const selectedRecord = selectedProps.record || {};
   const avatarUrl = resolveBackendAssetUrl(selectedEmployee.profileImage);
+  const isSelectedPersonEvent = selectedProps.type === "leave" || selectedProps.type === "travel";
   const canViewFullProfile = Boolean(onViewEmployeeProfile && (selectedEmployee.employeeRecordId || selectedEmployee.id));
   const canAddAnnouncement = typeof onSaveAnnouncement === "function";
+  const isEventForm = announcementForm.entryType === "event";
 
   const closeAnnouncementModal = () => {
     setAnnouncementModalOpen(false);
@@ -447,23 +507,38 @@ export default function DashboardLeaveTravelCalendar({
     const nextErrors = {};
 
     if (!announcementForm.title.trim()) {
-      nextErrors.title = "Announcement title is required.";
+      nextErrors.title = `${isEventForm ? "Event" : "Announcement"} title is required.`;
     }
 
     if (!announcementForm.startDate) {
-      nextErrors.startDate = "Start date is required.";
+      nextErrors.startDate = `${isEventForm ? "Event start" : "Announcement"} date is required.`;
     }
 
-    if (!announcementForm.endDate) {
+    if (isEventForm && !announcementForm.startTime) {
+      nextErrors.startTime = "Start time is required.";
+    }
+
+    if (isEventForm && !announcementForm.endDate) {
       nextErrors.endDate = "End date is required.";
     }
 
+    if (isEventForm && !announcementForm.endTime) {
+      nextErrors.endTime = "End time is required.";
+    }
+
     if (
-      announcementForm.startDate
+      isEventForm
+      && announcementForm.startDate
+      && announcementForm.startTime
       && announcementForm.endDate
-      && announcementForm.endDate < announcementForm.startDate
+      && announcementForm.endTime
+      && `${announcementForm.endDate}T${announcementForm.endTime}` <= `${announcementForm.startDate}T${announcementForm.startTime}`
     ) {
-      nextErrors.endDate = "End date must be on or after the start date.";
+      nextErrors.endTime = "Event end must be after its start.";
+    }
+
+    if (isEventForm && !announcementForm.location.trim()) {
+      nextErrors.location = "Event location is required.";
     }
 
     setAnnouncementErrors(nextErrors);
@@ -481,16 +556,21 @@ export default function DashboardLeaveTravelCalendar({
 
     try {
       await onSaveAnnouncement?.({
+        entryType: announcementForm.entryType,
         title: announcementForm.title.trim(),
         startDate: announcementForm.startDate,
-        endDate: announcementForm.endDate,
+        endDate: isEventForm ? announcementForm.endDate : announcementForm.startDate,
+        startTime: isEventForm ? announcementForm.startTime : "",
+        endTime: isEventForm ? announcementForm.endTime : "",
+        audience: isEventForm ? announcementForm.audience : "all",
+        location: isEventForm ? announcementForm.location.trim() : "",
         description: announcementForm.description.trim(),
       });
 
-      toast.success("Announcement published to the calendar.");
+      toast.success(isEventForm ? "Event created on the calendar." : "Announcement published to the calendar.");
       closeAnnouncementModal();
     } catch (error) {
-      const message = error?.response?.data?.message || "Unable to publish the announcement.";
+      const message = error?.response?.data?.message || `Unable to create the ${isEventForm ? "event" : "announcement"}.`;
 
       setAnnouncementErrors({ form: message });
       toast.error(message);
@@ -520,7 +600,7 @@ export default function DashboardLeaveTravelCalendar({
               icon={Plus}
               onClick={() => setAnnouncementModalOpen(true)}
             >
-              Add Announcement
+              Create Event/Announcement
             </Button>
           ) : null}
           {showLegend ? (
@@ -528,8 +608,8 @@ export default function DashboardLeaveTravelCalendar({
               {Object.entries(ACTIVITY_META).map(([key, meta]) => (
                 <span
                   key={key}
-                  className={`inline-flex items-center gap-2 rounded-full border font-semibold ${compact ? "px-2 py-0.5 text-[10px]" : "px-3 py-1 text-xs"}`}
-                  style={{ borderColor: meta.border, backgroundColor: meta.bg, color: meta.text }}
+                  className={`calendar-activity-tone inline-flex items-center gap-2 rounded-full border font-semibold ${compact ? "px-2 py-0.5 text-[10px]" : "px-3 py-1 text-xs"}`}
+                  style={{ "--activity-color": meta.color, borderColor: meta.border, backgroundColor: meta.bg, color: meta.text }}
                 >
                   <span className={`${compact ? "h-2 w-2" : "h-2.5 w-2.5"} rounded-full`} style={{ backgroundColor: meta.color }} />
                   {meta.label}
@@ -583,30 +663,32 @@ export default function DashboardLeaveTravelCalendar({
             <Button variant="ghost" onClick={() => setSelectedEvent(null)}>
               Close
             </Button>
-            <Button
-              variant="primary"
-              icon={ExternalLink}
-              disabled={!canViewFullProfile}
-              onClick={() => {
-                if (!canViewFullProfile) {
-                  return;
-                }
+            {isSelectedPersonEvent ? (
+              <Button
+                variant="primary"
+                icon={ExternalLink}
+                disabled={!canViewFullProfile}
+                onClick={() => {
+                  if (!canViewFullProfile) {
+                    return;
+                  }
 
-                setSelectedEvent(null);
-                onViewEmployeeProfile(selectedEmployee);
-              }}
-            >
-              View Full Profile
-            </Button>
+                  setSelectedEvent(null);
+                  onViewEmployeeProfile(selectedEmployee);
+                }}
+              >
+                View Full Profile
+              </Button>
+            ) : null}
           </>
         )}
       >
         {selectedEvent ? (
-          selectedProps.type === "announcement" || selectedProps.type === "holiday" ? (
+          ["announcement", "event", "holiday"].includes(selectedProps.type) ? (
             <OfficeEventDetails
               title={selectedEvent.title}
               props={selectedProps}
-              detailLabel={selectedProps.type === "holiday" ? "Holiday Details" : "Announcement Details"}
+              detailLabel={selectedProps.type === "holiday" ? "Holiday Details" : selectedProps.type === "event" ? "Event Details" : "Announcement Details"}
             />
           ) : (
             <div className="space-y-5">
@@ -628,8 +710,9 @@ export default function DashboardLeaveTravelCalendar({
                 </h3>
                 <p className="m-0 mt-1 text-sm text-slate-500">{selectedEmployee.position || "Position unavailable"}</p>
                 <span
-                  className="mt-3 inline-flex rounded-full border px-3 py-1 text-xs font-semibold"
+                  className="calendar-activity-tone mt-3 inline-flex rounded-full border px-3 py-1 text-xs font-semibold"
                   style={{
+                    "--activity-color": ACTIVITY_META[selectedProps.type]?.color,
                     borderColor: ACTIVITY_META[selectedProps.type]?.border,
                     backgroundColor: ACTIVITY_META[selectedProps.type]?.bg,
                     color: ACTIVITY_META[selectedProps.type]?.text,
@@ -713,16 +796,13 @@ export default function DashboardLeaveTravelCalendar({
 
       <Modal
         open={announcementModalOpen}
-        title="Add Announcement"
-        maxWidth="max-w-[620px]"
+        title="Create Event/Announcement"
+        maxWidth="max-w-[760px]"
         onClose={closeAnnouncementModal}
         footer={(
           <>
-            <Button variant="ghost" disabled={announcementSaving} onClick={closeAnnouncementModal}>
-              Cancel
-            </Button>
-            <Button icon={Megaphone} loading={announcementSaving} onClick={handleAnnouncementSubmit}>
-              {announcementSaving ? "Publishing..." : "Publish Announcement"}
+            <Button icon={isEventForm ? CalendarClock : Megaphone} loading={announcementSaving} onClick={handleAnnouncementSubmit}>
+              {announcementSaving ? "Saving..." : isEventForm ? "Create Event" : "Publish Announcement"}
             </Button>
           </>
         )}
@@ -735,8 +815,26 @@ export default function DashboardLeaveTravelCalendar({
           ) : null}
 
           <div className="space-y-2">
+            <label htmlFor="calendarEntryType" className="text-sm font-semibold text-slate-700">
+              Create Type
+            </label>
+            <select
+              id="calendarEntryType"
+              value={announcementForm.entryType}
+              onChange={(event) => {
+                setAnnouncementForm((current) => ({ ...current, entryType: event.target.value }));
+                setAnnouncementErrors({});
+              }}
+              className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+            >
+              <option value="announcement">Announcement</option>
+              <option value="event">Event</option>
+            </select>
+          </div>
+
+          <div className="space-y-2">
             <label htmlFor="calendarAnnouncementTitle" className="text-sm font-semibold text-slate-700">
-              Announcement Title
+              {isEventForm ? "Event Title" : "Announcement Title"}
             </label>
             <input
               id="calendarAnnouncementTitle"
@@ -746,46 +844,117 @@ export default function DashboardLeaveTravelCalendar({
                 setAnnouncementErrors((current) => ({ ...current, title: "" }));
               }}
               className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
-              placeholder="Enter announcement title"
+              placeholder={isEventForm ? "Enter event title" : "Enter announcement title"}
             />
             {announcementErrors.title ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.title}</p> : null}
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
+          {!isEventForm ? <div className="space-y-2">
               <label htmlFor="calendarAnnouncementStart" className="text-sm font-semibold text-slate-700">
-                Start Date
+                Select Date
               </label>
               <input
                 id="calendarAnnouncementStart"
                 type="date"
                 value={announcementForm.startDate}
+                onClick={openDatePicker}
                 onChange={(event) => {
                   setAnnouncementForm((current) => ({ ...current, startDate: event.target.value }));
                   setAnnouncementErrors((current) => ({ ...current, startDate: "" }));
                 }}
-                className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                className="min-h-[42px] w-full cursor-pointer rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               />
               {announcementErrors.startDate ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.startDate}</p> : null}
-            </div>
+          </div> : (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="m-0 text-sm font-bold text-slate-700">Start</p>
+                <input
+                  aria-label="Event start date"
+                  type="date"
+                  value={announcementForm.startDate}
+                  onClick={openDatePicker}
+                  onChange={(event) => {
+                    setAnnouncementForm((current) => ({ ...current, startDate: event.target.value }));
+                    setAnnouncementErrors((current) => ({ ...current, startDate: "", endTime: "" }));
+                  }}
+                  className="min-h-[42px] w-full cursor-pointer rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                />
+                <input
+                  aria-label="Event start time"
+                  type="time"
+                  value={announcementForm.startTime}
+                  onChange={(event) => {
+                    setAnnouncementForm((current) => ({ ...current, startTime: event.target.value }));
+                    setAnnouncementErrors((current) => ({ ...current, startTime: "", endTime: "" }));
+                  }}
+                  className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                />
+                {announcementErrors.startDate ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.startDate}</p> : null}
+                {announcementErrors.startTime ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.startTime}</p> : null}
+              </div>
 
-            <div className="space-y-2">
-              <label htmlFor="calendarAnnouncementEnd" className="text-sm font-semibold text-slate-700">
-                End Date
-              </label>
-              <input
-                id="calendarAnnouncementEnd"
-                type="date"
-                value={announcementForm.endDate}
-                onChange={(event) => {
-                  setAnnouncementForm((current) => ({ ...current, endDate: event.target.value }));
-                  setAnnouncementErrors((current) => ({ ...current, endDate: "" }));
-                }}
-                className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
-              />
-              {announcementErrors.endDate ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.endDate}</p> : null}
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="m-0 text-sm font-bold text-slate-700">End</p>
+                <input
+                  aria-label="Event end date"
+                  type="date"
+                  min={announcementForm.startDate || undefined}
+                  value={announcementForm.endDate}
+                  onClick={openDatePicker}
+                  onChange={(event) => {
+                    setAnnouncementForm((current) => ({ ...current, endDate: event.target.value }));
+                    setAnnouncementErrors((current) => ({ ...current, endDate: "", endTime: "" }));
+                  }}
+                  className="min-h-[42px] w-full cursor-pointer rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                />
+                <input
+                  aria-label="Event end time"
+                  type="time"
+                  value={announcementForm.endTime}
+                  onChange={(event) => {
+                    setAnnouncementForm((current) => ({ ...current, endTime: event.target.value }));
+                    setAnnouncementErrors((current) => ({ ...current, endTime: "" }));
+                  }}
+                  className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                />
+                {announcementErrors.endDate ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.endDate}</p> : null}
+                {announcementErrors.endTime ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.endTime}</p> : null}
+              </div>
             </div>
-          </div>
+          )}
+
+          {isEventForm ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="calendarEventAudience" className="text-sm font-semibold text-slate-700">Audience</label>
+                <select
+                  id="calendarEventAudience"
+                  value={announcementForm.audience}
+                  onChange={(event) => setAnnouncementForm((current) => ({ ...current, audience: event.target.value }))}
+                  className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                >
+                  {EVENT_AUDIENCE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="calendarEventLocation" className="text-sm font-semibold text-slate-700">Location</label>
+                <input
+                  id="calendarEventLocation"
+                  value={announcementForm.location}
+                  maxLength={255}
+                  onChange={(event) => {
+                    setAnnouncementForm((current) => ({ ...current, location: event.target.value }));
+                    setAnnouncementErrors((current) => ({ ...current, location: "" }));
+                  }}
+                  className="min-h-[42px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
+                  placeholder="e.g. Conference Room, Regional Office"
+                />
+                {announcementErrors.location ? <p className="m-0 text-xs font-semibold text-rose-600">{announcementErrors.location}</p> : null}
+              </div>
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             <label htmlFor="calendarAnnouncementDescription" className="text-sm font-semibold text-slate-700">
@@ -797,7 +966,7 @@ export default function DashboardLeaveTravelCalendar({
               value={announcementForm.description}
               onChange={(event) => setAnnouncementForm((current) => ({ ...current, description: event.target.value }))}
               className="w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
-              placeholder="Share announcement details for employees"
+              placeholder={isEventForm ? "Add the event agenda or other important details" : "Share announcement details for employees"}
             />
           </div>
         </div>

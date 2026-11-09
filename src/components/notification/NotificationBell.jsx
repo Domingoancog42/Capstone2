@@ -9,7 +9,6 @@ import {
   Eye,
   Inbox,
   Loader2,
-  Printer,
   ShieldAlert,
   ShieldCheck,
   X,
@@ -17,6 +16,7 @@ import {
   Search,
 } from "lucide-react";
 import Button from "../UI/button";
+import ActionsMenu from "../UI/ActionsMenu";
 import Modal from "../UI/modal";
 import NotificationBadge from "../UI/NotificationBadge";
 import NotificationTypeChip from "./NotificationTypeChip";
@@ -28,7 +28,6 @@ import {
   formatNotificationRelativeTime,
   getNotificationRoute,
   getNotificationTypeLabel,
-  getNotificationsCenterPath,
   getNotificationDateGroupLabel,
   isSecurityNotificationType,
   markAllNotificationsRead,
@@ -45,11 +44,6 @@ import {
   fetchAccessRequest,
   grantAccessRequest,
 } from "../../services/accessRequestService";
-import {
-  approveServiceRecordPrint,
-  fetchServiceRecordPrintRequest,
-  SERVICE_RECORD_PRINT_REQUEST_NOTIFICATION_TYPE,
-} from "../../services/serviceRecordPrintService";
 import {
   approveProfileEditRequest,
   declineProfileEditRequest,
@@ -116,7 +110,6 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
    * elsewhere on the row: the unread dot and the tinted background still mark what is unread.
    */
   const showNotificationMeta = roleKey === "admin";
-  const centerPath = getNotificationsCenterPath(roleKey);
   const rootRef = useRef(null);
   const mountedRef = useRef(false);
   const selectAllRef = useRef(null);
@@ -149,9 +142,6 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
   const [accessRequest, setAccessRequest] = useState(null);
   const [grantBusy, setGrantBusy] = useState(false);
   const [grantMessage, setGrantMessage] = useState("");
-  const [printRequest, setPrintRequest] = useState(null);
-  const [printApproveBusy, setPrintApproveBusy] = useState(false);
-  const [printApproveMessage, setPrintApproveMessage] = useState("");
   const [editRequest, setEditRequest] = useState(null);
   const [editDecisionBusy, setEditDecisionBusy] = useState("");
   const [editDecisionMessage, setEditDecisionMessage] = useState("");
@@ -578,52 +568,13 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
     };
   }, [detailNotification?.referenceId, detailOpen, isAccessRequest]);
 
-  /*
-   * Service record print requests, re-read on open for the same reason access requests are: the
-   * other approver may have granted it already, and the button must not offer to approve twice.
-   */
-  const isPrintRequest =
-    (roleKey === "admin" || roleKey === "hrhead")
-    && normalizeNotificationType(detailNotification?.type) === SERVICE_RECORD_PRINT_REQUEST_NOTIFICATION_TYPE;
-
-  useEffect(() => {
-    if (!detailOpen || !isPrintRequest) {
-      setPrintRequest(null);
-      setPrintApproveMessage("");
-      return undefined;
-    }
-
-    let active = true;
-    const requestId = Number(detailNotification?.referenceId);
-
-    if (!requestId) {
-      return undefined;
-    }
-
-    fetchServiceRecordPrintRequest(requestId)
-      .then((request) => {
-        if (active) {
-          setPrintRequest(request);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setPrintRequest(null);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [detailNotification?.referenceId, detailOpen, isPrintRequest]);
-
-  /*
-   * Personal details edit requests, re-read on open for the same reason the two above are: the
-   * other approver may have decided it already, and the buttons must not offer to decide twice.
-   */
   const isEditRequest =
     (roleKey === "admin" || roleKey === "hrhead")
     && normalizeNotificationType(detailNotification?.type) === PROFILE_EDIT_REQUEST_NOTIFICATION_TYPE;
+  const isOwnEditRequest = Boolean(
+    editRequest?.requestedByUserId
+    && Number(editRequest.requestedByUserId) === Number(user?.id)
+  );
 
   useEffect(() => {
     if (!detailOpen || !isEditRequest) {
@@ -679,31 +630,6 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
     } finally {
       if (mountedRef.current) {
         setEditDecisionBusy("");
-      }
-    }
-  };
-
-  const handleApprovePrint = async () => {
-    if (!printRequest?.id || printApproveBusy) {
-      return;
-    }
-
-    setPrintApproveBusy(true);
-    setPrintApproveMessage("");
-
-    try {
-      const result = await approveServiceRecordPrint(printRequest.id);
-
-      setPrintRequest(result.request);
-      setPrintApproveMessage(result.message || "Print request approved.");
-      await loadNotifications({ silent: true });
-    } catch (approveError) {
-      setPrintApproveMessage(
-        approveError?.response?.data?.message || "Unable to approve the print request. Please try again."
-      );
-    } finally {
-      if (mountedRef.current) {
-        setPrintApproveBusy(false);
       }
     }
   };
@@ -818,7 +744,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
             className="notification-bell-panel absolute right-0 top-[calc(100%+10px)] z-50 w-[350px] max-w-[calc(100vw-1rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_64px_rgba(15,23,42,0.18)]"
           >
-            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-3.5 py-3">
+            <div className="notification-bell-header flex items-start justify-between gap-3 border-b border-slate-200 px-3.5 py-3">
               <div>
                 <p className="m-0 text-xs font-semibold uppercase tracking-[0.16em] text-[#D61E1E]">
                   Notifications
@@ -842,7 +768,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
               </Button>
             </div>
 
-            <div className="max-h-[28rem] overflow-y-auto">
+            <div className="notification-bell-list max-h-[28rem] overflow-y-auto overscroll-contain">
               {error ? (
                 <div className="border-b border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                   {error}
@@ -886,13 +812,18 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                         void handleOpenNotification(notification);
                       }
                     }}
-                    className={`border-b border-slate-100 px-4 py-4 text-left transition hover:bg-slate-50 ${
+                    aria-busy={isBusy || undefined}
+                    className={`border-b border-slate-100 px-4 py-3 text-left transition hover:bg-slate-50 ${
                       notification.isRead ? "bg-white" : "bg-[#fff7f7]"
                     }`}
                   >
+                    {/*
+                      * Compact rows: the row is the action -- clicking it opens the details and
+                      * marks it read -- so it carries just the title, a short snippet and the time.
+                      */}
                     <div className="flex items-start gap-3">
                       <span
-                        className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${
+                        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
                           notification.isRead ? "bg-slate-300" : "bg-emerald-500"
                         }`}
                       />
@@ -910,7 +841,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                                 <NotificationStatusChip isRead={notification.isRead} />
                               </div>
                             ) : null}
-                            <p className={`text-sm font-semibold leading-5 text-slate-950 ${showNotificationMeta ? "mt-2" : ""}`.trim()}>
+                            <p className={`truncate text-[13px] font-semibold leading-5 text-slate-950 ${showNotificationMeta ? "mt-1.5" : ""}`.trim()}>
                               {notification.title || "Notification"}
                             </p>
                           </div>
@@ -920,39 +851,9 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                           </span>
                         </div>
 
-                        <p className="mt-2 text-sm leading-6 text-slate-600">
-                          {buildNotificationSnippet(notification.message)}
+                        <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-slate-500">
+                          {buildNotificationSnippet(notification.message, 80)}
                         </p>
-
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            icon={Eye}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void handleOpenNotification(notification);
-                            }}
-                            disabled={isBusy}
-                            className={VIEW_BUTTON_CLASS}
-                          >
-                            View
-                          </Button>
-
-                          <Button
-                            type="button"
-                            size="sm"
-                            icon={BeatCheckIcon}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void markNotificationReadOnly(notification);
-                            }}
-                            disabled={isBusy || notification.isRead}
-                            className={MARK_READ_BUTTON_CLASS}
-                          >
-                            Mark as Read
-                          </Button>
-                        </div>
                       </div>
                     </div>
                   </div>
@@ -960,7 +861,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
               })}
             </div>
 
-            <div className="border-t border-slate-200 p-4">
+            <div className="notification-bell-footer border-t border-slate-200 p-4">
               <Button
                 type="button"
                 fullWidth
@@ -977,6 +878,8 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
 
       <Modal
         open={detailOpen}
+        portal
+        containerClassName="notification-bell"
         title={detailNotification?.title || "Notification Details"}
         maxWidth="max-w-[680px]"
         onClose={() => {
@@ -1000,24 +903,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                     : `Grant Access to ${accessRequest.moduleLabel}`}
               </Button>
             ) : null}
-            {isPrintRequest && printRequest ? (
-              <Button
-                type="button"
-                variant="primary"
-                icon={Printer}
-                onClick={handleApprovePrint}
-                disabled={printApproveBusy || printRequest.status !== "pending"}
-              >
-                {printRequest.status === "approved"
-                  ? "Print Approved"
-                  : printRequest.status === "used"
-                    ? "Copy Already Printed"
-                    : printApproveBusy
-                      ? "Approving..."
-                      : "Approve Print Request"}
-              </Button>
-            ) : null}
-            {isEditRequest && editRequest ? (
+            {isEditRequest && editRequest && !isOwnEditRequest ? (
               <>
                 <Button
                   type="button"
@@ -1030,18 +916,19 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                 <Button
                   type="button"
                   variant="primary"
+                  icon={ShieldCheck}
                   onClick={() => decideEditRequest(true)}
                   disabled={Boolean(editDecisionBusy) || editRequest.status !== "pending"}
                 >
                   {editRequest.status === "approved"
-                    ? "Edit Unlocked"
+                    ? "Edit Approved"
                     : editRequest.status === "declined"
                       ? "Declined"
                       : editRequest.status === "used"
-                        ? "Correction Saved"
+                        ? "Changes Saved"
                         : editDecisionBusy === "approve"
-                          ? "Unlocking..."
-                          : "Unlock Editing"}
+                          ? "Approving..."
+                          : "Approve Edit Request"}
                 </Button>
               </>
             ) : null}
@@ -1146,47 +1033,9 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
               </div>
             ) : null}
 
-            {isPrintRequest && printRequest ? (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
-                <p className="m-0 text-sm font-semibold text-amber-900">Service record print request</p>
-                <dl className="mt-2 grid gap-2 sm:grid-cols-2">
-                  <div>
-                    <dt className="text-xs font-semibold uppercase tracking-wide text-amber-700">Requested by</dt>
-                    <dd className="m-0 mt-0.5 text-sm text-amber-900">
-                      {printRequest.requesterName}
-                      {printRequest.employeeCode ? ` (${printRequest.employeeCode})` : ""}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs font-semibold uppercase tracking-wide text-amber-700">Designation</dt>
-                    <dd className="m-0 mt-0.5 text-sm text-amber-900">
-                      {printRequest.designationTitle || "Not recorded"}
-                    </dd>
-                  </div>
-                </dl>
-                <p className="m-0 mt-3 text-sm text-amber-800">
-                  Approving releases one certified copy of CS Form No. 1, issued in your name. A
-                  further copy needs a further request.
-                </p>
-                {printRequest.status === "approved" ? (
-                  <p className="m-0 mt-2 text-sm font-semibold text-emerald-700">
-                    Approved — waiting for the employee to print.
-                  </p>
-                ) : null}
-                {printRequest.status === "used" ? (
-                  <p className="m-0 mt-2 text-sm font-semibold text-slate-700">
-                    The approved copy has already been printed.
-                  </p>
-                ) : null}
-                {printApproveMessage ? (
-                  <p className="m-0 mt-2 text-sm text-amber-800">{printApproveMessage}</p>
-                ) : null}
-              </div>
-            ) : null}
-
             {isEditRequest && editRequest ? (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
-                <p className="m-0 text-sm font-semibold text-amber-900">Personal details edit request</p>
+                <p className="m-0 text-sm font-semibold text-amber-900">Personal Details edit request</p>
                 <dl className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div>
                     <dt className="text-xs font-semibold uppercase tracking-wide text-amber-700">Requested by</dt>
@@ -1196,25 +1045,19 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-semibold uppercase tracking-wide text-amber-700">Designation</dt>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-amber-700">Position</dt>
                     <dd className="m-0 mt-0.5 text-sm text-amber-900">
                       {editRequest.designationTitle || "Not recorded"}
                     </dd>
                   </div>
-                  <div className="sm:col-span-2">
-                    <dt className="text-xs font-semibold uppercase tracking-wide text-amber-700">Reason given</dt>
-                    <dd className="m-0 mt-0.5 whitespace-pre-line text-sm text-amber-900">
-                      {editRequest.reason || "No reason recorded."}
-                    </dd>
-                  </div>
                 </dl>
                 <p className="m-0 mt-3 text-sm text-amber-800">
-                  Unlocking lets them save one correction to their personal details. A further change
-                  needs a further request.
+                  Approval unlocks Personal Details for one successful save. A later correction
+                  requires another request.
                 </p>
                 {editRequest.status === "approved" ? (
                   <p className="m-0 mt-2 text-sm font-semibold text-emerald-700">
-                    Unlocked — waiting for the employee to save.
+                    Approved — waiting for the employee to save.
                   </p>
                 ) : null}
                 {editRequest.status === "declined" ? (
@@ -1224,7 +1067,12 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                 ) : null}
                 {editRequest.status === "used" ? (
                   <p className="m-0 mt-2 text-sm font-semibold text-slate-700">
-                    The correction has already been saved.
+                    The approved correction has been saved.
+                  </p>
+                ) : null}
+                {isOwnEditRequest && editRequest.status === "pending" ? (
+                  <p className="m-0 mt-2 text-sm font-semibold text-amber-800">
+                    Another Admin or HR Head must decide your request.
                   </p>
                 ) : null}
                 {editDecisionMessage ? (
@@ -1247,6 +1095,8 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
 
       <Modal
         open={viewAllOpen}
+        portal
+        containerClassName="notification-bell"
         title="All Notifications"
         maxWidth="max-w-[1200px]"
         onClose={() => {
@@ -1395,7 +1245,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                 onChange={handlePerPageChange}
                 className="h-9 w-full appearance-none rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
               >
-                {[10, 20, 50].map((option) => (
+                {[10, 20, 50, 100, 200].map((option) => (
                   <option key={option} value={option}>
                     {option}
                   </option>
@@ -1512,7 +1362,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                     },
                     { label: "Message", value: buildNotificationSnippet(notification.message), full: true },
                   ],
-                  actions: renderNotificationActions(notification, isBusy),
+                  actions: <ActionsMenu>{renderNotificationActions(notification, isBusy)}</ActionsMenu>,
                 };
               }}
             />
@@ -1619,9 +1469,7 @@ export default function NotificationBell({ user, onNavigate, onOpen }) {
                             <NotificationStatusChip isRead={notification.isRead} />
                           </td>
                           <td className="border-b border-slate-200 px-4 py-4 align-top">
-                            <div className="flex flex-wrap gap-2">
-                              {renderNotificationActions(notification, isBusy)}
-                            </div>
+                            <ActionsMenu>{renderNotificationActions(notification, isBusy)}</ActionsMenu>
                           </td>
                         </tr>
                       );

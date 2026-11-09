@@ -17,7 +17,10 @@ import {
   requestPasswordChangeCode,
   resendPasswordChangeCode,
 } from "../../../services/api";
-import { getPasswordPolicyItems } from "../../../utils/passwordPolicy";
+import {
+  getPasswordPolicyItems,
+  PASSWORD_POLICY_DEFAULT_MAX_LENGTH,
+} from "../../../utils/passwordPolicy";
 import { formatDateTime, formatTimer } from "../../../utils/format";
 import { getResponseMessage } from "../../../utils/apiResponse";
 import ProfileSectionCard from "../ProfileSectionCard";
@@ -45,6 +48,7 @@ function PasswordInput({
   placeholder,
   invalid = false,
   disabled = false,
+  maxLength,
 }) {
   const [revealed, setRevealed] = useState(false);
 
@@ -66,6 +70,7 @@ function PasswordInput({
           autoComplete={autoComplete}
           placeholder={placeholder}
           disabled={disabled}
+          maxLength={maxLength}
           aria-invalid={invalid}
           className="w-full rounded-lg bg-transparent py-2.5 pl-3 pr-11 text-slate-900 outline-none transition placeholder:text-slate-400 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
         />
@@ -115,6 +120,8 @@ export default function PasswordChangeSection({ variant = "card" }) {
   }, [loadStatus]);
 
   const pending = status?.pending || null;
+  const maximumPasswordLength =
+    Number(status?.maximumPasswordLength) || PASSWORD_POLICY_DEFAULT_MAX_LENGTH;
 
   useEffect(() => {
     setExpiresInSeconds(Number(pending?.expiresInSeconds || 0));
@@ -146,8 +153,8 @@ export default function PasswordChangeSection({ variant = "card" }) {
   }, [resendAvailableInSeconds]);
 
   const policyItems = useMemo(
-    () => getPasswordPolicyItems(form.newPassword),
-    [form.newPassword]
+    () => getPasswordPolicyItems(form.newPassword, { maximumPasswordLength }),
+    [form.newPassword, maximumPasswordLength]
   );
   const policySatisfied = policyItems.every((item) => item.satisfied);
   const passwordsMatch = form.newPassword !== "" && form.newPassword === form.confirmPassword;
@@ -316,6 +323,7 @@ export default function PasswordChangeSection({ variant = "card" }) {
               autoComplete="new-password"
               placeholder="Enter new password"
               disabled={lockedForSeconds > 0}
+              maxLength={maximumPasswordLength}
             />
             <PasswordInput
               id="passwordChangeConfirm"
@@ -326,6 +334,7 @@ export default function PasswordChangeSection({ variant = "card" }) {
               placeholder="Re-enter new password"
               invalid={form.confirmPassword !== "" && !passwordsMatch}
               disabled={lockedForSeconds > 0}
+              maxLength={maximumPasswordLength}
             />
           </div>
 

@@ -164,6 +164,86 @@ export function yearsUntilRetirement(age) {
 }
 
 /**
+ * Step increment for length of service: one step up for every three full years at the same salary
+ * grade and step, to the top of the schedule at Step 8. The count runs only while the employee is
+ * still serving; a resignation or retirement stops it where it stands.
+ */
+export const STEP_INCREMENT_YEARS = 3;
+export const HIGHEST_SALARY_STEP = 8;
+
+/* Engagements that are not on the salary schedule, so there are no steps to move up. */
+const STEPLESS_EMPLOYMENT_STATUSES = new Set(["contract of service", "job order"]);
+
+export function isSteplessEmploymentStatus(value) {
+  return STEPLESS_EMPLOYMENT_STATUSES.has(normalizeEmployeeStatus(value));
+}
+
+function addYears(date, years) {
+  return new Date(date.getFullYear() + years, date.getMonth(), date.getDate());
+}
+
+/**
+ * Where an employee stands on the step schedule today.
+ *
+ * The count starts from the step on their service record and the date it took effect; with no step
+ * on record, from Step 1 on the date hired. Returns null when there is nothing to count: a Contract
+ * of Service, or a separated employee whose last step is not on record.
+ *
+ * - `step` is the step held today. It runs ahead of `recordedStep` when an increment fell due on
+ *   `dueSince` but has not been entered on the service record yet.
+ * - `nextStep` and `nextStepDate` are the next increment, or null at Step 8 or once separated.
+ * - Dates are "YYYY-MM-DD", like the API's.
+ */
+export function resolveServiceStep({
+  recordedStep = null,
+  stepSince = null,
+  dateHired = null,
+  employmentStatus = "",
+  separated = false,
+  today = new Date(),
+}) {
+  if (isSteplessEmploymentStatus(employmentStatus)) {
+    return null;
+  }
+
+  const onRecord = Number.isInteger(recordedStep) && recordedStep >= 1 && recordedStep <= HIGHEST_SALARY_STEP;
+  const startStep = onRecord ? recordedStep : 1;
+  const since = parseDateOnly(onRecord ? stepSince : dateHired);
+
+  if (!since || (separated && !onRecord)) {
+    return null;
+  }
+
+  if (separated) {
+    return {
+      step: startStep,
+      recordedStep: startStep,
+      since: todayAsDateInput(since),
+      dueSince: null,
+      nextStep: null,
+      nextStepDate: null,
+      stopped: true,
+    };
+  }
+
+  const served = yearsAndMonthsSince(since, today);
+  const earned = served ? Math.floor(served.years / STEP_INCREMENT_YEARS) : 0;
+  const step = Math.min(HIGHEST_SALARY_STEP, startStep + earned);
+  const gained = step - startStep;
+  const nextStep = step < HIGHEST_SALARY_STEP ? step + 1 : null;
+
+  return {
+    step,
+    recordedStep: onRecord ? recordedStep : null,
+    since: todayAsDateInput(since),
+    dueSince: onRecord && gained > 0 ? todayAsDateInput(addYears(since, gained * STEP_INCREMENT_YEARS)) : null,
+    nextStep,
+    nextStepDate: nextStep ? todayAsDateInput(addYears(since, (gained + 1) * STEP_INCREMENT_YEARS)) : null,
+    stopped: false,
+  };
+}
+
+/**
  * The two ways an employee leaves. `key` is what the API expects as `separationType`; `status` is
  * what `employees.status` ends up holding, and must stay in step with EMPLOYEE_SEPARATION_TYPES in
  * backend/api/employee.php.

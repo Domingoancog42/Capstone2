@@ -6,6 +6,7 @@ require_once __DIR__ . '/connection-pdo.php';
 $sessionUser = require_session_user();
 require_method('POST');
 ensure_employee_suffix_column($pdo);
+ensure_employee_pds_photo_column($pdo);
 
 function employee_profile_int(mixed $value): int
 {
@@ -40,12 +41,14 @@ function fetch_employee_profile_record(PDO $pdo, int $id): ?array
             d.name AS department,
             e.designation_id AS designationId,
             des.name AS position,
+            e.designation,
             e.basic_salary AS basicSalary,
             e.salary_rate AS salaryRate,
             e.date_hired AS dateHired,
             e.status,
             e.employment_status AS employmentStatus,
             e.profile_image AS profileImage,
+            e.include_profile_image_in_pds AS includeProfileImageInPds,
             CAST(e.pwd AS CHAR) AS pwd,
             e.civil_status AS civilStatus,
             e.height,
@@ -56,8 +59,8 @@ function fetch_employee_profile_record(PDO $pdo, int $id): ?array
             e.emp_philhealth_id_no AS philhealthIdNo,
             e.tin_no AS tinNo
          FROM employees e
-         INNER JOIN divisions d ON d.id = e.division_id
-         INNER JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE e.id = :id
            AND e.is_archived = 0
          LIMIT 1'
@@ -170,28 +173,36 @@ if ($existingEmployee === null) {
 
 $currentProfileImage = employee_profile_text($existingEmployee['profileImage'] ?? '');
 $nextProfileImage = $currentProfileImage;
+$includeProfileImageInPds = (int)($existingEmployee['includeProfileImageInPds'] ?? 1);
+$hasPdsPreference = array_key_exists('includeProfileImageInPds', $_POST);
+if ($hasPdsPreference) {
+    if (!in_array($_POST['includeProfileImageInPds'], ['0', '1'], true)) {
+        json_response(['success' => false, 'message' => 'Choose whether to include your profile picture in your PDS.'], 422);
+    }
+    $includeProfileImageInPds = (int)$_POST['includeProfileImageInPds'];
+}
 
 try {
     if ($remove) {
         $nextProfileImage = null;
-    } else {
-        if (!isset($_FILES['profileImage']) || !is_array($_FILES['profileImage'])) {
-            json_response([
-                'success' => false,
-                'message' => 'Profile picture file is required.',
-            ], 422);
-        }
-
+    } elseif (isset($_FILES['profileImage']) && is_array($_FILES['profileImage'])) {
         $nextProfileImage = store_profile_image($_FILES['profileImage']);
+    } elseif (!$hasPdsPreference) {
+        json_response([
+            'success' => false,
+            'message' => 'Profile picture file is required.',
+        ], 422);
     }
 
     $statement = $pdo->prepare(
         'UPDATE employees
-         SET profile_image = :profile_image
+         SET profile_image = :profile_image,
+             include_profile_image_in_pds = :include_profile_image_in_pds
          WHERE id = :id
            AND is_archived = 0'
     );
     $statement->bindValue(':profile_image', $nextProfileImage !== null ? $nextProfileImage : null, $nextProfileImage !== null ? PDO::PARAM_STR : PDO::PARAM_NULL);
+    $statement->bindValue(':include_profile_image_in_pds', $includeProfileImageInPds, PDO::PARAM_INT);
     $statement->bindValue(':id', $employeeId, PDO::PARAM_INT);
     $statement->execute();
 

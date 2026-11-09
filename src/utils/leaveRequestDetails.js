@@ -8,6 +8,7 @@ export const DEFAULT_LEAVE_REQUEST_DETAILS = {
   sickLeaveMode: "",
   sickLeaveIllness: "",
   studyLeavePurpose: "",
+  maternityMonth: "",
 };
 
 function normalizeText(value) {
@@ -29,6 +30,9 @@ function sanitizeLeaveRequestDetails(details = {}) {
   const normalizedStudyLeavePurpose = ["masters", "bar_review"].includes(next.studyLeavePurpose)
     ? next.studyLeavePurpose
     : "";
+  const normalizedMaternityMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(next.maternityMonth || ""))
+    ? String(next.maternityMonth)
+    : "";
 
   return {
     vacationScope: normalizedVacationScope,
@@ -36,6 +40,7 @@ function sanitizeLeaveRequestDetails(details = {}) {
     sickLeaveMode: normalizedSickLeaveMode,
     sickLeaveIllness: normalizedSickLeaveMode ? normalizeText(next.sickLeaveIllness) : "",
     studyLeavePurpose: normalizedStudyLeavePurpose,
+    maternityMonth: normalizedMaternityMonth,
     /* The picked days and their AM/PM halves; the shared model lives in dateSelection.js. */
     leaveDays: sanitizeSelectedDates(next.leaveDays),
   };
@@ -48,6 +53,7 @@ function hasStructuredLeaveDetails(details = {}) {
     || details.sickLeaveMode
     || details.sickLeaveIllness
     || details.studyLeavePurpose
+    || details.maternityMonth
     || (details.leaveDays || []).length > 0
   );
 }

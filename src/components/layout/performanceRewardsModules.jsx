@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { BarChart3, ScrollText, Trophy } from "lucide-react";
+import { BarChart3, ScrollText, TrendingUp, Trophy } from "lucide-react";
 import IpcrManagementWorkspace from "../../module/performance/IpcrManagementWorkspace";
 import OpcrManagementWorkspace from "../../module/performance/OpcrManagementWorkspace";
 import AwardCyclesWorkspace from "../../module/rewards/AwardCyclesWorkspace";
 import LoyaltyWorkspace from "../../module/rewards/LoyaltyWorkspace";
 import CertificateTemplateEditor from "../../module/rewards/CertificateTemplateEditor";
 import ServiceRecordWorkspace from "../../module/serviceRecord/ServiceRecordWorkspace";
+import PromotionWorkspace from "../../module/promotion/PromotionWorkspace";
 import { getEmployees } from "../../services/api";
+import { resolveUserRoleKey } from "../../utils/roleRoutes";
 
 /**
  * Performance Management (OPCR/IPCR) and Rewards & Recognition — the Masterfiles screens that HR
@@ -85,8 +87,9 @@ export const PERFORMANCE_REWARDS_MODULES = {
     title: "Loyalty",
     description: "Track tenure-based loyalty tiers and see who is eligible for retirement.",
     hidePageIntro: true,
-    render: () => (
-      <EmployeeDirectoryScreen render={(employees) => <LoyaltyWorkspace employees={employees} />} />
+    // HR Staff and the other HR desks use the organization-wide employee directory.
+    render: ({ user }) => (
+      <EmployeeDirectoryScreen render={(employees) => <LoyaltyWorkspace user={user} employees={employees} />} />
     ),
   },
   rewardsCertificateTemplate: {
@@ -107,15 +110,33 @@ export const PERFORMANCE_REWARDS_MODULES = {
     title: "IPCR",
     description: "Assign Individual Performance Commitment and Review KPIs and review submissions.",
     hidePageIntro: true,
-    render: () => (
-      <EmployeeDirectoryScreen render={(employees) => <IpcrManagementWorkspace employees={employees} />} />
-    ),
+    /* Only the HR Head creates IPCR records; the API enforces the same role rule. */
+    render: ({ user }) => {
+      const roleKey = resolveUserRoleKey(user);
+
+      return (
+        <EmployeeDirectoryScreen
+          render={(employees) => (
+            <IpcrManagementWorkspace
+              employees={employees}
+              canAssign={roleKey === "hrhead"}
+            />
+          )}
+        />
+      );
+    },
   },
   serviceRecord: {
     title: "Service Record",
     description: "Maintain and issue employee service records (CS Form No. 1).",
     hidePageIntro: true,
     render: ({ user }) => <ServiceRecordWorkspace user={user} mode="manage" />,
+  },
+  promotions: {
+    title: "Promotions",
+    description: "Prepare, recommend, and approve promotions up the position hierarchy.",
+    hidePageIntro: true,
+    render: ({ user }) => <PromotionWorkspace user={user} />,
   },
 };
 
@@ -129,9 +150,22 @@ export const PERFORMANCE_REWARDS_MODULES = {
  * never needs a module of its own.
  *
  * `includePerformanceReviews: false` drops the Performance Reviews group (OPCR/IPCR) for roles that
- * do not run those reviews, such as HR Staff, while leaving the rest of the group in place.
+ * do not run those reviews. `includeNomination: false` keeps the Rewards group while handing the
+ * nomination-management desk to another role. `includePromotions: false` leaves out the Promotions
+ * desk for a role that has no part in that chain.
  */
-export function buildPerformanceRewardsNavItems(basePath, { includePerformanceReviews = true } = {}) {
+export function buildPerformanceRewardsNavItems(
+  basePath,
+  { includePerformanceReviews = true, includeNomination = true, includePromotions = true } = {}
+) {
+  const rewardsChildren = [
+    ...(includeNomination
+      ? [{ key: "rewardsNomination", label: "Nomination", path: `${basePath}/rewards-recognition/nomination` }]
+      : []),
+    { key: "rewardsLoyalty", label: "Loyalty", path: `${basePath}/rewards-recognition/loyalty` },
+    { key: "rewardsCertificateTemplate", label: "Certificate Template", path: `${basePath}/rewards-recognition/certificate-template` },
+  ];
+
   return [
     {
       key: "serviceRecord",
@@ -139,18 +173,24 @@ export function buildPerformanceRewardsNavItems(basePath, { includePerformanceRe
       icon: ScrollText,
       path: `${basePath}/service-record`,
     },
+    ...(includePromotions
+      ? [
+          {
+            key: "promotions",
+            label: "Promotions",
+            icon: TrendingUp,
+            path: `${basePath}/promotions`,
+          },
+        ]
+      : []),
     {
       key: "rewardsRecognition",
       label: "Recognition & Rewards",
       icon: Trophy,
       // Points at the first child, the way Performance Management points at OPCR. Children are
       // matched before parents, so this key never needs a module of its own.
-      path: `${basePath}/rewards-recognition/nomination`,
-      children: [
-        { key: "rewardsNomination", label: "Nomination", path: `${basePath}/rewards-recognition/nomination` },
-        { key: "rewardsLoyalty", label: "Loyalty", path: `${basePath}/rewards-recognition/loyalty` },
-        { key: "rewardsCertificateTemplate", label: "Certificate Template", path: `${basePath}/rewards-recognition/certificate-template` },
-      ],
+      path: rewardsChildren[0].path,
+      children: rewardsChildren,
     },
     ...(includePerformanceReviews
       ? [

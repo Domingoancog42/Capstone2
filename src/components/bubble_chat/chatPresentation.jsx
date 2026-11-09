@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useSyncExternalStore } from "react";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 
 /*
@@ -36,44 +36,123 @@ export function isContactOnline(contact) {
   return ONLINE_PRESENCE_VALUES.has(String(explicitStatus || "").trim().toLowerCase());
 }
 
-/**
- * Contact-list timestamps: a clock time for today, a date for anything older. A conversation list is
- * scanned for "when did we last speak", which today's time answers and today's date does not.
- */
-export function formatContactTime(value) {
+function parseChatTimestamp(value) {
   const date = new Date(String(value || "").replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
-  if (Number.isNaN(date.getTime())) {
+/**
+ * When a message was sent, the way a messenger says it: "Just now", then minutes and hours ago for
+ * today, "Yesterday", and the date itself before that -- with the year once it is not this year's.
+ * Used for the message bubbles and the contact list alike, so both read the same.
+ *
+ * A timestamp a few seconds ahead of this machine's clock (server and browser rarely agree to the
+ * second) reads as "Just now" rather than a negative age.
+ */
+export function formatChatTime(value, now = Date.now()) {
+  const date = parseChatTimestamp(value);
+
+  if (!date) {
     return "";
   }
 
-  const today = new Date();
-  const sameDay = date.toDateString() === today.toDateString();
+  const current = new Date(now);
+  const elapsedMinutes = Math.floor((current.getTime() - date.getTime()) / 60000);
 
-  if (sameDay) {
-    return new Intl.DateTimeFormat("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    }).format(date);
+  if (elapsedMinutes < 1) {
+    return "Just now";
+  }
+
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes} ${elapsedMinutes === 1 ? "min" : "mins"} ago`;
+  }
+
+  if (date.toDateString() === current.toDateString()) {
+    const elapsedHours = Math.floor(elapsedMinutes / 60);
+    return `${elapsedHours} ${elapsedHours === 1 ? "hr" : "hrs"} ago`;
+  }
+
+  const yesterday = new Date(current);
+  yesterday.setDate(current.getDate() - 1);
+
+  if (date.toDateString() === yesterday.toDateString()) {
+    return "Yesterday";
   }
 
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
-    day: "2-digit",
+    day: "numeric",
+    ...(date.getFullYear() !== current.getFullYear() ? { year: "numeric" } : {}),
   }).format(date);
 }
 
-export function formatMessageTime(value) {
-  const date = new Date(String(value || "").replace(" ", "T"));
+/** The exact send time, for the hover title behind a relative label. */
+export function formatFullChatTime(value) {
+  const date = parseChatTimestamp(value);
 
-  return Number.isNaN(date.getTime())
-    ? ""
-    : new Intl.DateTimeFormat("en-US", {
+  return date
+    ? new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
         hour: "numeric",
         minute: "2-digit",
         hour12: true,
-      }).format(date);
+      }).format(date)
+    : "";
+}
+
+/*
+ * One shared clock for every timestamp on screen, so "Just now" turns into "1 min ago" while the chat
+ * sits open. A single interval runs only while at least one timestamp is mounted.
+ */
+const CHAT_CLOCK_INTERVAL_MS = 30000;
+const chatClockListeners = new Set();
+let chatClockNow = Date.now();
+let chatClockTimer = null;
+
+function subscribeChatClock(listener) {
+  chatClockListeners.add(listener);
+
+  if (!chatClockTimer) {
+    chatClockNow = Date.now();
+    chatClockTimer = window.setInterval(() => {
+      chatClockNow = Date.now();
+      chatClockListeners.forEach((notify) => notify());
+    }, CHAT_CLOCK_INTERVAL_MS);
+  }
+
+  return () => {
+    chatClockListeners.delete(listener);
+
+    if (chatClockListeners.size === 0 && chatClockTimer) {
+      window.clearInterval(chatClockTimer);
+      chatClockTimer = null;
+    }
+  };
+}
+
+function readChatClock() {
+  return chatClockNow;
+}
+
+export function ChatTimestamp({ value }) {
+  /*
+   * Subscribing is what re-renders the label on each tick. The age itself is measured against the
+   * moment of rendering, so a message sent between two ticks still reads "Just now" straight away.
+   */
+  useSyncExternalStore(subscribeChatClock, readChatClock);
+  const label = formatChatTime(value, Date.now());
+
+  if (!label) {
+    return null;
+  }
+
+  return (
+    <time dateTime={String(value || "").replace(" ", "T")} title={formatFullChatTime(value)}>
+      {label}
+    </time>
+  );
 }
 
 /*

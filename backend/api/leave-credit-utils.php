@@ -228,7 +228,30 @@ function leave_credit_tracked_type_by_code(PDO $pdo, string $leaveTypeCode): ?ar
     return null;
 }
 
-function ensure_employee_default_leave_credits(PDO $pdo, int $employeeId, ?int $year = null): void
+/*
+ * A newly added employee has not earned any vacation or sick leave yet, so those balances open at 0
+ * and grow with the monthly accrual from the month after the hire date. Every other leave type
+ * keeps its default entitlement, and existing employees opening a new year are not affected.
+ */
+function leave_credit_new_employee_opening_totals(): array
+{
+    return [
+        'VL' => 0.0,
+        'SL' => 0.0,
+    ];
+}
+
+/** The balance a tracked leave type opens at: its default, or the new-employee figure. */
+function leave_credit_opening_total(string $definitionCode, array $trackedType, bool $isNewEmployee): float
+{
+    if ($isNewEmployee && array_key_exists($definitionCode, leave_credit_new_employee_opening_totals())) {
+        return (float)leave_credit_new_employee_opening_totals()[$definitionCode];
+    }
+
+    return (float)$trackedType['total'];
+}
+
+function ensure_employee_default_leave_credits(PDO $pdo, int $employeeId, ?int $year = null, bool $isNewEmployee = false): void
 {
     if ($employeeId <= 0) {
         return;
@@ -247,12 +270,12 @@ function ensure_employee_default_leave_credits(PDO $pdo, int $employeeId, ?int $
          ON DUPLICATE KEY UPDATE total_credits = total_credits'
     );
 
-    foreach ($trackedTypes as $trackedType) {
+    foreach ($trackedTypes as $definitionCode => $trackedType) {
         $statement->execute([
             ':employee_id' => $employeeId,
             ':leave_type_id' => (int)$trackedType['leave_type_id'],
             ':year' => $year,
-            ':total_credits' => (float)$trackedType['total'],
+            ':total_credits' => leave_credit_opening_total((string)$definitionCode, $trackedType, $isNewEmployee),
         ]);
     }
 }
@@ -343,7 +366,30 @@ function fetch_employee_leave_credit_snapshot(PDO $pdo, int $employeeId, ?int $y
 
     if ($employeeId > 0) {
         ensure_employee_default_leave_credits($pdo, $employeeId, $year);
+        apply_due_leave_credit_accruals($pdo, $year, $employeeId);
         recalculate_employee_leave_credit_usage($pdo, $employeeId, $year);
+    }
+
+    $nextAccrualDate = '';
+
+    if ($employeeId > 0 && $year === (int)date('Y')) {
+        $accrualStatement = $pdo->prepare(
+            'SELECT e.date_hired, e.status,
+                    (SELECT MIN(lc.created_at) FROM leave_credits lc WHERE lc.employee_id = e.id) AS tracked_since
+             FROM employees e
+             WHERE e.id = :employee_id
+             LIMIT 1'
+        );
+        $accrualStatement->execute([':employee_id' => $employeeId]);
+        $accrualRow = $accrualStatement->fetch() ?: [];
+        $accrualStart = leave_credit_accrual_start_month(
+            (string)($accrualRow['date_hired'] ?? ''),
+            (string)($accrualRow['tracked_since'] ?? '')
+        );
+
+        if ($accrualStart !== null && strcasecmp((string)($accrualRow['status'] ?? ''), 'Active') === 0) {
+            $nextAccrualDate = leave_credit_next_accrual_date($accrualStart);
+        }
     }
 
     $recordsByCode = [];
@@ -398,12 +444,17 @@ function fetch_employee_leave_credit_snapshot(PDO $pdo, int $employeeId, ?int $y
 
     foreach ($definitions as $definitionCode => $definition) {
         $record = $recordsByCode[$definitionCode] ?? null;
+        $monthlyAccrual = $record !== null && $nextAccrualDate !== ''
+            ? leave_credit_monthly_accrual($definitionCode)
+            : 0.0;
         $balance = [
             'code' => (string)$definition['code'],
             'type' => (string)$definition['name'],
             'total' => $record['total'] ?? leave_credit_round((float)$definition['total']),
             'used' => $record['used'] ?? 0.0,
             'remaining' => $record['remaining'] ?? leave_credit_round((float)$definition['total']),
+            'monthlyAccrual' => $monthlyAccrual,
+            'nextAccrualDate' => $monthlyAccrual > 0 ? $nextAccrualDate : '',
         ];
         $balances[] = $balance;
         $balanceMap[$balance['type']] = $balance;
@@ -415,7 +466,67 @@ function fetch_employee_leave_credit_snapshot(PDO $pdo, int $employeeId, ?int $y
         'gender' => leave_credit_employee_gender($pdo, $employeeId),
         'balances' => $balances,
         'balanceMap' => $balanceMap,
+        'entitlements' => leave_credit_entitlements($pdo, $trackedTypes, $balances),
     ];
+}
+
+/*
+ * Every active leave type, one entry each, for the employee's balance card wall. A type that spends
+ * a tracked credit carries that balance -- its own (Vacation, Sick, ...) or the one it is charged to
+ * (Mandatory/Forced Leave draws on Vacation Leave). The rest carry only the yearly entitlement the
+ * leave_types row records, or none at all for a leave granted as approved (Study, Terminal, Leave
+ * Without Pay). `balances` stays the request form's list of tracked credits; this is the wider view.
+ */
+function leave_credit_entitlements(PDO $pdo, array $trackedTypes, array $balances): array
+{
+    $balancesByCode = [];
+    foreach ($balances as $balance) {
+        $balancesByCode[strtoupper((string)$balance['code'])] = $balance;
+    }
+
+    /* Which tracked balance each leave_types row spends, whether it is the canonical row or an alias. */
+    $balanceCodeByLeaveTypeId = [];
+    foreach ($trackedTypes as $definitionCode => $trackedType) {
+        foreach ($trackedType['charged_leave_type_ids'] ?? [(int)$trackedType['leave_type_id']] as $leaveTypeId) {
+            $balanceCodeByLeaveTypeId[(int)$leaveTypeId] = strtoupper((string)$definitionCode);
+        }
+    }
+
+    $statement = $pdo->query(
+        'SELECT leave_type_id, name, code, max_days_per_year, is_with_pay
+         FROM leave_types
+         WHERE is_active = 1
+         ORDER BY leave_type_id ASC'
+    );
+
+    $entitlements = [];
+    foreach ($statement->fetchAll() as $row) {
+        $leaveTypeId = (int)$row['leave_type_id'];
+        $name = trim((string)($row['name'] ?? ''));
+        $balanceCode = $balanceCodeByLeaveTypeId[$leaveTypeId] ?? null;
+        $balance = $balanceCode !== null ? ($balancesByCode[$balanceCode] ?? null) : null;
+        $balanceType = $balance !== null ? (string)$balance['type'] : null;
+
+        $entitlements[] = [
+            'leaveTypeId' => $leaveTypeId,
+            'name' => $name,
+            'code' => strtoupper(trim((string)($row['code'] ?? ''))),
+            'maxDaysPerYear' => $row['max_days_per_year'] !== null
+                ? leave_credit_round((float)$row['max_days_per_year'])
+                : null,
+            'isWithPay' => (int)($row['is_with_pay'] ?? 0) === 1,
+            'balanceCode' => $balanceCode,
+            'balanceType' => $balanceType,
+            'chargedTo' => $balanceType !== null && strcasecmp($balanceType, $name) !== 0 ? $balanceType : null,
+            'total' => $balance['total'] ?? null,
+            'used' => $balance['used'] ?? null,
+            'remaining' => $balance['remaining'] ?? null,
+            'monthlyAccrual' => $balance['monthlyAccrual'] ?? 0.0,
+            'nextAccrualDate' => $balance['nextAccrualDate'] ?? '',
+        ];
+    }
+
+    return $entitlements;
 }
 
 /*
@@ -583,6 +694,7 @@ function write_leave_credit_audit_log(
             ':details_json' => audit_details_json($details, $context),
             ':user_agent' => $context['userAgent'],
         ]);
+        audit_mark_entry_written();
     } catch (Throwable $exception) {
         // Leave balance updates should not fail only because optional audit logging is unavailable.
     }
@@ -595,8 +707,9 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null, bool $a
     $trackedTypes = leave_credit_type_rows($pdo);
     ensure_leave_request_pay_split_columns($pdo);
     ensure_archive_columns($pdo, 'leave_credits');
+    apply_due_leave_credit_accruals($pdo, $resolvedYear);
 
-    $employees = $pdo->query(
+    $employeeStatement = $pdo->prepare(
         'SELECT
             e.id AS employeeRecordId,
             e.employee_id AS employeeId,
@@ -605,13 +718,17 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null, bool $a
             des.name AS position,
             e.gender,
             e.status,
-            e.employment_status AS employmentStatus
+            e.employment_status AS employmentStatus,
+            e.date_hired AS dateHired,
+            (SELECT MIN(lc.created_at) FROM leave_credits lc WHERE lc.employee_id = e.id) AS trackedSince
          FROM employees e
-         INNER JOIN divisions d ON d.id = e.division_id
-         INNER JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE e.is_archived = 0
          ORDER BY employeeName ASC, e.id ASC'
-    )->fetchAll();
+    );
+    $employeeStatement->execute();
+    $employees = $employeeStatement->fetchAll();
 
     if ($employees === []) {
         return [];
@@ -625,6 +742,7 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null, bool $a
     $balanceRowsByEmployee = [];
     $usageRowsByEmployee = [];
     $updatedAtByEmployee = [];
+    $archiveStatesByEmployee = [];
 
     if ($trackedTypes !== []) {
         $leaveTypeIds = array_map(
@@ -640,18 +758,24 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null, bool $a
         $chargedLeaveTypePlaceholders = implode(', ', array_fill(0, count($chargedLeaveTypeIds), '?'));
 
         $balanceStatement = $pdo->prepare(
-            'SELECT employee_id, leave_type_id, total_credits, updated_at
+            'SELECT employee_id, leave_type_id, total_credits, updated_at, is_archived
              FROM leave_credits
              WHERE year = ?
-               AND is_archived = ?
                AND employee_id IN (' . $employeePlaceholders . ')
                AND leave_type_id IN (' . $leaveTypePlaceholders . ')'
         );
-        $balanceStatement->execute([$resolvedYear, $archived ? 1 : 0, ...$employeeIds, ...$leaveTypeIds]);
+        $balanceStatement->execute([$resolvedYear, ...$employeeIds, ...$leaveTypeIds]);
 
         foreach ($balanceStatement->fetchAll() as $row) {
             $employeeId = (int)$row['employee_id'];
             $leaveTypeId = (int)$row['leave_type_id'];
+            $rowIsArchived = (int)($row['is_archived'] ?? 0) === 1;
+            $archiveStatesByEmployee[$employeeId][$rowIsArchived ? 1 : 0] = true;
+
+            if ($rowIsArchived !== $archived) {
+                continue;
+            }
+
             $balanceRowsByEmployee[$employeeId][$leaveTypeId] = [
                 'total' => leave_credit_round((float)($row['total_credits'] ?? 0)),
                 'updatedAt' => (string)($row['updated_at'] ?? ''),
@@ -690,11 +814,38 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null, bool $a
          * default yearly entitlement below. In the archive view they do not: nothing of theirs was
          * archived, so listing them would fill the archive with every employee on default balances.
          */
-        if ($archived && empty($balanceRowsByEmployee[$employeeId])) {
+        $hasMatchingBalanceRows = !empty($balanceRowsByEmployee[$employeeId]);
+        $hasArchivedBalanceRows = !empty($archiveStatesByEmployee[$employeeId][1]);
+
+        if ($archived && !$hasMatchingBalanceRows) {
+            continue;
+        }
+
+        /*
+         * The active registry still includes a new employee whose yearly credits have never been
+         * materialized, because their default entitlement is useful there. Once that employee has
+         * archived credit rows, however, treating the missing active rows as defaults would put the
+         * employee straight back into the active table after a successful archive.
+         */
+        if (!$archived && !$hasMatchingBalanceRows && $hasArchivedBalanceRows) {
             continue;
         }
 
         $balanceMap = [];
+        /*
+         * The coming posting, shown against each accruing pool so the registry says what the
+         * balance is about to become. Only a materialised, active balance earns credits (see
+         * apply_due_leave_credit_accruals()), and only while the viewed year is the current one.
+         */
+        $accrualStart = leave_credit_accrual_start_month(
+            (string)($employee['dateHired'] ?? ''),
+            (string)($employee['trackedSince'] ?? '')
+        );
+        $accruesThisYear = !$archived
+            && strcasecmp((string)($employee['status'] ?? ''), 'Active') === 0
+            && $resolvedYear === (int)date('Y')
+            && $accrualStart !== null;
+        $nextAccrualDate = $accruesThisYear ? leave_credit_next_accrual_date($accrualStart) : '';
 
         foreach ($definitions as $definitionCode => $definition) {
             $trackedType = $trackedTypes[$definitionCode] ?? null;
@@ -708,6 +859,9 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null, bool $a
 
             $totalCredits = $storedRow['total'] ?? leave_credit_round((float)$definition['total']);
             $remainingCredits = leave_credit_round($totalCredits - $usedCredits);
+            $monthlyAccrual = $storedRow !== null && $nextAccrualDate !== ''
+                ? leave_credit_monthly_accrual($definitionCode)
+                : 0.0;
 
             $balanceMap[$definitionCode] = [
                 'code' => (string)$definition['code'],
@@ -715,6 +869,8 @@ function fetch_leave_credit_management_rows(PDO $pdo, ?int $year = null, bool $a
                 'total' => leave_credit_round((float)$totalCredits),
                 'used' => leave_credit_round($usedCredits),
                 'remaining' => $remainingCredits,
+                'monthlyAccrual' => $monthlyAccrual,
+                'nextAccrualDate' => $monthlyAccrual > 0 ? $nextAccrualDate : '',
             ];
         }
 
@@ -857,6 +1013,344 @@ function reset_employee_leave_credit_balances(PDO $pdo, int $employeeId, int $ye
     return $results;
 }
 
+/*
+ * Vacation and sick leave are not granted in one lump. On the first day of every month each pool
+ * earns a fixed number of credits on top of the yearly opening balance in
+ * leave_credit_default_definitions(), with no ceiling: unused credits keep accumulating, as the CSC
+ * rules allow for vacation and sick leave. The rate is the CSC Omnibus Rules' 1.25 days a month
+ * (15 a year) and lives here so that changing it is one edit.
+ */
+function leave_credit_monthly_accrual_rates(): array
+{
+    return [
+        'VL' => 1.25,
+        'SL' => 1.25,
+    ];
+}
+
+/** What one monthly posting adds to a pool; 0 for a pool that does not accrue. */
+function leave_credit_monthly_accrual(string $code): float
+{
+    return leave_credit_round((float)(leave_credit_monthly_accrual_rates()[$code] ?? 0));
+}
+
+/*
+ * Every posted accrual is written down once, keyed by employee, pool and month. That is what makes
+ * posting safe to repeat on every read of the registry -- a month already on the ledger is skipped,
+ * and the unique key means two requests racing on the same month post it once between them.
+ */
+function ensure_leave_credit_accrual_table(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    $ensured = true;
+
+    // Checked first because even a no-op CREATE is DDL and would commit a caller's open transaction.
+    if (database_table_exists($pdo, 'leave_credit_accruals')) {
+        return;
+    }
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS leave_credit_accruals (
+            accrual_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            employee_id INT UNSIGNED NOT NULL,
+            leave_type_id INT NOT NULL,
+            accrual_month DATE NOT NULL,
+            amount DECIMAL(6,2) NOT NULL,
+            remaining_before DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+            remaining_after DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+            applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (accrual_id),
+            UNIQUE KEY uq_leave_credit_accrual (employee_id, leave_type_id, accrual_month),
+            KEY idx_leave_credit_accruals_month (accrual_month),
+            CONSTRAINT fk_leave_credit_accruals_employee FOREIGN KEY (employee_id) REFERENCES employees (id),
+            CONSTRAINT fk_leave_credit_accruals_leave_type FOREIGN KEY (leave_type_id) REFERENCES leave_types (leave_type_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+}
+
+/**
+ * The first month an employee earns credits: the month after they were hired, or after their
+ * balances started being tracked here, whichever is later.
+ *
+ * Counting from the tracking date rather than the hire date is deliberate. The opening balance
+ * already stands in for the months before the registry existed, so posting those months again
+ * would count them twice -- and it keeps the day this rule was switched on from handing every
+ * long-serving employee a year of back credits at once.
+ */
+function leave_credit_accrual_start_month(?string $dateHired, ?string $trackedSince): ?DateTimeImmutable
+{
+    $latest = null;
+
+    foreach ([$dateHired, $trackedSince] as $value) {
+        $text = trim((string)$value);
+        if ($text === '' || str_starts_with($text, '0000')) {
+            continue;
+        }
+
+        try {
+            $date = new DateTimeImmutable($text);
+        } catch (Throwable $exception) {
+            continue;
+        }
+
+        if ($latest === null || $date > $latest) {
+            $latest = $date;
+        }
+    }
+
+    return $latest?->modify('first day of next month')->setTime(0, 0);
+}
+
+/** The first of the month that will be posted next: always the coming month, never today's. */
+function leave_credit_next_accrual_date(?DateTimeImmutable $startMonth = null): string
+{
+    $next = (new DateTimeImmutable('today'))->modify('first day of next month');
+
+    if ($startMonth !== null && $startMonth > $next) {
+        $next = $startMonth;
+    }
+
+    return $next->format('Y-m-d');
+}
+
+/**
+ * Posts every monthly accrual that has come due for the year and is not yet on the ledger, and
+ * returns how many it posted.
+ *
+ * It runs on every read of the registry and of an employee's own balances, which is what makes a
+ * month's credits appear on its first day on a XAMPP box with no scheduler. Only balances that
+ * already exist and are not archived earn credits: an employee whose year was never materialised
+ * is still on the default entitlement, and an archived balance must not be quietly re-opened by a
+ * system posting. Nothing is posted for a future year or a month that has not started.
+ */
+function apply_due_leave_credit_accruals(PDO $pdo, ?int $year = null, ?int $employeeId = null): int
+{
+    $trackedTypes = leave_credit_type_rows($pdo);
+    $accruingTypes = [];
+
+    foreach (leave_credit_monthly_accrual_rates() as $code => $amount) {
+        $leaveTypeId = (int)($trackedTypes[$code]['leave_type_id'] ?? 0);
+        if ($leaveTypeId > 0 && (float)$amount > 0) {
+            $accruingTypes[$leaveTypeId] = $code;
+        }
+    }
+
+    if ($accruingTypes === []) {
+        return 0;
+    }
+
+    $year = leave_credit_resolve_year($year);
+    $today = new DateTimeImmutable('today');
+    $lastDueMonth = min(
+        $today->modify('first day of this month')->setTime(0, 0),
+        new DateTimeImmutable(sprintf('%04d-12-01', $year))
+    );
+
+    if ((int)$today->format('Y') < $year) {
+        return 0;
+    }
+
+    // DDL commits any open transaction, so the ledger is made sure of before one is opened below.
+    ensure_leave_credit_accrual_table($pdo);
+    ensure_archive_columns($pdo, 'leave_credits');
+
+    $leaveTypePlaceholders = implode(', ', array_fill(0, count($accruingTypes), '?'));
+    $params = [$year, ...array_keys($accruingTypes)];
+    $employeeCondition = '';
+
+    if ($employeeId !== null) {
+        $employeeCondition = ' AND lc.employee_id = ?';
+        $params[] = $employeeId;
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT
+            lc.employee_id,
+            lc.leave_type_id,
+            e.date_hired,
+            (SELECT MIN(first.created_at) FROM leave_credits first WHERE first.employee_id = lc.employee_id) AS tracked_since,
+            (SELECT MAX(posted.accrual_month)
+               FROM leave_credit_accruals posted
+              WHERE posted.employee_id = lc.employee_id
+                AND posted.leave_type_id = lc.leave_type_id
+                AND YEAR(posted.accrual_month) = lc.year) AS last_posted_month
+         FROM leave_credits lc
+         INNER JOIN employees e ON e.id = lc.employee_id
+         WHERE lc.year = ?
+           AND lc.is_archived = 0
+           AND e.is_archived = 0
+           AND LOWER(e.status) = "active"
+           AND lc.leave_type_id IN (' . $leaveTypePlaceholders . ')' . $employeeCondition
+    );
+    $statement->execute($params);
+
+    $due = [];
+    foreach ($statement->fetchAll() as $row) {
+        $startMonth = leave_credit_accrual_start_month((string)($row['date_hired'] ?? ''), (string)($row['tracked_since'] ?? ''));
+        if ($startMonth === null) {
+            continue;
+        }
+
+        $lastPosted = trim((string)($row['last_posted_month'] ?? ''));
+        $month = $lastPosted !== ''
+            ? (new DateTimeImmutable($lastPosted))->modify('first day of next month')
+            : $startMonth;
+        $month = max($month, new DateTimeImmutable(sprintf('%04d-01-01', $year)));
+
+        while ($month <= $lastDueMonth) {
+            $due[] = [(int)$row['employee_id'], (int)$row['leave_type_id'], $month->format('Y-m-d')];
+            $month = $month->modify('first day of next month');
+        }
+    }
+
+    if ($due === []) {
+        return 0;
+    }
+
+    $ledgerStatement = $pdo->prepare(
+        'INSERT IGNORE INTO leave_credit_accruals
+            (employee_id, leave_type_id, accrual_month, amount, remaining_before, remaining_after)
+         VALUES (:employee_id, :leave_type_id, :accrual_month, :amount, :remaining_before, :remaining_after)'
+    );
+    $balanceStatement = $pdo->prepare(
+        'SELECT remaining_credits
+         FROM leave_credits
+         WHERE employee_id = :employee_id AND leave_type_id = :leave_type_id AND year = :year
+         FOR UPDATE'
+    );
+    $creditStatement = $pdo->prepare(
+        'UPDATE leave_credits
+         SET total_credits = total_credits + :amount
+         WHERE employee_id = :employee_id AND leave_type_id = :leave_type_id AND year = :year'
+    );
+
+    $ownsTransaction = !$pdo->inTransaction();
+    if ($ownsTransaction) {
+        $pdo->beginTransaction();
+    }
+
+    $posted = 0;
+
+    try {
+        foreach ($due as [$dueEmployeeId, $leaveTypeId, $accrualMonth]) {
+            $balanceStatement->execute([
+                ':employee_id' => $dueEmployeeId,
+                ':leave_type_id' => $leaveTypeId,
+                ':year' => $year,
+            ]);
+            $remainingBefore = leave_credit_round((float)$balanceStatement->fetchColumn());
+            $amount = leave_credit_monthly_accrual($accruingTypes[$leaveTypeId]);
+
+            $ledgerStatement->execute([
+                ':employee_id' => $dueEmployeeId,
+                ':leave_type_id' => $leaveTypeId,
+                ':accrual_month' => $accrualMonth,
+                ':amount' => $amount,
+                ':remaining_before' => $remainingBefore,
+                ':remaining_after' => leave_credit_round($remainingBefore + $amount),
+            ]);
+
+            // Zero rows means another request posted this month first; its credit stands.
+            if ($ledgerStatement->rowCount() === 0 || $amount <= 0) {
+                continue;
+            }
+
+            $creditStatement->execute([
+                ':amount' => $amount,
+                ':employee_id' => $dueEmployeeId,
+                ':leave_type_id' => $leaveTypeId,
+                ':year' => $year,
+            ]);
+            $posted++;
+        }
+
+        if ($ownsTransaction) {
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($ownsTransaction && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        throw $exception;
+    }
+
+    return $posted;
+}
+
+/**
+ * The accrual entries for one employee's history, in the same shape as the audit log entries the
+ * History dialog already renders, so a posting reads like any other balance change there.
+ */
+function fetch_employee_leave_credit_accrual_history(PDO $pdo, int $employeeId, int $year, string $leaveTypeCode = ''): array
+{
+    ensure_leave_credit_accrual_table($pdo);
+
+    $statement = $pdo->prepare(
+        'SELECT a.leave_type_id, a.accrual_month, a.amount, a.remaining_before, a.remaining_after, a.applied_at,
+                lt.name AS leave_type_name, lt.code AS leave_type_code
+         FROM leave_credit_accruals a
+         INNER JOIN leave_types lt ON lt.leave_type_id = a.leave_type_id
+         WHERE a.employee_id = :employee_id
+           AND YEAR(a.accrual_month) = :year
+         ORDER BY a.accrual_month DESC, a.leave_type_id ASC'
+    );
+    $statement->execute([
+        ':employee_id' => $employeeId,
+        ':year' => $year,
+    ]);
+
+    $entries = [];
+    $normalizedCode = strtoupper(trim($leaveTypeCode));
+
+    foreach ($statement->fetchAll() as $row) {
+        $code = strtoupper(trim((string)($row['leave_type_code'] ?? '')));
+        if ($normalizedCode !== '' && $code !== $normalizedCode) {
+            continue;
+        }
+
+        $amount = leave_credit_round((float)($row['amount'] ?? 0));
+        $monthLabel = (new DateTimeImmutable((string)$row['accrual_month']))->format('F Y');
+
+        $entries[] = [
+            'actorName' => 'System',
+            'actorRole' => 'Monthly accrual',
+            'action' => 'leave_credit.accrual',
+            'summary' => $amount > 0
+                ? sprintf(
+                    'Monthly accrual: +%s %s credit(s) for %s.',
+                    leave_credit_format_days($amount),
+                    (string)$row['leave_type_name'],
+                    $monthLabel
+                )
+                : sprintf(
+                    'Monthly accrual: no %s credits added for %s.',
+                    (string)$row['leave_type_name'],
+                    $monthLabel
+                ),
+            'details' => [
+                'year' => $year,
+                'leaveTypeCode' => $code,
+                'leaveTypeName' => (string)$row['leave_type_name'],
+                'operation' => 'add',
+                'amount' => $amount,
+                'accrualMonth' => (string)$row['accrual_month'],
+                'effectiveDate' => (string)$row['accrual_month'],
+                'previousRemaining' => leave_credit_round((float)($row['remaining_before'] ?? 0)),
+                'newRemaining' => leave_credit_round((float)($row['remaining_after'] ?? 0)),
+            ],
+            'createdAt' => (string)($row['applied_at'] ?? ''),
+        ];
+    }
+
+    return $entries;
+}
+
 function fetch_employee_leave_credit_history(PDO $pdo, int $employeeId, ?int $year = null, string $leaveTypeCode = ''): array
 {
     $resolvedYear = leave_credit_resolve_year($year);
@@ -909,6 +1403,16 @@ function fetch_employee_leave_credit_history(PDO $pdo, int $employeeId, ?int $ye
             $historyLogs = [];
         }
     }
+
+    /* Postings sit in the trail alongside HR's own changes, newest first like the rest. */
+    $historyLogs = array_merge(
+        $historyLogs,
+        fetch_employee_leave_credit_accrual_history($pdo, $employeeId, $resolvedYear, $normalizedCode)
+    );
+    usort(
+        $historyLogs,
+        static fn (array $left, array $right): int => strcmp((string)$right['createdAt'], (string)$left['createdAt'])
+    );
 
     $managementRows = fetch_leave_credit_management_rows($pdo, $resolvedYear);
     $matchedRow = null;

@@ -5,6 +5,7 @@ require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/password-reset-utils.php';
 require_once __DIR__ . '/date-selection-utils.php';
 require_once __DIR__ . '/captcha-utils.php';
+require_once __DIR__ . '/compensatory-workflow-utils.php';
 
 $sessionUser = require_session_user();
 
@@ -37,11 +38,14 @@ function compensatory_date_or_null(mixed $value): ?string
 function ensure_compensatory_rejected_note_column(PDO $pdo): void
 {
     $statement = $pdo->query("SHOW COLUMNS FROM compensatory LIKE 'rejected_note'");
-    if ($statement !== false && $statement->fetch() !== false) {
-        return;
+    if ($statement === false || $statement->fetch() === false) {
+        $pdo->exec('ALTER TABLE compensatory ADD COLUMN rejected_note TEXT NULL AFTER remarks');
     }
 
-    $pdo->exec('ALTER TABLE compensatory ADD COLUMN rejected_note TEXT NULL AFTER remarks');
+    $roleStatement = $pdo->query("SHOW COLUMNS FROM compensatory LIKE 'rejected_by_role'");
+    if ($roleStatement === false || $roleStatement->fetch() === false) {
+        $pdo->exec('ALTER TABLE compensatory ADD COLUMN rejected_by_role VARCHAR(80) NULL AFTER rejected_note');
+    }
 }
 
 function compensatory_number_or_null(mixed $value): ?float
@@ -64,12 +68,29 @@ function compensatory_role_key(array $user): string
 
 function compensatory_can_manage(array $user): bool
 {
-    return in_array(compensatory_role_key($user), ['admin', 'hrhead', 'hrstaff', 'regionaldirector', 'chief', 'planningofficer'], true);
+    return in_array(compensatory_role_key($user), ['admin', 'regionaldirector', 'chief'], true);
 }
 
 function compensatory_can_view_all(array $user): bool
 {
-    return compensatory_role_key($user) !== 'employee';
+    return !compensatory_is_self_service_role($user);
+}
+
+/** The roles that only ever see their own filings. */
+function compensatory_is_self_service_role(array $user): bool
+{
+    return in_array(compensatory_role_key($user), ['employee', 'cashier', 'hrhead', 'hrstaff', 'planningofficer'], true);
+}
+
+/*
+ * Archiving is tidying, not deciding, so the applicant may do it too -- but only once the request
+ * is settled, so a filing still moving through the desks cannot be hidden from them. Mirrors the
+ * `cto` entry of ARCHIVE_MANAGER_ROLES in frontend/src/utils/archiveActions.js, which only decides
+ * whether the button is drawn; this is what refuses the request.
+ */
+function compensatory_can_archive(array $user): bool
+{
+    return compensatory_can_manage($user) || compensatory_is_self_service_role($user);
 }
 
 function compensatory_hours_text(float $hours): string
@@ -328,33 +349,22 @@ function compensatory_status_to_database(mixed $status): string
     };
 }
 
-/*
- * A compensatory time off filing is signed three times before it is good, and each signature is a
- * status of its own so the row itself says whose desk it is sitting on:
- *
- *   Pending  -- the employee filed it and the division Chief has yet to recommend it
- *   Endorsed -- the Chief recommended it and the HR Head has yet to certify the credits
- *   Reviewed -- the HR Head certified it and the Regional Director has yet to sign
- *   Approved -- the Regional Director signed, which is the last step
- *
- * Rejected and Cancelled end the chain wherever it stood.
- */
-const COMPENSATORY_APPROVAL_CHAIN = [
-    'Pending' => ['role' => 'chief', 'next' => 'Endorsed'],
-    'Endorsed' => ['role' => 'hrhead', 'next' => 'Reviewed'],
-    'Reviewed' => ['role' => 'regionaldirector', 'next' => 'Approved'],
-];
-
-/** The role whose signature the request is waiting on, or null once it has been decided. */
-function compensatory_stage_role(string $currentStatus): ?string
+/** The roles whose signature the request is waiting on, or [] once it has been decided. */
+function compensatory_stage_roles(string $currentStatus, string $approvalRoute): array
 {
-    return COMPENSATORY_APPROVAL_CHAIN[$currentStatus]['role'] ?? null;
+    return compensatory_workflow_stage_roles($currentStatus, $approvalRoute);
+}
+
+/** The role the waiting desk is named after, or null once the request has been decided. */
+function compensatory_stage_role(string $currentStatus, string $approvalRoute): ?string
+{
+    return compensatory_stage_roles($currentStatus, $approvalRoute)[0] ?? null;
 }
 
 /** The status the waiting role's approval moves the request to, or null once it has been decided. */
-function compensatory_stage_next_status(string $currentStatus): ?string
+function compensatory_stage_next_status(string $currentStatus, string $approvalRoute): ?string
 {
-    return COMPENSATORY_APPROVAL_CHAIN[$currentStatus]['next'] ?? null;
+    return compensatory_workflow_next_status($currentStatus, $approvalRoute);
 }
 
 /*
@@ -363,14 +373,26 @@ function compensatory_stage_next_status(string $currentStatus): ?string
  * turn: the Chief cannot reach ahead for the Director's signature, and the Director cannot sign
  * before HR has certified the credits.
  */
-function compensatory_can_act_on(array $user, string $currentStatus): bool
+function compensatory_can_act_on(array $user, string $currentStatus, string $approvalRoute): bool
 {
-    $roleKey = compensatory_role_key($user);
-    if ($roleKey === 'admin') {
-        return compensatory_stage_role($currentStatus) !== null;
+    $stageRoles = compensatory_stage_roles($currentStatus, $approvalRoute);
+    if ($stageRoles === []) {
+        return false;
     }
 
-    return $roleKey === compensatory_stage_role($currentStatus);
+    $roleKey = compensatory_role_key($user);
+    $exactRoleKey = user_exact_role_key($user);
+
+    if ($roleKey === 'admin') {
+        return true;
+    }
+
+    /* Chief Admin is based on Chief, but a Chief Admin stage must require that exact role. */
+    if (in_array('chiefadmin', $stageRoles, true)) {
+        return $exactRoleKey === 'chiefadmin';
+    }
+
+    return in_array($roleKey, $stageRoles, true);
 }
 
 /** How a desk is named when a user is told the request is not on theirs yet. */
@@ -378,6 +400,7 @@ function compensatory_stage_role_label(?string $roleKey): string
 {
     return match ($roleKey) {
         'chief' => 'Division Chief',
+        'chiefadmin' => 'Chief Admin',
         'hrhead' => 'HR Head',
         'regionaldirector' => 'Regional Director',
         default => 'an authorized approver',
@@ -399,6 +422,64 @@ function ensure_compensatory_reviewed_status(PDO $pdo): void
         "ALTER TABLE compensatory
          MODIFY COLUMN status ENUM('Pending', 'Endorsed', 'Reviewed', 'Approved', 'Rejected', 'Cancelled')
          NOT NULL DEFAULT 'Pending'"
+    );
+}
+
+/**
+ * The route is stamped when the CTO is filed so a later employee transfer or division rename does
+ * not move an in-flight request to a different approval chain. The backfill also catches FAD rows
+ * created before its direct Chief Admin route was introduced.
+ */
+function ensure_compensatory_approval_route_column(PDO $pdo): void
+{
+    $statement = $pdo->query("SHOW COLUMNS FROM compensatory LIKE 'approval_route'");
+    if ($statement === false || $statement->fetch() === false) {
+        $pdo->exec(
+            "ALTER TABLE compensatory
+             ADD COLUMN approval_route VARCHAR(50) NOT NULL DEFAULT 'standard' AFTER status"
+        );
+    }
+
+    /* ORD keeps its existing direct route; FAD/FAM now uses that same two-approver route. */
+    $pdo->exec(
+        "UPDATE compensatory c
+         INNER JOIN employees e ON e.id = c.employee_id
+         INNER JOIN divisions d ON d.id = e.division_id
+         SET c.approval_route = 'chief_admin_regional_director'
+         WHERE c.approval_route = 'standard'
+           AND (
+                UPPER(TRIM(COALESCE(d.code, ''))) IN ('ORD', 'FAD', 'FAM')
+                OR LOWER(TRIM(COALESCE(d.name, ''))) IN (
+                    'office of the regional director',
+                    'finance & administrative management',
+                    'finance and administrative management',
+                    'finance and administrative division'
+                )
+           )"
+    );
+}
+
+/** Decide the immutable route for a newly filed request from the employee's current office. */
+function compensatory_approval_route_for_employee(PDO $pdo, int $employeeId): string
+{
+    $statement = $pdo->prepare(
+        'SELECT COALESCE(d.code, "") AS divisionCode, COALESCE(d.name, "") AS divisionName
+         FROM employees e
+         LEFT JOIN divisions d ON d.id = e.division_id
+         WHERE e.id = :employee_id
+           AND e.is_archived = 0
+         LIMIT 1'
+    );
+    $statement->execute([':employee_id' => $employeeId]);
+    $division = $statement->fetch();
+
+    if (!$division) {
+        return COMPENSATORY_APPROVAL_ROUTE_STANDARD;
+    }
+
+    return compensatory_approval_route_for_division(
+        $division['divisionCode'] ?? '',
+        $division['divisionName'] ?? ''
     );
 }
 
@@ -531,7 +612,8 @@ function backfill_compensatory_credit_snapshots(PDO $pdo): void
     }
 }
 
-function resolve_compensatory_session_employee_id(PDO $pdo, array $user): int
+/** The signed-in user's employee record, or null for an account (an Admin, say) that has none. */
+function compensatory_find_session_employee_id(PDO $pdo, array $user): ?int
 {
     $employeeCode = compensatory_text($user['employee_id'] ?? '');
     $employeeName = compensatory_text($user['full_name'] ?? '');
@@ -560,10 +642,71 @@ function resolve_compensatory_session_employee_id(PDO $pdo, array $user): int
         }
     }
 
+    return null;
+}
+
+function resolve_compensatory_session_employee_id(PDO $pdo, array $user): int
+{
+    $id = compensatory_find_session_employee_id($pdo, $user);
+
+    if ($id !== null) {
+        return $id;
+    }
+
     json_response([
         'success' => false,
         'message' => 'Signed-in employee record was not found.',
     ], 422);
+}
+
+function compensatory_session_division_id(PDO $pdo, array $user): int
+{
+    $employeeId = resolve_compensatory_session_employee_id($pdo, $user);
+    $statement = $pdo->prepare(
+        'SELECT division_id
+         FROM employees
+         WHERE id = :id
+           AND is_archived = 0
+         LIMIT 1'
+    );
+    $statement->execute([':id' => $employeeId]);
+    $divisionId = (int)$statement->fetchColumn();
+
+    if ($divisionId <= 0) {
+        json_response([
+            'success' => false,
+            'message' => 'Your employee record is not assigned to a division.',
+        ], 422);
+    }
+
+    return $divisionId;
+}
+
+/**
+ * Applicants receive only their own filings. A Division Chief remains division-scoped,
+ * while Chief Admin and the Regional Director are organization-wide CTO approval desks.
+ */
+function compensatory_read_scopes(PDO $pdo, array $sessionUser): array
+{
+    if (user_exact_role_key($sessionUser) === 'chiefadmin') {
+        return ['employeeId' => null, 'divisionId' => null];
+    }
+
+    return match (compensatory_role_key($sessionUser)) {
+        'employee', 'cashier', 'hrhead', 'hrstaff', 'planningofficer' => [
+            'employeeId' => resolve_compensatory_session_employee_id($pdo, $sessionUser),
+            'divisionId' => null,
+        ],
+        'regionaldirector' => [
+            'employeeId' => null,
+            'divisionId' => null,
+        ],
+        'chief' => [
+            'employeeId' => null,
+            'divisionId' => compensatory_session_division_id($pdo, $sessionUser),
+        ],
+        default => ['employeeId' => null, 'divisionId' => null],
+    };
 }
 
 function resolve_compensatory_employee_id(PDO $pdo, array $body, array $sessionUser): int
@@ -615,7 +758,12 @@ function resolve_compensatory_employee_id(PDO $pdo, array $body, array $sessionU
     ], 422);
 }
 
-function fetch_compensatory(PDO $pdo, int $id, ?int $employeeScopeId = null): ?array
+function fetch_compensatory(
+    PDO $pdo,
+    int $id,
+    ?int $employeeScopeId = null,
+    ?int $divisionScopeId = null
+): ?array
 {
     $sql = 'SELECT
                 c.id,
@@ -627,25 +775,30 @@ function fetch_compensatory(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
                 TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
                 des.name AS position,
                 d.name AS division,
+                ' . employee_role_name_subselect() . ' AS employeeRole,
                 c.hours_applied AS hoursApplied,
                 c.coc_balance_hours AS cocBalanceHours,
                 COALESCE(c.unpaid_hours, 0) AS unpaidHours,
                 c.start_date AS startDate,
                 c.end_date AS endDate,
                 c.status,
+                c.approval_route AS approvalRoute,
                 c.approved_by AS approvedBy,
                 approver.username AS approvedByUsername,
                 c.endorsed_by_employee_id AS endorsedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(endorsed_employee.first_name, " ", COALESCE(endorsed_employee.middle_name, ""), " ", endorsed_employee.last_name)), ""), "") AS endorsedByName,
+                COALESCE(NULLIF(TRIM(endorsed_employee.designation), ""), endorsed_designation.name, "") AS endorsedByPosition,
                 c.endorsed_at AS endorsedAt,
                 c.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(reviewed_employee.first_name, " ", COALESCE(reviewed_employee.middle_name, ""), " ", reviewed_employee.last_name)), ""), "") AS reviewedByName,
+                COALESCE(NULLIF(TRIM(reviewed_employee.designation), ""), reviewed_designation.name, "") AS reviewedByPosition,
                 c.reviewed_at AS reviewedAt,
                 c.approved_by_employee_id AS approvedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(approved_employee.first_name, " ", COALESCE(approved_employee.middle_name, ""), " ", approved_employee.last_name)), ""), "") AS approvedByName,
                 c.approved_at AS approvedAt,
                 c.remarks,
                 COALESCE(c.rejected_note, "") AS rejectedNote,
+                COALESCE(c.rejected_by_role, "") AS rejectedByRole,
                 DATE(c.created_at) AS dateFiled,
                 c.created_at AS createdAt,
                 c.updated_at AS updatedAt
@@ -655,7 +808,9 @@ function fetch_compensatory(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
             LEFT JOIN designations des ON des.id = e.designation_id
             LEFT JOIN users approver ON approver.id = c.approved_by
             LEFT JOIN employees endorsed_employee ON endorsed_employee.id = c.endorsed_by_employee_id
+            LEFT JOIN designations endorsed_designation ON endorsed_designation.id = endorsed_employee.designation_id
             LEFT JOIN employees reviewed_employee ON reviewed_employee.id = c.reviewed_by_employee_id
+            LEFT JOIN designations reviewed_designation ON reviewed_designation.id = reviewed_employee.designation_id
             LEFT JOIN employees approved_employee ON approved_employee.id = c.approved_by_employee_id
             WHERE c.id = :id';
 
@@ -663,6 +818,10 @@ function fetch_compensatory(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
     if ($employeeScopeId !== null) {
         $sql .= ' AND c.employee_id = :employee_scope_id';
         $params[':employee_scope_id'] = $employeeScopeId;
+    }
+    if ($divisionScopeId !== null) {
+        $sql .= ' AND e.division_id = :division_scope_id';
+        $params[':division_scope_id'] = $divisionScopeId;
     }
     $sql .= ' LIMIT 1';
 
@@ -681,21 +840,25 @@ function fetch_compensatory(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
         ? (int)$record['endorsedByEmployeeRecordId']
         : null;
     $record['endorsedByName'] = compensatory_text($record['endorsedByName'] ?? '');
+    $record['endorsedByPosition'] = compensatory_text($record['endorsedByPosition'] ?? '');
     $record['reviewedByEmployeeRecordId'] = $record['reviewedByEmployeeRecordId'] !== null
         ? (int)$record['reviewedByEmployeeRecordId']
         : null;
     $record['reviewedByName'] = compensatory_text($record['reviewedByName'] ?? '');
+    $record['reviewedByPosition'] = compensatory_text($record['reviewedByPosition'] ?? '');
     $record['approvedByEmployeeRecordId'] = $record['approvedByEmployeeRecordId'] !== null
         ? (int)$record['approvedByEmployeeRecordId']
         : null;
     $record['approvedByName'] = compensatory_text($record['approvedByName'] ?? '');
     $record['position'] = compensatory_text($record['position'] ?? '');
     $record['status'] = compensatory_status_to_database($record['status'] ?? '');
+    $record['approvalRoute'] = normalize_compensatory_approval_route($record['approvalRoute'] ?? '');
     $record['hoursApplied'] = (float)$record['hoursApplied'];
     $record['cocBalanceHours'] = $record['cocBalanceHours'] !== null ? (float)$record['cocBalanceHours'] : null;
     $record['unpaidHours'] = (float)($record['unpaidHours'] ?? 0);
     $record['isLeaveWithoutPay'] = $record['unpaidHours'] > 0.001;
     $record['rejectedNote'] = compensatory_text($record['rejectedNote'] ?? '');
+    $record['rejectedByRole'] = compensatory_text($record['rejectedByRole'] ?? '');
 
     return $record;
 }
@@ -712,7 +875,8 @@ function fetch_compensatory_notification_context(PDO $pdo, int $id): ?array
             c.start_date AS startDate,
             c.end_date AS endDate,
             COALESCE(c.remarks, "") AS remarks,
-            COALESCE(c.rejected_note, "") AS rejectedNote
+            COALESCE(c.rejected_note, "") AS rejectedNote,
+            COALESCE(c.rejected_by_role, "") AS rejectedByRole
          FROM compensatory c
          INNER JOIN employees e ON e.id = c.employee_id
          LEFT JOIN divisions d ON d.id = e.division_id
@@ -737,6 +901,7 @@ function fetch_compensatory_notification_context(PDO $pdo, int $id): ?array
     $record['endDate'] = compensatory_text($record['endDate'] ?? '');
     $record['remarks'] = compensatory_text($record['remarks'] ?? '');
     $record['rejectedNote'] = compensatory_text($record['rejectedNote'] ?? '');
+    $record['rejectedByRole'] = compensatory_text($record['rejectedByRole'] ?? '');
 
     return $record;
 }
@@ -746,13 +911,13 @@ function send_compensatory_rejection_notification(PDO $pdo, int $id): ?string
     $record = fetch_compensatory_notification_context($pdo, $id);
 
     if ($record === null) {
-        return 'Compensatory request rejected, but employee details could not be loaded for email notification.';
+        return 'Compensatory request disapproved, but employee details could not be loaded for email notification.';
     }
 
     $employeeEmail = compensatory_text($record['employeeEmail'] ?? '');
 
     if ($employeeEmail === '' || filter_var($employeeEmail, FILTER_VALIDATE_EMAIL) === false) {
-        return 'Compensatory request rejected, but no valid employee email address is available.';
+        return 'Compensatory request disapproved, but no valid employee email address is available.';
     }
 
     /*
@@ -776,7 +941,7 @@ function send_compensatory_rejection_notification(PDO $pdo, int $id): ?string
         );
     } catch (Throwable $exception) {
         error_log('Compensatory rejection email error: ' . $exception->getMessage());
-        return 'Compensatory request rejected, but the rejection email could not be sent.';
+        return 'Compensatory request disapproved, but the disapproval email could not be sent.';
     }
 
     return null;
@@ -784,7 +949,11 @@ function send_compensatory_rejection_notification(PDO $pdo, int $id): ?string
 
 function list_compensatory(PDO $pdo, array $sessionUser): void
 {
-    $employeeScopeId = compensatory_can_view_all($sessionUser) ? null : resolve_compensatory_session_employee_id($pdo, $sessionUser);
+    $scopes = compensatory_read_scopes($pdo, $sessionUser);
+    $employeeScopeId = $scopes['employeeId'];
+    $divisionScopeId = $scopes['divisionId'];
+    $roleKey = compensatory_role_key($sessionUser);
+    $exactRoleKey = user_exact_role_key($sessionUser);
 
     $sql = 'SELECT
                 c.id,
@@ -796,25 +965,30 @@ function list_compensatory(PDO $pdo, array $sessionUser): void
                 TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
                 des.name AS position,
                 d.name AS division,
+                ' . employee_role_name_subselect() . ' AS employeeRole,
                 c.hours_applied AS hoursApplied,
                 c.coc_balance_hours AS cocBalanceHours,
                 COALESCE(c.unpaid_hours, 0) AS unpaidHours,
                 c.start_date AS startDate,
                 c.end_date AS endDate,
                 c.status,
+                c.approval_route AS approvalRoute,
                 c.approved_by AS approvedBy,
                 approver.username AS approvedByUsername,
                 c.endorsed_by_employee_id AS endorsedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(endorsed_employee.first_name, " ", COALESCE(endorsed_employee.middle_name, ""), " ", endorsed_employee.last_name)), ""), "") AS endorsedByName,
+                COALESCE(NULLIF(TRIM(endorsed_employee.designation), ""), endorsed_designation.name, "") AS endorsedByPosition,
                 c.endorsed_at AS endorsedAt,
                 c.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(reviewed_employee.first_name, " ", COALESCE(reviewed_employee.middle_name, ""), " ", reviewed_employee.last_name)), ""), "") AS reviewedByName,
+                COALESCE(NULLIF(TRIM(reviewed_employee.designation), ""), reviewed_designation.name, "") AS reviewedByPosition,
                 c.reviewed_at AS reviewedAt,
                 c.approved_by_employee_id AS approvedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(approved_employee.first_name, " ", COALESCE(approved_employee.middle_name, ""), " ", approved_employee.last_name)), ""), "") AS approvedByName,
                 c.approved_at AS approvedAt,
                 c.remarks,
                 COALESCE(c.rejected_note, "") AS rejectedNote,
+                COALESCE(c.rejected_by_role, "") AS rejectedByRole,
                 DATE(c.created_at) AS dateFiled,
                 c.created_at AS createdAt,
                 c.updated_at AS updatedAt
@@ -824,7 +998,9 @@ function list_compensatory(PDO $pdo, array $sessionUser): void
             LEFT JOIN designations des ON des.id = e.designation_id
             LEFT JOIN users approver ON approver.id = c.approved_by
             LEFT JOIN employees endorsed_employee ON endorsed_employee.id = c.endorsed_by_employee_id
+            LEFT JOIN designations endorsed_designation ON endorsed_designation.id = endorsed_employee.designation_id
             LEFT JOIN employees reviewed_employee ON reviewed_employee.id = c.reviewed_by_employee_id
+            LEFT JOIN designations reviewed_designation ON reviewed_designation.id = reviewed_employee.designation_id
             LEFT JOIN employees approved_employee ON approved_employee.id = c.approved_by_employee_id
             WHERE c.is_archived = :is_archived';
 
@@ -833,6 +1009,54 @@ function list_compensatory(PDO $pdo, array $sessionUser): void
         $sql .= ' AND c.employee_id = :employee_scope_id';
         $params[':employee_scope_id'] = $employeeScopeId;
     }
+    if ($divisionScopeId !== null) {
+        $sql .= ' AND e.division_id = :division_scope_id';
+        $params[':division_scope_id'] = $divisionScopeId;
+    }
+
+    /* Direct-route filings bypass the ordinary Division Chief desk. */
+    if ($exactRoleKey !== 'chiefadmin' && $roleKey === 'chief') {
+        $sql .= ' AND c.approval_route <> :chief_admin_route';
+        $params[':chief_admin_route'] = COMPENSATORY_APPROVAL_ROUTE_CHIEF_ADMIN;
+    }
+
+    /*
+     * Downstream desks must not see a request before the preceding signature sends it forward.
+     * Terminal records remain visible only when they reached that desk, preserving its history
+     * without leaking a Division-Chief-pending filing to Chief Admin or the Director.
+     *
+     * The desk's own filing is the exception: it is theirs to follow from the moment it is filed,
+     * under "View My CTO", whichever desk it is currently sitting on.
+     */
+    if ($exactRoleKey === 'chiefadmin' || in_array($roleKey, ['hrhead', 'hrstaff', 'regionaldirector'], true)) {
+        $ownEmployeeId = compensatory_find_session_employee_id($pdo, $sessionUser);
+        $params[':own_employee_id'] = $ownEmployeeId ?? 0;
+    }
+
+    if ($exactRoleKey === 'chiefadmin') {
+        $sql .= ' AND (
+            c.employee_id = :own_employee_id
+            OR c.approval_route = :direct_chief_admin_route
+            OR (
+                c.approval_route <> :non_direct_chief_admin_route
+                AND (
+                    c.status IN ("Endorsed", "Reviewed", "Approved")
+                    OR (c.status = "Rejected" AND LOWER(COALESCE(c.rejected_by_role, "")) IN ("chiefadmin", "regionaldirector"))
+                )
+            )
+        )';
+        $params[':direct_chief_admin_route'] = COMPENSATORY_APPROVAL_ROUTE_CHIEF_ADMIN;
+        $params[':non_direct_chief_admin_route'] = COMPENSATORY_APPROVAL_ROUTE_CHIEF_ADMIN;
+    } elseif ($roleKey === 'hrhead' || $roleKey === 'hrstaff') {
+        $sql .= ' AND c.employee_id = :own_employee_id';
+    } elseif ($roleKey === 'regionaldirector') {
+        $sql .= ' AND (
+            c.employee_id = :own_employee_id
+            OR c.status IN ("Reviewed", "Approved")
+            OR (c.status = "Rejected" AND LOWER(COALESCE(c.rejected_by_role, "")) = "regionaldirector")
+        )';
+    }
+
     $sql .= ' ORDER BY c.created_at DESC, c.id DESC';
 
     $statement = $pdo->prepare($sql);
@@ -847,21 +1071,25 @@ function list_compensatory(PDO $pdo, array $sessionUser): void
             ? (int)$record['endorsedByEmployeeRecordId']
             : null;
         $record['endorsedByName'] = compensatory_text($record['endorsedByName'] ?? '');
+        $record['endorsedByPosition'] = compensatory_text($record['endorsedByPosition'] ?? '');
         $record['reviewedByEmployeeRecordId'] = $record['reviewedByEmployeeRecordId'] !== null
             ? (int)$record['reviewedByEmployeeRecordId']
             : null;
         $record['reviewedByName'] = compensatory_text($record['reviewedByName'] ?? '');
+        $record['reviewedByPosition'] = compensatory_text($record['reviewedByPosition'] ?? '');
         $record['approvedByEmployeeRecordId'] = $record['approvedByEmployeeRecordId'] !== null
             ? (int)$record['approvedByEmployeeRecordId']
             : null;
         $record['approvedByName'] = compensatory_text($record['approvedByName'] ?? '');
         $record['position'] = compensatory_text($record['position'] ?? '');
         $record['status'] = compensatory_status_to_database($record['status'] ?? '');
+        $record['approvalRoute'] = normalize_compensatory_approval_route($record['approvalRoute'] ?? '');
         $record['hoursApplied'] = (float)$record['hoursApplied'];
         $record['cocBalanceHours'] = $record['cocBalanceHours'] !== null ? (float)$record['cocBalanceHours'] : null;
         $record['unpaidHours'] = (float)($record['unpaidHours'] ?? 0);
         $record['isLeaveWithoutPay'] = $record['unpaidHours'] > 0.001;
         $record['rejectedNote'] = compensatory_text($record['rejectedNote'] ?? '');
+        $record['rejectedByRole'] = compensatory_text($record['rejectedByRole'] ?? '');
     }
     unset($record);
 
@@ -871,13 +1099,34 @@ function list_compensatory(PDO $pdo, array $sessionUser): void
     ]);
 }
 
+/** A Chief files compensatory requests only for employees in their own division (themselves included). */
+function assert_compensatory_employee_in_chief_division(PDO $pdo, array $sessionUser, int $employeeId): void
+{
+    if (compensatory_role_key($sessionUser) !== 'chief') {
+        return;
+    }
+
+    $statement = $pdo->prepare('SELECT division_id FROM employees WHERE id = :id AND is_archived = 0 LIMIT 1');
+    $statement->execute([':id' => $employeeId]);
+
+    if ((int)$statement->fetchColumn() !== compensatory_session_division_id($pdo, $sessionUser)) {
+        json_response([
+            'success' => false,
+            'message' => 'Chiefs may only file compensatory requests for employees in their own division.',
+        ], 403);
+    }
+}
+
 function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
 {
     $employeeId = resolve_compensatory_employee_id($pdo, $body, $sessionUser);
+    assert_compensatory_employee_in_chief_division($pdo, $sessionUser, $employeeId);
+    $approvalRoute = compensatory_approval_route_for_employee($pdo, $employeeId);
     $hoursApplied = compensatory_number_or_null($body['hoursApplied'] ?? $body['hours_applied'] ?? null);
     $startDate = compensatory_date_or_null($body['startDate'] ?? $body['start_date'] ?? null);
     $endDate = compensatory_date_or_null($body['endDate'] ?? $body['end_date'] ?? null);
     $remarks = compensatory_text($body['remarks'] ?? '');
+    $selectedDates = unpack_selected_dates($remarks)['dates'];
 
     $errors = [];
     if ($hoursApplied === null) {
@@ -892,19 +1141,24 @@ function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
         $errors[] = 'Inclusive end date is required.';
     }
     /*
-     * The form's calendar already starts at today, but that only constrains the picker -- a crafted
-     * request still reaches here, so the rule is enforced again rather than trusted. Applies to every
-     * role: no account may back-date a filing. Compared as 'Y-m-d' text, which both sides guarantee.
+     * There is deliberately no past-date rule here any more.
+     *
+     * Compensatory time off is not applied for ahead of the days it covers the way leave is: the
+     * employee takes the day off against credits they have already earned, and the filing catches up
+     * afterwards. Refusing a date behind today made the ordinary case impossible to record, so the
+     * rule went from the picker, the form and here together. The ordering and balance checks below
+     * are what still constrain a filing.
      */
-    $today = date('Y-m-d');
-    if ($startDate !== null && $startDate < $today) {
-        $errors[] = 'Inclusive start date cannot be in the past. Choose today or a later date.';
-    }
-    if ($endDate !== null && $endDate < $today) {
-        $errors[] = 'Inclusive end date cannot be in the past. Choose today or a later date.';
-    }
     if ($startDate !== null && $endDate !== null && $endDate < $startDate) {
         $errors[] = 'Inclusive end date must not be earlier than the start date.';
+    }
+    if ($selectedDates !== [] && $startDate !== null && $endDate !== null) {
+        $selectedStartDate = (string)($selectedDates[0]['date'] ?? '');
+        $selectedEndDate = (string)($selectedDates[count($selectedDates) - 1]['date'] ?? '');
+
+        if ($startDate !== $selectedStartDate || $endDate !== $selectedEndDate) {
+            $errors[] = 'The selected CTO leave dates do not match the submitted inclusive date range.';
+        }
     }
 
     if ($errors !== []) {
@@ -931,8 +1185,6 @@ function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
      * four hours and still carry a week of dates in its remarks, and the balance check below
      * would wave it through.
      */
-    $selectedDates = unpack_selected_dates($remarks)['dates'];
-
     if ($selectedDates !== []) {
         $expectedHours = round(selected_dates_total($selectedDates) * COMPENSATORY_HOURS_PER_DAY, 2);
 
@@ -961,6 +1213,8 @@ function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
     $unpaidHours = round((float)$hoursApplied - $payableCredits, 2);
     $unpaidHours = $unpaidHours > 0.001 ? $unpaidHours : 0.0;
 
+    throttle_filing_request($pdo, $sessionUser);
+
     /*
      * The balance read a moment ago is also what the form certifies, so it is stored with the row.
      * It is the credits standing before this filing is counted, which is what "COC as of <date
@@ -968,9 +1222,9 @@ function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
      */
     $statement = $pdo->prepare(
         'INSERT INTO compensatory
-            (employee_id, hours_applied, coc_balance_hours, unpaid_hours, start_date, end_date, status, remarks)
+            (employee_id, hours_applied, coc_balance_hours, unpaid_hours, start_date, end_date, status, approval_route, remarks)
          VALUES
-            (:employee_id, :hours_applied, :coc_balance_hours, :unpaid_hours, :start_date, :end_date, "Pending", :remarks)'
+            (:employee_id, :hours_applied, :coc_balance_hours, :unpaid_hours, :start_date, :end_date, "Pending", :approval_route, :remarks)'
     );
     $statement->execute([
         ':employee_id' => $employeeId,
@@ -979,14 +1233,15 @@ function create_compensatory(PDO $pdo, array $body, array $sessionUser): void
         ':unpaid_hours' => number_format($unpaidHours, 2, '.', ''),
         ':start_date' => $startDate,
         ':end_date' => $endDate,
+        ':approval_route' => $approvalRoute,
         ':remarks' => $remarks !== '' ? $remarks : null,
     ]);
 
     $recordId = (int)$pdo->lastInsertId();
-    $scopeId = compensatory_can_view_all($sessionUser) ? null : resolve_compensatory_session_employee_id($pdo, $sessionUser);
+    $scopes = compensatory_read_scopes($pdo, $sessionUser);
     json_response([
         'success' => true,
-        'record' => fetch_compensatory($pdo, $recordId, $scopeId),
+        'record' => fetch_compensatory($pdo, $recordId, $scopes['employeeId'], $scopes['divisionId']),
     ], 201);
 }
 
@@ -1006,12 +1261,20 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
     if ($status === 'Rejected' && $rejectedNote === '') {
         json_response([
             'success' => false,
-            'message' => 'Rejected note is required.',
+            'message' => 'Disapproval note is required.',
         ], 422);
     }
 
+    $scopes = compensatory_read_scopes($pdo, $sessionUser);
+    if (fetch_compensatory($pdo, $id, $scopes['employeeId'], $scopes['divisionId']) === null) {
+        json_response([
+            'success' => false,
+            'message' => 'Compensatory request was not found.',
+        ], 404);
+    }
+
     $currentRecordStatement = $pdo->prepare(
-        'SELECT employee_id, status,
+        'SELECT employee_id, status, approval_route,
                 endorsed_by_employee_id, endorsed_at,
                 reviewed_by_employee_id, reviewed_at,
                 approved_by_employee_id, approved_at
@@ -1031,6 +1294,8 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
 
     $sessionEmployeeId = session_employee_record_id($pdo, $sessionUser);
     $currentStatus = compensatory_status_to_database($currentRecord['status'] ?? '');
+    $approvalRoute = normalize_compensatory_approval_route($currentRecord['approval_route'] ?? '');
+    $usesChiefAdminRoute = compensatory_uses_chief_admin_route($approvalRoute);
     $currentEndorsedByEmployeeId = (int)($currentRecord['endorsed_by_employee_id'] ?? 0);
     $currentReviewedByEmployeeId = (int)($currentRecord['reviewed_by_employee_id'] ?? 0);
     $currentApprovedByEmployeeId = (int)($currentRecord['approved_by_employee_id'] ?? 0);
@@ -1063,11 +1328,11 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
 
     /*
      * Every remaining decision belongs to an approver, and an approver may only act on the stage the
-     * request is actually sitting at — Chief on Pending, HR Head on Endorsed, Regional Director on
-     * Reviewed. Anyone else is told whose desk it is on rather than being allowed to sign out of turn.
+     * request is actually sitting at: Division Chief on standard Pending filings, Chief Admin on
+     * direct Pending or standard Endorsed filings, and Regional Director on Reviewed filings.
      */
-    if (!$isOwnCancellation && !compensatory_can_act_on($sessionUser, $currentStatus)) {
-        $waitingRole = compensatory_stage_role($currentStatus);
+    if (!$isOwnCancellation && !compensatory_can_act_on($sessionUser, $currentStatus, $approvalRoute)) {
+        $waitingRole = compensatory_stage_role($currentStatus, $approvalRoute);
 
         json_response([
             'success' => false,
@@ -1083,7 +1348,7 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
      * the Chief's endorsement, never the Director's signature.
      */
     if (in_array($status, ['Endorsed', 'Reviewed', 'Approved'], true)) {
-        $status = compensatory_stage_next_status($currentStatus) ?? $status;
+        $status = compensatory_stage_next_status($currentStatus, $approvalRoute) ?? $status;
 
         if ($sessionEmployeeId === null || $sessionEmployeeId <= 0) {
             json_response([
@@ -1094,15 +1359,15 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
     }
 
     /*
-     * Every signature on the CTO form -- the Chief's endorsement, HR Head's review, the Director's
-     * approval -- carries a solved captcha. Rejecting and cancelling do not; see the
+     * Every signature on the CTO form -- Chief/Chief Admin endorsement, Chief Admin review, or
+     * Director approval -- carries a solved captcha. Rejecting and cancelling do not; see the
      * approval_workflow entry in captcha-utils.php.
      *
      * Read after the stage resolution above rather than before it, so the gate follows the status
      * the request is actually going to move to and not the one the caller asked for.
      */
     if (in_array($status, ['Endorsed', 'Reviewed', 'Approved'], true)) {
-        require_approval_captcha($body);
+        require_approval_captcha($body, 'compensatory', $id);
     }
 
     $signerEmployeeId = $sessionEmployeeId !== null && $sessionEmployeeId > 0 ? $sessionEmployeeId : null;
@@ -1124,8 +1389,16 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
     }
 
     if ($status === 'Reviewed') {
-        $nextReviewedByEmployeeId = $signerEmployeeId;
-        $nextReviewedAt = $signedAt;
+        if ($usesChiefAdminRoute) {
+            /* On a direct route, Chief Admin is the Head of Office and signs the recommending slot. */
+            $nextEndorsedByEmployeeId = $signerEmployeeId;
+            $nextEndorsedAt = $signedAt;
+            $nextReviewedByEmployeeId = null;
+            $nextReviewedAt = null;
+        } else {
+            $nextReviewedByEmployeeId = $signerEmployeeId;
+            $nextReviewedAt = $signedAt;
+        }
         $nextApprovedByEmployeeId = null;
         $nextApprovedAt = null;
     }
@@ -1140,14 +1413,13 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
      * desk has an employee record to sign with, so the form never prints a time against no name.
      */
     if ($status === 'Rejected' && $signerEmployeeId !== null) {
-        $rejectingRole = compensatory_stage_role($currentStatus);
-
-        if ($rejectingRole === 'chief') {
+        /* The route and stage pick the signature slot even when Chief Admin is the signer. */
+        if ($currentStatus === 'Pending' || ($usesChiefAdminRoute && $currentStatus === 'Endorsed')) {
             $nextEndorsedByEmployeeId = $signerEmployeeId;
             $nextEndorsedAt = $signedAt;
         }
 
-        if ($rejectingRole === 'hrhead') {
+        if (!$usesChiefAdminRoute && $currentStatus === 'Endorsed') {
             $nextReviewedByEmployeeId = $signerEmployeeId;
             $nextReviewedAt = $signedAt;
         }
@@ -1163,6 +1435,7 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
          SET status = :status,
              approved_by = :approved_by,
              rejected_note = :rejected_note,
+             rejected_by_role = :rejected_by_role,
              endorsed_by_employee_id = :endorsed_by_employee_id,
              endorsed_at = :endorsed_at,
              reviewed_by_employee_id = :reviewed_by_employee_id,
@@ -1175,6 +1448,7 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
         ':status' => $status,
         ':approved_by' => $isOwnCancellation ? null : ((int)($sessionUser['id'] ?? 0) ?: null),
         ':rejected_note' => $status === 'Rejected' ? $rejectedNote : null,
+        ':rejected_by_role' => $status === 'Rejected' ? user_exact_role_key($sessionUser) : null,
         ':endorsed_by_employee_id' => $nextEndorsedByEmployeeId,
         ':endorsed_at' => $nextEndorsedAt,
         ':reviewed_by_employee_id' => $nextReviewedByEmployeeId,
@@ -1203,14 +1477,14 @@ function update_compensatory(PDO $pdo, array $body, array $sessionUser): void
 
     json_response([
         'success' => true,
-        'record' => fetch_compensatory($pdo, $id),
+        'record' => fetch_compensatory($pdo, $id, $scopes['employeeId'], $scopes['divisionId']),
         'emailNotification' => $status === 'Rejected'
             ? ($notificationWarning === null ? 'sent' : 'warning')
             : 'not_applicable',
         'message' => match ($status) {
-            'Rejected' => $notificationWarning ?? 'Compensatory request rejected and the employee was notified by email.',
-            'Endorsed' => 'Compensatory request approved by the Division Chief and forwarded to HR Head.',
-            'Reviewed' => 'Compensatory request approved by HR Head and forwarded to Regional Director for final approval.',
+            'Rejected' => $notificationWarning ?? 'Compensatory request disapproved and the employee was notified by email.',
+            'Endorsed' => 'Compensatory request approved by the Division Chief and forwarded to Chief Admin.',
+            'Reviewed' => 'Compensatory request approved by Chief Admin and forwarded to Regional Director for final approval.',
             'Approved' => 'Compensatory request approved by Regional Director.',
             'Cancelled' => 'Compensatory request cancelled.',
             default => 'Compensatory request updated.',
@@ -1222,7 +1496,7 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 function archive_compensatory(PDO $pdo, array $body, array $sessionUser, bool $archived): void
 {
-    if (!compensatory_can_manage($sessionUser)) {
+    if (!compensatory_can_archive($sessionUser)) {
         json_response([
             'success' => false,
             'message' => 'You are not allowed to archive compensatory requests.',
@@ -1230,12 +1504,25 @@ function archive_compensatory(PDO $pdo, array $body, array $sessionUser, bool $a
     }
 
     $id = (int)($body['id'] ?? 0);
+    $scopes = compensatory_read_scopes($pdo, $sessionUser);
+    $record = $id > 0 ? fetch_compensatory($pdo, $id, $scopes['employeeId'], $scopes['divisionId']) : null;
 
-    if ($id <= 0 || fetch_compensatory($pdo, $id) === null) {
+    if ($record === null) {
         json_response([
             'success' => false,
             'message' => 'Compensatory request not found.',
         ], 404);
+    }
+
+    if (
+        $archived
+        && compensatory_is_self_service_role($sessionUser)
+        && !in_array(strtolower((string)($record['status'] ?? '')), ['approved', 'rejected', 'cancelled'], true)
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'Only approved, rejected, or cancelled compensatory requests can be archived.',
+        ], 422);
     }
 
     set_record_archived($pdo, 'compensatory', 'id', $id, $archived, $sessionUser, 'Compensatory Request');
@@ -1243,13 +1530,14 @@ function archive_compensatory(PDO $pdo, array $body, array $sessionUser, bool $a
     json_response([
         'success' => true,
         'message' => $archived ? 'Compensatory request archived.' : 'Compensatory request restored.',
-        'record' => fetch_compensatory($pdo, $id),
+        'record' => fetch_compensatory($pdo, $id, $scopes['employeeId'], $scopes['divisionId']),
     ]);
 }
 
 try {
     ensure_compensatory_rejected_note_column($pdo);
     ensure_compensatory_reviewed_status($pdo);
+    ensure_compensatory_approval_route_column($pdo);
     ensure_compensatory_action_actor_columns($pdo);
     ensure_compensatory_action_timestamp_columns($pdo);
     ensure_compensatory_unpaid_hours_column($pdo);

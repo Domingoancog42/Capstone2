@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/two_factor.php';
+require_once __DIR__ . '/email-domain-policy.php';
 
 // Keeps the session open: this endpoint parks the pending-verification state in $_SESSION.
 $sessionUser = require_session_user(keepSessionOpen: true);
@@ -191,6 +192,7 @@ function email_verification_profile_payload(PDO $pdo, array $sessionUser): array
         'user' => $sessionUser,
         'emailVerification' => [
             'currentEmail' => (string)($userRow['email'] ?? ''),
+            'emailDomainPolicy' => email_domain_policy($pdo),
             'isVerified' => $emailVerifiedAt !== '',
             'status' => $emailVerifiedAt !== '' ? 'verified' : 'pending',
             'statusLabel' => $emailVerifiedAt !== '' ? 'Verified' : 'Pending Verification',
@@ -344,7 +346,7 @@ function email_verification_send_email(string $recipientEmail, string $displayNa
     $logoContentId = password_reset_embed_logo($mail);
     $mail->Body = email_verification_html_body($displayName, $code, $expiresInMinutes, $logoContentId);
     $mail->AltBody = email_verification_text_body($displayName, $code, $expiresInMinutes);
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 function email_verification_issue_code(PDO $pdo, array $sessionUser, string $targetEmail, bool $allowCurrentEmail, bool $enforceResendDelay): array
@@ -384,6 +386,17 @@ function email_verification_issue_code(PDO $pdo, array $sessionUser, string $tar
             'success' => false,
             'message' => 'New email cannot match your current email.',
         ], 422);
+    }
+
+    if (!$allowCurrentEmail) {
+        $emailPolicyViolation = email_domain_policy_violation($pdo, $targetEmail);
+
+        if ($emailPolicyViolation !== null) {
+            json_response([
+                'success' => false,
+                'message' => $emailPolicyViolation,
+            ], 422);
+        }
     }
 
     if (email_verification_email_in_use($pdo, $targetEmail, $userId, $employeeRecordId)) {
@@ -473,6 +486,19 @@ function email_verification_verify_code(PDO $pdo, array $sessionUser, string $co
     $currentEmail = email_verification_normalize_email($userRow['email'] ?? '');
     $targetEmail = email_verification_normalize_email($codeRow['newEmail'] ?? '');
     $expiresAt = datetime_timestamp($codeRow['expiresAt'] ?? null);
+
+    if ($targetEmail !== $currentEmail) {
+        $emailPolicyViolation = email_domain_policy_violation($pdo, $targetEmail);
+
+        if ($emailPolicyViolation !== null) {
+            email_verification_invalidate_open($pdo, $userId);
+            json_response([
+                'success' => false,
+                'message' => $emailPolicyViolation,
+                'emailVerification' => email_verification_profile_payload($pdo, $sessionUser)['emailVerification'],
+            ], 422);
+        }
+    }
 
     if ($expiresAt === null || $expiresAt < time()) {
         email_verification_invalidate_open($pdo, $userId);

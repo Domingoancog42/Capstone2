@@ -1,11 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import FormQrCode from "../UI/FormQrCode";
+import { toast } from "react-hot-toast";
+import LeaveApplicationSheet, {
+  downloadLeaveApplicationPdf,
+  printLeaveApplicationSheet,
+} from "./LeaveApplicationSheet";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
 import { CSC_FORM_LEAVE_TYPES, mergeCscLeaveTypes } from "../../data/leaveTypes";
 import { formatDateDisplay, getDurationDays } from "../../utils/leaveHelpers";
-import { buildLeaveRequestQrPayload, buildLeaveRequestReference } from "../../utils/formQrCode";
-import { formatSelectedDatesSummary } from "../../utils/dateSelection";
+import { buildLeaveRequestQrPayload } from "../../utils/formQrCode";
+import { getSelectedDatesRange } from "../../utils/dateSelection";
 import { splitEmployeeName } from "../../utils/employeeName";
 import { unpackLeaveReason } from "../../utils/leaveRequestDetails";
 import { formatSignatureTimestamp } from "../../utils/signatureTimestamp";
@@ -86,11 +92,23 @@ function formatInclusiveDates(startDate, endDate) {
     return "";
   }
 
-  if (startDate && endDate && startDate === endDate) {
-    return formatDateDisplay(startDate);
+  if (!startDate || !endDate || startDate === endDate) {
+    return formatDateDisplay(startDate || endDate);
   }
 
-  return `${formatDateDisplay(startDate)} to ${formatDateDisplay(endDate)}`;
+  return `${formatDateDisplay(startDate)} - ${formatDateDisplay(endDate)}`;
+}
+
+function formatMonthDisplay(value) {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(value || ""));
+  if (!match) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("en-PH", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(Number(match[1]), Number(match[2]) - 1, 1));
 }
 
 function formatCreditValue(value) {
@@ -124,7 +142,7 @@ function resolvePendingBalance(balance, chargedDays, requestStatus) {
   }
 
   const remaining = Number(balance.remaining ?? balance.total ?? 0);
-  const isAwaitingAction = requestStatus === "pending" || requestStatus === "reviewed";
+  const isAwaitingAction = ["submitted", "pending", "endorsed", "reviewed", "chief reviewed", "chief_reviewed"].includes(requestStatus);
   const projectedRemaining = isAwaitingAction
     ? Math.max(0, remaining - chargedDays)
     : Math.max(0, remaining);
@@ -132,7 +150,7 @@ function resolvePendingBalance(balance, chargedDays, requestStatus) {
   return formatCreditValue(projectedRemaining);
 }
 
-function buildFormData(request, employees, leaveCreditSnapshot = null, availableLeaveTypes = CSC_FORM_LEAVE_TYPES) {
+export function buildFormData(request, employees, leaveCreditSnapshot = null, availableLeaveTypes = CSC_FORM_LEAVE_TYPES) {
   const employeeRecord = findEmployeeRecord(request, employees);
   const nameParts = splitEmployeeName(request?.employeeName || employeeRecord?.fullName || "");
   const matchedLeaveType = mapLeaveType(request?.leaveType, availableLeaveTypes);
@@ -168,7 +186,8 @@ function buildFormData(request, employees, leaveCreditSnapshot = null, available
   const paidDays = floorToHalfDay(Math.min(toDayCount(request?.paidDays, requestedDays), requestedDays));
   const unpaidDays = Math.max(0, toDayCount(request?.unpaidDays, 0), requestedDays - paidDays);
   const certifiedChargedDays = isRejected ? 0 : paidDays;
-  const hasActionableStatus = ["pending", "reviewed", "approved"].includes(normalizedStatus);
+  const hasActionableStatus = ["submitted", "pending", "endorsed", "reviewed", "chief reviewed", "chief_reviewed", "approved"].includes(normalizedStatus);
+  const hasChiefApproval = ["chief reviewed", "chief_reviewed", "approved"].includes(normalizedStatus);
   /*
    * 7.A certifies the credits this application draws from, so only the applied leave type's column
    * is filled. Leaving the other column blank keeps unrelated balances off the certification.
@@ -178,6 +197,13 @@ function buildFormData(request, employees, leaveCreditSnapshot = null, available
   const creditsAsOf = leaveCreditSnapshot?.creditsAsOf
     ? toDateInputValue(leaveCreditSnapshot.creditsAsOf)
     : "";
+  const selectedDateRange = getSelectedDatesRange(details.leaveDays);
+  const inclusiveDateRange = normalizedLeaveType === "maternity leave" && details.maternityMonth
+    ? formatMonthDisplay(details.maternityMonth)
+    : formatInclusiveDates(
+      selectedDateRange.startDate || request?.startDate,
+      selectedDateRange.endDate || request?.endDate
+    );
 
   return {
     office: request?.division || employeeRecord?.department || "",
@@ -209,11 +235,10 @@ function buildFormData(request, employees, leaveCreditSnapshot = null, available
     leaveDetailOtherTerminal: false,
     numberOfDays: String(numberOfDays || ""),
     /*
-     * A request covers the days it actually named, which can skip working days inside its span, so
-     * the exact list is what 6.C reports. Requests filed as a plain range still show start to end.
-     */
-    inclusiveDates: formatSelectedDatesSummary(details.leaveDays)
-      || formatInclusiveDates(request?.startDate, request?.endDate),
+     * The form reports the inclusive span only. Exact selected working days remain in the request
+     * metadata for duration and overlap checks, without crowding the printed CSC form.
+    */
+    inclusiveDateRange,
     commutation: "",
     creditsAsOf,
     vlEarned: chargesVacationCredits ? formatCreditValue(vacationCredits?.total) : "",
@@ -222,253 +247,14 @@ function buildFormData(request, employees, leaveCreditSnapshot = null, available
     slEarned: chargesSickCredits ? formatCreditValue(sickCredits?.total) : "",
     slLess: chargesSickCredits ? formatCreditValue(certifiedChargedDays) : "",
     slBalance: chargesSickCredits ? resolvePendingBalance(sickCredits, certifiedChargedDays, normalizedStatus) : "",
-    recommendation: isRejected ? "disapproved" : "",
+    recommendation: isRejected ? "disapproved" : (hasChiefApproval ? "approved" : ""),
     disapprovalReason: isRejected ? rejectedNote : "",
     approvedDaysPay: hasActionableStatus ? formatCreditValue(paidDays) : "",
     approvedDaysNoPay: hasActionableStatus && unpaidDays > 0 ? formatCreditValue(unpaidDays) : "",
     approvedOthers: "",
-    disapprovedReason: isRejected ? rejectedNote : "",
+    /* The rejection note is already printed under 7.B Recommendation. */
+    disapprovedReason: "",
   };
-}
-
-const styles = {
-  wrap: {
-    fontFamily: "Arial, sans-serif",
-    fontSize: "11px",
-    width: "100%",
-    maxWidth: "860px",
-    margin: 0,
-    background: "#fff",
-    border: "2px solid #000",
-    boxShadow: "0 25px 60px rgba(15, 23, 42, 0.25)",
-  },
-  topBar: {
-    background: "#e5e5e5",
-    padding: "8px 12px",
-    borderBottom: "1px solid #999",
-    fontSize: "10px",
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: "20px",
-    padding: "12px",
-    borderBottom: "2px solid #000",
-    textAlign: "center",
-  },
-  logoImage: {
-    width: "65px",
-    height: "65px",
-    objectFit: "contain",
-    flexShrink: 0,
-  },
-  formTitle: {
-    marginTop: "8px",
-    fontSize: "17px",
-    fontWeight: "bold",
-    textDecoration: "underline",
-  },
-  row: {
-    display: "flex",
-    width: "100%",
-    borderBottom: "1px solid #000",
-  },
-  cell: {
-    padding: "6px 8px",
-    borderRight: "1px solid #000",
-    boxSizing: "border-box",
-  },
-  label: {
-    fontWeight: "bold",
-    display: "block",
-    marginBottom: "4px",
-    fontSize: "9px",
-    textTransform: "uppercase",
-  },
-  sectionTitle: {
-    background: "#f2f2f2",
-    textAlign: "center",
-    fontWeight: "bold",
-    padding: "5px",
-    borderBottom: "1px solid #000",
-  },
-  input: {
-    border: "none",
-    borderBottom: "1px solid #aaa",
-    outline: "none",
-    fontSize: "11px",
-    fontWeight: "bold",
-    textTransform: "uppercase",
-    width: "100%",
-    background: "transparent",
-    color: "#111827",
-  },
-  checklistItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: "5px",
-    marginBottom: "4px",
-    fontSize: "11px",
-  },
-  selectionBox: {
-    width: "13px",
-    height: "13px",
-    border: "1px solid #000",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    fontSize: "11px",
-    fontWeight: "bold",
-    lineHeight: 1,
-    color: "#111827",
-  },
-  subLabel: {
-    fontStyle: "italic",
-    margin: "8px 0 4px",
-    fontWeight: "bold",
-    fontSize: "10px",
-  },
-  creditsTable: {
-    width: "100%",
-    borderCollapse: "collapse",
-    marginTop: "5px",
-  },
-  sigLine: {
-    borderTop: "1px solid #000",
-    width: "85%",
-    margin: "5px auto 0",
-    fontWeight: "bold",
-    fontSize: "10px",
-    textAlign: "center",
-    paddingTop: "2px",
-  },
-  signaturePreview: {
-    minHeight: "40px",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: "2px",
-    marginBottom: "0",
-  },
-  signatureImage: {
-    maxWidth: "170px",
-    maxHeight: "44px",
-    objectFit: "contain",
-    display: "block",
-  },
-  signatureTimestamp: {
-    color: "#111827",
-    fontSize: "9px",
-    fontStyle: "italic",
-    fontWeight: "bold",
-    lineHeight: 1.2,
-    textAlign: "center",
-  },
-  signatureCaption: {
-    textAlign: "center",
-    fontSize: "10px",
-    marginTop: "2px",
-  },
-  signatureName: {
-    width: "85%",
-    margin: "0 auto",
-    fontWeight: "bold",
-    fontSize: "10px",
-    textAlign: "center",
-    minHeight: "12px",
-  },
-  signatureUnderline: {
-    width: "85%",
-    margin: "1px auto 0",
-    borderTop: "1px solid #000",
-  },
-  qrFooter: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "flex-end",
-    gap: "10px",
-    borderTop: "1px solid #000",
-    padding: "6px 8px",
-  },
-  qrFooterNote: {
-    fontSize: "8px",
-    lineHeight: 1.4,
-    color: "#334155",
-    textAlign: "left",
-    maxWidth: "300px",
-    alignSelf: "center",
-    marginRight: "auto",
-  },
-};
-
-const tdStyle = {
-  border: "1px solid #000",
-  padding: "4px",
-  textAlign: "center",
-  fontSize: "10px",
-};
-
-const inputWithoutUnderlineStyle = {
-  ...styles.input,
-  borderBottom: "none",
-};
-
-function ReadOnlyInput(props) {
-  return <input {...props} readOnly />;
-}
-
-function SelectionIndicator({ checked = false }) {
-  return (
-    <input
-      type="checkbox"
-      checked={checked}
-      readOnly
-      aria-hidden="true"
-      tabIndex={-1}
-      style={{
-        width: "13px",
-        height: "13px",
-        margin: 0,
-        flexShrink: 0,
-        accentColor: "#111827",
-        pointerEvents: "none",
-      }}
-    />
-  );
-}
-
-function SignatureBlock({
-  signatureDataUrl = "",
-  fallbackText = "",
-  name = "",
-  caption = "",
-}) {
-  return (
-    <div style={{ marginTop: "20px", textAlign: "center" }}>
-      <div style={styles.signaturePreview}>
-        {signatureDataUrl ? (
-          <>
-            <img
-              src={signatureDataUrl}
-              alt={`${name || "Authorized"} signature`}
-              style={styles.signatureImage}
-            />
-            {fallbackText ? (
-              <div style={styles.signatureTimestamp}>{fallbackText}</div>
-            ) : null}
-          </>
-        ) : fallbackText ? (
-          <div style={styles.signatureTimestamp}>{fallbackText}</div>
-        ) : null}
-      </div>
-      <div style={styles.signatureName}>{name}</div>
-      <div style={styles.signatureUnderline} />
-      <div style={styles.signatureCaption}>{caption}</div>
-    </div>
-  );
 }
 
 export default function LeaveFormModal({
@@ -478,6 +264,7 @@ export default function LeaveFormModal({
   reviewer = null,
   showRegionalDirectorApproverSignature = false,
   autoPrint = false,
+  autoDownload = false,
   onClose,
 }) {
   const [visible, setVisible] = useState(false);
@@ -486,18 +273,29 @@ export default function LeaveFormModal({
   const [reviewerSignature, setReviewerSignature] = useState("");
   const [savedHrmoSignature, setSavedHrmoSignature] = useState("");
   const [savedRegionalDirectorSignature, setSavedRegionalDirectorSignature] = useState("");
+  const [savedChiefSignature, setSavedChiefSignature] = useState("");
   const [leaveCredits, setLeaveCredits] = useState(null);
   const [configuredLeaveTypes, setConfiguredLeaveTypes] = useState([]);
   const printRef = useRef(null);
+  const { showESignatures, showTimestamps, loading: signatorySettingsLoading } = useFilingSignatories();
   /*
-   * Opened from the Print action in the table rather than by a reader: print the form once every
-   * load below has landed, then hand back to the caller so the sheet does not linger on screen.
-   * `handlePrint` is only called from inside the frame callback, well after it is initialised.
+   * Opened from the Print or Download PDF action in the table rather than by a reader: print or save
+   * the form once every load below has landed, then hand back to the caller so the sheet does not
+   * linger on screen. `handlePrint` and `handleDownloadPdf` are only called from inside the frame
+   * callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: open && autoPrint,
-    onPrint: () => handlePrint(),
-    onDone: onClose,
+    active: open && !signatorySettingsLoading && (autoPrint || autoDownload),
+    /* The PDF is saved asynchronously, so a download closes the sheet only once the file is out. */
+    onPrint: () => {
+      if (autoDownload) {
+        void handleDownloadPdf().finally(() => onClose?.());
+        return;
+      }
+
+      handlePrint();
+    },
+    onDone: autoDownload ? undefined : onClose,
   });
 
   useEffect(() => {
@@ -671,6 +469,35 @@ export default function LeaveFormModal({
   useEffect(() => {
     let mounted = true;
 
+    const loadSavedChiefSignature = async () => {
+      if (!open || !resolvedRequest?.chiefReviewedByEmployeeRecordId) {
+        setSavedChiefSignature("");
+        return;
+      }
+
+      try {
+        const result = await getEmployeeSignature(resolvedRequest.chiefReviewedByEmployeeRecordId);
+        if (!mounted) {
+          return;
+        }
+
+        setSavedChiefSignature(String(result?.employee?.signatureDataUrl || ""));
+      } catch {
+        if (mounted) {
+          setSavedChiefSignature("");
+        }
+      }
+    };
+
+    void trackLoad(loadSavedChiefSignature);
+    return () => {
+      mounted = false;
+    };
+  }, [open, resolvedRequest?.chiefReviewedByEmployeeRecordId, trackLoad]);
+
+  useEffect(() => {
+    let mounted = true;
+
     const loadLeaveCredits = async () => {
       if (!open || !resolvedRequest?.employeeRecordId) {
         setLeaveCredits(null);
@@ -761,6 +588,17 @@ export default function LeaveFormModal({
     () => Boolean(resolvedRequest?.reviewedByEmployeeRecordId || resolvedRequest?.reviewedByName),
     [resolvedRequest?.reviewedByEmployeeRecordId, resolvedRequest?.reviewedByName]
   );
+  /*
+   * 7.A is captioned with the signing HR Head's own designation (or position, when they have none),
+   * not a fixed title. Before anyone has signed, the blank line names the title of whoever holds the
+   * HR Head desk now; "HRMO" is only the last resort when neither is on file.
+   */
+  const hrmoCaption = useMemo(() => {
+    const position = hasHrmoSignatureBlock
+      ? resolvedRequest?.reviewedByPosition
+      : resolvedRequest?.hrHeadPosition;
+    return String(position || "").trim() || "HRMO";
+  }, [hasHrmoSignatureBlock, resolvedRequest?.hrHeadPosition, resolvedRequest?.reviewedByPosition]);
   const hrmoTimestampLabel = useMemo(() => {
     const hasSavedReviewer = Boolean(resolvedRequest?.reviewedByEmployeeRecordId || resolvedRequest?.reviewedByName);
     return hasSavedReviewer
@@ -773,6 +611,25 @@ export default function LeaveFormModal({
     resolvedRequest?.reviewedByName,
     resolvedRequest?.updatedAt,
   ]);
+  /*
+   * 7.B is the division Chief's recommendation. The Chief signs it whether they approve or reject,
+   * and the signature is captioned with their own designation (or position) and division code ("Unit Head,
+   * GD"), as the printed CSC form reads "Chief, MMD".
+   */
+  const hasChiefSignatureBlock = Boolean(
+    resolvedRequest?.chiefReviewedByEmployeeRecordId || resolvedRequest?.chiefReviewedByName
+  );
+  const chiefName = String(resolvedRequest?.chiefReviewedByName || "").trim();
+  const chiefCaption = [
+    String(resolvedRequest?.chiefReviewedByPosition || "").trim() || "Division Chief",
+    String(resolvedRequest?.chiefReviewedByDivisionCode || "").trim(),
+  ].filter(Boolean).join(", ");
+  const chiefTimestampLabel = useMemo(
+    () => (hasChiefSignatureBlock
+      ? formatSignatureTimestamp(resolvedRequest?.chiefReviewedAt || resolvedRequest?.updatedAt)
+      : ""),
+    [hasChiefSignatureBlock, resolvedRequest?.chiefReviewedAt, resolvedRequest?.updatedAt]
+  );
   const regionalDirectorName = useMemo(
     () => String(
       resolvedRequest?.approvedByName
@@ -826,141 +683,38 @@ export default function LeaveFormModal({
       showRegionalDirectorApproverSignature,
     ]
   );
-  const leaveReference = useMemo(
-    () => buildLeaveRequestReference(resolvedRequest),
-    [resolvedRequest]
-  );
   const qrPayload = useMemo(
     () => buildLeaveRequestQrPayload(resolvedRequest, formData),
     [formData, resolvedRequest]
   );
 
-  const handlePrint = () => {
-    if (!printRef.current) {
-      return;
+  const handlePrint = () => printLeaveApplicationSheet(printRef.current, { title: "Application for Leave" });
+
+  /* The Download PDF row action: the sheet Print would send to the printer, saved as a file instead. */
+  const handleDownloadPdf = async () => {
+    const toastId = toast.loading("Preparing the leave form PDF...");
+    const employeeName = String(resolvedRequest?.employeeName || "")
+      .trim()
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+    try {
+      await downloadLeaveApplicationPdf(
+        printRef.current,
+        `Leave-Form-${employeeName || "Employee"}-${resolvedRequest?.id || "request"}.pdf`,
+      );
+      toast.success("Leave form PDF downloaded.", { id: toastId });
+    } catch (error) {
+      toast.error(error?.message || "Unable to download the leave form PDF.", { id: toastId });
     }
-
-    const formClone = printRef.current.cloneNode(true);
-    const sourceFields = printRef.current.querySelectorAll("input, textarea, select");
-    const clonedFields = formClone.querySelectorAll("input, textarea, select");
-
-    sourceFields.forEach((field, index) => {
-      const clonedField = clonedFields[index];
-      if (!clonedField) {
-        return;
-      }
-
-      if (field instanceof HTMLInputElement && clonedField instanceof HTMLInputElement) {
-        if (field.type === "checkbox" || field.type === "radio") {
-          clonedField.checked = field.checked;
-        } else {
-          clonedField.value = field.value;
-          clonedField.setAttribute("value", field.value);
-        }
-        return;
-      }
-
-      if (field instanceof HTMLTextAreaElement && clonedField instanceof HTMLTextAreaElement) {
-        clonedField.value = field.value;
-        clonedField.textContent = field.value;
-        return;
-      }
-
-      if (field instanceof HTMLSelectElement && clonedField instanceof HTMLSelectElement) {
-        clonedField.value = field.value;
-      }
-    });
-
-    const printWindow = window.open("", "_blank", "width=960,height=1200");
-    if (!printWindow) {
-      return;
-    }
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html lang="en">
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>Application for Leave</title>
-          <style>
-            @page {
-              size: auto;
-              margin: 10mm;
-            }
-
-            html, body {
-              margin: 0;
-              padding: 0;
-              background: #ffffff;
-            }
-
-            body {
-              font-family: Arial, sans-serif;
-              color: #000000;
-            }
-
-            *,
-            *::before,
-            *::after {
-              box-sizing: border-box;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-
-            .print-shell {
-              width: 100%;
-              max-width: 190mm;
-              margin: 0 auto;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="print-shell">${formClone.outerHTML}</div>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-
-    const formRoot = printWindow.document.querySelector(".print-shell > div");
-    if (formRoot) {
-      formRoot.style.width = "100%";
-      formRoot.style.maxWidth = "190mm";
-      formRoot.style.margin = "0 auto";
-      formRoot.style.boxShadow = "none";
-    }
-
-    const finishPrint = () => {
-      printWindow.focus();
-      printWindow.print();
-      printWindow.addEventListener("afterprint", () => printWindow.close(), { once: true });
-    };
-
-    const images = Array.from(printWindow.document.images || []);
-    if (images.length === 0) {
-      window.setTimeout(finishPrint, 150);
-      return;
-    }
-
-    Promise.all(
-      images.map((image) => (
-        image.complete
-          ? Promise.resolve()
-          : new Promise((resolve) => {
-            image.onload = resolve;
-            image.onerror = resolve;
-          })
-      ))
-    ).then(() => {
-      window.setTimeout(finishPrint, 150);
-    });
   };
 
   if (!open || !resolvedRequest) {
     return null;
   }
 
-  return (
+  // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
+  return createPortal((
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -992,294 +746,37 @@ export default function LeaveFormModal({
 
         <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <div className="mx-auto w-full max-w-[900px]">
-            <div ref={printRef} className="leave-form-paper" style={styles.wrap}>
-          <div style={styles.topBar}>
-            <strong>Civil Service Form No. 6</strong>
-            &nbsp;&bull;&nbsp;
-            <em>Revised 2020</em>
-          </div>
-
-          <div style={styles.header}>
-            <img src="/mgb.png" alt="MGB Logo" style={styles.logoImage} />
-            <div>
-              <p style={{ margin: "1px 0", fontSize: "10px" }}>Republic of the Philippines</p>
-              <p style={{ margin: "1px 0", fontSize: "10px" }}>Department of Environment and Natural Resources</p>
-              <h3 style={{ margin: "4px 0", fontSize: "12px", fontWeight: "bold" }}>
-                MINES AND GEOSCIENCES BUREAU REGIONAL OFFICE NO. X
-              </h3>
-              <p style={{ margin: "1px 0", fontSize: "10px" }}>DENR-X Compound, Puntod, Cagayan de Oro City</p>
-              <div style={styles.formTitle}>APPLICATION FOR LEAVE</div>
-            </div>
-            <img src="/bagongpilipinas.png" alt="Bagong Pilipinas" style={styles.logoImage} />
-          </div>
-
-          <div style={styles.row}>
-            <div style={{ ...styles.cell, width: "33.33%" }}>
-              <label style={styles.label}>1. Office/Department</label>
-              <ReadOnlyInput style={inputWithoutUnderlineStyle} value={formData.office} />
-            </div>
-            <div style={{ ...styles.cell, width: "66.66%", borderRight: "none" }}>
-              <label style={styles.label}>2. Name</label>
-              <div style={{ display: "flex", textAlign: "center" }}>
-                {[
-                  ["lastName", "(Last)"],
-                  ["firstName", "(First)"],
-                  ["middleName", "(Middle)"],
-                ].map(([field, label]) => (
-                  <div
-                    key={field}
-                    style={{
-                      flex: 1,
-                      paddingInline: "4px",
-                    }}
-                  >
-                    <span style={{ fontSize: "8px", fontStyle: "italic", display: "block" }}>{label}</span>
-                    <ReadOnlyInput style={inputWithoutUnderlineStyle} value={formData[field]} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div style={styles.row}>
-            <div style={{ ...styles.cell, width: "25%" }}>
-              <label style={styles.label}>3. Date of Filing</label>
-              <ReadOnlyInput type="date" style={inputWithoutUnderlineStyle} value={formData.dateOfFiling} />
-            </div>
-            <div style={{ ...styles.cell, width: "50%" }}>
-              <label style={styles.label}>4. Position</label>
-              <ReadOnlyInput style={inputWithoutUnderlineStyle} value={formData.position} />
-            </div>
-            <div style={{ ...styles.cell, width: "25%", borderRight: "none" }}>
-              <label style={styles.label}>5. Salary</label>
-              <ReadOnlyInput style={inputWithoutUnderlineStyle} value={formData.salary} />
-            </div>
-          </div>
-
-          <div style={styles.sectionTitle}>6. DETAILS OF APPLICATION</div>
-          <div style={styles.row}>
-            <div style={{ ...styles.cell, width: "50%" }}>
-              <label style={styles.label}>6.A Type of Leave to be Availed of</label>
-              {availableLeaveTypes.map((type) => (
-                <div key={type} style={styles.checklistItem}>
-                  <SelectionIndicator checked={formData.leaveType === type} />
-                  <span>{type}</span>
-                </div>
-              ))}
-              <div style={{ display: "flex", alignItems: "flex-end", marginTop: "5px", gap: "4px" }}>
-                <span>Others:</span>
-                <ReadOnlyInput
-                  style={{ ...styles.input, flex: 1 }}
-                  value={formData.leaveTypeOther}
-                />
-              </div>
-            </div>
-
-            <div style={{ ...styles.cell, width: "50%", borderRight: "none" }}>
-              <label style={styles.label}>6.B Details of Leave</label>
-
-              <p style={styles.subLabel}>In case of Vacation/Special Privilege Leave:</p>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailVacationWithinChecked} />
-                <span>Within the Philippines</span>
-                <ReadOnlyInput style={{ ...styles.input, flex: 1 }} value={formData.leaveDetailVacationWithinNote} />
-              </div>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailVacationAbroadChecked} />
-                <span>Abroad (Specify)</span>
-                <ReadOnlyInput style={{ ...styles.input, flex: 1 }} value={formData.leaveDetailVacationAbroadNote} />
-              </div>
-
-              <p style={styles.subLabel}>In case of Sick Leave:</p>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailSickHospitalChecked} />
-                <span>In Hospital (Specify Illness)</span>
-                <ReadOnlyInput style={{ ...styles.input, flex: 1 }} value={formData.leaveDetailSickHospitalNote} />
-              </div>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailSickOutpatientChecked} />
-                <span>Out Patient (Specify Illness)</span>
-                <ReadOnlyInput style={{ ...styles.input, flex: 1 }} value={formData.leaveDetailSickOutpatientNote} />
-              </div>
-
-              <p style={styles.subLabel}>In case of Special Leave Benefits for Women:</p>
-              <div style={{ display: "flex", gap: "4px", alignItems: "flex-end" }}>
-                <span style={{ whiteSpace: "nowrap" }}>(Specify Illness)</span>
-                <ReadOnlyInput style={{ ...styles.input, flex: 1 }} value={formData.leaveDetailWomen} />
-              </div>
-
-              <p style={styles.subLabel}>In case of Study Leave:</p>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailStudyMasters} />
-                <span>Completion of Master's Degree</span>
-              </div>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailStudyReview} />
-                <span>BAR/Board Examination Review</span>
-              </div>
-
-              <p style={styles.subLabel}>Other purpose:</p>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailOtherMonetization} />
-                <span>Monetization of Leave Credits</span>
-              </div>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.leaveDetailOtherTerminal} />
-                <span>Terminal Leave</span>
-              </div>
-            </div>
-          </div>
-
-          <div style={styles.row}>
-            <div style={{ ...styles.cell, width: "50%" }}>
-              <label style={styles.label}>6.C Number of Working Days Applied For</label>
-              <ReadOnlyInput
-                style={{ ...styles.input, margin: "10px 0", display: "block" }}
-                value={formData.numberOfDays}
-              />
-              <label style={styles.label}>Inclusive Dates</label>
-              <ReadOnlyInput
-                style={{ ...styles.input, margin: "10px 0", display: "block" }}
-                value={formData.inclusiveDates}
-              />
-            </div>
-            <div style={{ ...styles.cell, width: "50%", borderRight: "none" }}>
-              <label style={styles.label}>6.D Commutation</label>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.commutation === "not_requested"} />
-                Not Requested
-              </div>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.commutation === "requested"} />
-                Requested
-              </div>
-              <SignatureBlock
-                signatureDataUrl={employeeSignature}
-                fallbackText={applicantTimestampLabel}
-                name={formData.applicantName}
-                caption="(Signature of Applicant)"
-              />
-            </div>
-          </div>
-
-          <div style={styles.sectionTitle}>7. DETAILS OF ACTION ON APPLICATION</div>
-          <div style={styles.row}>
-            <div style={{ ...styles.cell, width: "50%" }}>
-              <label style={styles.label}>7.A Certification of Leave Credits</label>
-              <p style={{ textAlign: "center", fontSize: "10px" }}>
-                As of <ReadOnlyInput style={{ ...inputWithoutUnderlineStyle, width: "80px", display: "inline" }} value={formData.creditsAsOf} />
-              </p>
-              <table style={styles.creditsTable}>
-                <thead>
-                  <tr>
-                    <th style={tdStyle}></th>
-                    <th style={tdStyle}>Vacation Leave</th>
-                    <th style={tdStyle}>Sick Leave</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    ["Total Earned", "vlEarned", "slEarned"],
-                    ["Less this App.", "vlLess", "slLess"],
-                    ["Balance", "vlBalance", "slBalance"],
-                  ].map(([label, vl, sl]) => (
-                    <tr key={label}>
-                      <td style={tdStyle}>{label}</td>
-                      <td style={tdStyle}>
-                        <ReadOnlyInput style={{ ...inputWithoutUnderlineStyle, textAlign: "center" }} value={formData[vl]} />
-                      </td>
-                      <td style={tdStyle}>
-                        <ReadOnlyInput style={{ ...inputWithoutUnderlineStyle, textAlign: "center" }} value={formData[sl]} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {hasHrmoSignatureBlock ? (
-                <SignatureBlock
-                  signatureDataUrl={hrmoSignature}
-                  fallbackText={hrmoTimestampLabel}
-                  name={hrmoName}
-                  caption="Administrative Officer V (HRMO)"
-                />
-              ) : (
-                <div style={{ marginTop: "20px", textAlign: "center" }}>
-                  <div style={styles.sigLine}>Administrative Officer V (HRMO)</div>
-                </div>
-              )}
-            </div>
-
-            <div style={{ ...styles.cell, width: "50%", borderRight: "none" }}>
-              <label style={styles.label}>7.B Recommendation</label>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.recommendation === "approved"} />
-                For approval
-              </div>
-              <div style={styles.checklistItem}>
-                <SelectionIndicator checked={formData.recommendation === "disapproved"} />
-                For disapproval due to:
-              </div>
-              <ReadOnlyInput
-                style={{ ...styles.input, display: "block", marginTop: "10px", height: "40px" }}
-                value={formData.disapprovalReason}
-              />
-            </div>
-          </div>
-
-          <div style={{ ...styles.row, borderBottom: "none" }}>
-            <div style={{ ...styles.cell, width: "50%" }}>
-              <label style={styles.label}>7.C Approved For:</label>
-              <div style={{ display: "flex", alignItems: "center", gap: "4px", margin: "4px 0" }}>
-                <ReadOnlyInput style={{ ...styles.input, width: "40px" }} value={formData.approvedDaysPay} />
-                <span>days with pay</span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "4px", margin: "4px 0" }}>
-                <ReadOnlyInput style={{ ...styles.input, width: "40px" }} value={formData.approvedDaysNoPay} />
-                <span>days without pay</span>
-              </div>
-              {/* Wider than the day boxes above it: what lands here is a phrase, not a count. */}
-              <div style={{ display: "flex", alignItems: "center", gap: "4px", margin: "4px 0" }}>
-                <ReadOnlyInput style={{ ...styles.input, flex: 1 }} value={formData.approvedOthers} />
-                <span style={{ whiteSpace: "nowrap" }}>others (Specify)</span>
-              </div>
-            </div>
-            <div style={{ ...styles.cell, width: "50%", borderRight: "none" }}>
-              <label style={styles.label}>7.D Disapproved Due To:</label>
-              <ReadOnlyInput
-                style={{ ...inputWithoutUnderlineStyle, display: "block", height: "20px" }}
-                value={formData.disapprovedReason}
-              />
-              {hasRegionalDirectorSignatureBlock ? (
-                <SignatureBlock
-                  signatureDataUrl={regionalDirectorSignature}
-                  fallbackText={regionalDirectorTimestampLabel}
-                  name={regionalDirectorName}
-                  caption="OIC, Regional Director"
-                />
-              ) : (
-                <div style={{ marginTop: "20px", textAlign: "center" }}>
-                  <div style={styles.sigLine}>OIC, Regional Director</div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div style={styles.qrFooter}>
-            <div style={styles.qrFooterNote}>
-              Generated by the MGB Regional Office No. X HRIS. Scan the QR code to read the filed
-              leave details.
-            </div>
-            <FormQrCode
-              value={qrPayload}
-              size={118}
-              align="right"
-              reference={leaveReference}
-              caption="Scan to view leave details"
+            <LeaveApplicationSheet
+              sheetRef={printRef}
+              showESignatures={showESignatures}
+              showTimestamps={showTimestamps}
+              formData={formData}
+              leaveTypes={availableLeaveTypes}
+              applicant={{ signatureDataUrl: employeeSignature, fallbackText: applicantTimestampLabel }}
+              hrmo={{
+                signed: hasHrmoSignatureBlock,
+                signatureDataUrl: hrmoSignature,
+                fallbackText: hrmoTimestampLabel,
+                name: hrmoName,
+                caption: hrmoCaption,
+              }}
+              chief={{
+                signed: hasChiefSignatureBlock,
+                signatureDataUrl: savedChiefSignature,
+                fallbackText: chiefTimestampLabel,
+                name: chiefName,
+                caption: chiefCaption,
+              }}
+              regionalDirector={{
+                signed: hasRegionalDirectorSignatureBlock,
+                signatureDataUrl: regionalDirectorSignature,
+                fallbackText: regionalDirectorTimestampLabel,
+                name: regionalDirectorName,
+              }}
+              qrPayload={qrPayload}
             />
-          </div>
-            </div>
 
-            {/* Printing is a row action in the table now, so the sheet itself only offers Close. */}
+            {/* Print and Download PDF are row actions in the table, so the sheet itself only offers Close. */}
             <div className="mt-3 flex justify-end gap-2">
               <button
                 type="button"
@@ -1293,6 +790,6 @@ export default function LeaveFormModal({
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 

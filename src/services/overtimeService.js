@@ -61,7 +61,7 @@ export async function updateOvertimeRequest(id, payload) {
 }
 
 /**
- * Both signatures on an overtime filing — HR's review and the Regional Director's final approval —
+ * Both signatures on an overtime filing — the Chief Admin's first approval and the Regional Director's final approval —
  * carry a solved captcha, because overtime.php refuses them without one. Rejections and
  * cancellations are not gated and pass nothing, so `captcha` stays empty for those.
  */
@@ -70,6 +70,38 @@ export async function updateOvertimeStatus(id, status, captcha = {}) {
     id,
     status: normalizeLeaveStatus(status),
     ...captcha,
+  });
+  notifyLeaveRequestsChanged();
+  return response.data;
+}
+
+/**
+ * The accomplishment reports (the "task rendered during overtime" memos) the caller may see: an
+ * employee's own, or every one for the desks that note and monitor them. Same endpoint as the
+ * requests so a submitted memo wakes the same `overtime` topic the workspace already listens to.
+ */
+export async function fetchOvertimeAccomplishmentReports() {
+  const response = await api.get("/overtime.php", { params: { view: "accomplishments" } });
+  return response.data;
+}
+
+/** Files (or, after a return, revises) the memo for one approved overtime request. */
+export async function submitOvertimeAccomplishmentReport(payload) {
+  const response = await api.post("/overtime.php", {
+    ...payload,
+    action: "accomplishment_submit",
+  });
+  notifyLeaveRequestsChanged();
+  return response.data;
+}
+
+/** The chief's decision on a memo: "Approved" notes it, "Rejected" returns it with remarks. */
+export async function updateOvertimeAccomplishmentStatus(reportId, status, remarks = "") {
+  const response = await api.put("/overtime.php", {
+    action: "accomplishment_status",
+    reportId,
+    status,
+    remarks,
   });
   notifyLeaveRequestsChanged();
   return response.data;

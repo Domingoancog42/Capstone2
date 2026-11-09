@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getChat, sendChatMessage } from "../../services/api";
-import { Avatar, formatContactTime, formatMessageTime } from "./chatPresentation";
+import { Avatar, ChatTimestamp } from "./chatPresentation";
 
 export default function BubbleChat({ user }) {
   const [contacts, setContacts] = useState([]);
@@ -142,7 +142,7 @@ export default function BubbleChat({ user }) {
   };
 
   return (
-    <section className="min-h-0 flex-1 overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm">
+    <section className="min-h-0 flex-1 overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm lg:h-full">
       <div className="grid h-full grid-cols-1 lg:grid-cols-[350px_minmax(0,1fr)]">
         
         {/* Left Side: Contact List */}
@@ -213,7 +213,7 @@ export default function BubbleChat({ user }) {
                       </span>
                       <span className="flex flex-col items-end gap-1.5 shrink-0">
                         <span className="text-[10px] font-medium text-slate-400">
-                          {formatContactTime(contact.lastMessageAt)}
+                          <ChatTimestamp value={contact.lastMessageAt} />
                         </span>
                         {unreadCount > 0 ? (
                           <span className="grid h-4.5 min-w-4.5 place-items-center rounded-full bg-[#D61E1E] px-1.5 text-[9px] font-bold text-white shadow-sm">
@@ -235,7 +235,7 @@ export default function BubbleChat({ user }) {
         <div className="flex min-h-0 flex-col bg-white">
           {activeContact ? (
             <>
-              <header className="flex min-h-16 items-center justify-between border-b border-slate-200 px-5 bg-white shadow-sm/5 z-10">
+              <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-slate-200 px-5 bg-white shadow-sm/5 z-10">
                 <div className="flex items-center gap-3">
                   <Avatar contact={activeContact} size="lg" showPresence />
                   <div className="min-w-0">
@@ -285,7 +285,7 @@ export default function BubbleChat({ user }) {
                           >
                             <p className="m-0 whitespace-pre-wrap text-xs leading-relaxed font-medium">{message.messageText}</p>
                             <span className={`block text-[9px] mt-1.5 text-right font-medium ${message.mine ? "text-red-200/90" : "text-slate-400"}`}>
-                              {formatMessageTime(message.createdAt)}
+                              <ChatTimestamp value={message.createdAt} />
                             </span>
                           </div>
                         </motion.div>
@@ -305,7 +305,7 @@ export default function BubbleChat({ user }) {
               </div>
 
               {/* Message Input Box */}
-              <form onSubmit={handleSendMessage} className="border-t border-slate-200 bg-white p-4">
+              <form onSubmit={handleSendMessage} className="shrink-0 border-t border-slate-200 bg-white p-4">
                 <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/50 p-2 focus-within:border-[#D61E1E] focus-within:ring-2 focus-within:ring-[#D61E1E]/10 transition">
                   <textarea
                     value={draft}

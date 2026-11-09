@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import ResponsiveContainer from "../chart/ResponsiveChartContainer";
+import React from "react";
 import {
   Bar,
   BarChart,
@@ -8,17 +9,16 @@ import {
   LineChart,
   Pie,
   PieChart,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { BarChart3, Table2 } from "lucide-react";
 import {
   formatCompact,
   formatNumber,
   normalizeEntityKey,
   resolveEntityColors,
+  useCountUp,
   useReportsTheme,
 } from "../../module/reports/reportsTheme";
 
@@ -46,15 +46,15 @@ export const SINGLE_SERIES_SLOT = 0;
 
 /**
  * Gender keeps a fixed slot per entity, so filtering divisions never repaints the
- * survivors and "Female is blue" stays true across every screen. The set was validated
- * as a 4-slot adjacent run; the two it now uses are the first two of that run, so the
- * separation only widens. The employee record offers no gender beyond these two, which
+ * survivors and "Female is pink, Male is blue" stays true across every screen. Female takes
+ * the palette's pink (slot 4) and Male its blue (slot 0), the pairing people read without
+ * checking the legend. The employee record offers no gender beyond these two, which
  * is why the "Other" and "Not Specified" series were dropped — they were legend entries
  * for bars that could never be drawn.
  */
 export const GENDER_SERIES = [
-  { key: "female", label: "Female", slot: 0 },
-  { key: "male", label: "Male", slot: 1 },
+  { key: "female", label: "Female", slot: 4 },
+  { key: "male", label: "Male", slot: 0 },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -124,63 +124,7 @@ export function AnalyticsLegend({ items, theme }) {
 }
 
 /**
- * The table twin. Three light-mode series steps sit below 3:1 on white, which
- * obligates a relief channel — this is it, and it doubles as the keyboard-reachable
- * route to every value a tooltip would otherwise gate.
- */
-export function AnalyticsTableView({ columns, rows }) {
-  return (
-    <div className="max-h-[260px] overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
-      <table className="w-full border-collapse text-sm">
-        <thead className="sticky top-0">
-          <tr>
-            {columns.map((column) => (
-              <th
-                key={column}
-                className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-bold uppercase tracking-wide text-slate-600 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-300"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td
-                colSpan={columns.length}
-                className="px-3 py-4 text-center text-sm text-slate-500 dark:text-slate-400"
-              >
-                No data available.
-              </td>
-            </tr>
-          ) : (
-            rows.map((row, index) => (
-              <tr
-                key={`row-${index}`}
-                className="transition hover:bg-slate-50 dark:hover:bg-slate-800/60"
-              >
-                {row.map((cell, cellIndex) => (
-                  <td
-                    key={`cell-${index}-${cellIndex}`}
-                    className={`border-b border-slate-100 px-3 py-2 text-slate-700 dark:border-slate-800 dark:text-slate-300 ${
-                      cellIndex > 0 ? "tabular-nums" : ""
-                    }`}
-                  >
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-/**
- * Card shell every analytics card wears: icon header, optional table-view toggle,
+ * Card shell every analytics card wears: icon header,
  * empty and loading states. Dark mode is a selected set of steps from the same
  * ramps (see `reportsTheme.js`), not an automatic flip.
  */
@@ -193,13 +137,10 @@ export function AnalyticsCard({
   emptyMessage = "No data available.",
   emptyIcon: EmptyIcon,
   loading = false,
-  tableColumns,
-  tableRows,
   footer,
+  action,
   children,
 }) {
-  const [showTable, setShowTable] = useState(false);
-
   if (loading) {
     return (
       <div className="h-full min-h-[360px] animate-pulse rounded-lg bg-white p-4 shadow-md dark:bg-slate-900">
@@ -208,8 +149,6 @@ export function AnalyticsCard({
       </div>
     );
   }
-
-  const canToggleTable = Boolean(tableColumns) && !isEmpty;
 
   return (
     <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-white p-4 shadow-md transition-shadow duration-300 hover:shadow-lg dark:bg-slate-900">
@@ -227,18 +166,7 @@ export function AnalyticsCard({
             ) : null}
           </div>
         </div>
-
-        {canToggleTable ? (
-          <button
-            type="button"
-            onClick={() => setShowTable((current) => !current)}
-            title={showTable ? "Show chart" : "Show data table"}
-            aria-label={showTable ? "Show chart" : "Show data table"}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            {showTable ? <BarChart3 size={15} aria-hidden="true" /> : <Table2 size={15} aria-hidden="true" />}
-          </button>
-        ) : null}
+        {action}
       </div>
 
       <div className="flex-1">
@@ -251,8 +179,6 @@ export function AnalyticsCard({
               <p className="m-0 text-sm font-medium">{emptyMessage}</p>
             </div>
           </div>
-        ) : showTable ? (
-          <AnalyticsTableView columns={tableColumns} rows={tableRows || []} />
         ) : (
           children
         )}
@@ -381,50 +307,117 @@ export function DistributionPieChart({
   valueFormatter = formatNumber,
   colorIndex = SINGLE_SERIES_SLOT,
   showPercentages = true,
+  donut = false,
+  centerLabel = "",
+  animateValues = false,
+  showSlicePercentages = false,
+  legendLayout = "stacked",
 }) {
   const total = data.reduce((sum, item) => sum + (Number(item.value) || 0), 0);
+  const animatedTotal = useCountUp(total, 900, animateValues);
+  const displayedTotal = animateValues ? animatedTotal : total;
   const slices = data.map((item) => ({
     ...item,
     color: item.color || theme.series[colorIndex],
     percentage: total > 0 ? ((Number(item.value) || 0) / total) * 100 : 0,
   }));
 
+  const renderPercentageLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
+    if (!showSlicePercentages || percent < 0.06) {
+      return null;
+    }
+
+    const radians = Math.PI / 180;
+    const radius = innerRadius + (outerRadius - innerRadius) * 0.52;
+    const x = cx + radius * Math.cos(-midAngle * radians);
+    const y = cy + radius * Math.sin(-midAngle * radians);
+
+    return (
+      <text
+        x={x}
+        y={y}
+        dy="0.35em"
+        textAnchor="middle"
+        fill={theme.surface}
+        stroke={theme.text}
+        strokeWidth={2.5}
+        paintOrder="stroke"
+        className="text-[10px] font-bold"
+      >
+        {`${Math.round(percent * 100)}%`}
+      </text>
+    );
+  };
+
   return (
     <div className="flex flex-col">
-      <ResponsiveContainer width="100%" height={height}>
-        <PieChart>
-          <Tooltip
-            content={(
-              <AnalyticsTooltip
-                theme={theme}
-                formatter={(value, entry) => (
-                  showPercentages
-                    ? `${valueFormatter(value)} (${(entry?.payload?.percentage || 0).toFixed(1)}%)`
-                    : valueFormatter(value)
-                )}
-              />
-            )}
-          />
-          <Pie
-            data={slices}
-            dataKey="value"
-            nameKey="label"
-            cx="50%"
-            cy="50%"
-            outerRadius="92%"
-            stroke={theme.surface}
-            strokeWidth={2}
-          >
-            {slices.map((slice) => (
-              <Cell key={slice.label} fill={slice.color} />
-            ))}
-          </Pie>
-        </PieChart>
-      </ResponsiveContainer>
+      <div className="relative">
+        <ResponsiveContainer width="100%" height={height}>
+          <PieChart>
+            <Tooltip
+              content={(
+                <AnalyticsTooltip
+                  theme={theme}
+                  formatter={(value, entry) => (
+                    showPercentages
+                      ? `${valueFormatter(value)} (${(entry?.payload?.percentage || 0).toFixed(1)}%)`
+                      : valueFormatter(value)
+                  )}
+                />
+              )}
+            />
+            <Pie
+              data={slices}
+              dataKey="value"
+              nameKey="label"
+              cx="50%"
+              cy="50%"
+              innerRadius={donut ? "57%" : 0}
+              outerRadius="92%"
+              stroke={theme.surface}
+              strokeWidth={2}
+              labelLine={false}
+              label={showSlicePercentages ? renderPercentageLabel : false}
+              isAnimationActive
+              animationDuration={900}
+              animationEasing="ease-out"
+            >
+              {slices.map((slice) => (
+                <Cell key={slice.label} fill={slice.color} />
+              ))}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
 
-      <div className="mt-3 max-h-[104px] space-y-1 overflow-y-auto pr-1 [scrollbar-width:thin]">
+        {donut ? (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+            <span className="text-3xl font-bold tabular-nums" style={{ color: theme.text }}>
+              {valueFormatter(Math.round(displayedTotal))}
+            </span>
+            {centerLabel ? (
+              <span
+                className="mt-0.5 max-w-[88px] text-[10px] font-semibold uppercase leading-tight tracking-wide"
+                style={{ color: theme.textMuted }}
+              >
+                {centerLabel}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div
+        className={legendLayout === "centered-row"
+          ? "mt-4 flex max-h-[132px] flex-wrap items-center justify-center gap-x-5 gap-y-2 overflow-y-auto px-1 [scrollbar-width:thin]"
+          : "mt-3 max-h-[132px] space-y-1.5 overflow-y-auto pr-1 [scrollbar-width:thin]"}
+      >
         {slices.map((slice) => (
-          <div key={slice.label} className="flex items-center justify-between gap-2 text-xs">
+          <div
+            key={slice.label}
+            className={legendLayout === "centered-row"
+              ? "inline-flex items-center justify-center gap-1.5 text-xs"
+              : "flex items-center justify-between gap-2 text-xs"}
+          >
             <span
               className="flex min-w-0 items-center gap-1.5 font-medium"
               style={{ color: theme.textSecondary }}
@@ -434,13 +427,24 @@ export function DistributionPieChart({
                 style={{ backgroundColor: slice.color }}
                 aria-hidden="true"
               />
-              <span className="truncate">{slice.label}</span>
+              <span className={legendLayout === "centered-row" ? "whitespace-nowrap" : "truncate"}>
+                {slice.label}
+              </span>
             </span>
             <span className="shrink-0 font-semibold tabular-nums" style={{ color: theme.text }}>
-              {valueFormatter(slice.value)}
+              <AnimatedChartValue
+                value={slice.value}
+                formatter={valueFormatter}
+                animate={animateValues}
+              />
               {showPercentages ? (
                 <span className="ml-1 font-medium" style={{ color: theme.textMuted }}>
-                  {`${slice.percentage.toFixed(0)}%`}
+                  (<AnimatedChartValue
+                    value={slice.percentage}
+                    formatter={(value) => `${Number(value).toFixed(1)}%`}
+                    animate={animateValues}
+                    decimals={1}
+                  />)
                 </span>
               ) : null}
             </span>
@@ -449,6 +453,16 @@ export function DistributionPieChart({
       </div>
     </div>
   );
+}
+
+function AnimatedChartValue({ value, formatter, animate, decimals = 0 }) {
+  const animatedValue = useCountUp(value, 900, animate);
+  const displayedValue = animate ? animatedValue : Number(value) || 0;
+  const roundedValue = decimals > 0
+    ? Number(displayedValue.toFixed(decimals))
+    : Math.round(displayedValue);
+
+  return formatter(roundedValue);
 }
 
 /**

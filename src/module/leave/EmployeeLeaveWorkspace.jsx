@@ -1,25 +1,31 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CalendarClock,
-  CalendarDays,
   FilePenLine,
   Filter,
   Search,
-  Wallet,
 } from "lucide-react";
-import { faBan, faEye, faPrint } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBan,
+  faBoxArchive,
+  faFileArrowDown,
+  faPrint,
+  faRotateLeft,
+} from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 import ActionIconButton from "../../components/UI/ActionIconButton";
+import ViewFormActions from "../../components/UI/ViewFormActions";
+import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
 import LeaveFormModal from "../../components/leave/LeaveForm";
+import LeaveBalanceModal, { LeaveBalanceButton } from "../../components/leave/LeaveBalanceModal";
 import LeaveRequestModal from "../../components/leave/LeaveRequestModal";
+import LeaveAttachmentUploadButton from "../../components/leave/LeaveAttachmentUploadButton";
 import LeaveStatusBadge from "../../components/leave/LeaveStatusBadge";
 import LeaveMonetizationFormModal from "../../components/payroll/LeaveMonetizationForm";
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
-import ProfileFloatingCard from "../../components/profile/ProfileFloatingCard";
-import { LEAVE_REQUEST_TYPES, LEAVE_STATUSES, LEAVE_TYPES } from "../../data/leaveTypes";
+import { LEAVE_STATUSES } from "../../data/leaveTypes";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   fetchLeaveCredits,
@@ -33,9 +39,12 @@ import {
   updateLeaveMonetizationStatus,
 } from "../../services/leaveMonetizationService";
 import {
+  canUploadLeaveMedicalCertificate,
   formatDateDisplay,
   formatDurationLabel,
+  isLeaveStartDateTooSoon,
   isRegionalDirectorApproved,
+  LEAVE_ADVANCE_NOTICE_ERROR,
   matchesUserRecordScope,
   normalizeLeaveStatus,
 } from "../../utils/leaveHelpers";
@@ -49,57 +58,46 @@ import {
   confirmLeaveWithoutPay,
   extractLeaveWithoutPayPrompt,
 } from "../../utils/leaveWithoutPay";
-
-const leaveBalanceCards = [
-  { type: "Vacation Leave", tone: "from-teal-600 to-cyan-600", icon: CalendarDays },
-  { type: "Sick Leave", tone: "from-sky-600 to-indigo-600", icon: CalendarClock },
-];
-
-function formatCreditValue(value) {
-  const numericValue = Number(value);
-
-  if (!Number.isFinite(numericValue)) {
-    return "0";
-  }
-
-  return Number.isInteger(numericValue)
-    ? String(numericValue)
-    : numericValue.toFixed(2).replace(/\.?0+$/, "");
-}
+import { showDuplicateLeaveDateAlert } from "../../utils/duplicateLeaveDate";
+import { confirmArchiveRecord, confirmRestoreRecord } from "../../utils/archiveActions";
 
 export default function EmployeeLeaveWorkspace({ user }) {
   const [requests, setRequests] = useState([]);
   /* Monetization filings, kept by leave_monetization.php and listed alongside the leave requests. */
   const [monetizationRecords, setMonetizationRecords] = useState([]);
-  const [leaveCredits, setLeaveCredits] = useState([]);
+  /* The whole leave_credit.php snapshot: the balances feed the request form, the rest the balance modal. */
+  const [leaveCreditSnapshot, setLeaveCreditSnapshot] = useState(null);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   /* The request whose CSC Form No. 6 is open for viewing; null when the form modal is closed. */
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [selectedMonetization, setSelectedMonetization] = useState(null);
   const [printMonetization, setPrintMonetization] = useState(false);
+  const [downloadMonetization, setDownloadMonetization] = useState(false);
   const [printRequest, setPrintRequest] = useState(false);
+  const [downloadRequest, setDownloadRequest] = useState(false);
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [query, setQuery] = useState("");
-  const [leaveType, setLeaveType] = useState("");
   const [status, setStatus] = useState("");
-  const [rowsPerPage, setRowsPerPage] = useState("5");
+  const [rowsPerPage, setRowsPerPage] = useState("10");
   const [currentPage, setCurrentPage] = useState(1);
+  const [archiveView, setArchiveView] = useState(false);
 
   const loadLeaveWorkspace = useCallback(async ({ background = false } = {}) => {
     setLoading(!background);
     const [requestResult, creditResult, monetizationResult] = await Promise.allSettled([
-      fetchLeaveRequests(),
+      fetchLeaveRequests({ archived: archiveView }),
       fetchLeaveCredits(),
-      fetchLeaveMonetizationRequests(),
+      fetchLeaveMonetizationRequests({ archived: archiveView }),
     ]);
 
     try {
       if (requestResult.status === "fulfilled") {
         setRequests((requestResult.value.requests || []).filter((request) => matchesUserRecordScope(request, user)));
       } else if (!background) {
-        toast.error(requestResult.reason?.response?.data?.message || "Unable to load leave history.");
+        setRequests([]);
+        toast.error(requestResult.reason?.response?.data?.message || "Unable to load leave requests.");
       }
 
       /* The endpoint already scopes an employee to their own filings, so nothing is filtered here. */
@@ -116,19 +114,29 @@ export default function EmployeeLeaveWorkspace({ user }) {
       }
 
       if (creditResult.status === "fulfilled") {
-        setLeaveCredits(creditResult.value?.credits?.balances || []);
+        setLeaveCreditSnapshot(creditResult.value?.credits || null);
       } else if (!background) {
-        setLeaveCredits([]);
+        setLeaveCreditSnapshot(null);
         toast.error(creditResult.reason?.response?.data?.message || "Unable to load leave credits.");
       }
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [archiveView, user]);
+
+  useEffect(() => {
+    void loadLeaveWorkspace();
+  }, [loadLeaveWorkspace]);
 
   useAutoRefreshOnChange(loadLeaveWorkspace, {
     topics: ["leave_request", "leave_credit", "leave_monetization"],
+    refreshOnMount: false,
   });
+
+  const leaveCredits = useMemo(
+    () => (Array.isArray(leaveCreditSnapshot?.balances) ? leaveCreditSnapshot.balances : []),
+    [leaveCreditSnapshot]
+  );
 
   /*
    * One history: monetization is filed from the leave request form as a leave type of its own, so
@@ -153,36 +161,20 @@ export default function EmployeeLeaveWorkspace({ user }) {
         displayReason,
         request.status,
       ].filter(Boolean).some((value) => String(value).toLowerCase().includes(search));
-      const matchesType = !leaveType || request.leaveType === leaveType;
-      const matchesStatus = !status || normalizeLeaveStatus(request.status) === status;
+      const matchesStatus = !status || normalizeLeaveStatus(request.status) === normalizeLeaveStatus(status);
 
-      return matchesSearch && matchesType && matchesStatus;
+      return matchesSearch && matchesStatus;
     });
-  }, [combinedRequests, leaveType, query, status]);
+  }, [combinedRequests, query, status]);
 
-  const balanceCards = useMemo(
-    () =>
-      leaveBalanceCards.map((card) => {
-        const matchedBalance = leaveCredits.find((balance) => balance.type === card.type);
-
-        return {
-          ...card,
-          remaining: matchedBalance?.remaining ?? 15,
-          used: matchedBalance?.used ?? 0,
-          total: matchedBalance?.total ?? 15,
-        };
-      }),
-    [leaveCredits]
-  );
-
-  const pageSize = Number(rowsPerPage) || 5;
+  const pageSize = Number(rowsPerPage) || 10;
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const paginatedRequests = filteredRequests.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [leaveType, query, rowsPerPage, status]);
+  }, [archiveView, query, rowsPerPage, status]);
 
   const submitLeaveRequest = async (payload) => {
     try {
@@ -191,6 +183,10 @@ export default function EmployeeLeaveWorkspace({ user }) {
       toast.success(result.message || "Leave request submitted successfully.");
       setModalOpen(false);
     } catch (error) {
+      if (showDuplicateLeaveDateAlert(error)) {
+        return;
+      }
+
       /*
        * The modal already warns when it can see the balance. This covers the cases it cannot,
        * such as credits that changed while the form was open.
@@ -236,6 +232,14 @@ export default function EmployeeLeaveWorkspace({ user }) {
   };
 
   const handleSubmitRequest = async (payload) => {
+    if (!payload?.isLeaveMonetization && isLeaveStartDateTooSoon({
+      leaveType: payload?.leaveType,
+      startDate: payload?.startDate,
+    })) {
+      toast.error(LEAVE_ADVANCE_NOTICE_ERROR);
+      return;
+    }
+
     setSubmitting(true);
     try {
       if (payload?.isLeaveMonetization) {
@@ -354,64 +358,118 @@ export default function EmployeeLeaveWorkspace({ user }) {
     }
   };
 
+  const removeRequestFromCurrentView = (request) => {
+    if (request.isLeaveMonetization) {
+      setMonetizationRecords((current) => current.filter((item) => String(item.id) !== String(request.id)));
+      return;
+    }
+
+    setRequests((current) => current.filter((item) => String(item.id) !== String(request.id)));
+  };
+
+  const handleArchiveRequest = async (request, restore = false) => {
+    const moduleKey = request.isLeaveMonetization ? "leaveMonetization" : "leave";
+    const noun = request.isLeaveMonetization ? "leave monetization request" : "leave request";
+
+    if (restore) {
+      await confirmRestoreRecord({
+        module: moduleKey,
+        id: request.id,
+        noun,
+        onRestored: () => removeRequestFromCurrentView(request),
+      });
+      return;
+    }
+
+    await confirmArchiveRecord({
+      module: moduleKey,
+      id: request.id,
+      noun,
+      onArchived: () => removeRequestFromCurrentView(request),
+    });
+  };
+
+  /*
+   * Opens the request's form to read ("view"), or to print or save as a PDF ("print", "download"):
+   * the form modal is the source for both, doing the job once loaded and closing again.
+   */
+  const openRequestForm = (request, mode = "view") => {
+    if (request.isLeaveMonetization) {
+      /*
+       * The row renamed `leaveType` to the filing itself, so the credit it draws from is put
+       * back for the form, which reads that field to fill the certification of credits.
+       */
+      setPrintMonetization(mode === "print");
+      setDownloadMonetization(mode === "download");
+      setSelectedMonetization({
+        ...request,
+        leaveType: request.monetizedLeaveType || request.leaveType,
+      });
+      return;
+    }
+
+    setPrintRequest(mode === "print");
+    setDownloadRequest(mode === "download");
+    setSelectedRequest(request);
+  };
+
   /*
    * Viewing is always offered — the CSC Form No. 6 is the record of what was filed, and an employee
-   * should be able to read their own back at any status. Printing waits for the Regional Director's
-   * approval, since an unsigned form is not a document worth handing anyone. Cancelling is only
-   * theirs to do while the request is still pending. Defined once so the table and the
-   * narrow-screen cards agree.
+   * should be able to read their own back at any status. Printing and downloading wait for the
+   * Regional Director's approval, since an unsigned form is not a document worth handing anyone.
+   * Cancelling is only theirs to do while the request is still pending; their requests can move
+   * to the archive at any status and requests archived by this employee can be restored. Defined once
+   * so the table and the narrow-screen cards agree.
    */
   const renderRequestActions = (request) => (
-    <>
-      <ActionIconButton
-        label={request.isLeaveMonetization ? "View leave monetization form" : "View leave form"}
-        icon={faEye}
-        tone="view"
-        onClick={() => {
-          if (request.isLeaveMonetization) {
-            /*
-             * The row renamed `leaveType` to the filing itself, so the credit it draws from is put
-             * back for the form, which reads that field to fill the certification of credits.
-             */
-            setPrintMonetization(false);
-            setSelectedMonetization({
-              ...request,
-              leaveType: request.monetizedLeaveType || request.leaveType,
-            });
-            return;
-          }
-
-          setPrintRequest(false);
-          setSelectedRequest(request);
-        }}
-      />
-      {/* The form modal is the print source: it opens, prints itself once loaded, and closes again. */}
-      {request.isLeaveMonetization && isRegionalDirectorApproved(request) ? (
-        <ActionIconButton
-          label="Print leave monetization form"
-          icon={faPrint}
-          tone="print"
-          onClick={() => {
-            setPrintMonetization(true);
-            setSelectedMonetization({
-              ...request,
-              leaveType: request.monetizedLeaveType || request.leaveType,
-            });
-          }}
+    <ViewFormActions
+      viewLabel={request.isLeaveMonetization ? "View leave monetization form" : "View leave form"}
+      onView={() => openRequestForm(request)}
+      inlineActions={canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
+        <LeaveAttachmentUploadButton
+          request={request}
+          onUploaded={(updatedRequest) => setRequests((current) => current.map((row) => (
+            row.id === updatedRequest.id ? updatedRequest : row
+          )))}
         />
       ) : null}
-      {!request.isLeaveMonetization && isRegionalDirectorApproved(request) ? (
+    >
+      {isRegionalDirectorApproved(request) ? (
+        <>
+          <ActionIconButton
+            label={request.isLeaveMonetization ? "Print leave monetization form" : "Print leave form"}
+            icon={faPrint}
+            tone="print"
+            onClick={() => openRequestForm(request, "print")}
+          />
+          <ActionIconButton
+            label={request.isLeaveMonetization
+              ? "Download leave monetization form as PDF"
+              : "Download leave form as PDF"}
+            text="Download PDF"
+            icon={faFileArrowDown}
+            tone="export"
+            onClick={() => openRequestForm(request, "download")}
+          />
+        </>
+      ) : null}
+      {archiveView && String(request.archivedByUserId || "") === String(user?.id || "") ? (
         <ActionIconButton
-          label="Print leave form"
-          icon={faPrint}
-          tone="print"
-          onClick={() => {
-            setPrintRequest(true);
-            setSelectedRequest(request);
-          }}
+          label={request.isLeaveMonetization ? "Restore leave monetization request" : "Restore leave request"}
+          icon={faRotateLeft}
+          tone="restore"
+          onClick={() => handleArchiveRequest(request, true)}
         />
       ) : null}
-      {normalizeLeaveStatus(request.status) === "Pending" ? (
+      {!archiveView ? (
+        <ActionIconButton
+          label={request.isLeaveMonetization ? "Archive leave monetization request" : "Archive leave request"}
+          icon={faBoxArchive}
+          tone="archive"
+          onClick={() => handleArchiveRequest(request)}
+        />
+      ) : null}
+      {!archiveView && normalizeLeaveStatus(request.status) === "Pending" ? (
         <ActionIconButton
           label={request.isLeaveMonetization ? "Cancel leave monetization" : "Cancel leave request"}
           icon={faBan}
@@ -419,7 +477,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
           onClick={() => handleCancelRequest(request)}
         />
       ) : null}
-    </>
+    </ViewFormActions>
   );
 
   return (
@@ -428,68 +486,81 @@ export default function EmployeeLeaveWorkspace({ user }) {
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h3 className="m-0 text-base font-semibold text-slate-950">Leave History</h3>
-            <p className="m-0 mt-1 text-sm text-slate-500">Search, filter, and monitor your submitted leave requests.</p>
+            <h3 className="m-0 text-base font-semibold text-slate-950">
+              {archiveView ? "Archived Leave Requests" : "Leave Request"}
+            </h3>
+            <p className="m-0 mt-1 text-sm text-slate-500">
+              {archiveView
+                ? "Review your archived leave requests and restore them when needed."
+                : "Search, filter, and monitor your submitted leave requests."}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setBalanceOpen(true)}
-              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              <Wallet size={16} />
-              View Leave/COC Balances
-            </button>
-            <button
-              type="button"
-              onClick={() => setModalOpen(true)}
-              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
-            >
-              <FilePenLine size={16} />
-              File Leave Request
-            </button>
+            <ArchiveViewToggle
+              archiveView={archiveView}
+              label="leave requests"
+              onToggle={(next) => {
+                setArchiveView(next);
+                setStatus("");
+                setCurrentPage(1);
+              }}
+            />
+            <LeaveBalanceButton onClick={() => setBalanceOpen(true)} />
+            {!archiveView ? (
+              <button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+              >
+                <FilePenLine size={16} />
+                File Leave Request
+              </button>
+            ) : null}
           </div>
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_150px_130px]">
-          <label className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search leave history"
-              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-            />
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_150px_130px]">
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">
+              {archiveView ? "Search Archived Requests" : "Search Leave Requests"}
+            </span>
+            <span className="relative block">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={archiveView ? "Search archived requests" : "Search leave requests"}
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              />
+            </span>
           </label>
-          <select
-            value={leaveType}
-            onChange={(event) => setLeaveType(event.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          >
-            <option value="">All leave types</option>
-            {LEAVE_REQUEST_TYPES.map((type) => (
-              <option key={type} value={type}>{type}</option>
-            ))}
-          </select>
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          >
-            <option value="">All statuses</option>
-            {LEAVE_STATUSES.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
-          <select
-            value={rowsPerPage}
-            onChange={(event) => setRowsPerPage(event.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          >
-            <option value="5">5 rows</option>
-            <option value="10">10 rows</option>
-            <option value="20">20 rows</option>
-          </select>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Status</span>
+            <select
+              value={status}
+              onChange={(event) => setStatus(event.target.value)}
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            >
+              <option value="">All statuses</option>
+              {LEAVE_STATUSES.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Rows Per Page</span>
+            <select
+              value={rowsPerPage}
+              onChange={(event) => setRowsPerPage(event.target.value)}
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            >
+              <option value="10">10 rows</option>
+              <option value="20">20 rows</option>
+              <option value="50">50 rows</option>
+              <option value="100">100 rows</option>
+              <option value="200">200 rows</option>
+            </select>
+          </label>
         </div>
 
         {/*
@@ -504,17 +575,27 @@ export default function EmployeeLeaveWorkspace({ user }) {
           loadingCards={3}
           empty={{
             icon: Filter,
-            title: "No leave requests found",
-            description: "File a request or adjust your filters to see history.",
+            title: archiveView ? "No archived leave requests" : "No leave requests found",
+            description: archiveView
+              ? "Requests you archive will appear here."
+              : "File a request or adjust your filters to see leave requests.",
           }}
           itemKey={(request, index) => request?.rowKey || request?.id || index}
-          renderCard={(request, index) => ({
-            eyebrow: `#${(safePage - 1) * pageSize + index + 1}`,
+          renderCard={(request) => ({
             title: request.leaveType,
             subtitle: request.isLeaveMonetization
               ? `${request.monetizedLeaveType || "Leave"} credits`
               : `${formatDateDisplay(request.startDate)} - ${formatDateDisplay(request.endDate)}`,
-            badge: <LeaveStatusBadge status={request.status} />,
+            badge: (
+            <LeaveStatusBadge
+              status={request.status}
+              rejectedByRole={request.rejectedByRole}
+              isLeaveMonetization={request.isLeaveMonetization}
+              startDate={request.startDate}
+              endDate={request.endDate}
+              pendingByRole
+            />
+            ),
             fields: [
               {
                 label: "Days",
@@ -537,7 +618,7 @@ export default function EmployeeLeaveWorkspace({ user }) {
             <table className="min-w-[900px] w-full border-collapse">
               <thead className="bg-slate-50">
                 <tr>
-                  {["#", "Leave Type", "Date Range", "Days", "Status", "Reason", "Actions"].map((header) => (
+                  {["Leave Type", "Date Range", "Days", "Status", "Reason", "Actions"].map((header) => (
                     <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
                       {header}
                     </th>
@@ -548,28 +629,31 @@ export default function EmployeeLeaveWorkspace({ user }) {
                 {loading ? (
                   Array.from({ length: 4 }).map((_, index) => (
                     <tr key={index} className="animate-pulse border-b border-slate-100">
-                      <td colSpan={7} className="px-3 py-3">
+                      <td colSpan={6} className="px-3 py-3">
                         <div className="h-5 rounded bg-slate-200" />
                       </td>
                     </tr>
                   ))
                 ) : paginatedRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-12 text-center">
+                    <td colSpan={6} className="px-4 py-12 text-center">
                       <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
                         <Filter size={20} />
                       </div>
-                      <p className="m-0 mt-3 text-sm font-semibold text-slate-700">No leave requests found</p>
-                      <p className="m-0 mt-1 text-sm text-slate-500">File a request or adjust your filters to see history.</p>
+                      <p className="m-0 mt-3 text-sm font-semibold text-slate-700">
+                        {archiveView ? "No archived leave requests" : "No leave requests found"}
+                      </p>
+                      <p className="m-0 mt-1 text-sm text-slate-500">
+                        {archiveView
+                          ? "Requests you archive will appear here."
+                          : "File a request or adjust your filters to see leave requests."}
+                      </p>
                     </td>
                   </tr>
                 ) : (
-                  paginatedRequests.map((request, index) => {
+                  paginatedRequests.map((request) => {
                     return (
                       <tr key={request.rowKey || request.id} className="border-b border-slate-100 transition hover:bg-slate-50">
-                        <td className="px-3 py-3 text-sm font-semibold text-slate-600">
-                          {(safePage - 1) * pageSize + index + 1}
-                        </td>
                         <td className="px-3 py-3 text-sm text-slate-800">{request.leaveType}</td>
                         <td className="px-3 py-3 text-sm text-slate-600">
                           {/* A monetization has no span of dates: it draws days from a credit. */}
@@ -582,10 +666,19 @@ export default function EmployeeLeaveWorkspace({ user }) {
                             ? `${formatMonetizationDays(request.numberOfDays)} day(s)`
                             : formatDurationLabel(request.numberOfDays)}
                         </td>
-                        <td className="px-3 py-3"><LeaveStatusBadge status={request.status} /></td>
+                        <td className="px-3 py-3">
+                          <LeaveStatusBadge
+                            status={request.status}
+                            rejectedByRole={request.rejectedByRole}
+                            isLeaveMonetization={request.isLeaveMonetization}
+                            startDate={request.startDate}
+                            endDate={request.endDate}
+                            pendingByRole
+                          />
+                        </td>
                         <td className="max-w-[260px] truncate px-3 py-3 text-sm text-slate-600">{getLeaveReasonDisplay(request.reason, request.leaveType) || "No reason provided"}</td>
                         <td className="px-3 py-3">
-                          <div className="flex flex-wrap gap-2">{renderRequestActions(request)}</div>
+                          {renderRequestActions(request)}
                         </td>
                       </tr>
                     );
@@ -604,48 +697,15 @@ export default function EmployeeLeaveWorkspace({ user }) {
         </div>
       </section>
 
-      <ProfileFloatingCard
+      <LeaveBalanceModal
         open={balanceOpen}
         onClose={() => setBalanceOpen(false)}
-        title="Leave/COC Balances"
-        subtitle="Available credits on your employee account for the current year."
-        icon={Wallet}
-        maxWidth="max-w-[460px]"
-      >
-        <div className="space-y-3">
-          {balanceCards.map((card) => {
-            const Icon = card.icon;
-
-            return (
-              <article key={card.type} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <div className={`h-1.5 bg-gradient-to-r ${card.tone}`} />
-                <div className="flex items-center gap-3 p-4">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600">
-                    <Icon size={17} aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="m-0 text-sm font-semibold text-slate-500">{card.type}</p>
-                    <div className="mt-1.5 flex items-end justify-between gap-3">
-                      <strong className="text-lg font-semibold leading-none text-slate-950">
-                        {formatCreditValue(card.remaining)}
-                      </strong>
-                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                        {formatCreditValue(card.used)} used of {formatCreditValue(card.total)}
-                      </span>
-                    </div>
-                    <p className="m-0 mt-1.5 text-xs text-slate-500">Remaining days</p>
-                  </div>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      </ProfileFloatingCard>
+        credits={leaveCreditSnapshot}
+      />
 
       <LeaveRequestModal
         open={modalOpen}
         user={user}
-        leaveTypes={LEAVE_TYPES}
         leaveCredits={leaveCredits}
         isSubmitting={submitting}
         onClose={() => setModalOpen(false)}
@@ -663,24 +723,26 @@ export default function EmployeeLeaveWorkspace({ user }) {
         open={Boolean(selectedRequest)}
         request={selectedRequest}
         autoPrint={printRequest}
+        autoDownload={downloadRequest}
         onClose={() => {
           setSelectedRequest(null);
           setPrintRequest(false);
+          setDownloadRequest(false);
         }}
       />
 
-      {/* The monetization filing's copy of the same CSC Form No. 6, printed the same way. */}
+      {/* The monetization filing's copy of the same CSC Form No. 6, printed and saved the same way. */}
       <LeaveMonetizationFormModal
         open={Boolean(selectedMonetization)}
         record={selectedMonetization}
         autoPrint={printMonetization}
+        autoDownload={downloadMonetization}
         onClose={() => {
           setSelectedMonetization(null);
           setPrintMonetization(false);
+          setDownloadMonetization(false);
         }}
       />
     </div>
   );
 }
-
-

@@ -1,16 +1,11 @@
-import React, { useMemo } from "react";
-import { Pencil, Plus, RefreshCw } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { ChevronDown, Eye, Pencil, Plus, Power, RefreshCw, Search } from "lucide-react";
 import Button from "../../components/UI/button";
 import InputField from "../../components/UI/InputField";
 import Modal from "../../components/UI/modal";
 import Table from "../../components/UI/table";
 import { SettingsNotice, SettingsPanel } from "../../components/settings";
 
-/**
- * Panel colours only. Which groups exist is no longer decided here — `buildDeductionGroups` reads
- * them from `deduction_categories`, so adding a category in the database makes a panel appear
- * without a code change. This list used to BE the four groups, one per backing table.
- */
 const CATEGORY_BADGE_CLASSES = [
   "bg-sky-50 text-sky-700",
   "bg-emerald-50 text-emerald-700",
@@ -35,11 +30,10 @@ export function buildDeductionGroups(categories = []) {
     }));
 }
 
-
 export const deductionThresholdModeOptions = [
   { value: "fixed", label: "Fixed" },
   { value: "percentage", label: "Percentage" },
-  { value: "tiered", label: "Tiered" },
+  { value: "tiered", label: "Rule Based" },
   { value: "bracket", label: "Bracket" },
 ];
 
@@ -47,8 +41,6 @@ export const defaultDeductionDefinitionForm = {
   type_name: "",
   description: "",
   default_amount: "0.00",
-  // A percentage deduction is meaningless without this, and the old four-table shape had no column
-  // for it — which is why a GSIS row could sit in percentage mode charging nothing.
   default_rate: "0.0000",
   threshold_amount: "0.00",
   threshold_mode: "fixed",
@@ -58,190 +50,179 @@ export const defaultDeductionDefinitionForm = {
   is_active: "1",
 };
 
-function formatDeductionAmount(value) {
-  const amount = Number(value || 0);
-
-  return Number.isFinite(amount)
-    ? amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : "0.00";
+function numericValue(value) {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
 }
 
-/**
- * A rate is only meaningful in the modes that charge one, so a fixed deduction shows a dash rather
- * than "0.0000%" — which reads as "charges nothing" instead of "does not use a rate".
- *
- * Trailing zeros are trimmed but the significant digits are not: an attendance rate is 4.54545455%
- * (a day is monthly salary over 22) and rounding it for display would misreport what payroll charges.
- */
-function formatDeductionRate(row) {
-  const mode = row.threshold_mode || "fixed";
+function formatDeductionAmount(value) {
+  return numericValue(value).toLocaleString("en-PH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
 
-  if (mode === "fixed") {
-    return null;
-  }
+function formatDeductionRateValue(value) {
+  const rate = numericValue(value);
 
-  const rate = Number(row.default_rate || 0);
-
-  if (!Number.isFinite(rate) || rate <= 0) {
-    if ((mode === "tiered" || mode === "bracket") && row.threshold_rules) {
-      return "Rules";
-    }
-
-    return null;
+  if (rate <= 0) {
+    return "";
   }
 
   return `${String(rate).replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "")}%`;
 }
 
-const RATE_MODE_LABEL = {
-  percentage: "of salary",
-  tiered: "banded",
-  bracket: "banded",
-};
+export function getDeductionComputation(row = {}) {
+  const mode = String(row.threshold_mode || "fixed").toLowerCase();
 
-/* `cardRole` lays these columns out as cards below `lg` — see `components/UI/table.jsx`. */
-const baseDeductionColumns = [
-  {
-    key: "id",
-    header: "id",
-    headerClassName: "normal-case",
-    cardRole: "eyebrow",
-    render: (row) => <span className="font-semibold text-slate-900">{row.id}</span>,
-  },
+  if (mode === "bracket") {
+    return "Bracket";
+  }
+
+  if (mode === "tiered" || row.threshold_rules) {
+    return "Rule Based";
+  }
+
+  if (mode === "percentage" || Number(row.is_percentage) === 1) {
+    return "Percentage";
+  }
+
+  return "Fixed";
+}
+
+export function getDeductionAmountDisplay(row = {}) {
+  const computation = getDeductionComputation(row);
+
+  if (computation === "Percentage") {
+    return formatDeductionRateValue(row.default_rate) || "Automatic";
+  }
+
+  if (computation === "Rule Based" || computation === "Bracket") {
+    return "Automatic";
+  }
+
+  const amount = numericValue(row.default_amount);
+  return amount > 0 ? `₱${formatDeductionAmount(amount)}` : "Employee Specific";
+}
+
+function StatusBadge({ active }) {
+  return (
+    <span
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${
+        active
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          : "border-slate-200 bg-slate-50 text-slate-600"
+      }`}
+    >
+      {active ? "Active" : "Inactive"}
+    </span>
+  );
+}
+
+const otherDeductionColumns = [
   {
     key: "type_name",
-    header: "type_name",
-    headerClassName: "normal-case",
+    header: "Deduction Name",
+    headerClassName: "w-[30%]",
     cardRole: "title",
-    render: (row) => <span className="font-semibold text-slate-900">{row.type_name || "N/A"}</span>,
+    render: (row) => <span className="font-semibold text-slate-900">{row.type_name || "Unnamed deduction"}</span>,
   },
   {
     key: "description",
-    header: "description",
-    headerClassName: "normal-case",
-    cardFull: true,
-    render: (row) => (
-      <span className="block max-w-[240px] truncate text-slate-700" title={row.description || ""}>
-        {row.description || "N/A"}
-      </span>
-    ),
+    header: "Description",
+    headerClassName: "w-[45%]",
+    cardRole: "subtitle",
+    render: (row) => <span className="block break-words text-sm leading-5 text-slate-600">{row.description || "No description provided."}</span>,
   },
   {
     key: "default_amount",
-    header: "default_amount",
-    headerClassName: "normal-case",
-    render: (row) => <span className="tabular-nums text-slate-800">{formatDeductionAmount(row.default_amount)}</span>,
-  },
-  {
-    key: "default_rate",
-    header: "rate",
-    headerClassName: "normal-case",
-    render: (row) => {
-      const rate = formatDeductionRate(row);
-
-      if (rate === null) {
-        return <span className="text-slate-400">N/A</span>;
-      }
-
-      return (
-        <span className="whitespace-nowrap">
-          <span className="font-semibold tabular-nums text-[#D61E1E]">{rate}</span>
-          <span className="ml-1.5 text-xs text-slate-500">{RATE_MODE_LABEL[row.threshold_mode] || ""}</span>
-        </span>
-      );
-    },
-  },
-  {
-    key: "threshold_amount",
-    header: "threshold_amount",
-    headerClassName: "normal-case",
-    render: (row) => <span className="tabular-nums text-slate-800">{formatDeductionAmount(row.threshold_amount)}</span>,
-  },
-  {
-    key: "threshold_mode",
-    header: "threshold_mode",
-    headerClassName: "normal-case",
-    render: (row) => row.threshold_mode || "fixed",
-  },
-  {
-    key: "threshold_rules",
-    header: "threshold_rules",
-    headerClassName: "normal-case",
-    render: (row) => (
-      <span className="block max-w-[260px] truncate font-mono text-xs text-slate-700" title={row.threshold_rules || ""}>
-        {row.threshold_rules || "N/A"}
-      </span>
-    ),
-  },
-  {
-    key: "base_floor",
-    header: "base_floor",
-    headerClassName: "normal-case",
-    render: (row) => <span className="tabular-nums text-slate-800">{formatDeductionAmount(row.base_floor)}</span>,
-  },
-  {
-    key: "base_cap",
-    header: "base_cap",
-    headerClassName: "normal-case",
-    render: (row) => (
-      row.base_cap === null || row.base_cap === undefined || row.base_cap === ""
-        ? "N/A"
-        : <span className="tabular-nums text-slate-800">{formatDeductionAmount(row.base_cap)}</span>
-    ),
-  },
-  {
-    key: "is_percentage",
-    header: "is_percentage",
-    headerClassName: "normal-case",
-    render: (row) => (
-      <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700">
-        {Number(row.is_percentage) === 1 ? "1" : "0"}
-      </span>
-    ),
-  },
-  {
-    key: "is_active",
-    header: "is_active",
-    headerClassName: "normal-case",
-    render: (row) => (
-      <span
-        className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${
-          Number(row.is_active ?? 1) === 1
-            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-            : "border-slate-200 bg-slate-50 text-slate-600"
-        }`}
-      >
-        {Number(row.is_active ?? 1) === 1 ? "1" : "0"}
-      </span>
-    ),
+    header: "Amount",
+    headerClassName: "w-[25%] text-right",
+    cellClassName: "text-right",
+    render: (row) => <span className="font-semibold tabular-nums text-slate-900">₱{formatDeductionAmount(row.default_amount)}</span>,
   },
 ];
 
-/** The Edit action is appended per render because it closes over the handler. */
-function buildDeductionColumns(onEdit) {
-  if (!onEdit) {
-    return baseDeductionColumns;
-  }
-
+function buildDeductionColumns({ onView, onEdit, onToggleStatus, togglingDeductionId }) {
   return [
-    ...baseDeductionColumns,
+    {
+      key: "type_name",
+      header: "Deduction Name",
+      headerClassName: "w-[17%]",
+      cardRole: "title",
+      render: (row) => (
+        <span className="font-semibold text-slate-900">{row.type_name || "Unnamed deduction"}</span>
+      ),
+    },
+    {
+      key: "description",
+      header: "Description",
+      headerClassName: "w-[23%]",
+      cardRole: "subtitle",
+      render: (row) => (
+        <span className="block break-words text-sm leading-5 text-slate-600">
+          {row.description || "No description provided."}
+        </span>
+      ),
+    },
+    {
+      key: "computation",
+      header: "Computation",
+      headerClassName: "w-[13%]",
+      render: (row) => <span className="font-medium text-slate-700">{getDeductionComputation(row)}</span>,
+    },
+    {
+      key: "amountRate",
+      header: "Amount / Rate",
+      headerClassName: "w-[15%]",
+      render: (row) => {
+        const display = getDeductionAmountDisplay(row);
+        const employeeSpecific = display === "Employee Specific";
+
+        return (
+          <span className={`font-semibold tabular-nums ${employeeSpecific ? "text-slate-600" : "text-slate-900"}`}>
+            {display}
+          </span>
+        );
+      },
+    },
+    {
+      key: "status",
+      header: "Status",
+      headerClassName: "w-[10%]",
+      cardRole: "badge",
+      render: (row) => <StatusBadge active={Number(row.is_active ?? 1) === 1} />,
+    },
     {
       key: "actions",
-      header: "",
-      headerClassName: "normal-case",
-      cellClassName: "text-right",
+      header: "Actions",
+      headerClassName: "w-[22%]",
       cardRole: "actions",
-      render: (row) => (
-        <Button
-          size="sm"
-          variant="secondary"
-          icon={Pencil}
-          onClick={() => onEdit(row)}
-          aria-label={`Edit ${row.type_name || "deduction"}`}
-        >
-          Edit
-        </Button>
-      ),
+      render: (row) => {
+        const active = Number(row.is_active ?? 1) === 1;
+
+        return (
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant="ghost" icon={Eye} onClick={() => onView?.(row)}>
+              View
+            </Button>
+            <Button size="sm" variant="secondary" icon={Pencil} onClick={() => onEdit?.(row)}>
+              Edit
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={Power}
+              loading={togglingDeductionId === row.id}
+              onClick={() => onToggleStatus?.(row)}
+              className={active ? "text-rose-700" : "text-emerald-700"}
+              aria-label={`${active ? "Deactivate" : "Activate"} ${row.type_name || "deduction"}`}
+            >
+              {active ? "Deactivate" : "Activate"}
+            </Button>
+          </div>
+        );
+      },
     },
   ];
 }
@@ -253,28 +234,87 @@ export default function DeductionSettings({
   loading = false,
   message = "",
   messageTone = "info",
+  togglingDeductionId = null,
   onAdd,
   onEdit,
+  onToggleStatus,
   onRefresh,
 }) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [viewingDeduction, setViewingDeduction] = useState(null);
   const groups = useMemo(() => buildDeductionGroups(categories), [categories]);
-  const columns = useMemo(() => buildDeductionColumns(onEdit), [onEdit]);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtersActive = normalizedQuery !== "" || statusFilter !== "all";
 
-  /*
-   * Grouping is an exact match on the row's own category now. It used to fall back to matching
-   * name prefixes against an alias list ("pagibig", "philhealthpremium", …) because a deduction had
-   * no reliable link to its category — the category was a string it happened to carry.
-   */
+  const filteredDeductions = useMemo(() => {
+    return deductionTypes.filter((deduction) => {
+      const active = Number(deduction.is_active ?? 1) === 1;
+      const matchesStatus = statusFilter === "all"
+        || (statusFilter === "active" && active)
+        || (statusFilter === "inactive" && !active);
+      const matchesQuery = !normalizedQuery || [
+        deduction.type_name,
+        deduction.description,
+        deduction.groupLabel,
+        getDeductionComputation(deduction),
+        getDeductionAmountDisplay(deduction),
+      ].some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
+
+      return matchesStatus && matchesQuery;
+    });
+  }, [deductionTypes, normalizedQuery, statusFilter]);
+
   const deductionTypesByGroup = useMemo(() => {
     return groups.reduce((byGroup, group) => {
-      byGroup[group.key] = deductionTypes.filter((deduction) => deduction.groupKey === group.key);
+      byGroup[group.key] = filteredDeductions.filter((deduction) => deduction.groupKey === group.key);
       return byGroup;
     }, {});
-  }, [deductionTypes, groups]);
+  }, [filteredDeductions, groups]);
+
+  const columns = useMemo(() => buildDeductionColumns({
+    onView: setViewingDeduction,
+    onEdit,
+    onToggleStatus,
+    togglingDeductionId,
+  }), [onEdit, onToggleStatus, togglingDeductionId]);
 
   return (
     <div className="grid gap-4">
       <SettingsNotice tone={messageTone}>{message}</SettingsNotice>
+
+      <div className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.65)]">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <InputField
+            name="deductionSearch"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search deductions..."
+            icon={Search}
+            aria-label="Search deductions"
+            className="lg:flex-1"
+          />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label htmlFor="deductionStatusFilter" className="sr-only">Filter deductions by status</label>
+            <select
+              id="deductionStatusFilter"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              className="min-h-10 rounded-lg border border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 outline-none focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
+            >
+              <option value="all">Status: All</option>
+              <option value="active">Status: Active</option>
+              <option value="inactive">Status: Inactive</option>
+            </select>
+            <Button variant="secondary" icon={RefreshCw} loading={loading} onClick={onRefresh}>
+              Refresh
+            </Button>
+          </div>
+        </div>
+        <p className="m-0 mt-3 text-xs text-slate-500" aria-live="polite">
+          Showing {filteredDeductions.length} of {deductionTypes.length} deductions
+        </p>
+      </div>
 
       {!loading && groups.length === 0 ? (
         <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-500">
@@ -282,19 +322,20 @@ export default function DeductionSettings({
         </p>
       ) : null}
 
-      <div className="grid gap-4 2xl:grid-cols-2">
+      <div className="grid gap-4">
         {groups.map((group) => {
           const groupDeductions = deductionTypesByGroup[group.key] || [];
+          const totalInGroup = deductionTypes.filter((deduction) => deduction.groupKey === group.key).length;
 
           return (
             <SettingsPanel
               key={group.key}
               title={group.label}
-              description={`Manage deduction names categorized under ${group.label}.`}
+              description={`Manage ${group.label} deduction settings.`}
               actions={
                 <>
                   <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${group.badgeClassName}`}>
-                    {groupDeductions.length} item{groupDeductions.length === 1 ? "" : "s"}
+                    {filtersActive ? `${groupDeductions.length} of ${totalInGroup}` : groupDeductions.length} item{totalInGroup === 1 ? "" : "s"}
                   </span>
                   <Button size="sm" icon={Plus} onClick={() => onAdd?.(group.key)}>
                     Add
@@ -303,15 +344,21 @@ export default function DeductionSettings({
               }
             >
               <Table
-                columns={columns}
+                columns={group.key === "other" ? otherDeductionColumns : columns}
                 data={groupDeductions}
                 rowKey="definitionKey"
-                emptyMessage={loading ? "Loading deductions..." : `No ${group.label} deductions found.`}
-                tableClassName="min-w-[1800px]"
+                emptyMessage={loading
+                  ? "Loading deductions..."
+                  : filtersActive
+                    ? `No ${group.label} deductions match the current filters.`
+                    : `No ${group.label} deductions found.`}
+                loading={loading}
+                tableClassName="table-fixed"
+                minWidthClassName={group.key === "other" ? "min-w-[480px]" : "min-w-[900px]"}
                 className="rounded-lg border border-slate-200"
-                stickyHeader
                 cardsClassName="xl:hidden"
                 tableWrapperClassName="hidden xl:block"
+                stickyHeader
               />
             </SettingsPanel>
           );
@@ -320,52 +367,40 @@ export default function DeductionSettings({
 
       <AllowancePanel allowances={allowances} loading={loading} />
 
-      <div className="flex justify-end">
-        <Button variant="secondary" icon={RefreshCw} loading={loading} onClick={onRefresh}>
-          Refresh
-        </Button>
-      </div>
+      <DeductionViewModal
+        deduction={viewingDeduction}
+        onClose={() => setViewingDeduction(null)}
+        onEdit={(deduction) => {
+          setViewingDeduction(null);
+          onEdit?.(deduction);
+        }}
+      />
     </div>
   );
 }
 
 const allowanceColumns = [
   {
-    key: "allowanceId",
-    header: "id",
-    headerClassName: "normal-case",
-    cardRole: "eyebrow",
-    render: (row) => <span className="font-semibold text-slate-900">{row.allowanceId}</span>,
-  },
-  {
     key: "allowanceName",
-    header: "allowance_name",
-    headerClassName: "normal-case",
+    header: "Allowance Name",
     cardRole: "title",
     render: (row) => <span className="font-semibold text-slate-900">{row.allowanceName || "N/A"}</span>,
   },
   {
     key: "amount",
-    header: "amount",
-    headerClassName: "normal-case",
+    header: "Amount",
     cellClassName: "text-right",
-    render: (row) => (
-      <span className="tabular-nums font-semibold text-slate-800">{formatDeductionAmount(row.amount)}</span>
-    ),
+    render: (row) => <span className="tabular-nums font-semibold text-slate-800">₱{formatDeductionAmount(row.amount)}</span>,
   },
 ];
 
-/**
- * Allowances sit beside the deductions because together they are the two halves of a payslip, and
- * an administrator checking what a run will pay wants both on one screen.
- */
 function AllowancePanel({ allowances = [], loading = false }) {
-  const total = allowances.reduce((sum, allowance) => sum + Number(allowance.amount || 0), 0);
+  const total = allowances.reduce((sum, allowance) => sum + numericValue(allowance.amount), 0);
 
   return (
     <SettingsPanel
-      title="Allowances"
-      description="Allowance types payroll can add to a run, with the amount each carries."
+      title="Allowance Reference"
+      description="Existing allowance types shown here for payroll setup reference."
       actions={
         <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
           {allowances.length} item{allowances.length === 1 ? "" : "s"}
@@ -376,19 +411,131 @@ function AllowancePanel({ allowances = [], loading = false }) {
         columns={allowanceColumns}
         data={allowances}
         rowKey="allowanceId"
+        loading={loading}
         emptyMessage={loading ? "Loading allowances..." : "No allowances found."}
+        minWidthClassName="min-w-0"
         className="rounded-lg border border-slate-200"
-        cardsClassName="sm:hidden"
-        tableWrapperClassName="hidden sm:block"
       />
 
       {allowances.length > 0 ? (
         <p className="mt-3 text-right text-sm text-slate-600">
           Total if every allowance applies:{" "}
-          <span className="font-semibold tabular-nums text-slate-900">{formatDeductionAmount(total)}</span>
+          <span className="font-semibold tabular-nums text-slate-900">₱{formatDeductionAmount(total)}</span>
         </p>
       ) : null}
     </SettingsPanel>
+  );
+}
+
+function DetailItem({ label, value, full = false }) {
+  return (
+    <div className={full ? "sm:col-span-2" : ""}>
+      <dt className="text-[11px] font-bold uppercase tracking-[0.1em] text-slate-400">{label}</dt>
+      <dd className="m-0 mt-1 break-words text-sm font-medium text-slate-800">{value || "Not set"}</dd>
+    </div>
+  );
+}
+
+function DeductionViewModal({ deduction, onClose, onEdit }) {
+  if (!deduction) {
+    return null;
+  }
+
+  const active = Number(deduction.is_active ?? 1) === 1;
+  const rate = formatDeductionRateValue(deduction.default_rate);
+
+  return (
+    <Modal open title={deduction.type_name || "Deduction details"} onClose={onClose} maxWidth="max-w-2xl">
+      <div className="grid gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <div>
+            <p className="m-0 text-xs font-bold uppercase tracking-[0.1em] text-slate-400">{deduction.groupLabel}</p>
+            <p className="m-0 mt-1 text-sm text-slate-600">{deduction.description || "No description provided."}</p>
+          </div>
+          <StatusBadge active={active} />
+        </div>
+
+        <dl className="m-0 grid gap-4 rounded-xl border border-slate-200 p-4 sm:grid-cols-2">
+          <DetailItem label="Computation" value={getDeductionComputation(deduction)} />
+          <DetailItem label="Amount / Rate" value={getDeductionAmountDisplay(deduction)} />
+          <DetailItem label="Default Amount" value={`₱${formatDeductionAmount(deduction.default_amount)}`} />
+          <DetailItem label="Rate" value={rate || "Not used"} />
+        </dl>
+
+        <details className="group rounded-xl border border-slate-200 bg-white">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-slate-800">
+            Advanced Computation Settings
+            <ChevronDown size={17} className="transition group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <dl className="m-0 grid gap-4 border-t border-slate-200 p-4 sm:grid-cols-2">
+            <DetailItem label="Threshold Amount" value={`₱${formatDeductionAmount(deduction.threshold_amount)}`} />
+            <DetailItem label="Threshold Mode" value={deduction.threshold_mode || "fixed"} />
+            <DetailItem label="Base Floor" value={`₱${formatDeductionAmount(deduction.base_floor)}`} />
+            <DetailItem
+              label="Base Cap"
+              value={deduction.base_cap === null || deduction.base_cap === ""
+                ? "No cap"
+                : `₱${formatDeductionAmount(deduction.base_cap)}`}
+            />
+            <DetailItem label="Threshold Rules" value={deduction.threshold_rules || "No rules configured"} full />
+          </dl>
+        </details>
+
+        <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+          <Button icon={Pencil} onClick={() => onEdit?.(deduction)}>Edit Deduction</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function FormToggle({ id, label, description, checked, onChange }) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <div>
+        <label htmlFor={id} className="block text-sm font-semibold text-slate-800">{label}</label>
+        {description ? <p className="m-0 mt-0.5 text-xs leading-5 text-slate-500">{description}</p> : null}
+      </div>
+      <button
+        id={id}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange?.(!checked)}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/30 ${
+          checked ? "bg-[#D61E1E]" : "bg-slate-300"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition ${
+            checked ? "left-[22px]" : "left-0.5"
+          }`}
+          aria-hidden="true"
+        />
+      </button>
+    </div>
+  );
+}
+
+function AffixedNumberField({ id, label, prefix = "", suffix = "", error, ...props }) {
+  return (
+    <div className="w-full">
+      <label htmlFor={id} className="mb-1.5 block text-sm font-semibold text-slate-700">{label}</label>
+      <div className={`flex min-h-10 items-center rounded-lg border bg-white ${error ? "border-rose-600" : "border-slate-200"}`}>
+        {prefix ? <span className="border-r border-slate-200 px-3 text-sm font-semibold text-slate-500">{prefix}</span> : null}
+        <input
+          id={id}
+          type="number"
+          className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-slate-900 outline-none placeholder:text-slate-400"
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? `${id}-error` : undefined}
+          {...props}
+        />
+        {suffix ? <span className="border-l border-slate-200 px-3 text-sm font-semibold text-slate-500">{suffix}</span> : null}
+      </div>
+      {error ? <p id={`${id}-error`} className="mt-1.5 text-sm text-rose-700">{error}</p> : null}
+    </div>
   );
 }
 
@@ -406,8 +553,53 @@ export function DeductionModal({
 }) {
   const groupLabel = buildDeductionGroups(categories)
     .find((group) => group.key === groupKey)?.label || "Deduction";
-  const isRateBased = form.threshold_mode !== "fixed";
+  const computationMode = form.threshold_mode || "fixed";
+  const isPercentage = computationMode === "percentage";
+  const isRuleBased = computationMode === "tiered" || computationMode === "bracket";
   const isEditing = mode === "edit";
+  const active = String(form.is_active ?? "1") === "1";
+  const changeValue = (field, value) => onFieldChange?.(field)({ target: { value } });
+
+  if (groupKey === "other") {
+    return (
+      <Modal open={open} title={`${isEditing ? "Edit" : "Add"} ${groupLabel} Deduction`} onClose={onClose} maxWidth="max-w-xl">
+        <form className="grid gap-5" onSubmit={onSubmit}>
+          <InputField
+            label="Deduction Name"
+            name="type_name"
+            value={form.type_name}
+            onChange={onFieldChange?.("type_name")}
+            placeholder="Enter deduction name"
+            error={errors.type_name}
+          />
+          <div className="app-optional-field">
+            <label htmlFor="deductionDescription" className="mb-1.5 block text-sm font-semibold text-slate-700">Description</label>
+            <textarea
+              id="deductionDescription"
+              value={form.description}
+              onChange={onFieldChange?.("description")}
+              rows={3}
+              placeholder="Describe when this deduction is applied"
+              className="min-h-[96px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
+            />
+          </div>
+          <AffixedNumberField
+            id="deductionDefaultAmount"
+            label="Amount"
+            prefix="₱"
+            min="0"
+            step="0.01"
+            value={form.default_amount}
+            onChange={onFieldChange?.("default_amount")}
+            error={errors.default_amount}
+          />
+          <div className="flex justify-end border-t border-slate-200 pt-4">
+            <Button type="submit" loading={saving}>{isEditing ? "Update Deduction" : "Save Deduction"}</Button>
+          </div>
+        </form>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
@@ -417,110 +609,175 @@ export function DeductionModal({
       maxWidth="max-w-3xl"
     >
       <form className="grid gap-5" onSubmit={onSubmit}>
-        <InputField
-          label="type_name"
-          name="type_name"
-          value={form.type_name}
-          onChange={onFieldChange?.("type_name")}
-          placeholder="Enter type name"
-          error={errors.type_name}
-        />
-
-        <div>
-          <label htmlFor="deductionDescription" className="mb-1.5 block text-sm font-semibold text-slate-700">
-            description
-          </label>
-          <textarea
-            id="deductionDescription"
-            value={form.description}
-            onChange={onFieldChange?.("description")}
-            rows={3}
-            placeholder="Optional description"
-            className="min-h-[96px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
-          />
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <InputField
-            label="default_amount"
-            name="default_amount"
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.default_amount}
-            onChange={onFieldChange?.("default_amount")}
-          />
-          <InputField
-            label="threshold_amount"
-            name="threshold_amount"
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.threshold_amount}
-            onChange={onFieldChange?.("threshold_amount")}
-          />
-          <div>
-            <label htmlFor="thresholdMode" className="mb-1.5 block text-sm font-semibold text-slate-700">
-              threshold_mode
-            </label>
-            <select
-              id="thresholdMode"
-              value={form.threshold_mode}
-              onChange={onFieldChange?.("threshold_mode")}
-              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
-            >
-              {deductionThresholdModeOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+        <section>
+          <div className="mb-3">
+            <h3 className="m-0 text-sm font-bold text-slate-900">Basic Information</h3>
+            <p className="m-0 mt-1 text-xs text-slate-500">Name the deduction and explain when it applies.</p>
           </div>
-        </div>
+          <div className="grid gap-4 rounded-xl border border-slate-200 p-4">
+            <InputField
+              label="Deduction Name"
+              name="type_name"
+              value={form.type_name}
+              onChange={onFieldChange?.("type_name")}
+              placeholder="Enter deduction name"
+              error={errors.type_name}
+            />
 
-        <div className="grid gap-4 sm:grid-cols-3">
-          <InputField
-            label="default_rate (%)"
-            name="default_rate"
-            type="number"
-            min="0"
-            max="100"
-            step="0.0001"
-            value={form.default_rate}
-            onChange={onFieldChange?.("default_rate")}
-            error={errors.default_rate}
-            disabled={!isRateBased}
-            placeholder={isRateBased ? "e.g. 9 for 9%" : "Rate modes only"}
-          />
-          <InputField
-            label="base_floor"
-            name="base_floor"
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.base_floor}
-            onChange={onFieldChange?.("base_floor")}
-          />
-          <InputField
-            label="base_cap"
-            name="base_cap"
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.base_cap}
-            onChange={onFieldChange?.("base_cap")}
-            placeholder="Optional"
-          />
-        </div>
+            <div>
+              <label htmlFor="deductionDescription" className="mb-1.5 block text-sm font-semibold text-slate-700">
+                Description
+              </label>
+              <textarea
+                id="deductionDescription"
+                value={form.description}
+                onChange={onFieldChange?.("description")}
+                rows={3}
+                placeholder="Describe when this deduction is applied"
+                className="min-h-[96px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
+              />
+            </div>
 
-        <p className="-mt-2 text-xs text-slate-500">
-          {isRateBased
-            ? "The rate applies with the selected mode, using threshold rules and base limits when present."
-            : "Fixed deductions charge default_amount. Switch threshold_mode to Percentage, Tiered, or Bracket to set a rate."}
-        </p>
+            <FormToggle
+              id="deductionActive"
+              label="Active"
+              description="Inactive deductions remain available for reference but are not enabled for payroll use."
+              checked={active}
+              onChange={(checked) => changeValue("is_active", checked ? "1" : "0")}
+            />
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-3">
+            <h3 className="m-0 text-sm font-bold text-slate-900">Amount / Rate</h3>
+            <p className="m-0 mt-1 text-xs text-slate-500">Use the deduction's existing amount and rate settings.</p>
+          </div>
+          <div className="grid gap-4 rounded-xl border border-slate-200 p-4">
+            <FormToggle
+              id="percentageDeduction"
+              label="Percentage Deduction"
+              description="Turn on to calculate this deduction as a percentage instead of a fixed amount."
+              checked={isPercentage}
+              onChange={(checked) => changeValue("threshold_mode", checked ? "percentage" : "fixed")}
+            />
+
+            {computationMode === "fixed" ? (
+              <div>
+                <AffixedNumberField
+                  id="deductionDefaultAmount"
+                  label="Default Amount"
+                  prefix="₱"
+                  min="0"
+                  step="0.01"
+                  value={form.default_amount}
+                  onChange={onFieldChange?.("default_amount")}
+                />
+                <p className="m-0 mt-2 text-xs leading-5 text-slate-500">
+                  Leave this at ₱0.00 when the amount is entered per employee. It will display as Employee Specific.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <AffixedNumberField
+                  id="deductionDefaultRate"
+                  label={isRuleBased ? "Default Rate (optional)" : "Rate"}
+                  suffix="%"
+                  min="0"
+                  max="100"
+                  step="0.0001"
+                  value={form.default_rate}
+                  onChange={onFieldChange?.("default_rate")}
+                  error={errors.default_rate}
+                  placeholder={isRuleBased ? "Optional base rate" : "e.g. 9.00"}
+                />
+                <p className="m-0 mt-2 text-xs leading-5 text-slate-500">
+                  {isRuleBased
+                    ? "The configured threshold rules determine the final deduction automatically."
+                    : "Enter the percentage rate payroll should apply."}
+                </p>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <details className="group rounded-xl border border-slate-200 bg-slate-50/60">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3.5 text-sm font-semibold text-slate-800">
+            <span>
+              Advanced Computation Settings
+              <span className="mt-0.5 block text-xs font-normal text-slate-500">Existing threshold and salary-base controls</span>
+            </span>
+            <ChevronDown size={18} className="transition group-open:rotate-180" aria-hidden="true" />
+          </summary>
+
+          <div className="grid gap-4 border-t border-slate-200 bg-white p-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="thresholdMode" className="mb-1.5 block text-sm font-semibold text-slate-700">
+                  Threshold Mode
+                </label>
+                <select
+                  id="thresholdMode"
+                  value={form.threshold_mode}
+                  onChange={onFieldChange?.("threshold_mode")}
+                  className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
+                >
+                  {deductionThresholdModeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <AffixedNumberField
+                id="deductionThresholdAmount"
+                label="Threshold Amount"
+                prefix="₱"
+                min="0"
+                step="0.01"
+                value={form.threshold_amount}
+                onChange={onFieldChange?.("threshold_amount")}
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <AffixedNumberField
+                id="deductionBaseFloor"
+                label="Base Floor"
+                prefix="₱"
+                min="0"
+                step="0.01"
+                value={form.base_floor}
+                onChange={onFieldChange?.("base_floor")}
+              />
+              <AffixedNumberField
+                id="deductionBaseCap"
+                label="Base Cap"
+                prefix="₱"
+                min="0"
+                step="0.01"
+                value={form.base_cap}
+                onChange={onFieldChange?.("base_cap")}
+                placeholder="No cap"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="deductionThresholdRules" className="mb-1.5 block text-sm font-semibold text-slate-700">
+                Threshold Rules
+              </label>
+              <textarea
+                id="deductionThresholdRules"
+                value={form.threshold_rules}
+                onChange={onFieldChange?.("threshold_rules")}
+                rows={5}
+                placeholder="Existing JSON rule configuration"
+                className="min-h-[112px] w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 font-mono text-xs text-slate-900 outline-none transition placeholder:font-sans placeholder:text-slate-400 focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
+              />
+              <p className="m-0 mt-2 text-xs text-slate-500">Keep the existing JSON format used by payroll calculations.</p>
+            </div>
+          </div>
+        </details>
 
         <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
           <Button type="submit" loading={saving}>
             {isEditing ? "Update Deduction" : "Save Deduction"}
           </Button>

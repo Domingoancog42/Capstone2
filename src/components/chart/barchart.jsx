@@ -1,10 +1,10 @@
+import ResponsiveContainer from "./ResponsiveChartContainer";
 import React, { useEffect, useId, useMemo, useState } from "react";
 import {
   Bar,
   BarChart as RechartsBarChart,
   CartesianGrid,
   Legend,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,

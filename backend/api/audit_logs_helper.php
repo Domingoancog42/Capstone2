@@ -1,18 +1,18 @@
 <?php
 declare(strict_types=1);
 
-/**
- * The proxies whose forwarding headers this application believes.
+/*
+ * trusted_proxy_addresses() now lives in connection-pdo.php.
  *
- * Only the loopback addresses, because the only proxy in this deployment is the React dev server's
- * setupProxy.js, which runs on this machine. Put a real reverse proxy in front of Apache one day and
- * its address belongs here -- and nowhere else, so that this stays the single place that decides what
- * "trusted" means.
+ * It moved because the session cookie has to know whether the connection is encrypted before it can
+ * decide whether to carry the Secure flag, and that happens near the top of connection-pdo.php --
+ * long before this file is loaded. Both readers of the list, client_ip_address() below and
+ * request_is_https() over there, apply the same rule to different headers, so the list has to sit
+ * where the earlier of the two can reach it.
+ *
+ * Nothing needs to be required here to get it: connection-pdo.php is loaded before this file on both
+ * paths that include it (audit_logs.php requires it first, and settings.php is itself required by it).
  */
-function trusted_proxy_addresses(): array
-{
-    return ['127.0.0.1', '::1'];
-}
 
 /**
  * Who the request came from.
@@ -40,14 +40,14 @@ function trusted_proxy_addresses(): array
  */
 function client_ip_address(): ?string
 {
-    $remoteAddress = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+    $remoteAddress = audit_plain_ipv4(trim((string)($_SERVER['REMOTE_ADDR'] ?? '')));
     $remoteIsValid = $remoteAddress !== '' && filter_var($remoteAddress, FILTER_VALIDATE_IP) !== false;
 
     if ($remoteIsValid && in_array($remoteAddress, trusted_proxy_addresses(), true)) {
         $forwarded = array_filter(array_map('trim', explode(',', (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))));
 
         while ($forwarded !== []) {
-            $candidate = (string)array_pop($forwarded);
+            $candidate = audit_plain_ipv4((string)array_pop($forwarded));
 
             if (filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
                 return $candidate;
@@ -56,6 +56,23 @@ function client_ip_address(): ?string
     }
 
     return $remoteIsValid ? $remoteAddress : null;
+}
+
+/**
+ * An IPv4 address the way people write it.
+ *
+ * A dual-stack listener -- the React dev server that proxies to Apache is one -- reports an IPv4
+ * client as an IPv4-mapped IPv6 address, `::ffff:192.168.1.7`, and forwards it in that form. It is
+ * the same address, so it is recorded as the 192.168.1.7 everyone else calls it. `::1` is loopback
+ * under another name for the same reason.
+ */
+function audit_plain_ipv4(string $ipAddress): string
+{
+    if (preg_match('/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i', $ipAddress, $match)) {
+        return $match[1];
+    }
+
+    return $ipAddress === '::1' ? '127.0.0.1' : $ipAddress;
 }
 
 function audit_public_ip(?string $ipAddress): bool
@@ -105,7 +122,7 @@ function audit_http_json(string $url): ?array
 
             $response = curl_exec($curl);
             $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
-            curl_close($curl);
+            unset($curl);
 
             if (is_string($response) && $response !== '' && $status >= 200 && $status < 300) {
                 $body = $response;
@@ -183,6 +200,56 @@ function audit_current_public_ip_lookup(): ?array
     $geo = $result;
 
     return $geo;
+}
+
+/**
+ * The IPv4 address this machine answers to on the office network.
+ *
+ * A request from the server's own console reaches PHP as loopback, which names no machine at all.
+ * The audit trail used to swap that for the machine's *public* address from ipapi.co, which on an
+ * IPv6 connection produced a 39-character address nobody on the LAN would recognise. The address
+ * the machine is actually known by is its LAN one -- the same 192.168.x.x every other workstation
+ * is recorded under when it reaches Apache directly -- so that is what a console request records.
+ *
+ * Connecting a UDP socket picks the interface the machine would route out of, without sending a
+ * packet; on a box with several adapters (a VirtualBox host-only network, say) that is the one that
+ * matters. The hostname lookup is the fallback for a machine with no default route at all.
+ */
+function audit_server_lan_ipv4(): ?string
+{
+    static $resolved = false;
+    static $address = null;
+
+    if ($resolved) {
+        return $address;
+    }
+
+    $resolved = true;
+
+    $candidates = [];
+    $socket = @stream_socket_client('udp://8.8.8.8:53', $errorNumber, $errorMessage, 1);
+
+    if ($socket !== false) {
+        $candidates[] = preg_replace('/:\d+$/', '', (string)stream_socket_get_name($socket, false));
+        fclose($socket);
+    }
+
+    $hostname = (string)gethostname();
+    if ($hostname !== '') {
+        $candidates[] = (string)gethostbyname($hostname);
+    }
+
+    foreach ($candidates as $candidate) {
+        if (
+            filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            && !audit_loopback_ip($candidate)
+        ) {
+            $address = $candidate;
+            break;
+        }
+    }
+
+    return $address;
 }
 
 function audit_location_from_ip(?string $ipAddress): string
@@ -365,13 +432,14 @@ function audit_request_context(): array
     $clientPlatformVersion = audit_header_text('HTTP_X_CLIENT_PLATFORM_VERSION') ?: audit_header_text('HTTP_SEC_CH_UA_PLATFORM_VERSION');
     $localPublicGeo = null;
 
+    /*
+     * A console request is recorded under the machine's LAN address (see audit_server_lan_ipv4()).
+     * The public lookup is kept for the location column and the network details only; the public
+     * address itself no longer stands in for the IP.
+     */
     if (audit_loopback_ip($detectedIpAddress)) {
         $localPublicGeo = audit_current_public_ip_lookup();
-        $publicIpAddress = trim((string)($localPublicGeo['ip'] ?? ''));
-
-        if (audit_public_ip($publicIpAddress)) {
-            $ipAddress = $publicIpAddress;
-        }
+        $ipAddress = audit_server_lan_ipv4() ?? $detectedIpAddress;
     }
 
     $networkDetails = $localPublicGeo !== null
@@ -380,14 +448,14 @@ function audit_request_context(): array
 
     if ($detectedIpAddress !== null && $detectedIpAddress !== $ipAddress) {
         $networkDetails['detected_request_ip'] = $detectedIpAddress;
-        $networkDetails['ip_resolution'] = 'localhost_public_ip_fallback';
+        $networkDetails['ip_resolution'] = 'localhost_lan_ipv4';
     }
 
     return [
         'ipAddress' => $ipAddress,
         'location' => $localPublicGeo !== null
             ? audit_location_label($localPublicGeo)
-            : audit_location_from_ip($ipAddress),
+            : audit_location_from_ip($detectedIpAddress),
         'device' => audit_device_from_user_agent($userAgent),
         'browser' => audit_browser_from_user_agent($userAgent),
         'os' => audit_os_from_user_agent($userAgent, $clientPlatform, $clientPlatformVersion),
@@ -467,16 +535,23 @@ function audit_log_filters(array $params): array
     };
     $normalizedRange = $rangeDays === null ? 'all' : $rangeDays . 'd';
     $page = filter_var($params['page'] ?? 1, FILTER_VALIDATE_INT);
-    $perPage = filter_var($params['perPage'] ?? ($params['per_page'] ?? 25), FILTER_VALIDATE_INT);
-    $maxPerPage = filter_var($params['maxPerPage'] ?? 100, FILTER_VALIDATE_INT);
-    $maxPerPage = max(5, min(500, $maxPerPage === false ? 100 : (int)$maxPerPage));
+    $perPage = filter_var($params['perPage'] ?? ($params['per_page'] ?? 10), FILTER_VALIDATE_INT);
+    $maxPerPage = filter_var($params['maxPerPage'] ?? 200, FILTER_VALIDATE_INT);
+    $userId = filter_var($params['userId'] ?? ($params['user_id'] ?? null), FILTER_VALIDATE_INT);
+    $accountHistory = filter_var(
+        $params['accountHistory'] ?? ($params['account_history'] ?? false),
+        FILTER_VALIDATE_BOOLEAN
+    );
+    $maxPerPage = max(5, min(500, $maxPerPage === false ? 200 : (int)$maxPerPage));
 
     return [
         'search' => trim((string)($params['search'] ?? '')),
+        'userId' => $userId === false || (int)$userId <= 0 ? null : (int)$userId,
+        'accountHistory' => $accountHistory,
         'range' => $normalizedRange,
         'rangeDays' => $rangeDays,
         'page' => max(1, $page === false ? 1 : (int)$page),
-        'perPage' => max(5, min($maxPerPage, $perPage === false ? 25 : (int)$perPage)),
+        'perPage' => max(5, min($maxPerPage, $perPage === false ? 10 : (int)$perPage)),
     ];
 }
 
@@ -488,25 +563,76 @@ function audit_log_where_sql(array $filters, array &$bindings): string
         $where[] = 'log.created_at >= DATE_SUB(NOW(), INTERVAL ' . (int)$filters['rangeDays'] . ' DAY)';
     }
 
+    if ($filters['userId'] !== null) {
+        if ($filters['accountHistory']) {
+            // The profile history belongs to the affected login, not every other user or employee
+            // record this administrator happened to manage as the actor.
+            $where[] = 'log.user_id = :account_history_user_id';
+            $bindings[':account_history_user_id'] = $filters['userId'];
+        } else {
+            // Keep both sides of a general audit event: user_id is the affected login on detailed
+            // rows, while actor_id identifies the signed-in account on generic activity rows.
+            $where[] = '(log.user_id = :account_user_id OR log.actor_id = :account_actor_id)';
+            $bindings[':account_user_id'] = $filters['userId'];
+            $bindings[':account_actor_id'] = $filters['userId'];
+        }
+    }
+
+    if ($filters['accountHistory']) {
+        $accountActionPatterns = [
+            'login.%',
+            'logout.%',
+            'password.%',
+            'email_verification.%',
+            'two_factor.otp_%',
+            'two_factor.verify_%',
+            'two_factor.resend_%',
+            'two_factor.personal_setting_updated',
+            'account.%',
+        ];
+        $accountActionWhere = [];
+
+        foreach ($accountActionPatterns as $index => $pattern) {
+            $placeholder = ':account_action_' . $index;
+            $accountActionWhere[] = 'log.action LIKE ' . $placeholder;
+            $bindings[$placeholder] = $pattern;
+        }
+
+        $where[] = '(' . implode(' OR ', $accountActionWhere) . ')';
+    }
+
     if ($filters['search'] !== '') {
-        $where[] = '(
-            log.action LIKE :search
-            OR log.summary LIKE :search
-            OR log.ip_address LIKE :search
-            OR log.location LIKE :search
-            OR log.device LIKE :search
-            OR log.browser LIKE :search
-            OR log.os LIKE :search
-            OR log.category LIKE :search
-            OR log.actor_name LIKE :search
-            OR log.actor_role LIKE :search
-            OR account.username LIKE :search
-            OR account.email LIKE :search
-            OR employee.first_name LIKE :search
-            OR employee.middle_name LIKE :search
-            OR employee.last_name LIKE :search
-        )';
-        $bindings[':search'] = '%' . $filters['search'] . '%';
+        /*
+         * Native PDO prepares do not permit one named placeholder to be reused. The old query used
+         * `:search` for every column, so any non-empty search failed with SQLSTATE[HY093] before it
+         * could return a row. Give each LIKE its own binding while retaining one search value.
+         */
+        $searchColumns = [
+            'log.action',
+            'log.summary',
+            'log.ip_address',
+            'log.location',
+            'log.device',
+            'log.browser',
+            'log.os',
+            'log.category',
+            'log.actor_name',
+            'log.actor_role',
+            'account.username',
+            'account.email',
+            'employee.first_name',
+            'employee.middle_name',
+            'employee.last_name',
+        ];
+        $searchWhere = [];
+
+        foreach ($searchColumns as $index => $column) {
+            $placeholder = ':search_' . $index;
+            $searchWhere[] = $column . ' LIKE ' . $placeholder;
+            $bindings[$placeholder] = '%' . $filters['search'] . '%';
+        }
+
+        $where[] = '(' . implode(' OR ', $searchWhere) . ')';
     }
 
     return $where === [] ? '' : ' WHERE ' . implode(' AND ', $where);
@@ -516,7 +642,7 @@ function audit_log_from_join_sql(): string
 {
     return ' FROM audit_logs log
          LEFT JOIN users account
-            ON account.id = COALESCE(log.user_id, log.actor_id)
+            ON account.id = COALESCE(log.actor_id, log.user_id)
          LEFT JOIN employees employee
             ON employee.email COLLATE utf8mb4_unicode_ci = account.email COLLATE utf8mb4_unicode_ci
            AND employee.is_archived = 0';
@@ -533,7 +659,7 @@ function paginated_audit_logs(PDO $pdo, array $params = []): array
 
     $countStatement = $pdo->prepare('SELECT COUNT(*)' . $fromSql . $whereSql);
     foreach ($bindings as $name => $value) {
-        $countStatement->bindValue($name, $value, PDO::PARAM_STR);
+        $countStatement->bindValue($name, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
     }
     $countStatement->execute();
 
@@ -545,7 +671,7 @@ function paginated_audit_logs(PDO $pdo, array $params = []): array
     $statement = $pdo->prepare(
         'SELECT
             log.id,
-            COALESCE(log.user_id, log.actor_id) AS user_id,
+            COALESCE(log.actor_id, log.user_id) AS user_id,
             COALESCE(
                 NULLIF(TRIM(CONCAT(COALESCE(employee.first_name, ""), " ", COALESCE(employee.middle_name, ""), " ", COALESCE(employee.last_name, ""))), ""),
                 NULLIF(log.actor_name, ""),
@@ -571,7 +697,7 @@ function paginated_audit_logs(PDO $pdo, array $params = []): array
     );
 
     foreach ($bindings as $name => $value) {
-        $statement->bindValue($name, $value, PDO::PARAM_STR);
+        $statement->bindValue($name, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
     }
     $statement->bindValue(':limit', $filters['perPage'], PDO::PARAM_INT);
     $statement->bindValue(':offset', $offset, PDO::PARAM_INT);
@@ -591,6 +717,8 @@ function paginated_audit_logs(PDO $pdo, array $params = []): array
         ],
         'filters' => [
             'search' => $filters['search'],
+            'userId' => $filters['userId'],
+            'accountHistory' => $filters['accountHistory'],
             'range' => $filters['range'],
         ],
     ];

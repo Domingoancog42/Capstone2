@@ -1,10 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  CheckCircle2,
   FileSpreadsheet,
   Filter,
+  Info,
   Search,
   Send,
+  UploadCloud,
   WalletCards,
   X,
   XCircle,
@@ -26,11 +29,12 @@ import InputField from "../../components/UI/InputField";
 import Modal from "../../components/UI/modal";
 import Table from "../../components/UI/table";
 import Pagination from "../../components/UI/Pagination";
+import { RequiredFieldMarker } from "../../components/UI/RequiredFieldLabel";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
-import { normalizeRole, resolveUserRoleKey } from "../../utils/roleRoutes";
+import { isFadDivisionChiefUser, normalizeRole, resolveUserRoleKey } from "../../utils/roleRoutes";
 import PayrollDetailDrawer from "./PayrollDetailDrawer";
-import { promptPayrollWorkflowCaptcha } from "./payrollWorkflowCaptcha";
+import PayrollRegistryDetailsView from "./PayrollRegistryDetailsView";
 import { promptPayrollWorkflowStepUp } from "./payrollWorkflowStepUp";
 import {
   approvePayroll,
@@ -53,17 +57,16 @@ import {
 } from "../../services/payrollService";
 import { fetchPassSlips } from "../../services/passSlipService";
 import { fetchOvertimeRequests } from "../../services/overtimeService";
+import { importAttendanceCsv } from "../../services/attendanceService";
 import { currencyFormatter, numberFormatter } from "../../utils/format";
-
-const daysFormatter = new Intl.NumberFormat("en-US", {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 2,
-});
-
-const percentFormatter = new Intl.NumberFormat("en-US", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+import {
+  ATTENDANCE_DAT_BYTE_LIMIT,
+  ATTENDANCE_DAT_MB_LIMIT,
+  convertDatTextToAttendanceCsv,
+  formatAttendanceFileSize,
+  readAttendanceDatFile,
+} from "../../utils/attendanceDat";
+import { useOrganizationFilterOptions } from "../../hooks/useFilterOptions";
 
 const PAYROLL_VIEWS = {
   generate: {
@@ -89,24 +92,40 @@ const PAYROLL_VIEWS = {
   },
 };
 
-/*
- * Every column except the actions one declares an explicit `w-[...]`, so the table has to be allowed
- * to be at least as wide as those add up to plus room for the buttons. Set it any smaller and the
- * browser satisfies the constraint by shrinking columns rather than scrolling, and the action cells
- * -- whose buttons sit in a `flex-nowrap` row that cannot reflow -- spill out over the next column.
- */
-const REGISTRY_TABLE_MIN_WIDTH = "min-w-[1980px]";
 const RECORDS_TABLE_MIN_WIDTH = "min-w-[1750px]";
 
 const PAY_PERIOD_OPTIONS = ["1st Half", "2nd Half", "Monthly"];
+const AUTOMATIC_PAY_PERIOD_ROLE_KEYS = new Set(["admin", "hrstaff"]);
+
+export function requiredBiometricPayPeriods(payPeriod) {
+  if (payPeriod === "Monthly") {
+    return ["1st Half", "2nd Half"];
+  }
+
+  return PAY_PERIOD_OPTIONS.includes(payPeriod) ? [payPeriod] : [];
+}
+/*
+ * Who sees only their own division's batches in the registry. The FAD Division Chief is the one
+ * designated payroll approver and reviews the organization-wide registry, so nobody is scoped here.
+ * Mirrors payroll_division_scope_id() in payroll.php, which enforces the same scope on the API.
+ * Employee payroll remains self-only in the API/Payslip workspace.
+ */
+const DIVISION_SCOPED_PAYROLL_ROLE_KEYS = new Set();
 
 /*
- * A submitted payroll climbs three desks before it can be paid: HR Head, then the Chief of
- * Division, then the Regional Director for final approval. Each rung is its own status, so an
- * approver only ever sees the Approve / Return buttons on the batches actually sitting with them.
+ * Chief Admin is built on Chief. Keeping its exact key prevents it from inheriting the FAD Chief's
+ * payroll stage if an old direct payroll URL is opened.
+ */
+const CHIEF_ADMIN_ROLE_KEY = "chiefadmin";
+
+/*
+ * A submitted payroll climbs three desks before it can be paid: HR Head, the FAD Division Chief,
+ * then the Regional Director for final approval. Each rung is its own status, so an approver only ever
+ * sees the Approve / Return buttons on the batches actually sitting with them.
  *
  * The stored values are abbreviated because `payroll.status` is a varchar(20); STATUS_DISPLAY_LABELS
- * below spells them out for the badge.
+ * below spells them out for the badge. The FAD Chief's rung keeps the stored value "Pending Chief"
+ * for database compatibility.
  */
 const HR_HEAD_STATUS = "Pending Approval";
 const CHIEF_STATUS = "Pending Chief";
@@ -131,20 +150,32 @@ const ROLE_APPROVAL_STAGES = {
 const STATUS_DISPLAY_LABELS = {
   Draft: "Created",
   [HR_HEAD_STATUS]: "Pending HR Head",
-  [CHIEF_STATUS]: "Pending Chief",
+  [CHIEF_STATUS]: "Pending FAD Division Chief",
   [DIRECTOR_STATUS]: "Pending Director",
   Rejected: "Returned for Correction",
 };
 
+/*
+ * The Payroll Status filter offers one Pending for all three approval desks; which desk holds a
+ * batch is still on its status badge. No record is stored as plain "Pending".
+ */
+const PENDING_FILTER_VALUE = "Pending";
+
 const ACTIVE_STATUS_OPTIONS = [
   "Draft",
-  HR_HEAD_STATUS,
-  CHIEF_STATUS,
-  DIRECTOR_STATUS,
+  PENDING_FILTER_VALUE,
   "Approved",
   "Rejected",
   "Paid",
 ];
+
+function matchesStatusFilter(status, statusFilter) {
+  if (!statusFilter) {
+    return true;
+  }
+
+  return statusFilter === PENDING_FILTER_VALUE ? PENDING_STATUSES.includes(status) : status === statusFilter;
+}
 
 /* The pending statuses this user may act on, in chain order. Empty for anyone outside the chain. */
 function approvalStagesForRole(roleKey) {
@@ -153,6 +184,13 @@ function approvalStagesForRole(roleKey) {
 
 function isAwaitingRole(status, roleKey) {
   return approvalStagesForRole(roleKey).includes(status);
+}
+
+export function canEditPayrollRecordForRole(roleKey, record = {}) {
+  if (roleKey === "admin") return ["Draft", "Rejected", HR_HEAD_STATUS].includes(record.status);
+  if (roleKey === "hrstaff") return ["Draft", "Rejected"].includes(record.status);
+  if (roleKey === "hrhead") return record.status === HR_HEAD_STATUS;
+  return false;
 }
 
 function getStatusDisplayLabel(status) {
@@ -173,7 +211,7 @@ function statusesFromStage(status) {
 
 /*
  * A register can only be exported once the batch has cleared the whole chain -- HR Head, then the
- * Chief of Division, then the Regional Director. Up to that point any desk can still send it back
+ * FAD Division Chief, then the Regional Director. Up to that point any desk can still send it back
  * for correction and the figures can still change, so an exported file would be an official-looking
  * copy of numbers nobody has signed yet, circulating with no way to tell it from the final one.
  *
@@ -192,7 +230,7 @@ const EXPORTABLE_REGISTRY_STATUSES = ["Approved", "Paid"];
 function isRegistryExportable(status) {
   return EXPORTABLE_REGISTRY_STATUSES.includes(status);
 }
-const DEFAULT_ROWS_PER_PAGE = 8;
+const DEFAULT_ROWS_PER_PAGE = 10;
 const DEFAULT_PERA_AMOUNT = 2000;
 const WORKING_DAYS_PER_MONTH = 22;
 const WORKING_HOURS_PER_DAY = 8;
@@ -215,10 +253,13 @@ const ACTION_STATUS_VERIFY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 10000
  * honorarium -- so they come out at zero and HR types them into the register the same way the
  * deduction columns are typed in.
  *
+ * An earnings column with `kind: "step"` holds the employee's salary step from their service record
+ * (backend payroll_service_record_step()), not an amount, so it shows as a plain number.
+ *
  * `fixedPeriod` marks a type released on one date every year rather than on a chosen pay period --
  * the mid-year bonus in May and the year-end bonus in November. Picking one of those replaces the
- * pay period picker with its schedule and fills the dates in, so the period cannot be set to a month
- * the benefit is never released in.
+ * pay period picker with its default schedule and fills the dates in. HR can edit those dates when
+ * the bonus is processed in a different period.
  */
 const PAYROLL_TYPE_SALARY = "Salary";
 
@@ -230,12 +271,12 @@ const PAYROLL_TYPE_DEFINITIONS = [
     employmentTypes: ["Regular", "Contract of Service"],
     earningsGroupLabel: "",
     earningsColumns: [
-      { key: "basic", label: "Basic", field: "basicSalary" },
+      { key: "basic", label: "Basic", field: "periodBasicSalary" },
       { key: "pera", label: "PERA", field: "pera" },
-      { key: "stepIncrement", label: "Step Increment", field: "stepIncrement" },
+      { key: "stepIncrement", label: "Step Increment", field: "stepIncrement", kind: "step" },
     ],
     grossLabel: "Gross Amount Earned",
-    netLabel: "Net Amount Due",
+    netLabel: "Net Pay",
     tone: "border-emerald-200 bg-emerald-50 text-emerald-700",
   },
   {
@@ -258,7 +299,7 @@ const PAYROLL_TYPE_DEFINITIONS = [
       { key: "adjustment", label: "Other Adjustment", field: "salaryAdjustment", editable: true },
     ],
     grossLabel: "Total Bonus Earned",
-    netLabel: "Net Bonus Due",
+    netLabel: "Net Pay",
     tone: "border-violet-200 bg-violet-50 text-violet-700",
   },
   {
@@ -281,7 +322,7 @@ const PAYROLL_TYPE_DEFINITIONS = [
       { key: "cashGift", label: "Cash Gift", field: "otherAllowances", editable: true },
     ],
     grossLabel: "Total Year-End Benefit",
-    netLabel: "Net Amount Due",
+    netLabel: "Net Pay",
     tone: "border-indigo-200 bg-indigo-50 text-indigo-700",
   },
   {
@@ -373,18 +414,26 @@ function payrollTypeAllowsEmploymentType(payrollType, employmentType) {
   );
 }
 
-/*
- * The release window a `fixedPeriod` type is paid in, on the year the form is already working in --
- * so switching to the year-end bonus while filling in a 2027 payroll moves to November 2027 rather
- * than jumping back to whatever year today falls in.
- */
+function constrainDateRangeToWindow(range, minimumDate = "", maximumDate = "") {
+  if (!range.startDate || !range.endDate) {
+    return range;
+  }
+
+  const startDate = minimumDate && range.startDate < minimumDate ? minimumDate : range.startDate;
+  const endDate = maximumDate && range.endDate > maximumDate ? maximumDate : range.endDate;
+
+  return startDate <= endDate
+    ? { ...range, startDate, endDate }
+    : { ...range, startDate: "", endDate: "" };
+}
+
+/* Preserve the annual benefit period even when processing is delayed to a later month. */
 function getFixedPeriodDateRange(fixedPeriod, referenceDate) {
   if (!fixedPeriod) {
     return {};
   }
 
   const { year } = getReferenceMonth(referenceDate);
-
   return {
     payPeriod: fixedPeriod.payPeriod,
     startDate: formatDateInput(year, fixedPeriod.startMonthIndex, fixedPeriod.startDay),
@@ -399,15 +448,22 @@ function wait(ms) {
 }
 
 function emptyGeneratedPayrollState() {
+  const currentDate = getCurrentDateInput();
+
   return {
     payrollType: PAYROLL_TYPE_SALARY,
     payPeriod: "",
-    startDate: "",
-    endDate: "",
+    startDate: currentDate,
+    endDate: currentDate,
     search: "",
-    division: "",
     employmentType: "",
   };
+}
+
+function payrollPeraAmount(payrollType, value) {
+  return ["Mid-Year Bonus", "Year-End Bonus", "Performance-Based Bonus (PBB)"].includes(normalizePayrollType(payrollType))
+    ? 0
+    : resolvePeraAmount(value);
 }
 
 function resolvePeraAmount(value) {
@@ -428,7 +484,7 @@ function inferPayPeriod(startDate, endDate) {
   }
 
   if (start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth()) {
-    if (start.getDate() >= 16) {
+    if (start.getDate() >= 15 && end.getDate() > 15) {
       return "2nd Half";
     }
 
@@ -442,13 +498,33 @@ function inferPayPeriod(startDate, endDate) {
     return "Monthly";
   }
 
-  return start.getDate() >= 16 ? "2nd Half" : end.getDate() <= 15 ? "1st Half" : "Monthly";
+  return start.getDate() >= 15 && end.getDate() > 15
+    ? "2nd Half"
+    : end.getDate() <= 15
+      ? "1st Half"
+      : "Monthly";
 }
 
 function formatDateInput(year, monthIndex, day) {
   const month = String(monthIndex + 1).padStart(2, "0");
   const date = String(day).padStart(2, "0");
   return `${year}-${month}-${date}`;
+}
+
+function getCurrentDateInput() {
+  const currentDate = new Date();
+  return formatDateInput(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
+}
+
+function getCurrentMonthStartInput() {
+  const currentDate = new Date();
+  return formatDateInput(currentDate.getFullYear(), currentDate.getMonth(), 1);
+}
+
+function getCurrentMonthEndInput() {
+  const currentDate = new Date();
+  const lastDay = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+  return formatDateInput(currentDate.getFullYear(), currentDate.getMonth(), lastDay);
 }
 
 function getReferenceMonth(value) {
@@ -460,32 +536,70 @@ function getReferenceMonth(value) {
     : { year: date.getFullYear(), monthIndex: date.getMonth() };
 }
 
-function getPayPeriodDateRange(period, referenceDate) {
+export function getPayPeriodDateRange(period, referenceDate, minimumDate = "", maximumDate = "") {
   const { year, monthIndex } = getReferenceMonth(referenceDate);
-  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
 
-  if (period === "1st Half") {
-    return {
-      startDate: formatDateInput(year, monthIndex, 1),
-      endDate: formatDateInput(year, monthIndex, Math.min(15, lastDay)),
-    };
+  const buildRange = () => {
+    const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+    const payrollMonthEndDay = Math.min(30, lastDay);
+
+    if (period === "1st Half") {
+      return {
+        startDate: formatDateInput(year, monthIndex, 1),
+        endDate: formatDateInput(year, monthIndex, Math.min(15, lastDay)),
+      };
+    }
+
+    if (period === "2nd Half") {
+      return {
+        startDate: formatDateInput(year, monthIndex, Math.min(15, lastDay)),
+        endDate: formatDateInput(year, monthIndex, payrollMonthEndDay),
+      };
+    }
+
+    if (period === "Monthly") {
+      return {
+        startDate: formatDateInput(year, monthIndex, 1),
+        endDate: formatDateInput(year, monthIndex, payrollMonthEndDay),
+      };
+    }
+
+    return {};
+  };
+
+  return constrainDateRangeToWindow(buildRange(), minimumDate, maximumDate);
+}
+
+/*
+ * A pay period can only be generated while the calendar is inside it: the 1st Half from the 1st
+ * to the 15th, and the 2nd Half or the whole month from the 16th to the last day of the month.
+ * Otherwise a registry raised on, say, the 5th would pay the 2nd Half for days nobody has worked.
+ * Fixed-schedule benefits retain their annual periods and allow delayed processing, so they are
+ * not checked here.
+ */
+export function payPeriodGenerationStatus(period, referenceDate = getCurrentDateInput()) {
+  const date = new Date(`${referenceDate}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return { open: true, windowLabel: "" };
   }
 
-  if (period === "2nd Half") {
-    return {
-      startDate: formatDateInput(year, monthIndex, Math.min(16, lastDay)),
-      endDate: formatDateInput(year, monthIndex, lastDay),
-    };
+  const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const window = period === "1st Half"
+    ? [1, 15]
+    : period === "2nd Half" || period === "Monthly"
+      ? [16, lastDay]
+      : null;
+
+  if (!window) {
+    return { open: true, windowLabel: "" };
   }
 
-  if (period === "Monthly") {
-    return {
-      startDate: formatDateInput(year, monthIndex, 1),
-      endDate: formatDateInput(year, monthIndex, lastDay),
-    };
-  }
-
-  return {};
+  const day = date.getDate();
+  const monthName = date.toLocaleDateString("en-US", { month: "long" });
+  return {
+    open: day >= window[0] && day <= window[1],
+    windowLabel: `${monthName} ${window[0]} - ${window[1]}`,
+  };
 }
 
 function normalizeEmploymentTypeLabel(value) {
@@ -515,7 +629,7 @@ function emptyFormState(defaults = {}) {
     employeeRecordId: "",
     employeeId: "",
     employeeName: "",
-    designation: "",
+    position: "",
     division: "",
     basicSalary: "",
     payrollType: PAYROLL_TYPE_SALARY,
@@ -763,6 +877,19 @@ function exactRoleKey(user = {}) {
  */
 const PAYOUT_DESK_ROLE_KEYS = ["finance", "cashier"];
 
+/*
+ * The desks that archive and restore a settled register, matched on the workflow role key (the
+ * resolved workflow role); the payout desk is matched separately on its exact key. Mirrors
+ * PAYROLL_ARCHIVE_ROLES in payroll.php.
+ */
+const PAYROLL_ARCHIVE_ROLE_KEYS = new Set(["admin", "hrhead", "hrstaff", "chief", "regionaldirector"]);
+
+export function payrollRoleUsesDivisionScope(roleKey, exactRoleKey = roleKey) {
+  return !PAYOUT_DESK_ROLE_KEYS.includes(exactRoleKey)
+    && exactRoleKey !== CHIEF_ADMIN_ROLE_KEY
+    && DIVISION_SCOPED_PAYROLL_ROLE_KEYS.has(roleKey);
+}
+
 function buildPeriodLabel(record) {
   if (record.periodLabel) {
     return record.periodLabel;
@@ -788,7 +915,7 @@ function buildFormState(record, defaults = {}) {
     employeeRecordId: String(record.employeeRecordId || ""),
     employeeId: record.employeeId || "",
     employeeName: record.employeeName || "",
-    designation: record.designation || "",
+    position: record.position || "",
     division: record.division || "",
     basicSalary: record.basicSalary ? String(record.basicSalary) : "",
     payrollType: normalizePayrollType(record.payrollType),
@@ -798,7 +925,7 @@ function buildFormState(record, defaults = {}) {
     overtimeHours: formatAmountInput(record.overtimeHours),
     overtimeRate: formatAmountInput(record.overtimeRate),
     overtimePay: formatAmountInput(record.overtimePay),
-    pera: formatAmountInput(peraAmount),
+    pera: formatAmountInput(payrollPeraAmount(record.payrollType, peraAmount)),
     travelAllowance: formatAmountInput(record.travelAllowance),
     salaryAdjustment: formatAmountInput(record.salaryAdjustment),
     otherAllowances: formatAmountInput(record.otherAllowances),
@@ -819,12 +946,21 @@ function buildFormState(record, defaults = {}) {
   };
 }
 
+function periodBasicSalary(monthlySalary, payPeriod, payrollType = "Salary") {
+  const monthly = parseAmount(monthlySalary);
+  if (normalizePayrollType(payrollType) === "Salary" && ["1st Half", "2nd Half"].includes(payPeriod)) {
+    const firstHalf = roundAmount(monthly / 2);
+    return payPeriod === "1st Half" ? firstHalf : roundAmount(monthly - firstHalf);
+  }
+  return roundAmount(monthly);
+}
+
 function computeSummary(form) {
-  const basicSalary = parseAmount(form.basicSalary);
+  const basicSalary = periodBasicSalary(form.basicSalary, form.payPeriod, form.payrollType);
   const overtimePay = parseAmount(form.overtimePay);
   const totalAllowance =
     overtimePay
-    + parseAmount(form.pera)
+    + payrollPeraAmount(form.payrollType, parseAmount(form.pera))
     + parseAmount(form.travelAllowance)
     + parseAmount(form.salaryAdjustment)
     + parseAmount(form.otherAllowances)
@@ -863,7 +999,7 @@ function buildPayload(form) {
     endDate: form.endDate,
     overtimeHours: parseAmount(form.overtimeHours),
     overtimeRate: parseAmount(form.overtimeRate),
-    pera: resolvePeraAmount(form.pera),
+    pera: payrollPeraAmount(form.payrollType, form.pera),
     travelAllowance: parseAmount(form.travelAllowance),
     salaryAdjustment: parseAmount(form.salaryAdjustment),
     otherAllowances: parseAmount(form.otherAllowances),
@@ -894,7 +1030,7 @@ function buildGeneratedPayrollPayload(employee, generatedPayroll, defaults = {})
     overtimeHours: 0,
     overtimeRate: 0,
     overtimePay: 0,
-    pera: resolvePeraAmount(defaults.pera),
+    pera: payrollPeraAmount(generatedPayroll.payrollType, defaults.pera),
     travelAllowance: 0,
     salaryAdjustment: 0,
     otherAllowances: 0,
@@ -981,28 +1117,6 @@ function formatDisplayDate(value) {
   });
 }
 
-function formatDisplayDateTime(value) {
-  if (!value) {
-    return "";
-  }
-
-  const normalizedValue = String(value).includes("T") ? value : String(value).replace(" ", "T");
-  const date = new Date(normalizedValue);
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-}
-
 function getRegistryId(entry = {}) {
   const firstId = Number(entry.firstPayrollId);
   const lastId = Number(entry.lastPayrollId);
@@ -1019,13 +1133,15 @@ function getRegistryId(entry = {}) {
 }
 
 /*
- * The payroll type is part of the key: a division can be paid its salary and its mid-year bonus for
- * the same period, and those are two registers with different column text, not one mixed batch.
+ * Payroll type and employment type are part of the key. Regular and Contract of Service employees
+ * in the same period are separate registers, just as salary and bonus runs are. Division is not:
+ * Generate New Payroll covers every division at once, so one run is one register for the whole
+ * organization, and the FAD Division Chief approves it whole.
  */
 function getRegistryGroupKey(record = {}) {
   return [
     normalizePayrollType(record.payrollType),
-    record.division || "Unassigned",
+    normalizeEmploymentTypeLabel(record.employmentType) || "Unspecified",
     record.payPeriod || "",
     normalizeRegistryDate(record.startDate),
     normalizeRegistryDate(record.endDate || record.payrollDate),
@@ -1067,7 +1183,13 @@ function getRegistryStatus(records = []) {
   return "Draft";
 }
 
-function buildRegistryEntries(records = []) {
+/* Every division a registry's rows belong to, alphabetically. */
+function getRegistryDivisions(records = []) {
+  return Array.from(new Set(records.map((record) => String(record.division || "").trim() || "Unassigned")))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+export function buildRegistryEntries(records = []) {
   const groups = new Map();
 
   records.forEach((record) => {
@@ -1076,7 +1198,6 @@ function buildRegistryEntries(records = []) {
       id: key,
       records: [],
       payrollType: normalizePayrollType(record.payrollType),
-      division: record.division || "Unassigned",
       payPeriod: record.payPeriod || "",
       startDate: record.startDate || "",
       endDate: record.endDate || record.payrollDate || "",
@@ -1105,23 +1226,47 @@ function buildRegistryEntries(records = []) {
   });
 
   return Array.from(groups.values())
-    .map((entry) => ({
-      ...entry,
-      registryId: getRegistryId(entry),
-      periodLabel: entry.payPeriod
-        ? `${entry.payPeriod} (${entry.startDate || "N/A"} to ${entry.endDate || "N/A"})`
-        : `${entry.startDate || "N/A"} to ${entry.endDate || "N/A"}`,
-      status: getRegistryStatus(entry.records),
-      employmentTypes: getRegistryEmploymentTypes(entry.records),
-    }))
+    .map((entry) => {
+      const divisions = getRegistryDivisions(entry.records);
+
+      return {
+        ...entry,
+        divisions,
+        // A register whose rows all come from one division is named after it.
+        division: divisions.length === 1 ? divisions[0] : "All Divisions",
+        registryId: getRegistryId(entry),
+        periodLabel: entry.payPeriod
+          ? `${entry.payPeriod} (${entry.startDate || "N/A"} to ${entry.endDate || "N/A"})`
+          : `${entry.startDate || "N/A"} to ${entry.endDate || "N/A"}`,
+        status: getRegistryStatus(entry.records),
+        employmentTypes: getRegistryEmploymentTypes(entry.records),
+      };
+    })
     .sort((left, right) => {
       const dateCompare = String(right.dateCreated || "").localeCompare(String(left.dateCreated || ""));
       return dateCompare !== 0 ? dateCompare : String(right.registryId).localeCompare(String(left.registryId));
     });
 }
 
-// A registry row groups records only by division/period/date, so it can mix employment types
-// (e.g. Regular and Contract of Service paid together). Returns every distinct type present, most common first.
+function payrollDivisionMatches(division, targetDivision) {
+  const normalizedTarget = String(targetDivision || "").trim();
+
+  return normalizedTarget !== ""
+    && String(division || "").trim().localeCompare(
+      normalizedTarget,
+      undefined,
+      { sensitivity: "accent" }
+    ) === 0;
+}
+
+export function filterPayrollRecordsByDivision(records = [], division = "") {
+  if (!String(division || "").trim()) return [];
+
+  return records.filter((record) => payrollDivisionMatches(record?.division, division));
+}
+
+// The grouping key keeps one employment type per registry. Retaining an array here keeps the table
+// renderer compatible with older records while ensuring a new registry row displays one badge.
 function getRegistryEmploymentTypes(records = []) {
   const counts = new Map();
 
@@ -1231,12 +1376,12 @@ function recalculateRecordTotals(record = {}) {
 
 function updateRecordDeductionAmount(record = {}, column = {}, amount = 0) {
   const label = column.label || column.name || "";
-  const normalizedLabel = normalizePayrollColumnKey(label);
+  const labelKeys = new Set([label, ...(column.aliases || [])].map(normalizePayrollColumnKey));
   const labelField = payrollDeductionFieldForName(label);
   const items = Array.isArray(record.deductionItems) ? [...record.deductionItems] : [];
   const existingIndex = items.findIndex((item) => {
     const itemField = payrollDeductionFieldForName(item.name);
-    return normalizePayrollColumnKey(item.name) === normalizedLabel || (labelField && itemField === labelField);
+    return labelKeys.has(normalizePayrollColumnKey(item.name)) || (labelField && itemField === labelField);
   });
   const nextAmount = roundAmount(amount);
 
@@ -1317,7 +1462,7 @@ function updatePayrollRecordEarningAmount(record = {}, column = {}, amount = 0) 
     return record;
   }
 
-  const nextRecord = { ...record, [field]: roundAmount(amount) };
+  const nextRecord = { ...record, [field]: roundAmount(amount), pera: payrollPeraAmount(record.payrollType, parseAmount(record.pera)) };
   const totalAllowance = roundAmount(
     parseAmount(nextRecord.overtimePay)
     + parseAmount(nextRecord.pera)
@@ -1328,7 +1473,8 @@ function updatePayrollRecordEarningAmount(record = {}, column = {}, amount = 0) 
   );
 
   nextRecord.totalAllowance = totalAllowance;
-  nextRecord.grossPay = roundAmount(parseAmount(nextRecord.basicSalary) + totalAllowance);
+  const earnedBasicSalary = parseAmount(record.periodBasicSalary ?? (parseAmount(record.grossPay) - parseAmount(record.totalAllowance)));
+  nextRecord.grossPay = roundAmount(earnedBasicSalary + totalAllowance);
   nextRecord.netPay = roundAmount(nextRecord.grossPay - parseAmount(nextRecord.totalDeduction));
 
   return nextRecord;
@@ -1351,7 +1497,7 @@ function buildRecordUpdatePayload(record = {}) {
     endDate: record.endDate,
     overtimeHours: parseAmount(record.overtimeHours),
     overtimeRate: parseAmount(record.overtimeRate),
-    pera: parseAmount(record.pera),
+    pera: payrollPeraAmount(record.payrollType, parseAmount(record.pera)),
     travelAllowance: parseAmount(record.travelAllowance),
     salaryAdjustment: parseAmount(record.salaryAdjustment),
     otherAllowances: parseAmount(record.otherAllowances),
@@ -1380,48 +1526,6 @@ function deductionDraftKey(recordId, column = {}) {
 /* Namespaced apart from the deduction keys so an earnings column never shares a draft with one. */
 function earningsDraftKey(recordId, column = {}) {
   return `${recordId}:earning:${column.key || column.field || ""}`;
-}
-
-const REGISTRY_DETAIL_PAGE_SIZE = 10;
-const REGISTRY_DETAIL_PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
-
-/*
- * The certification that closes a payroll register. Boxes A and B are the certifying officers, and
- * the two beside them approve and pay out -- the same arrangement the printed form uses.
- *
- * Settings supplies the printed form slots and titles. When the registry has an approval action for
- * that slot, the approving officer's name/signature is drawn on the existing rule instead of adding
- * another approval block above the certification.
- */
-// Name on a rule with the designation beneath it -- the shape every signature on the form takes.
-function SignatureLine({ name, title, signatureDataUrl = "", actionDate = "", className = "" }) {
-  const resolvedSignature = String(signatureDataUrl || "").trim();
-  const timestamp = formatDisplayDateTime(actionDate);
-  const showTimestampFallback = !resolvedSignature && timestamp;
-
-  return (
-    <div className={`min-w-0 ${className}`.trim()}>
-      {resolvedSignature ? (
-        <div className="mb-1 flex min-h-[38px] items-end justify-center">
-          <img
-            src={resolvedSignature}
-            alt={`${name || title || "Officer"} signature`}
-            className="max-h-10 max-w-[180px] object-contain"
-          />
-        </div>
-      ) : showTimestampFallback ? (
-        <div className="mb-1 flex min-h-[38px] items-end justify-center">
-          <p className="m-0 rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-center text-[11px] font-bold text-slate-700">
-            {timestamp}
-          </p>
-        </div>
-      ) : null}
-      <p className="m-0 min-h-5 border-b border-slate-900 px-4 pb-1 text-center text-sm font-extrabold uppercase tracking-wide text-slate-950">
-        {name || "\u00a0"}
-      </p>
-      <p className="m-0 mt-1 text-center text-xs font-medium text-slate-700">{title}</p>
-    </div>
-  );
 }
 
 const PAYROLL_CERTIFICATION_STAGE_BY_SLOT = {
@@ -1510,73 +1614,64 @@ function payrollCertificationSignatories(signatories = [], records = []) {
   });
 }
 
-function PayrollCertification({ signatories = [], statement = "" }) {
-  const boxes = signatories.filter((slot) => slot.placement === "box");
-  const sideSignatories = signatories.filter((slot) => slot.placement === "side");
+/*
+ * The Regular register carries the same Pass Slip column as the Contract-of-Service one. Pass slips
+ * only become their own deduction when attendance did not cover the period, and the payroll stores
+ * that charge as the undertime deduction (payroll_apply_automatic_calculations) -- so Pass Slip and
+ * Undertime Deduction split one stored amount between them and never show it twice. Whichever
+ * column carries the amount is the one that can be edited; the other reads 0.00.
+ */
+const REGULAR_PASS_SLIP_DEDUCTION_COLUMN = {
+  key: "passSlipDeduction",
+  label: "Pass Slip",
+  category: ATTENDANCE_DEDUCTION_CATEGORY,
+  contractualDeductionKey: "passSlip",
+  canEdit: (record) => !record.hasAttendanceCoverage,
+};
 
-  if (boxes.length === 0 && sideSignatories.length === 0) {
-    return null;
+function isUndertimeDeductionColumn(column = {}) {
+  return normalizePayrollColumnKey(column.label) === "undertimededuction";
+}
+
+export function getRegularDeductionCellAmount(record = {}, column = {}) {
+  if (column.contractualDeductionKey === "passSlip") {
+    return record.hasAttendanceCoverage ? 0 : getDeductionAmount(record, ["Undertime Deduction"]);
   }
 
-  return (
-    <section className="shrink-0 border border-slate-400 bg-white text-slate-900">
-      <p className="m-0 border-b border-slate-400 px-4 py-3 text-sm leading-relaxed">
-        <span className="font-extrabold">CERTIFIED:</span> {statement}
-      </p>
+  if (isUndertimeDeductionColumn(column) && !record.hasAttendanceCoverage) {
+    return 0;
+  }
 
-      {boxes.map((box, index) => {
-        const signatory = sideSignatories[index];
-        const boxStatement = String(box.statement || "").trim();
-        const boxActionTimestamp = formatDisplayDateTime(box.actionDate);
+  return getDeductionAmount(record, [column.label]);
+}
 
-        return (
-          <div
-            key={box.key}
-            className="grid border-b border-slate-400 last:border-b-0 md:grid-cols-2"
-          >
-            <div className="flex border-b border-slate-400 md:border-b-0 md:border-r">
-              <div className="grid w-12 shrink-0 place-items-center border-r border-slate-400 text-base font-extrabold">
-                {box.box}
-              </div>
-              <div className="min-w-0 flex-1 px-4 py-3">
-                {boxStatement ? (
-                  <p className="m-0 text-sm leading-relaxed">
-                    <span className="font-extrabold">CERTIFIED:</span> {boxStatement}
-                  </p>
-                ) : null}
-                {/* Blank run above the rules: the officer signs the printed form here. */}
-                <div className={`${boxStatement ? "mt-10" : "mt-12"} flex flex-wrap items-end justify-start gap-x-10 gap-y-6`}>
-                  <SignatureLine
-                    name={box.name}
-                    title={box.title}
-                    signatureDataUrl={box.signatureDataUrl}
-                    actionDate={box.actionDate}
-                  />
-                  <div className="min-w-0">
-                    <p className="m-0 min-h-5 w-44 border-b border-slate-900 px-2 pb-1 text-center text-[11px] font-bold text-slate-700">
-                      {boxActionTimestamp || "\u00a0"}
-                    </p>
-                    <p className="m-0 mt-1 text-center text-xs font-medium text-slate-700">Date</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+export function canEditRegularDeductionCell(record = {}, column = {}) {
+  if (typeof column.canEdit === "function") {
+    return column.canEdit(record);
+  }
 
-            <div className="flex items-end justify-center px-4 pb-3 pt-16">
-              {signatory ? (
-                <SignatureLine
-                  name={signatory.name}
-                  title={signatory.title}
-                  signatureDataUrl={signatory.signatureDataUrl}
-                  actionDate={signatory.actionDate}
-                />
-              ) : null}
-            </div>
-          </div>
-        );
-      })}
-    </section>
-  );
+  return !(isUndertimeDeductionColumn(column) && !record.hasAttendanceCoverage);
+}
+
+const REGULAR_READ_ONLY_DEDUCTION_FIELDS = new Set([
+  "withholdingTax", "gsis", "hdmf", "lateDeduction", "absenceDeduction", "undertimeDeduction",
+]);
+const CONTRACTUAL_READ_ONLY_DEDUCTION_FIELDS = new Set(["withholdingTax", "hdmf", "phic"]);
+
+export function canEditRegistryDeductionCell(record = {}, column = {}) {
+  const contractual = isContractualRecord(record);
+  const names = [column.label || column.name || "", ...(column.aliases || [])];
+  const fields = names.map(payrollDeductionFieldForName);
+  const readOnlyFields = contractual ? CONTRACTUAL_READ_ONLY_DEDUCTION_FIELDS : REGULAR_READ_ONLY_DEDUCTION_FIELDS;
+
+  if (fields.some((field) => readOnlyFields.has(field))) return false;
+  if (names.some((name) => normalizePayrollColumnKey(name) === "wtax")) return false;
+  if (contractual && (column.contractualDeductionKey === "tardyUndertime"
+    || names.some((name) => normalizePayrollColumnKey(name) === "tardyundertime"))) return false;
+  // The regular Pass Slip cell edits the same amount as Undertime Deduction.
+  if (!contractual && column.contractualDeductionKey === "passSlip") return false;
+
+  return canEditRegularDeductionCell(record, column);
 }
 
 /*
@@ -1585,34 +1680,30 @@ function PayrollCertification({ signatories = [], statement = "" }) {
  * why the column header said "GSIS Premium" while the cell underneath matched on "GSIS": the list
  * and the data had drifted, and a deduction added in Settings never got a column at all.
  */
-function buildRegularDeductionColumns(deductionColumns = []) {
-  return deductionColumns
+export function buildRegularDeductionColumns(deductionColumns = []) {
+  const columns = deductionColumns
     .filter((column) => column?.name)
     .map((column) => ({
       key: column.code || column.name,
       label: column.name,
       category: column.category || "",
     }));
-}
 
-// Series, Employee No., Employee Name, the earnings breakdown, the gross column, every deduction,
-// Due Date, Total Deductions, the net column, and the two payout halves. The earnings breakdown is
-// counted rather than fixed at three because each payroll type names its own earnings columns.
-function regularColumnCount(deductionColumnCount, earningsColumnCount = 3) {
-  return 3 + earningsColumnCount + 1 + deductionColumnCount + 3 + 2;
-}
+  // Pass Slip is not a catalog type; it sits beside the undertime column whose amount it splits.
+  const undertimeIndex = columns.findIndex((column) => isUndertimeDeductionColumn(column));
+  columns.splice(undertimeIndex >= 0 ? undertimeIndex + 1 : columns.length, 0, REGULAR_PASS_SLIP_DEDUCTION_COLUMN);
 
-const REGULAR_HEADER_CELL_CLASS =
-  "border border-slate-200 bg-slate-50 px-4 py-3 text-center align-middle whitespace-nowrap";
+  return columns;
+}
 
 const CONTRACTUAL_EMPLOYMENT_TYPES = new Set(["Contract of Service"]);
 const PREMIUM_ALLOWANCE_NAMES = ["Premium", "Premium Pay", "Premium Percentage"];
-const CONTRACTUAL_COLUMN_COUNT = 22;
 const CONTRACTUAL_PRE_GROSS_DEDUCTION_COLUMNS = [
   {
     key: "previousPayrollDeduction",
     label: "Deduction from Previous Payroll",
     category: "Other Deductions",
+    aliases: ["DEDUCTION PREVIOUS PAYROLL"],
   },
   {
     key: "tardyUndertimeDeduction",
@@ -1633,11 +1724,13 @@ const CONTRACTUAL_POST_GROSS_DEDUCTION_COLUMNS = [
     key: "tax",
     label: "TAX",
     category: "Withholding Tax",
+    aliases: ["Withholding Tax", "W-TAX"],
   },
   {
     key: "philHealth",
     label: "PhilHealth",
     category: "PHIC",
+    aliases: ["PHIC", "PHILHEALTH PREMIUM"],
   },
   {
     key: "philHealthDifferential",
@@ -1648,11 +1741,13 @@ const CONTRACTUAL_POST_GROSS_DEDUCTION_COLUMNS = [
     key: "pagIbig",
     label: "Pag-IBIG",
     category: "Pag-IBIG",
+    aliases: ["HDMF", "PAG IBIG PREMIUM"],
   },
   {
     key: "pagIbigMp2",
     label: "Modified Pag-IBIG II (MP2)",
     category: "Pag-IBIG",
+    aliases: ["MP2", "PAG IBIG MP2", "PAG-IBIG MP2"],
   },
   {
     key: "pagIbigMpl",
@@ -1663,6 +1758,7 @@ const CONTRACTUAL_POST_GROSS_DEDUCTION_COLUMNS = [
     key: "mgbCoopLoan",
     label: "MGB Coop Loan",
     category: "Other Deductions",
+    aliases: ["MGB Cooperative Loan"],
   },
 ];
 
@@ -1678,51 +1774,6 @@ function getAllowanceAmount(record = {}, names = []) {
 
 function isContractualRecord(record = {}) {
   return CONTRACTUAL_EMPLOYMENT_TYPES.has(normalizeEmploymentTypeLabel(record.employmentType));
-}
-
-function buildSalaryPeriodColumnLabel(startDate, endDate) {
-  const start = new Date(`${normalizeRegistryDate(startDate)}T00:00:00`);
-  const end = new Date(`${normalizeRegistryDate(endDate)}T00:00:00`);
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return "Salary for the Period";
-  }
-
-  if (start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth()) {
-    const monthLabel = start.toLocaleDateString("en-US", { month: "long" });
-    return `${monthLabel} ${start.getDate()}-${end.getDate()}, ${end.getFullYear()}`;
-  }
-
-  return `${formatDisplayDate(startDate)} - ${formatDisplayDate(endDate)}`;
-}
-
-// The register always shows both halves of the month, but the month and the day span follow the
-// pay period the payroll was created with instead of a fixed calendar month.
-function buildPayoutHalfColumnLabels(startDate, endDate) {
-  const start = new Date(`${normalizeRegistryDate(startDate)}T00:00:00`);
-  const end = new Date(`${normalizeRegistryDate(endDate)}T00:00:00`);
-  const firstHalfSource = Number.isNaN(start.getTime()) ? end : start;
-  const secondHalfSource = Number.isNaN(end.getTime()) ? start : end;
-
-  if (Number.isNaN(firstHalfSource.getTime()) || Number.isNaN(secondHalfSource.getTime())) {
-    return [
-      { month: "Payout", range: "1st Half" },
-      { month: "Payout", range: "2nd Half" },
-    ];
-  }
-
-  const lastDay = new Date(secondHalfSource.getFullYear(), secondHalfSource.getMonth() + 1, 0).getDate();
-
-  return [
-    {
-      month: firstHalfSource.toLocaleDateString("en-US", { month: "long" }),
-      range: `1-15, ${firstHalfSource.getFullYear()}`,
-    },
-    {
-      month: secondHalfSource.toLocaleDateString("en-US", { month: "long" }),
-      range: `16-${lastDay}, ${secondHalfSource.getFullYear()}`,
-    },
-  ];
 }
 
 function getContractualDaysRendered(record = {}) {
@@ -1759,7 +1810,8 @@ function buildContractualRow(record = {}) {
   const calculatedPremiumRate = basicSalary > 0 ? roundAmount((premiumTotal / basicSalary) * 100) : 0;
   const premiumRate = calculatedPremiumRate > 0 ? calculatedPremiumRate : 0.20;
   const additionalSalary = parseAmount(record.totalAllowance);
-  const salaryTotal = roundAmount(basicSalary + additionalSalary);
+  const earnedBasicSalary = parseAmount(record.periodBasicSalary ?? (parseAmount(record.grossPay) - additionalSalary));
+  const salaryTotal = roundAmount(earnedBasicSalary + additionalSalary);
 
   // Pass slips only become their own deduction when attendance did not already cover the period,
   // so the two columns together always add up to the stored tardy plus undertime deduction.
@@ -1781,7 +1833,7 @@ function buildContractualRow(record = {}) {
     premiumRate,
     premiumTotal,
     rateWithPremium: roundAmount(dailyRate * (1 + premiumRate / 100)),
-    periodSalary: basicSalary,
+    periodSalary: earnedBasicSalary,
     additionalSalary,
     salaryTotal,
     previousPayrollDeduction,
@@ -1800,11 +1852,63 @@ function buildContractualRow(record = {}) {
   };
 }
 
+export function registryRecordAmounts(record = {}) {
+  if (isContractualRecord(record)) {
+    const row = buildContractualRow(record);
+    return {
+      grossPay: row.grossPay,
+      totalDeduction: row.totalDeductions,
+      netPay: row.netPay,
+      totalEarnings: row.salaryTotal,
+    };
+  }
+
+  return {
+    grossPay: parseAmount(record.grossPay),
+    totalDeduction: parseAmount(record.totalDeduction),
+    netPay: parseAmount(record.netPay),
+    totalEarnings: parseAmount(record.grossPay),
+  };
+}
+
+function sanitizePayrollAmountDraft(value) {
+  const numericText = String(value ?? "").replace(/[^\d.]/g, "");
+  const decimalIndex = numericText.indexOf(".");
+
+  if (decimalIndex < 0) {
+    return numericText;
+  }
+
+  const wholePart = numericText.slice(0, decimalIndex) || "0";
+  const decimalPart = numericText
+    .slice(decimalIndex + 1)
+    .replace(/\./g, "")
+    .slice(0, 2);
+
+  return `${wholePart}.${decimalPart}`;
+}
+
+function payrollAmountKeyIsAllowed(event) {
+  if (event.ctrlKey || event.metaKey) {
+    return true;
+  }
+
+  // Navigation, editing, modifier, and function keys have names longer than one character. Only
+  // printable characters need filtering; pasted and mobile-keyboard input is sanitized on change.
+  if (event.key.length > 1) {
+    return true;
+  }
+
+  if (/^\d$/.test(event.key)) {
+    return true;
+  }
+
+  return event.key === "." && !event.currentTarget.value.includes(".");
+}
+
 /*
- * One amount in a register that can be typed over: a button showing the formatted amount until it
- * is clicked, then a number input that saves the row on blur or Enter. Shared by the deduction
- * columns of both registers and by the hand-entered earnings columns of a bonus register, so a
- * bonus amount is filled in exactly the way a deduction already is.
+ * Editable payroll amounts save on blur or Enter. Deduction inputs stay visible; hand-entered
+ * earnings open an input when clicked. The same sanitization and save handler serve both.
  */
 function EditableAmountValue({
   amount,
@@ -1813,36 +1917,48 @@ function EditableAmountValue({
   editable = false,
   saving = false,
   active = false,
+  alwaysVisible = false,
   draftValue,
   onActivate = () => {},
   onChange = () => {},
   onSave = () => {},
   buttonClassName = "",
 }) {
+  const inputRef = useRef(null);
   const displayAmount = formatCurrency(amount);
 
+  useEffect(() => {
+    if (active && alwaysVisible) inputRef.current?.focus();
+  }, [active, alwaysVisible]);
+
   if (!editable) {
-    return displayAmount;
+    return <span className="ml-auto block h-8 w-28 border border-transparent px-2 text-right leading-8 tabular-nums">{displayAmount}</span>;
   }
 
-  if (active) {
+  if (active || alwaysVisible) {
     return (
       <input
-        autoFocus
-        type="number"
-        min="0"
-        step="0.01"
+        ref={inputRef}
+        autoFocus={!alwaysVisible}
+        type="text"
+        inputMode="decimal"
+        pattern="[0-9]*[.]?[0-9]{0,2}"
         value={draftValue ?? String(parseAmount(amount))}
         disabled={saving}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => onChange(sanitizePayrollAmountDraft(event.currentTarget.value))}
         onBlur={onSave}
         onFocus={(event) => event.currentTarget.select()}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
             event.currentTarget.blur();
+            return;
+          }
+
+          if (!payrollAmountKeyIsAllowed(event)) {
+            event.preventDefault();
           }
         }}
-        className="h-8 w-28 rounded-md border border-slate-300 bg-white px-2 text-right text-xs font-semibold tabular-nums text-slate-800 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15 disabled:bg-slate-100 disabled:text-slate-500"
+        className="ml-auto block h-8 w-28 rounded-md border border-slate-300 bg-white px-2 text-right text-xs font-semibold tabular-nums text-slate-800 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15 disabled:bg-slate-100 disabled:text-slate-500"
         aria-label={`${label} for ${employeeName || "employee"}`}
       />
     );
@@ -1853,7 +1969,7 @@ function EditableAmountValue({
       type="button"
       disabled={saving}
       onClick={onActivate}
-      className={`${buttonClassName} block h-8 w-28 rounded-md border border-transparent px-2 text-right text-xs font-semibold tabular-nums text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 focus:border-[#D61E1E] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/15 disabled:cursor-wait disabled:bg-slate-100 disabled:text-slate-500`.trim()}
+      className={`${buttonClassName} ml-auto block h-8 w-28 rounded-md border border-transparent px-2 text-right text-xs font-semibold tabular-nums text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 focus:border-[#D61E1E] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/15 disabled:cursor-wait disabled:bg-slate-100 disabled:text-slate-500`.trim()}
       title={`Edit ${label}`}
     >
       {displayAmount}
@@ -1861,138 +1977,59 @@ function EditableAmountValue({
   );
 }
 
-function ContractualRegistryTable({
-  records,
-  salaryPeriodLabel,
-  totalDeductions,
-  totalNetPay,
-  canEditRecord = () => false,
-  savingRecordIds = new Set(),
-  deductionDraftValues = new Map(),
-  activeDeductionCell = "",
-  onActivateDeductionCell = () => {},
-  onChangeDeduction = () => {},
-  onSaveRecord = () => {},
-}) {
-  const groupHeaderClass =
-    "border border-slate-300 bg-slate-100 px-3 py-2 text-center align-middle text-[11px] font-extrabold uppercase text-slate-700";
-  const subHeaderClass =
-    "border border-slate-300 bg-slate-50 px-3 py-2 text-center align-middle text-[11px] font-extrabold uppercase text-slate-600";
-  const lessHeaderClass = `${subHeaderClass} text-rose-700`;
-  const amountCellClass = "border border-slate-200 px-3 py-2 text-right tabular-nums text-slate-700 whitespace-nowrap";
-  const renderDeductionCell = (record, row, column) => {
-    const cellKey = deductionDraftKey(record.id, column);
+/*
+ * The register lists people surname-first -- "Dela Cruz, Juan Santos" -- the way
+ * payroll_export_register_name() in payroll-export.php writes the workbook. A record without the
+ * name parts keeps its full name.
+ */
+function formatRegisterEmployeeName(record = {}) {
+  const lastName = String(record.lastName || "").trim();
+  const givenNames = [record.firstName, record.middleName]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
 
-    return (
-      <td key={column.key} className={amountCellClass}>
-        <EditableAmountValue
-          amount={parseAmount(row[column.key])}
-          label={column.label}
-          employeeName={record.employeeName}
-          editable={canEditRecord(record) && (!column.canEdit || column.canEdit(record))}
-          saving={savingRecordIds.has(String(record.id))}
-          active={activeDeductionCell === cellKey}
-          draftValue={deductionDraftValues.get(cellKey)}
-          onActivate={() => onActivateDeductionCell(cellKey)}
-          onChange={(value) => onChangeDeduction(record.id, column, value)}
-          onSave={() => onSaveRecord(record.id)}
-          buttonClassName="ml-auto"
-        />
-      </td>
-    );
-  };
+  if (!lastName) {
+    return String(record.employeeName || "").trim() || "Employee";
+  }
 
-  return (
-    <table className="min-w-[2400px] w-full border-collapse text-sm">
-      <thead className="sticky top-0 z-20">
-        <tr>
-          <th rowSpan={2} className={groupHeaderClass}>NAMES</th>
-          <th rowSpan={2} className={groupHeaderClass}># of days rendered</th>
-          <th rowSpan={2} className={groupHeaderClass}>Rate/ day</th>
-          <th colSpan={2} className={groupHeaderClass}>Premium</th>
-          <th rowSpan={2} className={groupHeaderClass}>Total (Rate plus Premium Percentage)</th>
-          <th colSpan={3} className={groupHeaderClass}>Salary</th>
-          <th colSpan={3} className={groupHeaderClass}>Less:</th>
-          <th rowSpan={2} className={`${groupHeaderClass} bg-yellow-300 text-slate-900`}>GROSS</th>
-          <th colSpan={7} className={groupHeaderClass}>Less</th>
-          <th rowSpan={2} className={groupHeaderClass}>Total Deductions</th>
-          <th rowSpan={2} className={groupHeaderClass}>NET PAY</th>
-        </tr>
-        <tr>
-          <th className={subHeaderClass}>%</th>
-          <th className={subHeaderClass}>Total</th>
-          <th className={lessHeaderClass}>{salaryPeriodLabel}</th>
-          <th className={subHeaderClass}>Additional Salary</th>
-          <th className={subHeaderClass}>Total</th>
-          <th className={lessHeaderClass}>Deduction from Previous Payroll</th>
-          <th className={lessHeaderClass}>Tardy/ Undertime</th>
-          <th className={lessHeaderClass}>Pass Slip</th>
-          <th className={lessHeaderClass}>TAX</th>
-          <th className={lessHeaderClass}>PhilHealth</th>
-          <th className={lessHeaderClass}>PhilHealth Differential</th>
-          <th className={lessHeaderClass}>Pag-IBIG</th>
-          <th className={lessHeaderClass}>Modified Pag-IBIG II (MP2)</th>
-          <th className={lessHeaderClass}>Pag-IBIG MPL</th>
-          <th className={lessHeaderClass}>MGB Coop Loan</th>
-        </tr>
-      </thead>
-      <tbody>
-        {records.length > 0 ? records.map((record) => {
-          const row = buildContractualRow(record);
-
-          return (
-            <tr key={record.id}>
-              <td className="border border-slate-200 px-3 py-2 font-semibold text-slate-900 whitespace-nowrap">
-                {record.employeeName || "Employee"}
-              </td>
-              <td className={amountCellClass}>{daysFormatter.format(row.daysRendered)}</td>
-              <td className={amountCellClass}>{formatCurrency(row.dailyRate)}</td>
-              <td className={amountCellClass}>{`${percentFormatter.format(row.premiumRate)}%`}</td>
-              <td className={amountCellClass}>{formatCurrency(row.premiumTotal)}</td>
-              <td className={amountCellClass}>{formatCurrency(row.rateWithPremium)}</td>
-              <td className={amountCellClass}>{formatCurrency(row.periodSalary)}</td>
-              <td className={amountCellClass}>{formatCurrency(row.additionalSalary)}</td>
-              <td className={amountCellClass}>{formatCurrency(row.salaryTotal)}</td>
-              {CONTRACTUAL_PRE_GROSS_DEDUCTION_COLUMNS.map((column) => renderDeductionCell(record, row, column))}
-              <td className={`${amountCellClass} bg-yellow-50 font-bold text-slate-950`}>{formatCurrency(row.grossPay)}</td>
-              {CONTRACTUAL_POST_GROSS_DEDUCTION_COLUMNS.map((column) => renderDeductionCell(record, row, column))}
-              <td className={`${amountCellClass} text-slate-950`}>{formatCurrency(row.totalDeductions)}</td>
-              <td className={`${amountCellClass} font-bold text-slate-950`}>{formatCurrency(row.netPay)}</td>
-            </tr>
-          );
-        }) : (
-          <tr>
-            <td colSpan={CONTRACTUAL_COLUMN_COUNT} className="border border-slate-200 px-4 py-10 text-center text-sm font-medium text-slate-500">
-              No employees match your search.
-            </td>
-          </tr>
-        )}
-      </tbody>
-      <tfoot className="sticky bottom-0 z-20">
-        <tr className="text-slate-900">
-          <td className="border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-extrabold uppercase" colSpan={20}>
-            Total Net Payroll Amount (Contract of Service)
-          </td>
-          <td className="border border-slate-300 bg-slate-50 px-3 py-2 text-right tabular-nums text-slate-950 whitespace-nowrap">
-            {formatCurrency(totalDeductions)}
-          </td>
-          <td className="border border-slate-300 bg-slate-50 px-3 py-2 text-right font-bold tabular-nums text-slate-950 whitespace-nowrap">
-            {formatCurrency(totalNetPay)}
-          </td>
-        </tr>
-      </tfoot>
-    </table>
-  );
+  return givenNames ? `${lastName}, ${givenNames}` : lastName;
 }
 
-function PayrollRegistryDetailsModal({
+function registerNameSortKeys(record = {}) {
+  const lastName = String(record.lastName || "").trim();
+
+  return lastName
+    ? [lastName, String(record.firstName || "").trim(), String(record.middleName || "").trim()]
+    : [formatRegisterEmployeeName(record), "", ""];
+}
+
+/*
+ * Alphabetical by surname, then first and middle name. Comparing the parts rather than the joined
+ * name keeps "Dela, Maria" ahead of "Dela Cruz, Juan". Mirrors payroll_export_sort_records().
+ */
+function compareRegisterEmployeeNames(left, right) {
+  const leftKeys = registerNameSortKeys(left);
+  const rightKeys = registerNameSortKeys(right);
+
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    const comparison = leftKeys[index].localeCompare(rightKeys[index], undefined, { sensitivity: "base" });
+
+    if (comparison !== 0) {
+      return comparison;
+    }
+  }
+
+  return 0;
+}
+
+export function PayrollRegistryDetailsModal({
   entry,
   canApprove,
   canActOnStatus = () => false,
   canSubmit = false,
   canEditRecord = () => false,
   canMarkPaid,
-  canArchive,
   canExport = false,
   exporting = false,
   actionLoading,
@@ -2006,32 +2043,19 @@ function PayrollRegistryDetailsModal({
   onUpdateRecord,
   onExport,
   onMarkPaid,
-  onArchive,
 }) {
-  const open = Boolean(entry);
   const [editableRecords, setEditableRecords] = useState([]);
   const [dirtyRecordIds, setDirtyRecordIds] = useState(() => new Set());
   const [savingRecordIds, setSavingRecordIds] = useState(() => new Set());
   const [deductionDraftValues, setDeductionDraftValues] = useState(() => new Map());
   const [activeDeductionCell, setActiveDeductionCell] = useState("");
   const records = editableRecords;
+  const payrollType = normalizePayrollType(entry?.payrollType);
+  const payrollTypeDefinition = getPayrollTypeDefinition(payrollType);
   const regularDeductionColumns = useMemo(
     () => buildRegularDeductionColumns(deductionColumns),
     [deductionColumns]
   );
-  // What this registry pays out decides the register's column text -- see PAYROLL_TYPE_DEFINITIONS.
-  const payrollType = normalizePayrollType(entry?.payrollType);
-  const payrollTypeDefinition = useMemo(() => getPayrollTypeDefinition(payrollType), [payrollType]);
-  const earningsColumns = payrollTypeDefinition.earningsColumns;
-  const regularColumnTotal = regularColumnCount(regularDeductionColumns.length, earningsColumns.length);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(REGISTRY_DETAIL_PAGE_SIZE);
-
-  useEffect(() => {
-    setSearchQuery("");
-    setCurrentPage(1);
-  }, [entry?.registryId]);
 
   useEffect(() => {
     setEditableRecords(entry?.records || []);
@@ -2043,17 +2067,23 @@ function PayrollRegistryDetailsModal({
 
   const registryTotals = useMemo(
     () => records.reduce(
-      (totals, record) => ({
-        totalGrossPay: totals.totalGrossPay + parseAmount(record.grossPay),
-        totalDeductions: totals.totalDeductions + parseAmount(record.totalDeduction),
-        totalNetPay: totals.totalNetPay + parseAmount(record.netPay),
-      }),
+      (totals, record) => {
+        const amounts = registryRecordAmounts(record);
+        return {
+          totalGrossPay: totals.totalGrossPay + amounts.grossPay,
+          totalDeductions: totals.totalDeductions + amounts.totalDeduction,
+          totalNetPay: totals.totalNetPay + amounts.netPay,
+        };
+      },
       { totalGrossPay: 0, totalDeductions: 0, totalNetPay: 0 }
     ),
     [records]
   );
 
   const handleDeductionDraftChange = (recordId, column, value) => {
+    const record = editableRecords.find((item) => String(item.id) === String(recordId));
+    if (!record || !canEditRecord(record) || !canEditRegistryDeductionCell(record, column)) return;
+
     const amount = parseAmount(value);
     const draftKey = deductionDraftKey(recordId, column);
 
@@ -2138,431 +2168,164 @@ function PayrollRegistryDetailsModal({
     }
   };
 
-  const sortedRecords = useMemo(
-    () =>
-      [...records].sort((a, b) =>
-        String(a.employeeName || "").localeCompare(String(b.employeeName || ""), undefined, {
-          sensitivity: "base",
-        })
-      ),
-    [records]
-  );
-
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-
-  const filteredRecords = useMemo(() => {
-    if (!normalizedQuery) {
-      return sortedRecords;
-    }
-
-    return sortedRecords.filter((record) => {
-      const name = String(record.employeeName || "").toLowerCase();
-      const id = String(record.employeeId || "").toLowerCase();
-      return name.includes(normalizedQuery) || id.includes(normalizedQuery);
-    });
-  }, [normalizedQuery, sortedRecords]);
-
-  const totalPages =
-    pageSize === Infinity ? 1 : Math.max(1, Math.ceil(filteredRecords.length / pageSize));
-  const safeCurrentPage = Math.min(currentPage, totalPages);
-
-  useEffect(() => {
-    if (currentPage !== safeCurrentPage) {
-      setCurrentPage(safeCurrentPage);
-    }
-  }, [currentPage, safeCurrentPage]);
-
-  const pagedRecords = useMemo(() => {
-    if (pageSize === Infinity) {
-      return filteredRecords;
-    }
-
-    const start = (safeCurrentPage - 1) * pageSize;
-    return filteredRecords.slice(start, start + pageSize);
-  }, [filteredRecords, pageSize, safeCurrentPage]);
-
-  const employmentTypeSummary = useMemo(() => {
-    const counts = new Map();
-
-    records.forEach((record) => {
-      const label = normalizeEmploymentTypeLabel(record.employmentType) || "Unspecified";
-      counts.set(label, (counts.get(label) || 0) + 1);
-    });
-
-    return Array.from(counts.entries())
-      .map(([type, count]) => ({ type, count }))
-      .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
-  }, [records]);
-
-  const pagedContractualRecords = useMemo(
-    () => pagedRecords.filter((record) => isContractualRecord(record)),
-    [pagedRecords]
-  );
-
-  const pagedStandardRecords = useMemo(
-    () => pagedRecords.filter((record) => !isContractualRecord(record)),
-    [pagedRecords]
-  );
-
-  // Series numbers run over every regular row that survived the search, so they stay stable per page.
-  const standardSeriesNumbers = useMemo(() => {
-    const series = new Map();
-
-    filteredRecords
-      .filter((record) => !isContractualRecord(record))
-      .forEach((record, index) => series.set(record.id, index + 1));
-
-    return series;
-  }, [filteredRecords]);
-
-  const hasContractualRecords = useMemo(
-    () => records.some((record) => isContractualRecord(record)),
-    [records]
-  );
-
-  const hasStandardRecords = useMemo(
-    () => records.some((record) => !isContractualRecord(record)),
-    [records]
-  );
-
-  const contractualTotals = useMemo(
-    () => records.filter((record) => isContractualRecord(record)).reduce(
-      (totals, record) => {
-        const row = buildContractualRow(record);
-        return {
-          totalDeductions: totals.totalDeductions + row.totalDeductions,
-          netPay: totals.netPay + row.netPay,
-        };
-      },
-      { totalDeductions: 0, netPay: 0 }
-    ),
-    [records]
-  );
-
-  const salaryPeriodLabel = useMemo(
-    () => buildSalaryPeriodColumnLabel(entry?.startDate, entry?.endDate),
-    [entry?.endDate, entry?.startDate]
-  );
-
-  const payoutHalfLabels = useMemo(
-    () => buildPayoutHalfColumnLabels(entry?.startDate, entry?.endDate),
-    [entry?.endDate, entry?.startDate]
-  );
-
-  const showsBothTables = hasContractualRecords && hasStandardRecords;
+  const sortedRecords = useMemo(() => [...records].sort(compareRegisterEmployeeNames), [records]);
+  const employmentSummaryLabel = useMemo(() => [...new Set(records.map((record) => (
+    normalizeEmploymentTypeLabel(record.employmentType) || "Unspecified"
+  )))].join(", ") || "Unspecified", [records]);
   const certificationSignatories = useMemo(
     () => payrollCertificationSignatories(signatories, records),
     [records, signatories]
   );
 
+  const renderAmount = (record, column, amount, earning = false) => {
+    const cellKey = earning ? earningsDraftKey(record.id, column) : deductionDraftKey(record.id, column);
+    const editable = canEditRecord(record) && (earning
+      ? Boolean(column.editable)
+      : canEditRegistryDeductionCell(record, column));
+    return (
+      <EditableAmountValue
+        amount={amount}
+        label={column.label}
+        employeeName={record.employeeName}
+        editable={editable}
+        saving={savingRecordIds.has(String(record.id))}
+        active={activeDeductionCell === cellKey}
+        alwaysVisible={!earning}
+        draftValue={deductionDraftValues.get(cellKey)}
+        onActivate={() => setActiveDeductionCell(cellKey)}
+        onChange={(value) => earning
+          ? handleEarningDraftChange(record.id, column, value)
+          : handleDeductionDraftChange(record.id, column, value)}
+        onSave={() => handleSaveRecordDraft(record.id)}
+      />
+    );
+  };
+
+  const getEarningRows = (record) => {
+    const contractual = isContractualRecord(record);
+    const columns = contractual
+      ? [{ key: "basic", label: "Basic Salary", field: "periodBasicSalary" }]
+      : payrollTypeDefinition.earningsColumns;
+    const rows = columns.map((column) => ({
+      key: column.key,
+      label: payrollType === PAYROLL_TYPE_SALARY && column.key === "basic" ? "Basic Salary" : column.label,
+      value: column.kind === "step" ? (record[column.field] || "\u2014") : renderAmount(
+        record,
+        column,
+        column.field === "periodBasicSalary"
+          ? parseAmount(record.periodBasicSalary ?? (parseAmount(record.grossPay) - parseAmount(record.totalAllowance)))
+          : parseAmount(record[column.field]),
+        true
+      ),
+    }));
+    const includedNames = new Set(columns.map((column) => normalizePayrollColumnKey(column.label)));
+    const includedFields = new Set(columns.map((column) => column.field));
+    const allowances = [
+      ["PERA", "pera"], ["Overtime Pay", "overtimePay"], ["Travel Allowance", "travelAllowance"],
+      ["Salary Adjustment", "salaryAdjustment"], ["Other Allowances", "otherAllowances"], ["Bonus Amount", "bonusAmount"],
+    ];
+    allowances.forEach(([label, field]) => {
+      includedNames.add(normalizePayrollColumnKey(label));
+      if (!includedFields.has(field) && parseAmount(record[field]) !== 0) {
+        rows.push({ key: field, label, value: formatCurrency(record[field]) });
+      }
+    });
+    (record.allowanceItems || []).forEach((item, index) => {
+      if (!includedNames.has(normalizePayrollColumnKey(item.name)) && parseAmount(item.amount) !== 0) {
+        rows.push({ key: "allowance-" + index, label: item.name, value: formatCurrency(item.amount) });
+      }
+    });
+    return rows;
+  };
+
+  const getDeductionRows = (record) => {
+    const contractual = isContractualRecord(record);
+    const contractualRow = contractual ? buildContractualRow(record) : null;
+    const columns = contractual
+      ? [...CONTRACTUAL_PRE_GROSS_DEDUCTION_COLUMNS, ...CONTRACTUAL_POST_GROSS_DEDUCTION_COLUMNS]
+      : regularDeductionColumns;
+    const rows = columns.map((column) => ({
+      key: column.key,
+      label: column.label,
+      group: contractual ? (CONTRACTUAL_PRE_GROSS_DEDUCTION_COLUMNS.includes(column) ? "beforeGross" : "afterGross") : undefined,
+      onEdit: canEditRecord(record) && canEditRegistryDeductionCell(record, column)
+        ? () => setActiveDeductionCell(deductionDraftKey(record.id, column))
+        : undefined,
+      value: renderAmount(record, column, contractual
+        ? parseAmount(contractualRow[column.key])
+        : getRegularDeductionCellAmount(record, column)),
+    }));
+    // The contractual register has a fixed set of ten deduction columns, independent of the
+    // regular payroll catalog. Keep the same order and grouping as payroll-export.php.
+    if (contractual) return rows;
+
+    // Include stored deductions outside the active catalog so the breakdown stays complete.
+    const includedNames = new Set(columns.map((column) => normalizePayrollColumnKey(column.label)));
+    const includedFields = new Set(columns.map((column) => payrollDeductionFieldForName(column.label)).filter(Boolean));
+    if (!record.hasAttendanceCoverage) includedFields.add("undertimeDeduction");
+    (record.deductionItems || []).forEach((item, index) => {
+      const field = payrollDeductionFieldForName(item.name);
+      if (includedNames.has(normalizePayrollColumnKey(item.name)) || (field && includedFields.has(field))) return;
+      const column = { key: "stored-" + index, label: item.name, category: item.category };
+      rows.push({
+        key: column.key,
+        label: column.label,
+        onEdit: canEditRecord(record) && canEditRegistryDeductionCell(record, column)
+          ? () => setActiveDeductionCell(deductionDraftKey(record.id, column)) : undefined,
+        value: renderAmount(record, column, parseAmount(item.amount)),
+      });
+    });
+    return rows;
+  };
+
   return (
     <Modal
-      open={open}
-      title={entry ? `${payrollType} Details - ${entry.registryId}` : "Payroll Details"}
+      open={Boolean(entry)}
+      title={entry ? payrollType + " Details" : "Payroll Details"}
       onClose={onClose}
+      showCloseButton={false}
       maxWidth="max-w-none"
       maxHeight="max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2.5rem)]"
       panelClassName="h-[calc(100dvh-1.5rem)] sm:h-[calc(100dvh-2.5rem)]"
       containerClassName="z-[70]"
-      contentClassName="flex min-h-0 flex-1 bg-white"
-      footerClassName="bg-white"
-      footer={(
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-          {/* Same rule as the table's export button -- the drawer is another way to the same file. */}
-          {canExport && entry && isRegistryExportable(entry.status) ? (
-            <Button variant="success" icon={FileSpreadsheet} loading={exporting} onClick={() => onExport(entry)}>
-              Export to Excel
-            </Button>
-          ) : null}
-          {canSubmit && entry && ["Draft", "Rejected"].includes(entry.status) ? (
-            <Button variant="secondary" icon={Send} loading={actionLoading} onClick={() => onSubmit(entry)}>
-              Submit for Approval
-            </Button>
-          ) : null}
-          {canApprove
-            && entry
-            && canActOnStatus(entry.status)
-            ? (
-              <>
-                <Button variant="primary" icon={Check} loading={actionLoading} onClick={() => onApprove(entry)}>
-                  Approve Payroll
-                </Button>
-                {canActOnStatus(entry.status) ? (
-                  <Button variant="danger" icon={XCircle} loading={actionLoading} onClick={() => onReturn(entry)}>
-                    Return for Correction
-                  </Button>
-                ) : null}
-              </>
-            ) : null}
-          {canMarkPaid && entry?.status === "Approved" ? (
-            <Button variant="primary" icon={WalletCards} loading={actionLoading} onClick={() => onMarkPaid(entry)}>
-              Mark as Paid
-            </Button>
-          ) : null}
-          {canArchive && entry && entry.status !== "Archived" ? (
-            <Button variant="danger" icon={faBoxArchive} loading={actionLoading} onClick={() => onArchive(entry)}>
-              Archive
-            </Button>
-          ) : null}
-        </>
-      )}
+      headerClassName="!sr-only"
+      contentClassName="!overflow-hidden !px-0 !py-0 flex min-h-0 flex-1"
     >
       {entry ? (
-        <div className="flex h-full min-h-0 flex-col gap-3">
-          <div className="shrink-0 space-y-2">
-            <div
-              className="grid gap-2"
-              style={{ gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))" }}
-            >
-              {[
-                { label: "Payroll ID", value: entry.registryId },
-                { label: "Payroll Type", value: payrollType },
-                { label: "Division", value: entry.division },
-                { label: "Date Created", value: formatDisplayDate(entry.dateCreated) },
-                { label: "Total Employees", value: numberFormatter.format(records.length) },
-                ...employmentTypeSummary.map(({ type, count }) => ({
-                  label: type,
-                  value: numberFormatter.format(count),
-                  employmentType: type,
-                })),
-              ].map(({ label, value, employmentType }) => {
-                const tone = employmentType ? employmentTypeToneClasses(employmentType) : null;
-
-                return (
-                <div key={label} className={`min-w-0 rounded-md border px-3 py-2 ${tone?.card || "border-slate-200 bg-slate-50"}`}>
-                  <p className={`m-0 truncate text-[11px] font-bold uppercase ${tone?.label || "text-slate-500"}`}>{label}</p>
-                  <p className={`m-0 truncate text-sm font-extrabold ${tone ? "" : "text-slate-900"}`}>{value}</p>
-                </div>
-                );
-              })}
-            </div>
-
-            <div className="grid gap-2 md:grid-cols-3">
-              {[
-                ["Gross Pay", formatCurrency(registryTotals.totalGrossPay), "border-blue-200 bg-blue-50 text-blue-700"],
-                ["Total Deductions", formatCurrency(registryTotals.totalDeductions), "border-rose-200 bg-rose-50 text-rose-700"],
-                ["Total Net Payroll Amount", formatCurrency(registryTotals.totalNetPay), "border-emerald-200 bg-emerald-50 text-emerald-700"],
-              ].map(([label, value, toneClass]) => (
-                <div key={label} className={`min-w-0 rounded-md border px-3 py-2 ${toneClass}`}>
-                  <p className="m-0 truncate text-[11px] font-bold uppercase tracking-normal text-slate-500">{label}</p>
-                  <p className="m-0 truncate text-base font-extrabold tabular-nums">{value}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="relative w-full sm:max-w-xs">
-                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(event) => {
-                    setSearchQuery(event.target.value);
-                    setCurrentPage(1);
-                  }}
-                  placeholder="Search employee name or ID"
-                  className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-700 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">
-                  Rows per page
-                  <select
-                    value={pageSize === Infinity ? "all" : String(pageSize)}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setPageSize(value === "all" ? Infinity : Number(value));
-                      setCurrentPage(1);
-                    }}
-                    className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15"
-                  >
-                    {REGISTRY_DETAIL_PAGE_SIZE_OPTIONS.map((size) => (
-                      <option key={size} value={size}>{size}</option>
-                    ))}
-                    <option value="all">All</option>
-                  </select>
-                </label>
-                <p className="m-0 shrink-0 text-xs font-semibold text-slate-500">
-                  Showing {numberFormatter.format(filteredRecords.length)} of {numberFormatter.format(records.length)} employees
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-            {pagedContractualRecords.length > 0 ? (
-              <div className="rounded-lg border border-slate-200">
-                {showsBothTables ? (
-                  <p className="m-0 border-b border-slate-200 bg-white px-4 py-2 text-xs font-extrabold uppercase text-slate-600">
-                    Contract of Service
-                  </p>
-                ) : null}
-                <div className="overflow-x-auto">
-                  <ContractualRegistryTable
-                    records={pagedContractualRecords}
-                    salaryPeriodLabel={salaryPeriodLabel}
-                    totalDeductions={contractualTotals.totalDeductions}
-                    totalNetPay={contractualTotals.netPay}
-                    canEditRecord={canEditRecord}
-                    savingRecordIds={savingRecordIds}
-                    deductionDraftValues={deductionDraftValues}
-                    activeDeductionCell={activeDeductionCell}
-                    onActivateDeductionCell={setActiveDeductionCell}
-                    onChangeDeduction={handleDeductionDraftChange}
-                    onSaveRecord={handleSaveRecordDraft}
-                  />
-                </div>
-              </div>
-            ) : null}
-
-            {pagedStandardRecords.length > 0 ? (
-              <div className="shrink-0 overflow-x-auto rounded-lg border border-slate-200">
-                {showsBothTables ? (
-                  <p className="m-0 border-b border-slate-200 bg-white px-4 py-2 text-xs font-extrabold uppercase text-slate-600">
-                    Regular
-                  </p>
-                ) : null}
-                <table className="min-w-[3300px] w-full border-collapse text-sm">
-                  <thead className="sticky top-0 z-20">
-                    <tr className="text-xs font-extrabold uppercase text-slate-600">
-                      <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>Series</th>
-                      <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>Employee No.</th>
-                      <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>Employee Name</th>
-                      <th
-                        colSpan={earningsColumns.length}
-                        className={REGULAR_HEADER_CELL_CLASS}
-                        aria-hidden={payrollTypeDefinition.earningsGroupLabel ? undefined : "true"}
-                      >
-                        {payrollTypeDefinition.earningsGroupLabel}
-                      </th>
-                      <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>{payrollTypeDefinition.grossLabel}</th>
-                      <th colSpan={regularDeductionColumns.length} className={`${REGULAR_HEADER_CELL_CLASS} tracking-[0.3em]`}>
-                        Deductions
-                      </th>
-                      <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>Due Date</th>
-                      <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>Total Deductions</th>
-                      <th rowSpan={2} className={REGULAR_HEADER_CELL_CLASS}>{payrollTypeDefinition.netLabel}</th>
-                      <th className={REGULAR_HEADER_CELL_CLASS}>{payoutHalfLabels[0].month}</th>
-                      <th className={REGULAR_HEADER_CELL_CLASS}>{payoutHalfLabels[1].month}</th>
-                    </tr>
-                    <tr className="text-xs font-extrabold uppercase text-slate-600">
-                      {[
-                        ...earningsColumns,
-                        ...regularDeductionColumns,
-                        { key: "payoutFirst", label: payoutHalfLabels[0].range },
-                        { key: "payoutSecond", label: payoutHalfLabels[1].range },
-                      ].map((header) => (
-                        <th key={header.key} className={REGULAR_HEADER_CELL_CLASS} title={header.category || undefined}>
-                          {header.label}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pagedStandardRecords.length > 0 ? pagedStandardRecords.map((record, index) => {
-                      const recordEditable = canEditRecord(record);
-                      const recordSaving = savingRecordIds.has(String(record.id));
-
-                      return (
-                      <tr key={record.id} className="border-b border-slate-100 last:border-b-0">
-                        <td className="px-4 py-3 tabular-nums text-slate-600 whitespace-nowrap">{standardSeriesNumbers.get(record.id) ?? index + 1}</td>
-                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{record.employeeId || "N/A"}</td>
-                        <td className="px-4 py-3 font-semibold text-slate-900 whitespace-nowrap">{record.employeeName || "Employee"}</td>
-                        {earningsColumns.map((column) => {
-                          const cellKey = earningsDraftKey(record.id, column);
-
-                          return (
-                            <td key={column.key} className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">
-                              <EditableAmountValue
-                                amount={parseAmount(record[column.field])}
-                                label={column.label}
-                                employeeName={record.employeeName}
-                                editable={recordEditable && Boolean(column.editable)}
-                                saving={recordSaving}
-                                active={activeDeductionCell === cellKey}
-                                draftValue={deductionDraftValues.get(cellKey)}
-                                onActivate={() => setActiveDeductionCell(cellKey)}
-                                onChange={(value) => handleEarningDraftChange(record.id, column, value)}
-                                onSave={() => handleSaveRecordDraft(record.id)}
-                              />
-                            </td>
-                          );
-                        })}
-                        <td className="bg-slate-50 px-4 py-3 tabular-nums font-semibold text-slate-700 whitespace-nowrap">{formatCurrency(record.grossPay)}</td>
-                        {regularDeductionColumns.map((column) => {
-                          const cellKey = deductionDraftKey(record.id, column);
-
-                          return (
-                            <td key={column.key} className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">
-                              <EditableAmountValue
-                                amount={getDeductionAmount(record, [column.label])}
-                                label={column.label}
-                                employeeName={record.employeeName}
-                                editable={recordEditable}
-                                saving={recordSaving}
-                                active={activeDeductionCell === cellKey}
-                                draftValue={deductionDraftValues.get(cellKey)}
-                                onActivate={() => setActiveDeductionCell(cellKey)}
-                                onChange={(value) => handleDeductionDraftChange(record.id, column, value)}
-                                onSave={() => handleSaveRecordDraft(record.id)}
-                              />
-                            </td>
-                          );
-                        })}
-                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{formatDisplayDate(record.dueDate || record.endDate)}</td>
-                        <td className="bg-slate-50 px-4 py-3 tabular-nums font-semibold text-slate-950 whitespace-nowrap">{formatCurrency(record.totalDeduction)}</td>
-                        <td className="bg-slate-50 px-4 py-3 tabular-nums font-bold text-slate-950 whitespace-nowrap">{formatCurrency(record.netPay)}</td>
-                        <td className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">{formatCurrency(record.marchFirstHalf)}</td>
-                        <td className="px-4 py-3 tabular-nums text-slate-700 whitespace-nowrap">{formatCurrency(record.marchSecondHalf)}</td>
-                      </tr>
-                      );
-                    }) : (
-                      <tr>
-                        <td colSpan={regularColumnTotal} className="px-4 py-10 text-center text-sm font-medium text-slate-500">
-                          No employees match your search.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                  <tfoot>
-                    <tr className="text-slate-900">
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3" colSpan={regularColumnTotal - 4}>Overall Total</td>
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-slate-950 whitespace-nowrap">{formatCurrency(registryTotals.totalDeductions)}</td>
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-slate-950 whitespace-nowrap">{formatCurrency(registryTotals.totalNetPay)}</td>
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3"></td>
-                      <td className="border-t border-slate-200 bg-slate-50 px-4 py-3"></td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            ) : null}
-
-            {pagedRecords.length === 0 ? (
-              <div className="rounded-lg border border-slate-200 px-4 py-10 text-center text-sm font-medium text-slate-500">
-                No employees match your search.
-              </div>
-            ) : null}
-
-            {/*
-              * The register is signed as a whole, so this closes both tables -- and matches the
-              * block payroll-export.php writes at the foot of the exported workbook.
-              */}
-            <PayrollCertification
-              signatories={certificationSignatories}
-              statement={certificationStatement}
-            />
-          </div>
-
-          <Pagination
-            currentPage={safeCurrentPage}
-            totalPages={totalPages}
-            onPageChange={setCurrentPage}
-            className="shrink-0"
-          />
-        </div>
+        <PayrollRegistryDetailsView
+          key={entry.registryId}
+          entry={entry}
+          records={sortedRecords}
+          totals={registryTotals}
+          payrollType={payrollType}
+          employmentSummary={employmentSummaryLabel}
+          signatories={certificationSignatories}
+          certificationStatement={certificationStatement}
+          onClose={onClose}
+          formatEmployeeName={formatRegisterEmployeeName}
+          getEarningRows={getEarningRows}
+          getDeductionRows={getDeductionRows}
+          getRecordAmounts={registryRecordAmounts}
+          actions={(
+            <>
+              {canExport && isRegistryExportable(entry.status) ? (
+                <Button variant="secondary" size="sm" icon={FileSpreadsheet} loading={exporting} onClick={() => onExport(entry)}>Export Payroll</Button>
+              ) : null}
+              {canSubmit && ["Draft", "Rejected"].includes(entry.status) ? (
+                <Button variant="secondary" size="sm" icon={Send} loading={actionLoading} onClick={() => onSubmit(entry)}>Submit for Approval</Button>
+              ) : null}
+              {canApprove && canActOnStatus(entry.status) ? (
+                <>
+                  <Button variant="primary" size="sm" icon={Check} loading={actionLoading} onClick={() => onApprove(entry)}>Approve Payroll</Button>
+                  <Button variant="danger" size="sm" icon={XCircle} loading={actionLoading} onClick={() => onReturn(entry)}>Return for Correction</Button>
+                </>
+              ) : null}
+              {canMarkPaid && entry.status === "Approved" ? (
+                <Button variant="primary" size="sm" icon={WalletCards} loading={actionLoading} onClick={() => onMarkPaid(entry)}>Mark as Paid</Button>
+              ) : null}
+            </>
+          )}
+        />
       ) : null}
     </Modal>
   );
@@ -2646,35 +2409,37 @@ export default function PayrollManagementWorkspace({
   const isRegistryView = view === "generate";
   const isArchivedView = view === "archived";
   const roleKey = normalizeRoleKey(user);
+  const userDivision = String(user?.division || user?.department || "").trim();
   const userExactRoleKey = exactRoleKey(user);
+  const isFadDivisionChief = isFadDivisionChiefUser(user);
   const isPayoutDeskRole = PAYOUT_DESK_ROLE_KEYS.includes(userExactRoleKey);
-  const workflowRoleKey = isPayoutDeskRole ? userExactRoleKey : roleKey;
-  const canCreatePayroll = !isPayoutDeskRole && ["admin", "hrhead", "hrstaff"].includes(roleKey);
+  const isDivisionScopedRegistryRole = payrollRoleUsesDivisionScope(roleKey, userExactRoleKey);
+  const workflowRoleKey = isPayoutDeskRole
+    ? userExactRoleKey
+    : userExactRoleKey === CHIEF_ADMIN_ROLE_KEY || (roleKey === "chief" && !isFadDivisionChief)
+      ? ""
+      : roleKey;
+  const usesAutomaticPayPeriodDates = AUTOMATIC_PAY_PERIOD_ROLE_KEYS.has(roleKey);
+  const canCreatePayroll = !isPayoutDeskRole && ["admin", "hrstaff"].includes(roleKey);
   const canSubmitPayroll = !isPayoutDeskRole && roleKey === "hrstaff";
+  // Biometric imports belong in Time & Attendance; payroll registry creation should not require a DAT upload.
+  const requiresBiometricAttendance = false;
   const isRegistryTableView = isRegistryView || isArchivedView;
   const approvalStages = useMemo(() => approvalStagesForRole(workflowRoleKey), [workflowRoleKey]);
   const canApprovePayroll = approvalStages.length > 0;
   // Approving is the chain's job; releasing the money is the payout desk's step.
   const canMarkPayrollPaid = roleKey === "admin" || isPayoutDeskRole;
   const canManagePayrollFiles = !isPayoutDeskRole && ["hrhead", "hrstaff"].includes(roleKey);
-  const canArchivePayroll = canManagePayrollFiles;
-  const canRestorePayroll = canManagePayrollFiles;
+  // Every desk the register passes through may file a settled batch away; exporting stays with HR.
+  // Mirrors PAYROLL_ARCHIVE_ROLES in payroll.php.
+  const canArchivePayroll = isPayoutDeskRole || PAYROLL_ARCHIVE_ROLE_KEYS.has(workflowRoleKey);
+  const canRestorePayroll = canArchivePayroll;
   const canExportPayroll = canManagePayrollFiles;
   const canActOnStatus = useCallback(
     (status) => isAwaitingRole(status, workflowRoleKey),
     [workflowRoleKey]
   );
-  const canEditPayrollRecord = useCallback((record = {}) => {
-    if (roleKey === "hrstaff") {
-      return ["Draft", "Rejected"].includes(record.status);
-    }
-
-    if (roleKey === "hrhead") {
-      return record.status === HR_HEAD_STATUS;
-    }
-
-    return false;
-  }, [roleKey]);
+  const canEditPayrollRecord = useCallback((record) => canEditPayrollRecordForRole(roleKey, record), [roleKey]);
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -2689,8 +2454,15 @@ export default function PayrollManagementWorkspace({
   const [saving, setSaving] = useState(false);
   const [generateModalOpen, setGenerateModalOpen] = useState(false);
   const [processingGeneratedPayroll, setProcessingGeneratedPayroll] = useState(false);
-  const [generatedPayroll, setGeneratedPayroll] = useState(() => emptyGeneratedPayrollState());
+  const [generatedPayroll, setGeneratedPayroll] = useState(() => ({
+    ...emptyGeneratedPayrollState(),
+    ...(usesAutomaticPayPeriodDates ? { startDate: "", endDate: "" } : {}),
+  }));
   const [selectedGeneratedEmployeeIds, setSelectedGeneratedEmployeeIds] = useState([]);
+  const [payrollBiometricFiles, setPayrollBiometricFiles] = useState([]);
+  const [processingBiometricFiles, setProcessingBiometricFiles] = useState(false);
+  const [payrollBiometricDragActive, setPayrollBiometricDragActive] = useState(false);
+  const [payrollBiometricFileError, setPayrollBiometricFileError] = useState("");
   const [payrollPreviewRecords, setPayrollPreviewRecords] = useState([]);
   const [payrollPreviewLoading, setPayrollPreviewLoading] = useState(false);
   const [payrollPreviewError, setPayrollPreviewError] = useState("");
@@ -2713,15 +2485,23 @@ export default function PayrollManagementWorkspace({
   const [registryActionLoading, setRegistryActionLoading] = useState(false);
   const [exportingRegistry, setExportingRegistry] = useState(false);
   const [archiveActionLoading, setArchiveActionLoading] = useState(false);
+  // Only the FAD Division Chief reaches the Chief payroll addresses; every other Chief has them
+  // removed from navigation by ChiefDashboard.
   const archivePayrollPath = ({
     admin: "/admin/payroll/archived",
     hrhead: "/hrhead/payroll/archived",
     hrstaff: "/hrstaff/payroll/archived",
+    chief: "/chief/payroll/archived",
+    regionaldirector: "/regionaldirector/payroll/archived",
+    cashier: "/cashier/payroll/archived",
   })[roleKey] || "";
   const payrollHomePath = ({
     admin: "/admin/payroll/generate",
     hrhead: "/hrhead/payroll/generate",
     hrstaff: "/hrstaff/payroll/generate",
+    chief: "/chief/payroll/generate",
+    regionaldirector: "/regionaldirector/payroll/generate",
+    cashier: "/cashier/payroll/generate",
   })[roleKey] || "";
 
   const employeeOptions = useMemo(
@@ -2730,7 +2510,7 @@ export default function PayrollManagementWorkspace({
         employeeRecordId: employee.id,
         employeeId: employee.employeeId || employee.employee_id || "",
         employeeName: employee.fullName || employee.employeeName || "Employee",
-        designation: employee.position || employee.designation || "",
+        position: employee.position || "",
         division: employee.department || employee.division || "",
         employmentType: normalizeEmploymentTypeLabel(employee.employmentStatus || employee.employmentType),
         basicSalary: employee.basicSalary,
@@ -2742,17 +2522,27 @@ export default function PayrollManagementWorkspace({
     () => [...employeeOptions].sort((left, right) => String(left.employeeName || "").localeCompare(String(right.employeeName || ""))),
     [employeeOptions]
   );
-  const employeeDivisionOptions = useMemo(
-    () => Array.from(new Set(sortedEmployeeOptions.map((employee) => employee.division).filter(Boolean))).sort(),
-    [sortedEmployeeOptions]
-  );
+  /*
+   * Division choices for the registry filter come from the division table, not from the divisions
+   * present on loaded rows or employees.
+   */
+  const { divisions } = useOrganizationFilterOptions();
+  // Admin and HR Staff use fixed pay-period ranges for the current month, including days that have
+  // already passed. Other roles retain the existing today-forward restriction.
+  const minimumGeneratedPayrollDate = usesAutomaticPayPeriodDates
+    ? getCurrentMonthStartInput()
+    : getCurrentDateInput();
+  const maximumGeneratedPayrollDate = getCurrentMonthEndInput();
+  const minimumGeneratedPayrollEndDate = generatedPayroll.startDate > minimumGeneratedPayrollDate
+    ? generatedPayroll.startDate
+    : minimumGeneratedPayrollDate;
   const selectedGeneratedEmployeeIdSet = useMemo(
     () => new Set(selectedGeneratedEmployeeIds.map((id) => String(id))),
     [selectedGeneratedEmployeeIds]
   );
   /*
    * The employment types the chosen payroll type may be generated for. A bonus is a plantilla
-   * benefit, so picking one narrows both the Employment Type dropdown and the roster beneath it to
+   * benefit, so picking one narrows both the Employment Type buttons and the roster beneath it to
    * Regular -- the server rejects a Contract of Service employee under those types anyway.
    */
   const generatedPayrollTypeEmploymentTypes = useMemo(
@@ -2761,6 +2551,10 @@ export default function PayrollManagementWorkspace({
   );
   // Set for the benefits released on one date a year, which stand in for the pay period picker.
   const generatedPayrollFixedPeriod = getPayrollTypeDefinition(generatedPayroll.payrollType).fixedPeriod;
+  const requiredPayrollBiometricPeriods = useMemo(
+    () => requiredBiometricPayPeriods(generatedPayroll.payPeriod),
+    [generatedPayroll.payPeriod]
+  );
   const generatedEmploymentTypeOptions = useMemo(
     () => GENERATED_EMPLOYMENT_TYPE_OPTIONS.filter((type) => generatedPayrollTypeEmploymentTypes.includes(type)),
     [generatedPayrollTypeEmploymentTypes]
@@ -2770,6 +2564,10 @@ export default function PayrollManagementWorkspace({
     const search = generatedPayroll.search.trim().toLowerCase();
 
     return sortedEmployeeOptions.filter((employee) => {
+      if (!generatedPayroll.employmentType) {
+        return false;
+      }
+
       const matchesSearch = !search || [
         employee.employeeName,
         employee.employeeId,
@@ -2778,14 +2576,13 @@ export default function PayrollManagementWorkspace({
       ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(search));
-      const matchesDivision = !generatedPayroll.division || employee.division === generatedPayroll.division;
-      const matchesEmploymentType = !generatedPayroll.employmentType || employee.employmentType === generatedPayroll.employmentType;
+      const matchesEmploymentType = employee.employmentType === generatedPayroll.employmentType;
       const matchesPayrollType = generatedPayrollTypeEmploymentTypes.includes(employee.employmentType);
 
-      return matchesSearch && matchesDivision && matchesEmploymentType && matchesPayrollType;
+      // Every division is listed: one run generates a single register for the whole organization.
+      return matchesSearch && matchesEmploymentType && matchesPayrollType;
     });
   }, [
-    generatedPayroll.division,
     generatedPayroll.employmentType,
     generatedPayroll.search,
     generatedPayrollTypeEmploymentTypes,
@@ -2893,7 +2690,10 @@ export default function PayrollManagementWorkspace({
   });
 
   useEffect(() => {
-    if (!generateModalOpen) {
+    if (!generateModalOpen || requiresBiometricAttendance) {
+      setPayrollPreviewRecords([]);
+      setPayrollPreviewError("");
+      setPayrollPreviewLoading(false);
       return undefined;
     }
 
@@ -2952,25 +2752,26 @@ export default function PayrollManagementWorkspace({
     generatedPayroll.payPeriod,
     generatedPayroll.payrollType,
     generatedPayroll.startDate,
+    requiresBiometricAttendance,
     selectedGeneratedEmployeeIds,
   ]);
 
   const viewScopedRecords = useMemo(() => {
+    const roleScopedRecords = isDivisionScopedRegistryRole
+      ? filterPayrollRecordsByDivision(records, userDivision)
+      : records;
+
     if (view === "archived") {
-      return records.filter((record) => record.status === "Archived");
+      return roleScopedRecords.filter((record) => record.status === "Archived");
     }
 
-    return records.filter((record) => record.status !== "Archived");
-  }, [records, view]);
+    return roleScopedRecords.filter((record) => record.status !== "Archived");
+  }, [isDivisionScopedRegistryRole, records, userDivision, view]);
 
-  const divisions = useMemo(
-    () => Array.from(new Set(records.map((record) => record.division).filter(Boolean))).sort(),
-    [records]
-  );
 
   const periodOptions = useMemo(
-    () => Array.from(new Set(records.map((record) => record.payPeriod).filter(Boolean))),
-    [records]
+    () => Array.from(new Set(viewScopedRecords.map((record) => record.payPeriod).filter(Boolean))),
+    [viewScopedRecords]
   );
 
   const filteredRecords = useMemo(() => {
@@ -2980,12 +2781,12 @@ export default function PayrollManagementWorkspace({
       const matchesSearch = isRegistryView || !query || [
         record.employeeId,
         record.employeeName,
-        record.designation,
+        record.position,
         record.division,
       ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(query));
-      const matchesStatus = !statusFilter || record.status === statusFilter;
+      const matchesStatus = matchesStatusFilter(record.status, statusFilter);
       const matchesDivision = !divisionFilter || record.division === divisionFilter;
       const matchesPeriod = !periodFilter || record.payPeriod === periodFilter;
 
@@ -3043,6 +2844,8 @@ export default function PayrollManagementWorkspace({
         entry.registryId,
         entry.payrollType,
         entry.division,
+        ...(entry.divisions || []),
+        ...(entry.employmentTypes || []),
         entry.periodLabel,
         entry.status,
         entry.dateCreated,
@@ -3206,8 +3009,14 @@ export default function PayrollManagementWorkspace({
   }, [records]);
 
   const openGenerateModal = () => {
-    setGeneratedPayroll(emptyGeneratedPayrollState());
+    setGeneratedPayroll({
+      ...emptyGeneratedPayrollState(),
+      ...(usesAutomaticPayPeriodDates ? { startDate: "", endDate: "" } : {}),
+    });
     setSelectedGeneratedEmployeeIds([]);
+    setPayrollBiometricFiles([]);
+    setPayrollBiometricDragActive(false);
+    setPayrollBiometricFileError("");
     setPayrollPreviewRecords([]);
     setPayrollPreviewError("");
     setGenerateModalOpen(true);
@@ -3224,13 +3033,19 @@ export default function PayrollManagementWorkspace({
   };
 
   const closeGenerateModal = (force = false) => {
-    if (processingGeneratedPayroll && !force) {
+    if ((processingGeneratedPayroll || processingBiometricFiles) && !force) {
       return;
     }
 
     setGenerateModalOpen(false);
-    setGeneratedPayroll(emptyGeneratedPayrollState());
+    setGeneratedPayroll({
+      ...emptyGeneratedPayrollState(),
+      ...(usesAutomaticPayPeriodDates ? { startDate: "", endDate: "" } : {}),
+    });
     setSelectedGeneratedEmployeeIds([]);
+    setPayrollBiometricFiles([]);
+    setPayrollBiometricDragActive(false);
+    setPayrollBiometricFileError("");
     setPayrollPreviewRecords([]);
     setPayrollPreviewError("");
   };
@@ -3241,7 +3056,7 @@ export default function PayrollManagementWorkspace({
       employeeRecordId: String(employee.employeeRecordId || ""),
       employeeId: employee.employeeId || "",
       employeeName: employee.employeeName || "",
-      designation: employee.designation || "",
+      position: employee.position || "",
       division: employee.division || "",
       basicSalary: employee.basicSalary ? String(employee.basicSalary) : "",
     }));
@@ -3500,7 +3315,7 @@ export default function PayrollManagementWorkspace({
         `Division: ${entry.division || "Unassigned"}`,
         `Total Employees: ${numberFormatter.format(submitIds.length)}`,
         `Total Net Pay: ${formatCurrency(entry.totalNetPay)}`,
-        "It then goes to the Chief of Division and the Regional Director for final approval.",
+        "It then goes to the FAD Division Chief and the Regional Director for final approval.",
       ].join("\n"),
       icon: "question",
       showCancelButton: true,
@@ -3740,13 +3555,14 @@ export default function PayrollManagementWorkspace({
       return;
     }
 
-    const captcha = await promptPayrollWorkflowCaptcha({
-      note: `Answer the sum below to release Payroll ID ${entry.registryId} and mark it as paid.`,
+    const credential = await promptPayrollWorkflowStepUp({
+      otpAction: "paid",
+      captchaNote: `Answer the sum below to send an OTP for releasing Payroll ID ${entry.registryId}.`,
       confirmButtonText: "Mark as Paid",
       confirmButtonColor: "#D61E1E",
     });
 
-    if (!captcha) {
+    if (!credential) {
       return;
     }
 
@@ -3761,7 +3577,7 @@ export default function PayrollManagementWorkspace({
       });
 
       const paidOutcome = await waitForActionRequestOrStatus(
-        bulkMarkPaid(approvedIds, captcha),
+        bulkMarkPaid(approvedIds, credential),
         approvedIds,
         ["Paid"]
       );
@@ -4251,13 +4067,14 @@ export default function PayrollManagementWorkspace({
       return;
     }
 
-    const captcha = await promptPayrollWorkflowCaptcha({
-      note: "Answer the sum below to mark this payroll as paid. The payslip becomes visible to the employee.",
+    const credential = await promptPayrollWorkflowStepUp({
+      otpAction: "paid",
+      captchaNote: "Answer the sum below to send an OTP for releasing this payslip to the employee.",
       confirmButtonText: "Mark paid",
       confirmButtonColor: "#D61E1E",
     });
 
-    if (!captcha) {
+    if (!credential) {
       return;
     }
 
@@ -4273,7 +4090,7 @@ export default function PayrollManagementWorkspace({
         },
       });
 
-      const result = await markPayrollPaid(record.id, captcha);
+      const result = await markPayrollPaid(record.id, credential);
       applyUpdatedRecord(result.record);
 
       await Swal.fire({
@@ -4433,9 +4250,9 @@ export default function PayrollManagementWorkspace({
      * The three one-way transitions payroll.php gates. Returning records for correction is left
      * alone: it is the one move here that can be walked back, so it stays the quick one.
      *
-     * Submitting and approving take the two-step check -- the sum, then a code emailed to the person
-     * clicking -- because they carry the batch along the approval chain. Marking paid still takes the
-     * sum on its own; see workflow-otp-utils.php for where that line is drawn.
+     * Submitting, approving, and marking paid take the two-step check -- the sum, then a code emailed
+     * to the person clicking. The paid transition releases the payslips, so it receives the same
+     * step-up protection as the approval chain.
      */
     const securityNotes = {
       submit: `Answer the sum below to submit ${ids.length} payroll record${ids.length === 1 ? "" : "s"} for approval.`,
@@ -4445,21 +4262,11 @@ export default function PayrollManagementWorkspace({
 
     let credential = null;
 
-    if (type === "submit" || type === "approve") {
+    if (type === "submit" || type === "approve" || type === "paid") {
       credential = await promptPayrollWorkflowStepUp({
         otpAction: type,
         captchaNote: securityNotes[type],
         confirmButtonText: config.confirmButtonText,
-      });
-
-      if (!credential) {
-        return;
-      }
-    } else if (securityNotes[type]) {
-      credential = await promptPayrollWorkflowCaptcha({
-        note: securityNotes[type],
-        confirmButtonText: config.confirmButtonText,
-        confirmButtonColor: "#D61E1E",
       });
 
       if (!credential) {
@@ -4555,11 +4362,11 @@ export default function PayrollManagementWorkspace({
 
   const registryColumns = useMemo(
     () => [
-      /* `cardRole` lays these columns out as cards below `xl` — see `components/UI/table.jsx`. */
+      /* Percentages total 100% in both registry variants so the last column reaches the table edge. */
       {
         key: "registryId",
         header: "Payroll ID",
-        headerClassName: "w-[130px]",
+        width: isRegistryView ? "9%" : "7%",
         cardRole: "title",
         render: (row) => (
           <span className="font-semibold text-slate-950">{row.registryId}</span>
@@ -4568,7 +4375,7 @@ export default function PayrollManagementWorkspace({
       {
         key: "payrollType",
         header: "Payroll Type",
-        headerClassName: "w-[170px]",
+        width: isRegistryView ? "10%" : "8%",
         render: (row) => {
           const payrollType = normalizePayrollType(row.payrollType);
 
@@ -4585,15 +4392,18 @@ export default function PayrollManagementWorkspace({
       {
         key: "totalEmployees",
         header: "No. of Employees",
-        headerClassName: "w-[140px]",
+        width: isRegistryView ? "9%" : "7%",
         render: (row) => numberFormatter.format(row.totalEmployees),
       },
       {
         key: "division",
         header: "Division",
-        headerClassName: "w-[140px]",
+        width: isRegistryView ? "16%" : "12%",
         render: (row) => (
-          <span className="block truncate font-semibold text-slate-900" title={row.division}>
+          <span
+            className="block truncate font-semibold text-slate-900"
+            title={(row.divisions || []).join(", ") || row.division}
+          >
             {row.division || "Unassigned"}
           </span>
         ),
@@ -4601,7 +4411,7 @@ export default function PayrollManagementWorkspace({
       {
         key: "employmentType",
         header: "Employment Type",
-        headerClassName: "w-[160px]",
+        width: isRegistryView ? "13%" : "10%",
         render: (row) => {
           const types = Array.isArray(row.employmentTypes) && row.employmentTypes.length > 0
             ? row.employmentTypes
@@ -4628,7 +4438,7 @@ export default function PayrollManagementWorkspace({
       {
         key: "periodLabel",
         header: "Pay Period",
-        headerClassName: "w-[260px]",
+        width: isRegistryView ? "15%" : "12%",
         cardRole: "subtitle",
         render: (row) => (
           <span className="block truncate text-sm text-slate-700" title={row.periodLabel}>
@@ -4639,54 +4449,57 @@ export default function PayrollManagementWorkspace({
       {
         key: "dateCreated",
         header: "Date Created",
-        headerClassName: "w-[130px]",
+        width: isRegistryView ? "10%" : "8%",
         render: (row) => formatDisplayDate(row.dateCreated),
       },
       {
         key: "status",
         header: "Status",
-        headerClassName: "w-[120px] text-center",
+        width: isRegistryView ? "9%" : "7%",
+        headerClassName: "text-center",
         cellClassName: "text-center",
         cardRole: "badge",
         render: (row) => <PayrollStatusBadge status={row.status} compact />,
       },
-      {
-        key: "totalGrossPay",
-        header: "Total Gross",
-        headerClassName: "w-[140px]",
-        render: (row) => (
-          <span className="font-semibold text-slate-900">{formatCurrency(row.totalGrossPay)}</span>
-        ),
-      },
-      {
-        key: "totalDeductions",
-        header: "Total Deductions",
-        headerClassName: "w-[150px]",
-        render: (row) => (
-          <span className="text-slate-950">{formatCurrency(row.totalDeductions)}</span>
-        ),
-      },
-      {
-        key: "totalNetPay",
-        header: "Total Net Pay",
-        headerClassName: "w-[140px]",
-        render: (row) => (
-          <span className="text-slate-950">{formatCurrency(row.totalNetPay)}</span>
-        ),
-      },
+      /* The Create Payroll Registry list is for identifying and acting on batches. Its three
+         aggregate money columns are intentionally kept only in the archived audit view. */
+      ...(isRegistryView ? [] : [
+        {
+          key: "totalGrossPay",
+          header: "Total Gross",
+          width: "7%",
+          render: (row) => (
+            <span className="font-semibold text-slate-900">{formatCurrency(row.totalGrossPay)}</span>
+          ),
+        },
+        {
+          key: "totalDeductions",
+          header: "Total Deductions",
+          width: "7%",
+          render: (row) => (
+            <span className="text-slate-950">{formatCurrency(row.totalDeductions)}</span>
+          ),
+        },
+        {
+          key: "totalNetPay",
+          header: "Total Net Pay",
+          width: "7%",
+          render: (row) => (
+            <span className="text-slate-950">{formatCurrency(row.totalNetPay)}</span>
+          ),
+        },
+      ]),
       {
         key: "actions",
         header: "Actions",
-        // Deliberately no `w-[...]`: ActionIconButton renders a word next to the icon, so the width
-        // of this column depends on which buttons the row's status allows and on how long their
-        // labels are. Leaving it unset lets the auto table layout size it from the content.
-        headerClassName: "whitespace-nowrap",
-        cellClassName: "whitespace-nowrap text-left",
+        width: isRegistryView ? "9%" : "8%",
+        headerClassName: "whitespace-nowrap !text-right",
+        cellClassName: "whitespace-nowrap !text-right",
         cardRole: "actions",
         render: (row) => {
           if (isArchivedView) {
             return (
-              <div className="flex flex-nowrap items-center justify-start gap-2">
+              <div className="flex flex-nowrap items-center justify-end gap-2">
                 <ActionIconButton
                   label="View payroll registry"
                   icon={faEye}
@@ -4707,7 +4520,7 @@ export default function PayrollManagementWorkspace({
           }
 
           return (
-            <div className="flex flex-nowrap items-center justify-start gap-2">
+            <div className="flex flex-nowrap items-center justify-end gap-2">
               <ActionIconButton
                 label="View payroll registry"
                 icon={faEye}
@@ -4792,6 +4605,7 @@ export default function PayrollManagementWorkspace({
       handleRestoreRegistryEntry,
       handleSubmitRegistryEntry,
       isArchivedView,
+      isRegistryView,
       openArchiveRegistryConfirmation,
     ]
   );
@@ -4871,12 +4685,12 @@ export default function PayrollManagementWorkspace({
           render: (row) => <span className="block truncate" title={row.employeeId || "N/A"}>{row.employeeId || "N/A"}</span>,
         },
         {
-          key: "designation",
-          header: "Designation",
+          key: "position",
+          header: "Position",
           headerClassName: `${compactHeaderClassName} w-[150px]`,
           cellClassName: `${compactCellClassName} max-w-[150px]`,
           cardRole: "subtitle",
-          render: (row) => <span className="block truncate" title={row.designation || "N/A"}>{row.designation || "N/A"}</span>,
+          render: (row) => <span className="block truncate" title={row.position || "N/A"}>{row.position || "N/A"}</span>,
         },
         {
           key: "payPeriod",
@@ -5063,14 +4877,28 @@ export default function PayrollManagementWorkspace({
     const nextType = normalizePayrollType(value);
     const allowedEmploymentTypes = payrollTypeEmploymentTypes(nextType);
     const { fixedPeriod } = getPayrollTypeDefinition(nextType);
+    const nextPeriodState = fixedPeriod
+      ? getFixedPeriodDateRange(
+          fixedPeriod,
+          getCurrentDateInput()
+        )
+      : {
+          payPeriod: "",
+          startDate: usesAutomaticPayPeriodDates ? "" : minimumGeneratedPayrollDate,
+          endDate: usesAutomaticPayPeriodDates ? "" : minimumGeneratedPayrollDate,
+        };
 
     setGeneratedPayroll((current) => ({
       ...current,
       payrollType: nextType,
-      employmentType: allowedEmploymentTypes.includes(current.employmentType) ? current.employmentType : "",
+      employmentType: allowedEmploymentTypes.includes(current.employmentType)
+        ? current.employmentType
+        : allowedEmploymentTypes.length === 1
+          ? allowedEmploymentTypes[0]
+          : "",
       // A benefit with a fixed release window brings its own period, so the picker below is replaced
       // by the schedule rather than left showing a period the type is never paid on.
-      ...getFixedPeriodDateRange(fixedPeriod, current.startDate || current.endDate),
+      ...nextPeriodState,
     }));
 
     setSelectedGeneratedEmployeeIds((current) => {
@@ -5081,6 +4909,19 @@ export default function PayrollManagementWorkspace({
       );
 
       return current.filter((id) => allowedIds.has(String(id)));
+    });
+  };
+
+  const handleGeneratedEmploymentTypeChange = (employmentType) => {
+    setGeneratedPayroll((current) => ({ ...current, employmentType }));
+    setSelectedGeneratedEmployeeIds((current) => {
+      const matchingIds = new Set(
+        sortedEmployeeOptions
+          .filter((employee) => employee.employmentType === employmentType)
+          .map((employee) => String(employee.employeeRecordId))
+      );
+
+      return current.filter((id) => matchingIds.has(String(id)));
     });
   };
 
@@ -5110,15 +4951,220 @@ export default function PayrollManagementWorkspace({
     });
   };
 
+  const processPayrollBiometricFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    setProcessingBiometricFiles(true);
+    setPayrollBiometricFileError("");
+    const readyFiles = [];
+    const errors = [];
+
+    for (const file of files) {
+      const filename = String(file?.name || "Biometric file");
+
+      if (!filename.toLowerCase().endsWith(".dat")) {
+        errors.push(`${filename}: DAT files only.`);
+        continue;
+      }
+
+      if (Number(file?.size || 0) > ATTENDANCE_DAT_BYTE_LIMIT) {
+        errors.push(`${filename}: file exceeds the ${ATTENDANCE_DAT_MB_LIMIT} MB limit.`);
+        continue;
+      }
+
+      try {
+        const converted = convertDatTextToAttendanceCsv(await readAttendanceDatFile(file));
+
+        if (converted.spansMultipleMonths) {
+          throw new Error("The file contains attendance from more than one month.");
+        }
+
+        if (!converted.payPeriod) {
+          throw new Error("The payroll half could not be identified from the attendance dates.");
+        }
+
+        const csvBaseName = filename.replace(/\.dat$/i, "") || "attendance";
+        const filePeriods = converted.payPeriod === "Monthly"
+          ? ["1st Half", "2nd Half"]
+          : [converted.payPeriod];
+
+        filePeriods.forEach((payPeriod) => {
+          const segment = converted.segments?.[payPeriod];
+          if (!segment) {
+            return;
+          }
+
+          const periodSlug = payPeriod === "1st Half" ? "1st-half" : "2nd-half";
+          readyFiles.push({
+            id: `${filename}-${file.size}-${file.lastModified}-${payPeriod}`,
+            file,
+            csvFile: new File([segment.csv], `${csvBaseName}-${periodSlug}.csv`, { type: "text/csv;charset=utf-8;" }),
+            name: filename,
+            size: Number(file.size || 0),
+            payPeriod,
+            month: converted.month,
+            dateFrom: segment.dateFrom,
+            dateTo: segment.dateTo,
+            rowCount: segment.rowCount,
+            skippedRows: converted.skippedRows,
+            status: "Ready",
+          });
+        });
+      } catch (error) {
+        errors.push(`${filename}: ${error?.message || "Unable to read the biometric attendance file."}`);
+      }
+    }
+
+    if (readyFiles.length > 0) {
+      // One source file represents one half. Choosing another file for the same half replaces the
+      // earlier one, which keeps Monthly payrolls limited to the two unambiguous inputs shown here.
+      setPayrollBiometricFiles((current) => {
+        const byPeriod = new Map(current.map((item) => [item.payPeriod, item]));
+        readyFiles.forEach((item) => byPeriod.set(item.payPeriod, item));
+        return ["1st Half", "2nd Half"]
+          .map((period) => byPeriod.get(period))
+          .filter(Boolean);
+      });
+
+      toast.success(
+        `${readyFiles.length} biometric file${readyFiles.length === 1 ? " is" : "s are"} ready.`
+      );
+    }
+
+    if (errors.length > 0) {
+      const errorMessage = errors.join(" ");
+      setPayrollBiometricFileError(errorMessage);
+      toast.error(errorMessage);
+    }
+
+    setProcessingBiometricFiles(false);
+  };
+
+  const handlePayrollBiometricFileChange = (event) => {
+    const files = event.target.files;
+    event.target.value = "";
+    void processPayrollBiometricFiles(files);
+  };
+
+  const handlePayrollBiometricDragOver = (event) => {
+    event.preventDefault();
+    if (!processingBiometricFiles && !processingGeneratedPayroll) {
+      setPayrollBiometricDragActive(true);
+    }
+  };
+
+  const handlePayrollBiometricDragLeave = (event) => {
+    event.preventDefault();
+    setPayrollBiometricDragActive(false);
+  };
+
+  const handlePayrollBiometricDrop = (event) => {
+    event.preventDefault();
+    setPayrollBiometricDragActive(false);
+
+    if (processingBiometricFiles || processingGeneratedPayroll) {
+      return;
+    }
+
+    void processPayrollBiometricFiles(event.dataTransfer.files);
+  };
+
+  const removePayrollBiometricFile = (fileId) => {
+    setPayrollBiometricFiles((current) => current.filter((file) => file.id !== fileId));
+  };
+
   const handleProcessGeneratedPayroll = async () => {
+    let biometricFilesToImport = [];
+
+    if (!generatedPayroll.employmentType) {
+      toast.error("Select an employment type first.");
+      return;
+    }
+
+    if (usesAutomaticPayPeriodDates && !generatedPayrollFixedPeriod && !generatedPayroll.payPeriod) {
+      toast.error("Select a pay period first.");
+      return;
+    }
+
     if (!generatedPayroll.startDate || !generatedPayroll.endDate) {
-      toast.error("Select the payroll start and end dates first.");
+      toast.error(usesAutomaticPayPeriodDates && !generatedPayrollFixedPeriod
+        ? "Select a pay period first."
+        : "Select the payroll start and end dates first.");
+      return;
+    }
+
+    if (
+      !generatedPayrollFixedPeriod && (
+        generatedPayroll.startDate < minimumGeneratedPayrollDate
+        || generatedPayroll.endDate < minimumGeneratedPayrollDate
+      )
+    ) {
+      toast.error(
+        usesAutomaticPayPeriodDates
+          ? "Pay period dates must be within the current month."
+          : "Pay period dates cannot be before today."
+      );
+      return;
+    }
+
+    if (
+      !generatedPayrollFixedPeriod && (
+        generatedPayroll.startDate > maximumGeneratedPayrollDate
+        || generatedPayroll.endDate > maximumGeneratedPayrollDate
+      )
+    ) {
+      toast.error("Pay period dates must be within the current month.");
       return;
     }
 
     if (generatedPayroll.startDate > generatedPayroll.endDate) {
       toast.error("Pay period end must be on or after the start date.");
       return;
+    }
+
+    if (!generatedPayrollFixedPeriod) {
+      const selectedPayPeriod = generatedPayroll.payPeriod
+        || inferPayPeriod(generatedPayroll.startDate, generatedPayroll.endDate);
+      const generation = payPeriodGenerationStatus(selectedPayPeriod);
+
+      if (!generation.open) {
+        toast.error(`${selectedPayPeriod} payroll can only be generated from ${generation.windowLabel}.`);
+        return;
+      }
+    }
+
+    if (requiresBiometricAttendance) {
+      if (processingBiometricFiles) {
+        toast.error("Wait for the biometric attendance files to finish validating.");
+        return;
+      }
+
+      const requiredPeriods = requiredBiometricPayPeriods(generatedPayroll.payPeriod);
+      const filesByPeriod = new Map(payrollBiometricFiles.map((file) => [file.payPeriod, file]));
+      const missingPeriods = requiredPeriods.filter((period) => !filesByPeriod.has(period));
+
+      if (missingPeriods.length > 0) {
+        toast.error(
+          generatedPayroll.payPeriod === "Monthly"
+            ? "Monthly payroll requires separate 1st Half and 2nd Half biometric DAT files."
+            : `Upload the ${missingPeriods[0]} biometric DAT file before proceeding.`
+        );
+        return;
+      }
+
+      const payrollMonth = generatedPayroll.startDate.slice(0, 7);
+      biometricFilesToImport = requiredPeriods.map((period) => filesByPeriod.get(period));
+      const wrongMonthFile = biometricFilesToImport.find((file) => file.month !== payrollMonth);
+
+      if (wrongMonthFile) {
+        toast.error(
+          `${wrongMonthFile.name} contains attendance for ${wrongMonthFile.month || "an unknown month"}, not the selected payroll month ${payrollMonth}.`
+        );
+        return;
+      }
     }
 
     if (selectedGeneratedEmployeeIds.length === 0) {
@@ -5130,9 +5176,9 @@ export default function PayrollManagementWorkspace({
       await Swal.fire({
         title: "No Employees Selected",
         text: noneMatchFilter && activeType
-          ? `No ${activeType} employees match the current filters, so there is nothing to proceed with. Check the Employment Type and Division filters, or confirm that ${activeType} employees exist in the employee records.`
+          ? `No ${activeType} employees match the current filters, so there is nothing to proceed with. Check the Employment Type and search filters, or confirm that ${activeType} employees exist in the employee records.`
           : noneMatchFilter
-            ? "No employees match the current filters. Adjust the Employment Type, Division, or search filters and try again."
+            ? "No employees match the current filters. Adjust the Employment Type or search filters and try again."
             : "Tick at least one employee in the list before proceeding with payroll.",
         icon: "warning",
         confirmButtonColor: "#0f766e",
@@ -5193,8 +5239,8 @@ export default function PayrollManagementWorkspace({
       return;
     }
 
-    // Selections survive filter changes, so report what is actually queued rather than what
-    // the Employment Type dropdown currently shows.
+    // The search filter does not clear selections, so report what is actually queued rather
+    // than only what is currently visible in the roster.
     const selectedTypeCounts = selectedEmployees.reduce((counts, employee) => {
       const label = normalizeEmploymentTypeLabel(employee.employmentType) || "Unspecified";
       counts.set(label, (counts.get(label) || 0) + 1);
@@ -5211,10 +5257,13 @@ export default function PayrollManagementWorkspace({
         `Payroll Type: ${payrollType}`,
         `Employees: ${numberFormatter.format(selectedEmployees.length)}`,
         `Employment Type: ${selectedTypeSummary || "Unspecified"}`,
-        `Division: ${generatedPayroll.division || "All Divisions"}`,
+        "Division: All Divisions (one payroll registry)",
         `Pay Period: ${payPeriod} (${generatedPayroll.startDate} to ${generatedPayroll.endDate})`,
+        requiresBiometricAttendance
+          ? `Biometric Files: ${biometricFilesToImport.map((file) => file.name).join(", ")}`
+          : "",
         "Draft payroll records will be generated for each selected employee.",
-      ].join("\n"),
+      ].filter(Boolean).join("\n"),
       icon: "question",
       showCancelButton: true,
       confirmButtonText: "Proceed",
@@ -5250,6 +5299,27 @@ export default function PayrollManagementWorkspace({
     });
 
     try {
+      for (let index = 0; index < biometricFilesToImport.length; index += 1) {
+        const biometricFile = biometricFilesToImport[index];
+        Swal.update({
+          title: "Validating Biometric Attendance...",
+          text: `Importing ${biometricFile.name} (${index + 1} of ${biometricFilesToImport.length}).`,
+        });
+
+        const importResult = await importAttendanceCsv(biometricFile.csvFile);
+        const summary = importResult?.summary || {};
+        const recognizedPunches = Number(summary.totalImported || 0) + Number(summary.duplicatesSkipped || 0);
+
+        if (recognizedPunches === 0) {
+          throw new Error(`${biometricFile.name} has no attendance punches that match an employee record.`);
+        }
+      }
+
+      Swal.update({
+        title: "Proceeding with Payroll...",
+        text: `Generating payroll for ${numberFormatter.format(selectedEmployees.length)} employee${selectedEmployees.length === 1 ? "" : "s"}.`,
+      });
+
       for (const employee of selectedEmployees) {
         const duplicateKey = `${payrollType}|${employee.employeeRecordId}|${generatedPayroll.startDate}|${generatedPayroll.endDate}`;
         if (duplicateKeys.has(duplicateKey)) {
@@ -5393,7 +5463,7 @@ export default function PayrollManagementWorkspace({
     } catch (requestError) {
       await Swal.fire({
         title: "Unable to Proceed with Payroll",
-        text: requestError?.response?.data?.message || "Unable to proceed with payroll.",
+        text: requestError?.response?.data?.message || requestError?.message || "Unable to proceed with payroll.",
         icon: "error",
         confirmButtonColor: "#0f766e",
       });
@@ -5452,8 +5522,8 @@ export default function PayrollManagementWorkspace({
                 ) : null}
               </div>
             </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-end gap-3">
                 <InputField
                   label={isRegistryTableView ? "Search Registry" : "Search Employee"}
                   name="payrollSearch"
@@ -5464,9 +5534,10 @@ export default function PayrollManagementWorkspace({
                   }}
                   placeholder={isRegistryTableView ? "Search payroll ID, division, period" : "Search employee"}
                   icon={Search}
+                  className="w-full sm:w-[260px]"
                 />
 
-                <div>
+                <div className="w-full sm:w-[180px]">
                   <label htmlFor="payrollStatusFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Payroll Status
                   </label>
@@ -5488,27 +5559,36 @@ export default function PayrollManagementWorkspace({
                   </select>
                 </div>
 
-                <div>
-                  <label htmlFor="payrollDivisionFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
-                    Division
-                  </label>
-                  <select
-                    id="payrollDivisionFilter"
-                    value={divisionFilter}
-                    onChange={(event) => {
-                      setDivisionFilter(event.target.value);
-                      setCurrentPage(1);
-                    }}
-                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
-                  >
-                    <option value="">All divisions</option>
-                    {divisions.map((division) => (
-                      <option key={division} value={division}>{division}</option>
-                    ))}
-                  </select>
-                </div>
+                {!isRegistryView ? (
+                  <div className="w-full sm:w-[220px]">
+                    <label htmlFor="payrollDivisionFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
+                      Division
+                    </label>
+                    <select
+                      id="payrollDivisionFilter"
+                      value={divisionFilter}
+                      disabled={isDivisionScopedRegistryRole}
+                      onChange={(event) => {
+                        setDivisionFilter(event.target.value);
+                        setCurrentPage(1);
+                      }}
+                      className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-600"
+                    >
+                      {isDivisionScopedRegistryRole ? (
+                        <option value="">{userDivision || "No assigned division"}</option>
+                      ) : (
+                        <>
+                          <option value="">All divisions</option>
+                          {divisions.map((division) => (
+                            <option key={division} value={division}>{division}</option>
+                          ))}
+                        </>
+                      )}
+                    </select>
+                  </div>
+                ) : null}
 
-                <div>
+                <div className="w-full sm:w-[220px]">
                   <label htmlFor="payrollPeriodFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Payroll Period
                   </label>
@@ -5528,7 +5608,7 @@ export default function PayrollManagementWorkspace({
                   </select>
                 </div>
 
-                <div>
+                <div className="w-full sm:w-[130px]">
                   <label htmlFor="payrollRowsPerPage" className="mb-1.5 block text-sm font-semibold text-slate-700">
                     Rows Per Page
                   </label>
@@ -5541,7 +5621,7 @@ export default function PayrollManagementWorkspace({
                     }}
                     className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
                   >
-                    {[5, 8, 10, 15, 20].map((value) => (
+                    {[10, 20, 50, 100, 200].map((value) => (
                       <option key={value} value={value}>{value}</option>
                     ))}
                   </select>
@@ -5616,7 +5696,7 @@ export default function PayrollManagementWorkspace({
                 </div>
               ) : null}
 
-              {/* Plain container for the card grid below `xl`, framed box for the table from `xl` up. */}
+              {/* Registry views stay tabular and scroll horizontally when their content needs more room. */}
               <div className="xl:overflow-hidden xl:rounded-2xl xl:border xl:border-slate-200">
                 <Table
                   columns={isRegistryTableView ? registryColumns : columns}
@@ -5644,10 +5724,23 @@ export default function PayrollManagementWorkspace({
                     </div>
                   )}
                   stickyHeader
-                  className="max-h-[520px] overflow-y-auto"
-                  tableClassName={isRegistryTableView ? REGISTRY_TABLE_MIN_WIDTH : RECORDS_TABLE_MIN_WIDTH}
-                  cardsClassName="xl:hidden"
-                  tableWrapperClassName="hidden xl:block"
+                  className={isRegistryView
+                    ? "max-h-[520px] overflow-y-auto [&_th]:!px-4 [&_th]:!py-2.5 [&_th]:whitespace-nowrap [&_td]:!px-4 [&_td]:!py-2.5"
+                    : isRegistryTableView
+                      ? "max-h-[520px] overflow-y-auto [&_th]:!px-2 [&_th]:!py-2.5 [&_th]:whitespace-nowrap [&_td]:!px-2 [&_td]:!py-2.5"
+                      : "max-h-[520px] overflow-y-auto"}
+                  tableClassName={
+                    isRegistryTableView ? "table-fixed" : RECORDS_TABLE_MIN_WIDTH
+                  }
+                  minWidthClassName={
+                    isRegistryView
+                      ? "min-w-[72rem]"
+                      : isRegistryTableView
+                        ? "min-w-[96rem]"
+                        : undefined
+                  }
+                  cardsClassName={isRegistryTableView ? "" : "xl:hidden"}
+                  tableWrapperClassName={isRegistryTableView ? "" : "hidden xl:block"}
                 />
               </div>
 
@@ -5679,28 +5772,37 @@ export default function PayrollManagementWorkspace({
         open={generateModalOpen}
         title="Generate New Payroll"
         onClose={() => closeGenerateModal()}
-        maxWidth="max-w-3xl"
-        panelClassName="rounded-[26px] border border-slate-200 bg-white shadow-[0_28px_72px_rgba(15,23,42,0.18)]"
-        contentClassName="bg-white px-4 py-4 md:px-5 md:py-5"
-        footerClassName="bg-white"
+        maxWidth={requiresBiometricAttendance ? "max-w-6xl" : "max-w-3xl"}
+        maxHeight="max-h-[96dvh]"
+        panelClassName="rounded-[20px] border border-slate-200 bg-white shadow-[0_28px_72px_rgba(15,23,42,0.18)]"
+        headerClassName={requiresBiometricAttendance ? "!px-6 !py-4 [&_h2]:!text-xl [&_h2]:!font-bold" : ""}
+        contentClassName={requiresBiometricAttendance ? "bg-white !px-6 !py-5" : "bg-white px-4 py-4 md:px-5 md:py-5"}
+        footerClassName={requiresBiometricAttendance ? "bg-white !px-6 !py-3.5" : "bg-white"}
         footer={(
           <>
-            <Button variant="ghost" onClick={() => closeGenerateModal()} disabled={processingGeneratedPayroll}>
-              Cancel
-            </Button>
+            {requiresBiometricAttendance ? (
+              <Button
+                variant="ghost"
+                onClick={() => closeGenerateModal()}
+                disabled={processingGeneratedPayroll || processingBiometricFiles}
+              >
+                Cancel
+              </Button>
+            ) : null}
             <Button
               variant="primary"
               onClick={handleProcessGeneratedPayroll}
               loading={processingGeneratedPayroll}
+              disabled={processingBiometricFiles}
             >
-              Proceed
+              {requiresBiometricAttendance ? "Validate & Proceed" : "Proceed"}
             </Button>
           </>
         )}
       >
         <div className="space-y-4">
           <p className="m-0 text-sm leading-6 text-slate-600">
-            This will proceed with payroll for the selected period and division. Review the parameters before continuing.
+            This will proceed with one payroll for the selected period, covering employees from all divisions. Review the parameters before continuing.
           </p>
 
           <div>
@@ -5723,17 +5825,15 @@ export default function PayrollManagementWorkspace({
           </div>
 
           {/*
-            * A benefit released on a fixed date every year has no pay period to choose, so the
-            * picker gives way to the schedule the dates below were filled in from.
+            * Annual bonuses start with their scheduled dates, which HR can edit below.
             */}
           {generatedPayrollFixedPeriod ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
               <p className="m-0 text-sm font-semibold text-slate-700">
-                Pay Period: {generatedPayrollFixedPeriod.label}
+                Default Bonus Period: {generatedPayrollFixedPeriod.label}
               </p>
               <p className="m-0 mt-0.5 text-xs text-slate-500">
-                {generatedPayroll.payrollType} is released on a fixed schedule, so the pay period is
-                set automatically.
+                Adjust the start and end dates below if the bonus is processed in a different period, including delayed processing.
               </p>
             </div>
           ) : (
@@ -5742,20 +5842,37 @@ export default function PayrollManagementWorkspace({
               <div className="grid gap-2 sm:grid-cols-3">
                 {PAY_PERIOD_OPTIONS.map((period) => {
                   const active = generatedPayroll.payPeriod === period;
+                  const availableDateRange = getPayPeriodDateRange(
+                    period,
+                    minimumGeneratedPayrollDate,
+                    minimumGeneratedPayrollDate,
+                    maximumGeneratedPayrollDate
+                  );
+                  const generation = payPeriodGenerationStatus(period);
+                  const passed = !availableDateRange.startDate || !availableDateRange.endDate;
+                  const unavailable = passed || !generation.open;
 
                   return (
                     <button
                       key={period}
                       type="button"
+                      disabled={unavailable}
+                      title={passed
+                        ? `${period} has already passed for the current month.`
+                        : !generation.open
+                          ? `${period} payroll can only be generated from ${generation.windowLabel}.`
+                          : undefined}
                       onClick={() => setGeneratedPayroll((current) => ({
                         ...current,
                         payPeriod: period,
-                        ...getPayPeriodDateRange(period, current.startDate || current.endDate),
+                        ...availableDateRange,
                       }))}
                       className={`min-h-[42px] rounded-xl border px-4 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-red-100 ${
-                        active
-                          ? "border-[#D61E1E] bg-[#D61E1E] text-white shadow-sm"
-                          : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                        unavailable
+                          ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                          : active
+                            ? "border-[#D61E1E] bg-[#D61E1E] text-white shadow-sm"
+                            : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
                       }`}
                     >
                       {period}
@@ -5763,73 +5880,203 @@ export default function PayrollManagementWorkspace({
                   );
                 })}
               </div>
+              <p className="mb-0 mt-2 text-xs text-slate-500">
+                1st Half can be generated from the 1st to the 15th; 2nd Half and Monthly from the 16th to the end of the month.
+              </p>
             </div>
           )}
 
-          <div className="grid gap-3 md:grid-cols-2">
-            <InputField
-              label="Pay Period Start"
-              name="generatedPayrollStart"
-              type="date"
-              value={generatedPayroll.startDate}
-              onChange={(event) => setGeneratedPayroll((current) => ({ ...current, startDate: event.target.value }))}
-            />
-            <InputField
-              label="Pay Period End"
-              name="generatedPayrollEnd"
-              type="date"
-              value={generatedPayroll.endDate}
-              onChange={(event) => setGeneratedPayroll((current) => ({ ...current, endDate: event.target.value }))}
-            />
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <div>
-              <label htmlFor="generatedPayrollEmploymentType" className="mb-1.5 block text-sm font-semibold text-slate-700">
-                Employment Type
-              </label>
-              <select
-                id="generatedPayrollEmploymentType"
-                value={generatedPayroll.employmentType}
-                disabled={generatedEmploymentTypeOptions.length <= 1}
-                onChange={(event) => setGeneratedPayroll((current) => ({ ...current, employmentType: event.target.value }))}
-                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10 disabled:bg-slate-100 disabled:text-slate-500"
-              >
-                <option value="">
-                  {generatedEmploymentTypeOptions.length === 1
-                    ? `${generatedEmploymentTypeOptions[0]} only`
-                    : "All Types"}
-                </option>
-                {generatedEmploymentTypeOptions.map((type) => (
-                  <option key={type} value={type}>{type}</option>
-                ))}
-              </select>
+          {usesAutomaticPayPeriodDates && !generatedPayrollFixedPeriod ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <p className="m-0 text-sm font-semibold text-slate-700">Automatic pay period dates</p>
+              <p className="m-0 mt-0.5 text-xs text-slate-500">
+                {generatedPayroll.startDate && generatedPayroll.endDate
+                  ? `${formatDisplayDate(generatedPayroll.startDate)} to ${formatDisplayDate(generatedPayroll.endDate)}`
+                  : "Choose 1st Half, 2nd Half, or Monthly above to set the dates automatically."}
+              </p>
             </div>
-            <div>
-              <label htmlFor="generatedPayrollDivision" className="mb-1.5 block text-sm font-semibold text-slate-700">
-                Division
-              </label>
-              <select
-                id="generatedPayrollDivision"
-                value={generatedPayroll.division}
-                onChange={(event) => setGeneratedPayroll((current) => ({ ...current, division: event.target.value }))}
-                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
-              >
-                <option value="">All Division</option>
-                {employeeDivisionOptions.map((division) => (
-                  <option key={division} value={division}>{division}</option>
-                ))}
-              </select>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              <InputField
+                label="Pay Period Start *"
+                name="generatedPayrollStart"
+                type="date"
+                min={generatedPayrollFixedPeriod ? undefined : minimumGeneratedPayrollDate}
+                max={generatedPayrollFixedPeriod ? undefined : maximumGeneratedPayrollDate}
+                required
+                value={generatedPayroll.startDate}
+                onChange={(event) => {
+                  const startDate = event.target.value;
+                  setGeneratedPayroll((current) => ({
+                    ...current,
+                    startDate,
+                    endDate: startDate && current.endDate < startDate ? startDate : current.endDate,
+                  }));
+                }}
+              />
+              <InputField
+                label="Pay Period End *"
+                name="generatedPayrollEnd"
+                type="date"
+                min={generatedPayrollFixedPeriod ? generatedPayroll.startDate || undefined : minimumGeneratedPayrollEndDate}
+                max={generatedPayrollFixedPeriod ? undefined : maximumGeneratedPayrollDate}
+                required
+                value={generatedPayroll.endDate}
+                onChange={(event) => setGeneratedPayroll((current) => ({ ...current, endDate: event.target.value }))}
+              />
             </div>
-          </div>
+          )}
 
-          <div className="grid gap-3 md:grid-cols-2">
+          {requiresBiometricAttendance ? (
+            <section aria-labelledby="payrollBiometricHeading" className="space-y-2.5">
+              <h3 id="payrollBiometricHeading" className="m-0 text-sm font-semibold text-slate-800">
+                Biometric Attendance File <span className="font-bold text-rose-600" aria-hidden="true">*</span>
+              </h3>
+
+              <label
+                htmlFor="payrollBiometricFiles"
+                onDragOver={handlePayrollBiometricDragOver}
+                onDragLeave={handlePayrollBiometricDragLeave}
+                onDrop={handlePayrollBiometricDrop}
+                className={`group flex min-h-[170px] w-full cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed px-5 py-6 text-center transition focus-within:ring-2 focus-within:ring-[color:var(--ui-accent-border)] ${
+                  payrollBiometricDragActive
+                    ? "border-[color:var(--ui-accent)] bg-[color:var(--ui-accent-tint)]"
+                    : "border-[color:var(--ui-accent-border)] bg-white hover:border-[color:var(--ui-accent)] hover:bg-[color:var(--ui-accent-tint)]"
+                } ${processingBiometricFiles || processingGeneratedPayroll ? "pointer-events-none opacity-70" : ""}`}
+              >
+                <input
+                  id="payrollBiometricFiles"
+                  type="file"
+                  accept=".dat,application/octet-stream,text/plain"
+                  multiple
+                  className="sr-only"
+                  aria-describedby="payrollBiometricFileHint payrollBiometricFileError"
+                  disabled={processingBiometricFiles || processingGeneratedPayroll}
+                  onChange={handlePayrollBiometricFileChange}
+                />
+                <UploadCloud size={44} strokeWidth={1.8} className="text-[color:var(--ui-accent)]" aria-hidden="true" />
+                <p className="m-0 mt-2 text-lg font-bold text-[color:var(--ui-accent)]">
+                  {processingBiometricFiles
+                    ? "Validating biometric files..."
+                    : payrollBiometricDragActive
+                      ? "Drop biometric files here"
+                      : "Upload Biometric .dat File"}
+                </p>
+                <p id="payrollBiometricFileHint" className="m-0 mt-1 text-sm text-slate-500">
+                  Drag and drop or click to browse · DAT files only · Maximum {ATTENDANCE_DAT_MB_LIMIT} MB
+                </p>
+                <span className="mt-3 inline-flex min-h-9 items-center justify-center rounded-lg border border-[color:var(--ui-accent)] bg-[color:var(--ui-accent)] px-5 text-sm font-semibold text-[color:var(--ui-on-accent)] transition group-hover:bg-[color:var(--ui-accent-hover)]">
+                  Select Files
+                </span>
+              </label>
+
+              {payrollBiometricFileError ? (
+                <div
+                  id="payrollBiometricFileError"
+                  role="alert"
+                  className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700"
+                >
+                  {payrollBiometricFileError}
+                </div>
+              ) : null}
+
+              {payrollBiometricFiles.length > 0 ? (
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                  <p className="m-0 px-4 pb-2 pt-3 text-sm font-semibold text-slate-800">Uploaded Files</p>
+                  <div className="grid grid-cols-[minmax(0,1fr)_110px_90px_36px] items-center gap-3 border-y border-slate-200 bg-slate-50 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <span>File Name</span>
+                    <span>Pay Period</span>
+                    <span>Status</span>
+                    <span className="sr-only">Actions</span>
+                  </div>
+                  {payrollBiometricFiles.map((file) => (
+                    <div
+                      key={file.id}
+                      className="grid grid-cols-[minmax(0,1fr)_110px_90px_36px] items-center gap-3 border-b border-slate-100 px-4 py-2.5 text-sm last:border-b-0"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <CheckCircle2 size={22} className="shrink-0 text-emerald-600" aria-hidden="true" />
+                        <div className="min-w-0">
+                          <p className="m-0 truncate font-medium text-slate-800" title={file.name}>{file.name}</p>
+                          <p className="m-0 mt-0.5 text-xs text-slate-500">
+                            {formatAttendanceFileSize(file.size)} · {numberFormatter.format(file.rowCount)} rows
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${
+                        requiredPayrollBiometricPeriods.includes(file.payPeriod)
+                          ? "bg-[color:var(--ui-accent-tint)] text-[color:var(--ui-accent)]"
+                          : "bg-slate-100 text-slate-600"
+                      }`}>
+                        {file.payPeriod}
+                      </span>
+                      <span className="font-medium text-emerald-600">{file.status}</span>
+                      <button
+                        type="button"
+                        onClick={() => removePayrollBiometricFile(file.id)}
+                        disabled={processingGeneratedPayroll}
+                        className="grid h-8 w-8 place-items-center rounded-lg border-0 bg-transparent text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label={`Remove ${file.name}`}
+                        title={`Remove ${file.name}`}
+                      >
+                        <X size={18} aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="flex items-start gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+                <Info size={20} className="mt-0.5 shrink-0 text-sky-600" aria-hidden="true" />
+                <p className="m-0 leading-5">
+                  The system identifies the 1st Half or 2nd Half from the attendance dates. A full-month DAT file is split into both halves automatically. Monthly payroll requires attendance for both halves.
+                  {generatedPayroll.payPeriod
+                    ? ` Only the file${generatedPayroll.payPeriod === "Monthly" ? "s" : ""} required for ${generatedPayroll.payPeriod} will be imported.`
+                    : " Select a pay period above to see which file is required."}
+                </p>
+              </div>
+            </section>
+          ) : null}
+
+          {/* No division picker: one run covers every division and becomes a single register. */}
+          <div className="grid gap-3 md:grid-cols-2 md:items-end">
+            <div>
+              <p id="generatedPayrollEmploymentTypeLabel" className="mb-1.5 text-sm font-semibold text-slate-700">
+                Employment Type<RequiredFieldMarker />
+              </p>
+              <div
+                role="group"
+                aria-labelledby="generatedPayrollEmploymentTypeLabel"
+                className={`grid gap-2 ${generatedEmploymentTypeOptions.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}
+              >
+                {generatedEmploymentTypeOptions.map((type) => {
+                  const active = generatedPayroll.employmentType === type;
+
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => handleGeneratedEmploymentTypeChange(type)}
+                      className={`min-h-[40px] rounded-xl border px-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-red-100 ${
+                        active
+                          ? "border-[#D61E1E] bg-[#D61E1E] text-white shadow-sm"
+                          : "border-slate-200 bg-white text-slate-700 hover:border-[#d9a3a3] hover:bg-[#fff5f5] hover:text-[#D61E1E]"
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <InputField
               label=""
               name="generatedPayrollSearch"
               value={generatedPayroll.search}
               onChange={(event) => setGeneratedPayroll((current) => ({ ...current, search: event.target.value }))}
               placeholder="Search employees"
+              aria-label="Search employees"
               icon={Search}
             />
           </div>
@@ -5857,15 +6104,13 @@ export default function PayrollManagementWorkspace({
                   <p className="m-0 font-semibold text-slate-600">
                     {generatedPayroll.employmentType
                       ? `No ${generatedPayroll.employmentType} employees found.`
-                      : generatedEmploymentTypeOptions.length === 1
-                        ? `No ${generatedEmploymentTypeOptions[0]} employees found.`
-                        : "No employees found for this filter."}
+                      : "Select an employment type to show eligible employees."}
                   </p>
-                  {generatedPayroll.employmentType || generatedEmploymentTypeOptions.length === 1 ? (
+                  {generatedPayroll.employmentType ? (
                     <p className="m-0 mt-1 text-xs text-slate-500">
                       {generatedPayroll.payrollType} can only be processed for employees whose record
-                      is set to {generatedPayroll.employmentType || generatedEmploymentTypeOptions[0]}.
-                      Clear the filter or update the employment status in Employee Management.
+                      is set to {generatedPayroll.employmentType}. Check the search filter, or
+                      update the employment status in Employee Management.
                     </p>
                   ) : null}
                 </div>
@@ -5888,7 +6133,7 @@ export default function PayrollManagementWorkspace({
             {numberFormatter.format(selectedGeneratedEmployeeIds.length)} selected
           </p>
 
-          {selectedGeneratedEmployeeIds.length > 0 ? (
+          {!requiresBiometricAttendance && selectedGeneratedEmployeeIds.length > 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
@@ -5969,9 +6214,6 @@ export default function PayrollManagementWorkspace({
         footerClassName="bg-white"
         footer={(
           <>
-            <Button variant="ghost" onClick={closeFormModal}>
-              Cancel
-            </Button>
             <Button variant="primary" onClick={handleSave} loading={saving}>
               {editingRecord ? "Save Changes" : "Create Payroll"}
             </Button>
@@ -5981,7 +6223,9 @@ export default function PayrollManagementWorkspace({
         <div className="space-y-5">
           <div className="grid gap-4 md:grid-cols-2">
             <div>
-              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Employee *</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">
+                Employee <span className="app-required-marker font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+              </label>
               <EmployeeSearchSelect
                 employeeOptions={employeeOptions}
                 selectedEmployee={
@@ -5991,7 +6235,7 @@ export default function PayrollManagementWorkspace({
                       employeeRecordId: form.employeeRecordId,
                       employeeId: form.employeeId,
                       employeeName: form.employeeName,
-                      designation: form.designation,
+                      position: form.position,
                       division: form.division,
                       basicSalary: form.basicSalary,
                     }
@@ -6004,14 +6248,16 @@ export default function PayrollManagementWorkspace({
             <InputField
               label="Basic Salary"
               name="basicSalaryPreview"
-              value={form.basicSalary ? formatCurrency(form.basicSalary) : formatCurrency(0)}
+              value={formatCurrency(summary.basicSalary)}
               readOnly
             />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,0.8fr)]">
             <div>
-              <label className="mb-1.5 block text-sm font-semibold text-slate-700">Pay Period *</label>
+              <label className="mb-1.5 block text-sm font-semibold text-slate-700">
+                Pay Period <span className="app-required-marker font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+              </label>
               <div className="flex flex-wrap gap-2">
                 {PAY_PERIOD_OPTIONS.map((period) => {
                   const isSelected = form.payPeriod === period;
@@ -6257,12 +6503,11 @@ export default function PayrollManagementWorkspace({
 
       <PayrollRegistryDetailsModal
         entry={registryDetailEntry}
-        canApprove={canApprovePayroll}
+        canApprove={canApprovePayroll && !isRegistryView}
         canActOnStatus={canActOnStatus}
         canSubmit={canSubmitPayroll}
         canEditRecord={canEditPayrollRecord}
         canMarkPaid={canMarkPayrollPaid}
-        canArchive={canArchivePayroll}
         canExport={canExportPayroll}
         exporting={exportingRegistry}
         actionLoading={registryActionLoading}
@@ -6276,7 +6521,6 @@ export default function PayrollManagementWorkspace({
         onUpdateRecord={handleUpdatePayrollRecord}
         onExport={handleExportRegistryEntry}
         onMarkPaid={handleMarkRegistryPaid}
-        onArchive={openArchiveRegistryConfirmation}
       />
 
       <PayrollDetailDrawer

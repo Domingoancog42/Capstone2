@@ -9,10 +9,18 @@ require_method('POST');
 ensure_user_security_columns($pdo);
 
 $body = read_json_body();
+$action = trim((string)($body['action'] ?? 'reset'));
 $identifier = trim((string)($body['identifier'] ?? ''));
 $code = preg_replace('/\D+/', '', (string)($body['code'] ?? '')) ?? '';
 $password = (string)($body['password'] ?? '');
 $confirmPassword = (string)($body['confirmPassword'] ?? '');
+
+if (!in_array($action, ['reset', 'verify_code'], true)) {
+    json_response([
+        'success' => false,
+        'message' => 'Unsupported password reset action.',
+    ], 400);
+}
 
 if ($identifier === '') {
     json_response([
@@ -30,11 +38,74 @@ if (strlen($code) !== 6) {
 
 /*
  * A reset code is six digits and lives for minutes, which is short enough to matter and not short
- * enough to be safe: a million guesses is a few seconds of scripted requests. Counted per IP address
- * rather than per account so that a client cannot start over by naming a different user, and only
- * once the submission is well-formed, so a typo in the form is never what spends the budget.
+ * enough to be safe: a million guesses is a few seconds of scripted requests. Each reset identity
+ * has its own counter so one employee cannot exhaust another employee's attempts on a shared office
+ * network. It is counted only once the submission is well-formed, so a typo never spends the budget.
  */
-throttle_password_reset($pdo);
+throttle_password_reset($pdo, $identifier);
+
+/**
+ * Validate a reset code without consuming it.
+ *
+ * The same helper is used by the verification step and the final reset so revealing the password
+ * fields in the browser never becomes the security boundary. The final request must still prove it
+ * has the valid code, even if somebody skips or modifies the browser UI.
+ */
+function require_valid_password_reset_code(PDO $pdo, string $identifier, string $code): array
+{
+    $account = find_user_by_reset_identifier($pdo, $identifier);
+
+    if (!$account) {
+        json_response([
+            'success' => false,
+            'message' => 'Invalid or expired code.',
+            'codeInvalid' => true,
+        ], 422);
+    }
+
+    $attempt = verify_password_reset_code((int)$account['id'], $code);
+
+    if (!$attempt['ok']) {
+        if ($attempt['exhausted']) {
+            write_auth_audit(
+                $pdo,
+                null,
+                'password_reset.code_exhausted',
+                sprintf(
+                    'A password reset code for %s was destroyed after %d incorrect attempts from client address %s.',
+                    (string)$account['username'],
+                    PASSWORD_RESET_MAX_ATTEMPTS,
+                    (string)(client_ip_address() ?? 'unknown')
+                ),
+                ['userId' => (int)$account['id']]
+            );
+
+            json_response([
+                'success' => false,
+                'message' => 'Too many incorrect codes. Request a new reset code and try again.',
+                'codeExhausted' => true,
+                'codeInvalid' => true,
+            ], 422);
+        }
+
+        json_response([
+            'success' => false,
+            'message' => 'Invalid or expired code.',
+            'codeInvalid' => true,
+        ], 422);
+    }
+
+    return $account;
+}
+
+if ($action === 'verify_code') {
+    require_valid_password_reset_code($pdo, $identifier, $code);
+
+    json_response([
+        'success' => true,
+        'message' => 'Code verified. Create your new password.',
+    ]);
+}
 
 $passwordLengthError = password_length_error($pdo, $password, 6);
 
@@ -52,15 +123,6 @@ if ($password !== $confirmPassword) {
     ], 422);
 }
 
-$account = find_user_by_reset_identifier($pdo, $identifier);
-
-if (!$account) {
-    json_response([
-        'success' => false,
-        'message' => 'Invalid or expired code.',
-    ], 422);
-}
-
 /*
  * The guess itself, which is also where the per-code budget is spent. See PASSWORD_RESET_MAX_ATTEMPTS
  * in password-reset-utils.php for why a per-IP throttle alone was not enough to sit in front of a
@@ -70,35 +132,7 @@ if (!$account) {
  * code" from "no code outstanding for this user", would put back the enumeration oracle that
  * forgot_password.php was just closed against.
  */
-$attempt = verify_password_reset_code((int)$account['id'], $code);
-
-if (!$attempt['ok']) {
-    if ($attempt['exhausted']) {
-        write_auth_audit(
-            $pdo,
-            null,
-            'password_reset.code_exhausted',
-            sprintf(
-                'A password reset code for %s was destroyed after %d incorrect attempts from client address %s.',
-                (string)$account['username'],
-                PASSWORD_RESET_MAX_ATTEMPTS,
-                (string)(client_ip_address() ?? 'unknown')
-            ),
-            ['userId' => (int)$account['id']]
-        );
-
-        json_response([
-            'success' => false,
-            'message' => 'Too many incorrect codes. Request a new reset code and try again.',
-            'codeExhausted' => true,
-        ], 422);
-    }
-
-    json_response([
-        'success' => false,
-        'message' => 'Invalid or expired code.',
-    ], 422);
-}
+$account = require_valid_password_reset_code($pdo, $identifier, $code);
 
 /*
  * A reset that accepts the password already on the account is not a reset. The two signed-in change

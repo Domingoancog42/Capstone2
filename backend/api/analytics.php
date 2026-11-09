@@ -19,9 +19,20 @@ function analytics_table_exists(PDO $pdo, string $table): bool
     return function_exists('database_table_exists') && database_table_exists($pdo, $table);
 }
 
+/**
+ * The division every figure on the dashboard is counted within, or null for a role that reads the
+ * whole organization. A chief and a planning officer answer for one division, so theirs narrows to
+ * it. HR Staff, the Regional Director, Admin, and the HR Head use organization-wide dashboard
+ * figures, matching the "All Divisions / Organization-wide access" shown in their welcome card.
+ *
+ * Mirrors ANALYTICS_DIVISION_SCOPED_ROLE_KEYS in RoleAnalyticsOverview.jsx, which narrows the
+ * client-side lists the same panel draws from.
+ */
+const ANALYTICS_DIVISION_SCOPED_ROLES = ['chief', 'planningofficer'];
+
 function analytics_scope_division_id(PDO $pdo, array $user, string $roleKey): ?int
 {
-    if (!in_array($roleKey, ['regionaldirector', 'chief', 'planningofficer'], true)) {
+    if (!in_array($roleKey, ANALYTICS_DIVISION_SCOPED_ROLES, true)) {
         return null;
     }
 
@@ -520,7 +531,7 @@ function get_leave_utilization(PDO $pdo, ?int $divisionId): array
 
 function get_payroll_summary(PDO $pdo, ?int $divisionId): array
 {
-    if (($empty = analytics_empty_for_missing_tables($pdo, ['Payroll'], [])) !== null) {
+    if (($empty = analytics_empty_for_missing_tables($pdo, ['payroll'], [])) !== null) {
         return $empty;
     }
 
@@ -536,7 +547,7 @@ function get_payroll_summary(PDO $pdo, ?int $divisionId): array
             ROUND(COALESCE(SUM(p.total_deduction), 0), 2) AS total_deductions,
             ROUND(COALESCE(SUM(p.net_pay), 0), 2) AS total_net_pay,
             DATE_FORMAT(p.payroll_date, "%M %Y") AS period
-         FROM Payroll p
+         FROM payroll p
          LEFT JOIN employees e ON e.id = p.employee_id
          WHERE YEAR(p.payroll_date) = YEAR(CURDATE())
            AND MONTH(p.payroll_date) = MONTH(CURDATE())
@@ -612,7 +623,244 @@ function get_average_age(PDO $pdo, ?int $divisionId): float
     return (float)$statement->fetchColumn();
 }
 
-function analytics_payload(PDO $pdo, ?int $divisionId): array
+/**
+ * Monthly final-rating averages for the two Performance Management forms.
+ *
+ * IPCR belongs to an explicit review period, so its month is the period end. OPCR's free-text
+ * period cannot be grouped safely, so its month is the date the rating was submitted (falling back
+ * to its last saved date for legacy rows). Missing months stay null rather than becoming invented
+ * zero ratings, and division-scoped dashboard roles see only their own division's records.
+ */
+function get_performance_employee_records(PDO $pdo, ?int $divisionId, int $year): array
+{
+    if ($divisionId !== null && $divisionId <= 0) {
+        return [];
+    }
+    $records = [];
+    foreach (['ipcr', 'opcr'] as $type) {
+        $table = $type === 'ipcr' ? 'ipcr' : 'division_opcr_assignments';
+        if (!analytics_table_exists($pdo, $table) || !analytics_table_exists($pdo, 'employees')) {
+            continue;
+        }
+        $date = $type === 'ipcr' ? 'r.period_to' : 'COALESCE(r.submitted_at, r.updated_at, r.created_at)';
+        $id = $type === 'ipcr' ? 'r.ipcr_id' : 'r.assignment_id';
+        $department = $type === 'ipcr' ? "COALESCE(d.name, 'Unassigned')" : 'r.division';
+        $scope = $divisionId === null ? '' : ' AND e.division_id = :division_id';
+        if ($type === 'opcr' && $divisionId !== null) {
+            $scope = ' AND EXISTS (SELECT 1 FROM divisions scoped_division
+                WHERE scoped_division.id = :division_id AND scoped_division.is_archived = 0
+                AND (LOWER(TRIM(scoped_division.name)) = LOWER(TRIM(r.division))
+                    OR LOWER(TRIM(scoped_division.code)) = LOWER(TRIM(r.division))))';
+        }
+        $statement = $pdo->prepare("SELECT $id AS record_id, e.id AS employee_id,
+            e.employee_id AS employee_code, TRIM(CONCAT(e.first_name, ' ', e.last_name)) AS employee_name,
+            $department AS department, $date AS record_date,
+            COALESCE(NULLIF(r.a4_rating, 0), NULLIF(r.final_rating, 0)) AS rating
+            FROM $table r INNER JOIN employees e ON e.id = r.employee_id
+            LEFT JOIN divisions d ON d.id = e.division_id
+            WHERE r.is_archived = 0 AND e.is_archived = 0
+            AND $date >= :year_start AND $date < :next_year_start $scope
+            ORDER BY e.last_name, e.first_name, $date DESC");
+        $params = [':year_start' => "$year-01-01", ':next_year_start' => ($year + 1) . '-01-01'];
+        if ($divisionId !== null) {
+            $params[':division_id'] = $divisionId;
+        }
+        $statement->execute($params);
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $row['type'] = strtoupper($type);
+            $row['rating'] = $row['rating'] === null ? null : (float)$row['rating'];
+            $records[] = $row;
+        }
+    }
+    return $records;
+}
+
+function get_performance_management_analytics(
+    PDO $pdo,
+    ?int $divisionId,
+    int $year,
+    bool $allowLatestYearFallback = true
+): array
+{
+    $points = [];
+
+    for ($month = 1; $month <= 12; $month++) {
+        $points[$month] = [
+            'label' => date('M', mktime(0, 0, 0, $month, 1, $year)),
+            'month' => $month,
+            'ipcr' => null,
+            'opcr' => null,
+            'ipcr_evaluations' => 0,
+            'opcr_evaluations' => 0,
+        ];
+    }
+
+    $ipcrEvaluations = 0;
+    $opcrEvaluations = 0;
+
+    if ($divisionId !== null && $divisionId <= 0) {
+        return [
+            'year' => $year,
+            'points' => array_values($points),
+            'ipcr_evaluations' => 0,
+            'opcr_evaluations' => 0,
+        ];
+    }
+
+    $applyMonthlyRatings = static function (array &$target, string $series, array $rows): int {
+        $total = 0;
+
+        foreach ($rows as $row) {
+            $month = (int)($row['month_number'] ?? 0);
+            if (!isset($target[$month])) {
+                continue;
+            }
+
+            $target[$month][$series] = $row['average_rating'] === null
+                ? null
+                : (float)$row['average_rating'];
+            $evaluations = (int)($row['evaluations'] ?? 0);
+            $target[$month][$series . '_evaluations'] = $evaluations;
+            $total += $evaluations;
+        }
+
+        return $total;
+    };
+
+    $yearStart = sprintf('%d-01-01', $year);
+    $nextYearStart = sprintf('%d-01-01', $year + 1);
+
+    if (analytics_table_exists($pdo, 'ipcr') && analytics_table_exists($pdo, 'employees')) {
+        $scope = $divisionId !== null ? ' AND e.division_id = :division_id' : '';
+        $statement = $pdo->prepare(
+            'SELECT
+                MONTH(i.period_to) AS month_number,
+                ROUND(AVG(COALESCE(NULLIF(i.a4_rating, 0), NULLIF(i.final_rating, 0))), 2) AS average_rating,
+                COUNT(i.ipcr_id) AS evaluations
+             FROM ipcr i
+             INNER JOIN employees e ON e.id = i.employee_id
+             WHERE i.is_archived = 0
+               AND e.is_archived = 0
+               AND i.period_to >= :year_start
+               AND i.period_to < :next_year_start
+               AND COALESCE(NULLIF(i.a4_rating, 0), NULLIF(i.final_rating, 0)) IS NOT NULL' . $scope . '
+             GROUP BY MONTH(i.period_to)
+             ORDER BY month_number ASC'
+        );
+        $params = [
+            ':year_start' => $yearStart,
+            ':next_year_start' => $nextYearStart,
+        ];
+        if ($divisionId !== null) {
+            $params[':division_id'] = $divisionId;
+        }
+        $statement->execute($params);
+        $ipcrEvaluations = $applyMonthlyRatings($points, 'ipcr', $statement->fetchAll());
+    }
+
+    if (
+        analytics_table_exists($pdo, 'division_opcr_assignments')
+        && ($divisionId === null || analytics_table_exists($pdo, 'divisions'))
+    ) {
+        $join = '';
+        $scope = '';
+        $params = [
+            ':year_start' => $yearStart,
+            ':next_year_start' => $nextYearStart,
+        ];
+
+        if ($divisionId !== null) {
+            $join = ' INNER JOIN divisions d
+                ON LOWER(TRIM(d.name)) = LOWER(TRIM(doa.division))
+                OR LOWER(TRIM(d.code)) = LOWER(TRIM(doa.division))';
+            $scope = ' AND d.is_archived = 0 AND d.id = :division_id';
+            $params[':division_id'] = $divisionId;
+        }
+
+        $statement = $pdo->prepare(
+            'SELECT
+                MONTH(COALESCE(doa.submitted_at, doa.updated_at, doa.created_at)) AS month_number,
+                ROUND(AVG(COALESCE(NULLIF(doa.a4_rating, 0), NULLIF(doa.final_rating, 0))), 2) AS average_rating,
+                COUNT(doa.assignment_id) AS evaluations
+             FROM division_opcr_assignments doa' . $join . '
+             WHERE doa.is_archived = 0
+               AND COALESCE(doa.submitted_at, doa.updated_at, doa.created_at) >= :year_start
+               AND COALESCE(doa.submitted_at, doa.updated_at, doa.created_at) < :next_year_start
+               AND COALESCE(NULLIF(doa.a4_rating, 0), NULLIF(doa.final_rating, 0)) IS NOT NULL' . $scope . '
+             GROUP BY MONTH(COALESCE(doa.submitted_at, doa.updated_at, doa.created_at))
+             ORDER BY month_number ASC'
+        );
+        $statement->execute($params);
+        $opcrEvaluations = $applyMonthlyRatings($points, 'opcr', $statement->fetchAll());
+    }
+
+    // The dashboard year selector normally follows the current year. Historical source forms may
+    // not have a rating in that year, so show the latest real performance period instead of an
+    // empty chart. An explicitly selected year that contains ratings is always kept.
+    if ($allowLatestYearFallback && $ipcrEvaluations === 0 && $opcrEvaluations === 0) {
+        $availableYears = [];
+
+        if (analytics_table_exists($pdo, 'ipcr') && analytics_table_exists($pdo, 'employees')) {
+            $scope = $divisionId !== null ? ' AND e.division_id = :division_id' : '';
+            $statement = $pdo->prepare(
+                'SELECT MAX(YEAR(i.period_to))
+                 FROM ipcr i
+                 INNER JOIN employees e ON e.id = i.employee_id
+                 WHERE i.is_archived = 0
+                   AND e.is_archived = 0
+                   AND COALESCE(NULLIF(i.a4_rating, 0), NULLIF(i.final_rating, 0)) IS NOT NULL' . $scope
+            );
+            $statement->execute($divisionId !== null ? [':division_id' => $divisionId] : []);
+            $latestIpcrYear = (int)$statement->fetchColumn();
+            if ($latestIpcrYear > 0) {
+                $availableYears[] = $latestIpcrYear;
+            }
+        }
+
+        if (
+            analytics_table_exists($pdo, 'division_opcr_assignments')
+            && ($divisionId === null || analytics_table_exists($pdo, 'divisions'))
+        ) {
+            $join = '';
+            $scope = '';
+            $params = [];
+            if ($divisionId !== null) {
+                $join = ' INNER JOIN divisions d
+                    ON LOWER(TRIM(d.name)) = LOWER(TRIM(doa.division))
+                    OR LOWER(TRIM(d.code)) = LOWER(TRIM(doa.division))';
+                $scope = ' AND d.is_archived = 0 AND d.id = :division_id';
+                $params[':division_id'] = $divisionId;
+            }
+
+            $statement = $pdo->prepare(
+                'SELECT MAX(YEAR(COALESCE(doa.submitted_at, doa.updated_at, doa.created_at)))
+                 FROM division_opcr_assignments doa' . $join . '
+                 WHERE doa.is_archived = 0
+                   AND COALESCE(NULLIF(doa.a4_rating, 0), NULLIF(doa.final_rating, 0)) IS NOT NULL' . $scope
+            );
+            $statement->execute($params);
+            $latestOpcrYear = (int)$statement->fetchColumn();
+            if ($latestOpcrYear > 0) {
+                $availableYears[] = $latestOpcrYear;
+            }
+        }
+
+        $latestYear = $availableYears === [] ? 0 : max($availableYears);
+        if ($latestYear > 0 && $latestYear !== $year) {
+            return get_performance_management_analytics($pdo, $divisionId, $latestYear, false);
+        }
+    }
+
+    return [
+        'year' => $year,
+        'points' => array_values($points),
+        'ipcr_evaluations' => $ipcrEvaluations,
+        'opcr_evaluations' => $opcrEvaluations,
+        'employee_records' => get_performance_employee_records($pdo, $divisionId, $year),
+    ];
+}
+
+function analytics_payload(PDO $pdo, ?int $divisionId, int $year): array
 {
     return [
         'role_distribution' => get_role_distribution($pdo, $divisionId),
@@ -622,6 +870,7 @@ function analytics_payload(PDO $pdo, ?int $divisionId): array
         'pwd_summary' => get_pwd_summary($pdo, $divisionId),
         'gender_distribution' => get_gender_distribution($pdo, $divisionId),
         'gender_by_division' => get_gender_distribution_by_division($pdo, $divisionId),
+        'performance_management' => get_performance_management_analytics($pdo, $divisionId, $year),
         'senior_citizen' => get_senior_citizen_distribution($pdo, $divisionId),
         'age_group' => get_age_group_distribution($pdo, $divisionId),
         'department_headcount' => get_department_headcount($pdo, $divisionId),
@@ -638,7 +887,7 @@ function analytics_payload(PDO $pdo, ?int $divisionId): array
  * registries.  Keeping this deliberately to aggregate/card data prevents the dashboard from
  * downloading every historical row simply to display a handful of totals and charts.
  */
-function analytics_dashboard_cards_payload(PDO $pdo, ?int $divisionId): array
+function analytics_dashboard_cards_payload(PDO $pdo, ?int $divisionId, int $year): array
 {
     return [
         'role_distribution' => get_role_distribution($pdo, $divisionId),
@@ -648,6 +897,7 @@ function analytics_dashboard_cards_payload(PDO $pdo, ?int $divisionId): array
         'pwd_summary' => get_pwd_summary($pdo, $divisionId),
         'gender_distribution' => get_gender_distribution($pdo, $divisionId),
         'gender_by_division' => get_gender_distribution_by_division($pdo, $divisionId),
+        'performance_management' => get_performance_management_analytics($pdo, $divisionId, $year),
         'senior_citizen' => get_senior_citizen_distribution($pdo, $divisionId),
         'age_group' => get_age_group_distribution($pdo, $divisionId),
         'total_employees' => get_total_employees($pdo, $divisionId),
@@ -743,7 +993,7 @@ function get_dashboard_payroll_expense_trend(PDO $pdo, ?int $divisionId, int $ye
 {
     $months = analytics_dashboard_months($year, 'expense');
 
-    if (!analytics_table_exists($pdo, 'Payroll') || ($divisionId !== null && $divisionId <= 0)) {
+    if (!analytics_table_exists($pdo, 'payroll') || ($divisionId !== null && $divisionId <= 0)) {
         return array_values($months);
     }
 
@@ -751,7 +1001,7 @@ function get_dashboard_payroll_expense_trend(PDO $pdo, ?int $divisionId, int $ye
     $statement = $pdo->prepare(
         'SELECT MONTH(p.payroll_date) AS month_number,
                 ROUND(COALESCE(SUM(COALESCE(p.net_pay, p.gross_pay, 0)), 0), 2) AS expense
-         FROM Payroll p
+         FROM payroll p
          INNER JOIN employees e ON e.id = p.employee_id
          WHERE p.payroll_date >= :year_start
            AND p.payroll_date < :next_year_start
@@ -835,7 +1085,7 @@ function get_dashboard_request_summary(PDO $pdo, ?int $divisionId): array
          LEFT JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
          WHERE lr.is_archived = 0
            AND leave_employee.is_archived = 0
-           AND LOWER(lr.status) IN ("pending", "reviewed", "approved")' . $leaveScope . '
+           AND LOWER(lr.status) IN ("pending", "endorsed", "reviewed", "approved")' . $leaveScope . '
         UNION ALL
         SELECT
             "travel" AS request_type,
@@ -855,7 +1105,7 @@ function get_dashboard_request_summary(PDO $pdo, ?int $divisionId): array
          LEFT JOIN divisions travel_division ON travel_division.id = travel_employee.division_id
          WHERE t.is_archived = 0
            AND travel_employee.is_archived = 0
-           AND LOWER(t.status) IN ("pending", "reviewed", "approved")' . $travelScope . '
+           AND LOWER(t.status) IN ("pending", "reviewed", "chief_reviewed", "approved")' . $travelScope . '
         UNION ALL
         SELECT
             "compensatory" AS request_type,
@@ -972,7 +1222,7 @@ function get_dashboard_recent_activity(PDO $pdo, ?int $divisionId): array
            AND leave_employee.is_archived = 0' . $scopeFor('leave', 'leave_employee');
     }
 
-    if (analytics_table_exists($pdo, 'Payroll')) {
+    if (analytics_table_exists($pdo, 'payroll')) {
         $sections[] = 'SELECT
             "Payroll" AS source,
             CONCAT("payroll-", p.payroll_id) AS event_id,
@@ -981,7 +1231,7 @@ function get_dashboard_recent_activity(PDO $pdo, ?int $divisionId): array
             p.payroll_date AS event_at,
             COALESCE(payroll_division.name, "") AS detail,
             COALESCE(p.net_pay, 0) AS amount
-         FROM Payroll p
+         FROM payroll p
          INNER JOIN employees payroll_employee ON payroll_employee.id = p.employee_id
          LEFT JOIN divisions payroll_division ON payroll_division.id = payroll_employee.division_id
          WHERE COALESCE(p.status, "") <> "Archived"
@@ -1007,11 +1257,20 @@ function get_dashboard_recent_activity(PDO $pdo, ?int $divisionId): array
 
     if (analytics_table_exists($pdo, 'pass_slip')) {
         ensure_archive_columns($pdo, 'pass_slip');
+        /*
+         * Blank until the QR workflow gave a pass slip a status worth reporting here. Read through a
+         * column check rather than assumed, because this file never runs the pass slip migration --
+         * a dashboard opened before anyone touched the module would otherwise query a column that
+         * pass_slip.php has not created yet.
+         */
+        $passSlipStatus = database_column_exists($pdo, 'pass_slip', 'status')
+            ? 'COALESCE(ps.status, "")'
+            : '""';
         $sections[] = 'SELECT
             "Pass Slip" AS source,
             CONCAT("pass-slip-", ps.id) AS event_id,
             TRIM(CONCAT(pass_employee.first_name, " ", COALESCE(pass_employee.middle_name, ""), " ", pass_employee.last_name)) AS employee_name,
-            "" AS status,
+            ' . $passSlipStatus . ' AS status,
             ps.updated_at AS event_at,
             COALESCE(pass_division.name, ps.destination, "") AS detail,
             0 AS amount
@@ -1050,7 +1309,7 @@ function get_dashboard_recent_activity(PDO $pdo, ?int $divisionId): array
 function analytics_dashboard_payload(PDO $pdo, ?int $divisionId, int $year): array
 {
     return [
-        'analytics' => analytics_dashboard_cards_payload($pdo, $divisionId),
+        'analytics' => analytics_dashboard_cards_payload($pdo, $divisionId, $year),
         'overview' => [
             'divisions' => get_dashboard_division_summary($pdo, $divisionId),
             'headcount_growth' => get_dashboard_headcount_growth($pdo, $divisionId, $year),
@@ -1079,6 +1338,7 @@ try {
         'attendance_trend' => ['data' => get_attendance_trend($pdo, $divisionId, (int)($_GET['days'] ?? 30))],
         'pwd_distribution' => ['data' => get_pwd_distribution($pdo, $divisionId), 'summary' => get_pwd_summary($pdo, $divisionId)],
         'gender_distribution' => ['data' => get_gender_distribution($pdo, $divisionId)],
+        'performance_management' => ['data' => get_performance_management_analytics($pdo, $divisionId, $dashboardYear)],
         'senior_citizen' => ['data' => get_senior_citizen_distribution($pdo, $divisionId)],
         'age_group' => ['data' => get_age_group_distribution($pdo, $divisionId)],
         'department_headcount' => ['data' => get_department_headcount($pdo, $divisionId)],
@@ -1098,7 +1358,7 @@ try {
             ],
         ],
         default => [
-            'data' => analytics_payload($pdo, $divisionId),
+            'data' => analytics_payload($pdo, $divisionId, $dashboardYear),
             'timestamp' => date('Y-m-d H:i:s'),
         ],
     };

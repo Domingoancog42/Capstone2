@@ -11,56 +11,16 @@ import Card, {
 } from "../../components/UI/card";
 import Modal from "../../components/UI/modal";
 import Table from "../../components/UI/table";
+import TeamEmployeeProfile, {
+  formatTeamDate,
+  resolveEmployeeInitials,
+} from "../../components/employee/TeamEmployeeProfile";
 import { getEmployees } from "../../services/api";
+import { designationsForDivision, useOrganizationFilterOptions } from "../../hooks/useFilterOptions";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 
 function normalizeTeamText(value) {
   return String(value || "").trim().toLowerCase();
-}
-
-function resolveEmployeeInitials(employee) {
-  const parts = String(employee?.fullName || "").trim().split(/\s+/).filter(Boolean);
-
-  if (parts.length === 0) {
-    return "E";
-  }
-
-  return parts.slice(0, 2).map((part) => part[0] || "").join("").toUpperCase();
-}
-
-function formatTeamDate(value) {
-  if (!value) {
-    return "N/A";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "N/A";
-  }
-
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-  }).format(date);
-}
-
-/* The roster carries the address in four columns; the profile reads better as one line. */
-function formatTeamAddress(employee) {
-  const parts = [employee?.address, employee?.city, employee?.province, employee?.zipCode]
-    .map((part) => String(part || "").trim())
-    .filter(Boolean);
-
-  return parts.join(", ");
-}
-
-function TeamProfileField({ label, value }) {
-  return (
-    <div>
-      <dt className="m-0 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">{label}</dt>
-      <dd className="m-0 mt-0.5 text-sm text-slate-900">{value || "N/A"}</dd>
-    </div>
-  );
 }
 
 function isCurrentChiefEmployee(employee, user) {
@@ -75,11 +35,30 @@ function isCurrentChiefEmployee(employee, user) {
   );
 }
 
+/**
+ * The people a chief's desk covers: the staff of the chief's own division, without the chief.
+ * Shared by the team roster and the IPCR assignment desk so the two never disagree on who is in
+ * the division. An unknown division scopes to nobody rather than to everybody.
+ */
+export function scopeEmployeesToChiefDivision(employees, user) {
+  const divisionKey = normalizeTeamText(user?.division);
+
+  if (!divisionKey) {
+    return [];
+  }
+
+  return (employees || [])
+    .filter((employee) => normalizeTeamText(employee.department || employee.division) === divisionKey)
+    .filter((employee) => !isCurrentChiefEmployee(employee, user))
+    .sort((left, right) => String(left.fullName || "").localeCompare(String(right.fullName || "")));
+}
+
 export default function TeamOverview({ user }) {
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [query, setQuery] = useState("");
+  const [designation, setDesignation] = useState("");
   const [viewingEmployee, setViewingEmployee] = useState(null);
 
   useEffect(() => {
@@ -116,52 +95,44 @@ export default function TeamOverview({ user }) {
   }, []);
 
   const divisionName = String(user?.division || "").trim();
-  const scopedEmployees = useMemo(() => {
-    const divisionKey = normalizeTeamText(divisionName);
+  const scopedEmployees = useMemo(() => scopeEmployeesToChiefDivision(employees, user), [employees, user]);
 
-    if (!divisionKey) {
-      return [];
-    }
-
-    return employees
-      .filter((employee) => normalizeTeamText(employee.department || employee.division) === divisionKey)
-      .filter((employee) => !isCurrentChiefEmployee(employee, user))
-      .sort((left, right) => String(left.fullName || "").localeCompare(String(right.fullName || "")));
-  }, [divisionName, employees, user]);
+  /* This division's positions from the position catalog, not the titles held on the rows. */
+  const { designationRecords } = useOrganizationFilterOptions();
+  const designationOptions = useMemo(
+    () => (divisionName ? designationsForDivision(designationRecords, divisionName) : []),
+    [designationRecords, divisionName]
+  );
 
   const filteredEmployees = useMemo(() => {
     const search = normalizeTeamText(query);
+    const designationKey = normalizeTeamText(designation);
 
-    if (!search) {
-      return scopedEmployees;
-    }
+    return scopedEmployees.filter((employee) => {
+      if (designationKey && normalizeTeamText(employee.position) !== designationKey) {
+        return false;
+      }
 
-    /* Only the columns still on screen — searching a removed column returns rows with no
-     * visible reason for matching. */
-    return scopedEmployees.filter((employee) => (
-      [
+      if (!search) {
+        return true;
+      }
+
+      /* Only the columns still on screen — searching a removed column returns rows with no
+       * visible reason for matching. */
+      return [
         employee.fullName,
         employee.position,
+        employee.designation,
         employee.employmentStatus,
         employee.status,
       ]
         .filter(Boolean)
-        .some((value) => normalizeTeamText(value).includes(search))
-    ));
-  }, [query, scopedEmployees]);
+        .some((value) => normalizeTeamText(value).includes(search));
+    });
+  }, [designation, query, scopedEmployees]);
 
   /* `cardRole` lays these columns out as cards below `lg` — see `components/UI/table.jsx`. */
   const columns = useMemo(() => ([
-    {
-      key: "index",
-      header: "#",
-      /* A row number counts positions in a table; on a stack of cards it numbers nothing. */
-      card: false,
-      headerClassName: "w-12",
-      render: (row, index) => (
-        <span className="text-sm tabular-nums text-slate-500">{index + 1}</span>
-      ),
-    },
     {
       key: "employee",
       header: "Employee",
@@ -190,10 +161,15 @@ export default function TeamOverview({ user }) {
       },
     },
     {
-      key: "designation",
-      header: "Designation",
+      key: "position",
+      header: "Position",
       cardRole: "subtitle",
-      render: (row) => row.position || "Unassigned",
+      render: (row) => (
+        <>
+          {row.position || "Unassigned"}
+          {row.designation ? <span className="block text-xs text-slate-500">{row.designation}</span> : null}
+        </>
+      ),
     },
     {
       key: "employmentStatus",
@@ -260,15 +236,32 @@ export default function TeamOverview({ user }) {
             </div>
           ) : null}
 
-          <label className="relative block w-full sm:w-72">
-            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search employee or designation"
-              className="h-9 w-full rounded-2xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-            />
-          </label>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            {/* Focus is shown by the border alone; the accent ring the other inputs wear is left off here. */}
+            <label className="relative block w-full sm:w-72">
+              <span className="sr-only">Search employee or position</span>
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search employee or position"
+                className="h-9 w-full rounded-2xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-slate-400"
+              />
+            </label>
+            <label className="block w-full sm:w-64">
+              <span className="sr-only">Filter by position</span>
+              <select
+                value={designation}
+                onChange={(event) => setDesignation(event.target.value)}
+                className="h-9 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
+              >
+                <option value="">All positions</option>
+                {designationOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </label>
+          </div>
 
           <div className="overflow-hidden rounded-2xl border border-slate-200">
             {loading ? (
@@ -295,11 +288,6 @@ export default function TeamOverview({ user }) {
         </CardContent>
       </Card>
 
-      {/*
-        * A chief reads this to know who is on their team, so it stays to assignment and contact
-        * details. Salary, TIN, GSIS, Pag-IBIG and PhilHealth ride along in the roster payload but
-        * are payroll's business, not a division roster's, so they are left out on purpose.
-        */}
       <Modal
         open={Boolean(viewingEmployee)}
         title="Employee Profile"
@@ -311,48 +299,7 @@ export default function TeamOverview({ user }) {
           </Button>
         )}
       >
-        {viewingEmployee ? (
-          <div className="space-y-5">
-            <div className="flex flex-col items-center gap-3 text-center">
-              <div className="grid h-24 w-24 place-items-center overflow-hidden rounded-full border border-slate-200 bg-teal-600 text-lg font-bold text-white shadow-sm">
-                {resolveBackendAssetUrl(viewingEmployee.profileImage) ? (
-                  <img
-                    src={resolveBackendAssetUrl(viewingEmployee.profileImage)}
-                    alt={viewingEmployee.fullName || "Employee profile"}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <span>{resolveEmployeeInitials(viewingEmployee)}</span>
-                )}
-              </div>
-              <div>
-                <p className="m-0 text-lg font-semibold text-slate-900">
-                  {viewingEmployee.fullName || "Unnamed employee"}
-                </p>
-                <p className="m-0 mt-0.5 text-sm text-slate-500">
-                  {viewingEmployee.position || "Unassigned"}
-                </p>
-              </div>
-            </div>
-
-            <dl className="grid gap-4 sm:grid-cols-2">
-              <TeamProfileField label="Employee ID" value={viewingEmployee.employeeId} />
-              <TeamProfileField label="Division" value={viewingEmployee.department || viewingEmployee.division} />
-              <TeamProfileField label="Designation" value={viewingEmployee.position} />
-              <TeamProfileField label="Employment Status" value={viewingEmployee.employmentStatus} />
-              <TeamProfileField label="Status" value={viewingEmployee.status || "Active"} />
-              <TeamProfileField label="Date Hired" value={formatTeamDate(viewingEmployee.dateHired)} />
-              <TeamProfileField label="Email" value={viewingEmployee.email} />
-              <TeamProfileField label="Phone" value={viewingEmployee.phone} />
-              <TeamProfileField label="Date of Birth" value={formatTeamDate(viewingEmployee.dateOfBirth)} />
-              <TeamProfileField label="Gender" value={viewingEmployee.gender} />
-              <TeamProfileField label="Civil Status" value={viewingEmployee.civilStatus} />
-              <div className="sm:col-span-2">
-                <TeamProfileField label="Address" value={formatTeamAddress(viewingEmployee)} />
-              </div>
-            </dl>
-          </div>
-        ) : null}
+        {viewingEmployee ? <TeamEmployeeProfile employee={viewingEmployee} /> : null}
       </Modal>
     </>
   );

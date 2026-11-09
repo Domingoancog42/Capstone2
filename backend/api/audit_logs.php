@@ -17,9 +17,11 @@ if (user_role_key($sessionUser) !== 'admin') {
 
 $result = paginated_audit_logs($pdo, [
     'search' => $_GET['search'] ?? '',
+    'userId' => $_GET['userId'] ?? ($_GET['user_id'] ?? null),
+    'accountHistory' => $_GET['accountHistory'] ?? ($_GET['account_history'] ?? false),
     'range' => $_GET['range'] ?? '30d',
     'page' => $_GET['page'] ?? 1,
-    'perPage' => $_GET['perPage'] ?? ($_GET['per_page'] ?? 25),
+    'perPage' => $_GET['perPage'] ?? ($_GET['per_page'] ?? 10),
 ]);
 
 // array_merge() rather than unpacking: $result has string keys, and spreading those is PHP 8.1+.

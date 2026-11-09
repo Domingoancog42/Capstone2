@@ -14,6 +14,7 @@ export const AUTH_SESSION_EXPIRED_EVENT = "hris:auth-session-expired";
  * ended instead of dropping the user at the login screen with no explanation.
  */
 export const AUTH_ACCOUNT_INACTIVE_REASON = "account_inactive";
+export const AUTH_SESSION_TIMEOUT_REASON = "session_timeout";
 
 export function getBackendAssetUrl(path = "") {
   const cleanPath = String(path || "").replace(/^\/+/, "");
@@ -36,6 +37,9 @@ const AUTH_EXEMPT_ENDPOINTS = [
   "/captcha.php?purpose=login",
   "/captcha.php?action=verify&purpose=login",
   "/login.php",
+  // The Google credential sign-in. Its 401 is a verdict on the credential or the account -- there is
+  // no session behind it to have expired -- and it is spelled out because "/login.php" does not match it.
+  "/google_login.php",
   // The two login-step actions of two_factor.php, which run for a caller who has no session yet.
   // Listed with their query string for the same substring reason as settings.php below: the third
   // action on that file is the Security tab's personal setting, which DOES need a live session, so
@@ -44,6 +48,9 @@ const AUTH_EXEMPT_ENDPOINTS = [
   "/two_factor.php?action=resend",
   "/forgot_password.php",
   "/reset_password.php",
+  // The QR token itself authorizes one pass-slip departure/return transition. This endpoint never
+  // reads a user session and must not turn an anonymous rejection into a global sign-out event.
+  "/pass_slip_scan.php",
   // The login screen's slice of settings.php, which answers this one section before it asks for a
   // session. Matched by substring, so the query string keeps the rest of settings.php out of this list.
   "/settings.php?section=public",
@@ -51,7 +58,11 @@ const AUTH_EXEMPT_ENDPOINTS = [
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 20000,
+  // Aiven's free-tier database can take tens of seconds for authentication-heavy
+  // requests (login performs several security and audit queries). Keep the client
+  // alive long enough to receive the server's successful response instead of
+  // turning a slow login into a misleading network error.
+  timeout: 90000,
   withCredentials: true,
   headers: {
     "Content-Type": "application/json",
@@ -71,6 +82,9 @@ function notifyNotificationsChangedEvent() {
 let clientHintsPromise = null;
 let csrfToken = "";
 let csrfTokenPromise = null;
+let apiRateLimit = null;
+const sessionRequests = new Map();
+const RATE_LIMIT_RECOVERY_ENDPOINTS = ["settings.php", "logout.php", "csrf.php", "session.php"];
 
 function setCsrfToken(token) {
   csrfToken = String(token || "");
@@ -80,10 +94,17 @@ function setCsrfToken(token) {
 function requestNeedsCsrf(config = {}) {
   const method = String(config.method || "get").toLowerCase();
   const requestUrl = String(config.url || "");
+  // These anonymous writes declare HRIS_CSRF_EXEMPT, so they are not held up waiting for a token
+  // that their endpoint deliberately does not check.
+  const isAnonymousWrite = requestUrl.includes("/login.php")
+    || requestUrl.includes("/google_login.php")
+    || requestUrl.includes("/captcha.php?action=verify&purpose=login")
+    || requestUrl.includes("/pass_slip_scan.php");
 
   return (
     ["post", "put", "patch", "delete"].includes(method)
     && !requestUrl.includes("/csrf.php")
+    && !isAnonymousWrite
   );
 }
 
@@ -126,6 +147,29 @@ function clientHintHeaders() {
 }
 
 api.interceptors.request.use(async (config) => {
+  const script = String(config.url || "").split("?")[0].split("/").pop();
+  if (apiRateLimit && !RATE_LIMIT_RECOVERY_ENDPOINTS.includes(script)) {
+    const retryAfter = Math.ceil((apiRateLimit.retryAt - Date.now()) / 1000);
+    if (retryAfter > 0) {
+      // Let callers display the normal error without sending another request
+      // during the server's account-wide cool-down. Never replay a mutation.
+      const response = {
+        ...apiRateLimit.response,
+        config,
+        headers: { "retry-after": String(retryAfter) },
+        data: {
+          ...apiRateLimit.response.data,
+          retryAfter,
+          message: `Too many requests. Please try again in ${retryAfter} seconds.`,
+        },
+      };
+      const error = new axios.AxiosError(response.data.message, "ERR_BAD_REQUEST", config, null, response);
+      error._rateLimitCooldown = true;
+      throw error;
+    }
+    apiRateLimit = null;
+  }
+
   if (requestNeedsCsrf(config)) {
     const token = await getCsrfToken();
 
@@ -171,8 +215,42 @@ api.interceptors.response.use(
     const requestUrl = String(error?.config?.url || "");
     const isAuthExemptRequest = AUTH_EXEMPT_ENDPOINTS.some((endpoint) => requestUrl.includes(endpoint));
 
+    if (status === 429 && error.response?.data?.rule === "api" && !error._rateLimitCooldown) {
+      const retryHeader = error.response.headers?.["retry-after"];
+      const retryAfter = Number(retryHeader) || Number(error.response.data.retryAfter);
+      if (Number.isFinite(retryAfter) && retryAfter > 0) {
+        apiRateLimit = { retryAt: Date.now() + retryAfter * 1000, response: error.response };
+      }
+    }
+
     if ([401, 419].includes(status)) {
       setCsrfToken("");
+    }
+
+    /*
+     * A 419 is returned by connection-pdo.php before the requested endpoint is allowed to run, so
+     * the mutation has not happened and is safe to retry. Fetch a token for the browser's current
+     * PHP session, replace the stale header, and replay the request once. The flag stays on Axios'
+     * request config; if the cookie/session itself is unusable and the replay also gets a 419, the
+     * ordinary error reaches the screen instead of entering a retry loop.
+     */
+    if (status === 419 && error?.config && error.config._csrfRetry !== true) {
+      const retryConfig = error.config;
+      retryConfig._csrfRetry = true;
+
+      return getCsrfToken().then(
+        (token) => {
+          if (!token) {
+            return Promise.reject(error);
+          }
+
+          retryConfig.headers = retryConfig.headers || {};
+          retryConfig.headers["X-CSRF-Token"] = token;
+
+          return api.request(retryConfig);
+        },
+        () => Promise.reject(error)
+      );
     }
 
     if (
@@ -234,31 +312,60 @@ export const login = async (credentials) => {
   return response.data;
 };
 
+/**
+ * Sign-in with a Google credential: the signed ID token the Identity Services button hands back.
+ * It is carried to the server as-is and verified there, with Google; nothing in this browser reads
+ * it or decides who it belongs to. Answers with the same shape as login() -- `user`, or
+ * `requiresTwoFactor` with a `twoFactor` challenge -- so the login screen follows the same branches.
+ */
+export const googleLogin = async (credential) => {
+  const response = await api.post("/google_login.php", { credential });
+  return response.data;
+};
+
 export const logout = async () => {
   try {
     const response = await api.post("/logout.php");
     return response.data;
   } finally {
     setCsrfToken("");
+    apiRateLimit = null;
   }
 };
 
-export const refreshSession = async () => {
-  const response = await api.get("/session.php");
-  return response.data;
-};
+export const refreshSession = async ({ extend = false, allowAnonymous = false } = {}) => {
+  // Strict Mode and simultaneous auth/permission consumers share the same
+  // in-flight read. Extending and passive reads retain their own semantics.
+  const key = Boolean(extend);
+  if (!sessionRequests.has(key)) {
+    const request = api.get("/session.php", {
+      params: extend ? { extend: 1 } : undefined,
+    }).finally(() => sessionRequests.delete(key));
+    sessionRequests.set(key, request);
+  }
+  const response = await sessionRequests.get(key);
+  const result = response.data;
 
-export const startTemporaryAccountUse = async (userId) => {
-  const response = await api.post("/use-account.php", {
-    action: "start",
-    userId,
-  });
-  return response.data;
-};
+  if (result?.authenticated === false) {
+    // A general limit on the previous signed-in account must not carry over
+    // to the anonymous login form once the server has expired that session.
+    apiRateLimit = null;
+  }
 
-export const returnFromTemporaryAccountUse = async () => {
-  const response = await api.post("/use-account.php", { action: "return" });
-  return response.data;
+  // session.php deliberately answers anonymous callers with 200 so the authentication provider can
+  // choose the correct public UI without turning an expected signed-out state into a request error.
+  // Existing authenticated refresh callers still need a dead session to behave like a failure.
+  if (result?.authenticated === false && !allowAnonymous) {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
+    }
+
+    const error = new Error("The authenticated session is no longer valid.");
+    error.response = { status: 401, data: result };
+    throw error;
+  }
+
+  return result;
 };
 
 export const checkPasswordExpiry = async () => {
@@ -268,6 +375,14 @@ export const checkPasswordExpiry = async () => {
 
 export const forgotPassword = async (payload) => {
   const response = await api.post("/forgot_password.php", payload);
+  return response.data;
+};
+
+export const verifyPasswordResetCode = async (payload) => {
+  const response = await api.post("/reset_password.php", {
+    action: "verify_code",
+    ...payload,
+  });
   return response.data;
 };
 
@@ -301,6 +416,11 @@ export const getEmployees = async () => {
   return response.data;
 };
 
+export const getCurrentEmployee = async () => {
+  const response = await api.get("/employee.php", { params: { self: 1 } });
+  return response.data;
+};
+
 export const getArchivedEmployees = async () => {
   const response = await api.get("/employee.php", { params: { archived: 1 } });
   return response.data;
@@ -320,7 +440,8 @@ export const importEmployeesCsv = async (file) => {
   formData.append("action", "importEmployeesCsv");
   formData.append("employeeFile", file);
 
-  // The import also mails every new hire their activation email, so a large roster runs long.
+  // Password hashing still happens in this request; activation email delivery continues server-side
+  // after the response, so keep a generous limit without making SMTP part of the wait.
   const response = await api.post("/employee.php", formData, {
     timeout: 600000,
     headers: {
@@ -356,14 +477,18 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mimeType });
 }
 
-export const updateEmployeeProfileImage = async (employeeId, imageDataUrl = "") => {
+export const updateEmployeeProfileImage = async (employeeId, imageDataUrl = "", includeProfileImageInPds) => {
   const formData = new FormData();
   formData.append("employeeId", String(employeeId || ""));
+
+  if (typeof includeProfileImageInPds === "boolean") {
+    formData.append("includeProfileImageInPds", includeProfileImageInPds ? "1" : "0");
+  }
 
   if (imageDataUrl) {
     const profileImageBlob = dataUrlToBlob(imageDataUrl);
     formData.append("profileImage", profileImageBlob, `profile-${employeeId || "employee"}.png`);
-  } else {
+  } else if (imageDataUrl !== null) {
     formData.append("remove", "1");
   }
 
@@ -484,9 +609,19 @@ export const getUsers = async () => {
   return response.data;
 };
 
+export const getArchivedUsers = async () => {
+  const response = await api.get("/user.php", { params: { archived: 1 } });
+  return response.data;
+};
+
 export const createUser = async (user) => {
   const response = await api.post("/user.php", user);
   notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+export const sendAdminUserOtp = async ({ email, roleId }) => {
+  const response = await api.post("/user.php", { action: "sendAdminOtp", email, roleId });
   return response.data;
 };
 
@@ -502,15 +637,21 @@ export const archiveUser = async (id) => {
   return response.data;
 };
 
+export const restoreUser = async (id) => {
+  const response = await api.put("/user.php", { id, action: "restore" });
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
 export const getChat = async (contactId = "") => {
-  const response = await api.get("/chat.php", {
+  const response = await api.get("/messages.php", {
     params: contactId ? { contactId } : {},
   });
   return response.data;
 };
 
 export const sendChatMessage = async (receiverId, messageText) => {
-  const response = await api.post("/chat.php", {
+  const response = await api.post("/messages.php", {
     receiverId,
     messageText,
   });
@@ -519,6 +660,30 @@ export const sendChatMessage = async (receiverId, messageText) => {
 
 export const getSettings = async (params = {}) => {
   const response = await api.get("/settings.php", { params });
+  return response.data;
+};
+
+// A modal and its printed sheet can request this together. Share the in-flight request,
+// but read the server again for each newly opened form so admin changes stay current.
+let filingSignatoriesRequest = null;
+
+export const getFilingSignatories = () => {
+  if (!filingSignatoriesRequest) {
+    filingSignatoriesRequest = api
+      .get("/settings.php", { params: { section: "filingSignatories" } })
+      .then((response) => response.data)
+      .finally(() => { filingSignatoriesRequest = null; });
+  }
+
+  return filingSignatoriesRequest;
+};
+
+export const saveFilingSignatories = async ({ showTimestamps, showESignatures }) => {
+  const response = await api.put("/settings.php", {
+    type: "filing_signatories",
+    showTimestamps,
+    showESignatures,
+  });
   return response.data;
 };
 
@@ -560,14 +725,44 @@ export const createIpcr = async (payload) => {
   return response.data;
 };
 
+export const updateIpcrRecord = async (payload) => {
+  const response = await api.put("/ipcr.php?action=update", payload);
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
 export const submitIpcrRating = async (payload) => {
   const response = await api.put("/ipcr.php?action=submit_rating", payload);
   notifyNotificationsChangedEvent();
   return response.data;
 };
 
+/*
+ * Submits KPIs for validation: `{ kpis: [{ ipcr_id, actual_accomplishment, q1_rating, e2_rating,
+ * t3_rating }] }`. Each KPI must already carry at least one MOV, so upload those first.
+ */
 export const submitIpcrAccomplishment = async (payload) => {
   const response = await api.put("/ipcr.php?action=submit_accomplishment", payload);
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+/*
+ * The rater's decisions on submitted KPIs, in one call: `[{ ipcr_id, decision: "validate" |
+ * "return", q1_rating, e2_rating, t3_rating, remarks }]`. A return needs `remarks` for the employee.
+ */
+export const validateIpcrRecords = async (decisions) => {
+  const response = await api.put("/ipcr.php?action=validate", { decisions });
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+export const deleteIpcrVerification = async (fileId) => {
+  const response = await api.delete("/ipcr.php?action=delete_verification", {
+    data: {
+      file_id: fileId,
+    },
+  });
   notifyNotificationsChangedEvent();
   return response.data;
 };
@@ -586,6 +781,14 @@ export const archiveIpcrRecord = async (ipcrId) => {
     data: {
       ipcr_id: ipcrId,
     },
+  });
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+export const restoreIpcrRecord = async (ipcrId) => {
+  const response = await api.patch("/ipcr.php?action=restore", {
+    ipcr_id: ipcrId,
   });
   notifyNotificationsChangedEvent();
   return response.data;
@@ -626,6 +829,27 @@ export const createServiceRecordEntry = async (payload) => {
   return response.data;
 };
 
+export const previewServiceRecordImport = async (employeeRecordId, file) => {
+  if (/\.pdf$/i.test(file.name)) {
+    const { readServiceRecordPdf } = await import("../module/serviceRecord/serviceRecordPdfReader");
+    const rows = await readServiceRecordPdf(file);
+    const response = await api.post("/service_record.php?action=preview-pdf", { employeeRecordId, rows });
+    return response.data;
+  }
+  const formData = new FormData();
+  formData.append("employeeRecordId", employeeRecordId);
+  formData.append("file", file);
+  const response = await api.post("/service_record.php?action=preview-import", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+export const importServiceRecordEntries = async (employeeRecordId, entries) => {
+  const response = await api.post("/service_record.php?action=import", { employeeRecordId, entries });
+  return response.data;
+};
+
 export const updateServiceRecordEntry = async (payload) => {
   const response = await api.put("/service_record.php?action=update", payload);
   return response.data;
@@ -635,6 +859,12 @@ export const archiveServiceRecordEntry = async (employeeRecordId, id) => {
   const response = await api.delete("/service_record.php?action=archive", {
     data: { employeeRecordId, id },
   });
+  return response.data;
+};
+
+/** Every employee's current step and the date it took effect, for the Loyalty step column. */
+export const fetchServiceRecordSteps = async () => {
+  const response = await api.get("/service_record.php", { params: { action: "steps" } });
   return response.data;
 };
 
@@ -654,8 +884,62 @@ export const createOpcr = async (payload) => {
   return response.data;
 };
 
+export const updateOpcrRecord = async (payload) => {
+  const response = await api.put("/opcr.php?action=update", payload);
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+export const archiveOpcrRecord = async (assignmentId) => {
+  const response = await api.delete("/opcr.php?action=archive", {
+    data: {
+      assignment_id: assignmentId,
+    },
+  });
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+export const restoreOpcrRecord = async (assignmentId) => {
+  const response = await api.patch("/opcr.php?action=restore", {
+    assignment_id: assignmentId,
+  });
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
 export const submitOpcrRating = async (payload) => {
   const response = await api.put("/opcr.php?action=submit_rating", payload);
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+/*
+ * The division chief sends KPIs to the Regional Director: `{ kpis: [{ assignment_id,
+ * actual_accomplishment }] }`. Each KPI must already carry at least one MOV, so upload those first.
+ */
+export const submitOpcrAccomplishment = async (payload) => {
+  const response = await api.put("/opcr.php?action=submit_accomplishment", payload);
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+/*
+ * The Regional Director's decisions on submitted KPIs, in one call: `[{ assignment_id, decision:
+ * "validate" | "return", q1_rating, e2_rating, t3_rating, remarks }]`. A return needs `remarks`.
+ */
+export const validateOpcrRecords = async (decisions) => {
+  const response = await api.put("/opcr.php?action=validate", { decisions });
+  notifyNotificationsChangedEvent();
+  return response.data;
+};
+
+export const deleteOpcrVerification = async (fileId) => {
+  const response = await api.delete("/opcr.php?action=delete_verification", {
+    data: {
+      file_id: fileId,
+    },
+  });
   notifyNotificationsChangedEvent();
   return response.data;
 };
@@ -676,7 +960,7 @@ export const uploadOpcrVerification = async (assignmentId, file) => {
 
 /**
  * Rewards & Recognition. `fetchAwardCycles` returns every cycle with its nominations nested, plus
- * the `viewerKey` the screen matches against each nomination to find the signed-in user's own vote.
+ * the `viewerKey` the screen matches against each nomination to find the signed-in user's own ones.
  */
 export const fetchAwardCycles = async ({ archived = false } = {}) => {
   const response = await api.get("/rewards.php", {
@@ -715,13 +999,24 @@ export const deleteAwardCycle = async (cycleId) => {
   return response.data;
 };
 
-export const castAwardNomination = async (payload) => {
-  const response = await api.post("/rewards.php?action=vote", payload);
+/** A Chief's nomination of one colleague: `{ cycleId, nomineeKey, reason }`. It waits for HR review. */
+export const submitAwardNomination = async (payload) => {
+  const response = await api.post("/rewards.php?action=nominate", payload);
   return response.data;
 };
 
-export const withdrawAwardNomination = async (cycleId) => {
-  const response = await api.delete("/rewards.php?action=withdraw", { data: { cycleId } });
+/** The HR Head's decision on one nomination: `{ nominationId, status: "approved" | "rejected", reviewerNote }`. */
+export const reviewAwardNomination = async (payload) => {
+  const response = await api.put("/rewards.php?action=review", payload);
+  return response.data;
+};
+
+/**
+ * An employee's vote for one approved nominee: `{ cycleId, nomineeKey }`. Voting again in the same
+ * cycle changes the vote rather than adding a second one.
+ */
+export const castAwardVote = async (payload) => {
+  const response = await api.post("/rewards.php?action=vote", payload);
   return response.data;
 };
 
@@ -729,7 +1024,7 @@ export const withdrawAwardNomination = async (cycleId) => {
  * The signed-in user's own award certificates, minted when a cycle they won was closed.
  *
  * Takes no employee argument on purpose — the server scopes the list to the employee record behind
- * the session, so "My Awards" cannot be pointed at somebody else's.
+ * the session, so "My Rewards" cannot be pointed at somebody else's.
  */
 export const fetchMyAwardCertificates = async () => {
   const response = await api.get("/rewards.php", { params: { action: "certificates" } });
@@ -741,8 +1036,24 @@ export const fetchCertificateTemplate = async () => {
   return response.data;
 };
 
-export const updateCertificateTemplate = async (template) => {
-  const response = await api.put("/rewards.php?action=certificate-template", { template });
+export const createSavedCertificateTemplate = async ({ name, template }) => {
+  const response = await api.post("/rewards.php?action=certificate-template", { name, template });
+  return response.data;
+};
+
+export const updateCertificateTemplate = async (template, { templateId, name } = {}) => {
+  const response = await api.put("/rewards.php?action=certificate-template", {
+    template,
+    ...(templateId ? { templateId } : {}),
+    ...(name ? { name } : {}),
+  });
+  return response.data;
+};
+
+export const deleteSavedCertificateTemplate = async (templateId) => {
+  const response = await api.delete("/rewards.php?action=certificate-template", {
+    data: { templateId },
+  });
   return response.data;
 };
 
@@ -794,6 +1105,20 @@ export const getReportData = async (params = {}) => {
 };
 
 export const exportReportData = async (params = {}) => {
+  if (String(params.exportAs || params.export || "").toLowerCase() === "pdf") {
+    const reportParams = { ...params };
+    delete reportParams.exportAs;
+    delete reportParams.export;
+    const result = await getReportData(reportParams);
+    const report = result.report;
+    if (!report) throw new Error("Unable to load the report for PDF export.");
+    const { buildReportPdf } = await import("../utils/reportPdf");
+    const pdf = await buildReportPdf(report);
+    const label = String(report.label || "HRIS Report").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
+    await logReportAction({ reportType: report.key, action: "exported", format: "pdf", records: report.rows?.length || 0,
+      dateRangeLabel: report.dateRange?.label, summary: `Exported "${report.label}" as PDF.` }).catch(() => {});
+    return { blob: pdf.output("blob"), filename: `${label}-${new Date().toISOString().slice(0, 10)}.pdf` };
+  }
   const response = await api.get("/reports.php", {
     params,
     responseType: "blob",
@@ -1003,6 +1328,15 @@ export const saveLeaveType = async (leaveType) => {
   const response = await api.post("/settings.php", {
     type: "leave_type",
     ...leaveType,
+  });
+  return response.data;
+};
+
+export const updateLeaveTypeStatus = async (id, isActive) => {
+  const response = await api.put("/settings.php", {
+    type: "leave_type",
+    id,
+    isActive,
   });
   return response.data;
 };

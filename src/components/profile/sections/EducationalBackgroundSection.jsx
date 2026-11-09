@@ -41,6 +41,7 @@ export default function EducationalBackgroundSection({
                     label="Name of School (Write in full)"
                     name={`${level.value}-schoolName`}
                     value={record.schoolName || ""}
+                    placeholder="e.g. University of the Philippines Cebu"
                     onChange={(event) => onChange(level.value, "schoolName", event.target.value)}
                     readOnly={readOnly}
                   />
@@ -50,12 +51,13 @@ export default function EducationalBackgroundSection({
                     label="Basic Education / Degree / Course"
                     name={`${level.value}-degreeCourse`}
                     value={record.degreeCourse || ""}
+                    placeholder="e.g. Bachelor of Science in Information Technology"
                     onChange={(event) => onChange(level.value, "degreeCourse", event.target.value)}
                     readOnly={readOnly}
                   />
                 </div>
                 <ProfileField
-                  label="Attendance From"
+                  label="From"
                   name={`${level.value}-attendanceFrom`}
                   value={record.attendanceFrom || ""}
                   placeholder="e.g. 2010"
@@ -63,7 +65,7 @@ export default function EducationalBackgroundSection({
                   readOnly={readOnly}
                 />
                 <ProfileField
-                  label="Attendance To"
+                  label="To"
                   name={`${level.value}-attendanceTo`}
                   value={record.attendanceTo || ""}
                   placeholder="e.g. 2014"
@@ -74,6 +76,7 @@ export default function EducationalBackgroundSection({
                   label="Highest Level / Units Earned"
                   name={`${level.value}-highestLevelUnits`}
                   value={record.highestLevelUnits || ""}
+                  placeholder="e.g. 4th Year / 120 units"
                   onChange={(event) => onChange(level.value, "highestLevelUnits", event.target.value)}
                   readOnly={readOnly}
                 />
@@ -81,6 +84,7 @@ export default function EducationalBackgroundSection({
                   label="Year Graduated"
                   name={`${level.value}-yearGraduated`}
                   value={record.yearGraduated || ""}
+                  placeholder="e.g. 2014"
                   onChange={(event) => onChange(level.value, "yearGraduated", event.target.value)}
                   readOnly={readOnly}
                 />
@@ -89,6 +93,7 @@ export default function EducationalBackgroundSection({
                     label="Scholarship / Academic Honors Received"
                     name={`${level.value}-honors`}
                     value={record.honors || ""}
+                    placeholder="e.g. Cum Laude / DOST Scholar"
                     onChange={(event) => onChange(level.value, "honors", event.target.value)}
                     readOnly={readOnly}
                   />

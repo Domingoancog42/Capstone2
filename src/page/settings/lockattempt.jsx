@@ -54,9 +54,9 @@ export default function LockAttemptSettings({
           <div>
             <p className="m-0 font-semibold text-slate-900">{displayName}</p>
             <p className="m-0 mt-1 text-xs text-slate-500">{detail}</p>
-            {row.division || row.designation ? (
+            {row.division || row.position ? (
               <p className="m-0 mt-1 max-w-[260px] truncate text-xs text-slate-400">
-                {[row.designation, row.division].filter(Boolean).join(" - ")}
+                {[row.position, row.division].filter(Boolean).join(" - ")}
               </p>
             ) : null}
           </div>

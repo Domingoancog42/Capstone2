@@ -62,6 +62,60 @@ export async function confirmArchiveRecord({
   }
 }
 
+/** Archives several selected rows after one confirmation, while preserving each module endpoint's checks. */
+export async function confirmArchiveRecords({
+  records = [],
+  getModule = () => "",
+  getId = (record) => record?.id,
+  noun = "request",
+  onArchived,
+}) {
+  const targets = records
+    .map((record) => ({ record, moduleKey: getModule(record), id: getId(record) }))
+    .filter((target) => target.moduleKey && target.id);
+
+  if (targets.length === 0) return { succeeded: [], failed: [] };
+
+  const confirmation = await Swal.fire({
+    title: `Archive ${targets.length} selected ${noun}${targets.length === 1 ? "" : "s"}?`,
+    text: `The selected ${noun}${targets.length === 1 ? "" : "s"} will move to the Archive page, where they can be restored.`,
+    icon: "warning",
+    showCancelButton: true,
+    confirmButtonText: "Archive selected",
+    cancelButtonText: "Cancel",
+    confirmButtonColor: "#dc2626",
+    cancelButtonColor: "#64748b",
+    reverseButtons: true,
+    focusCancel: true,
+  });
+
+  if (!confirmation.isConfirmed) return { succeeded: [], failed: [] };
+
+  const toastId = toast.loading(`Archiving ${targets.length} selected ${noun}${targets.length === 1 ? "" : "s"}...`);
+  const results = await Promise.allSettled(
+    targets.map((target) => archiveRecord(target.moduleKey, target.id))
+  );
+  const succeeded = targets.filter((_, index) => results[index].status === "fulfilled");
+  const failed = targets.filter((_, index) => results[index].status === "rejected");
+
+  if (succeeded.length > 0) await onArchived?.(succeeded.map((target) => target.record));
+
+  if (failed.length === 0) {
+    toast.success(`${succeeded.length} ${noun}${succeeded.length === 1 ? "" : "s"} archived.`, { id: toastId });
+  } else {
+    const firstFailure = results.find((result) => result.status === "rejected");
+    const detail = firstFailure?.reason?.response?.data?.message;
+    toast.error(
+      succeeded.length > 0
+        ? `${succeeded.length} archived; ${failed.length} failed.`
+        : detail || `Unable to archive the selected ${noun}s.`,
+      { id: toastId }
+    );
+  }
+
+  return { succeeded, failed };
+}
+
 /**
  * The grouped variant, for a screen whose row stands for several records — Leave Balances, where a
  * row is an employee and the records behind it are their credits for the displayed year.
@@ -198,19 +252,49 @@ export async function confirmRestoreRecord({
 }
 
 /**
- * Who may archive, per module. Mirrors the `roles` list on each entry of the backend registry —
- * the server is what actually enforces this; the copy here only decides whether to draw the button,
- * so that a role who would be refused never sees it.
+ * Who may archive, per module. Mirrors the backend permission for each module. Pass slips, leave,
+ * CTO and travel orders are available to every signed-in role (employees remain scoped to their
+ * own settled records); the server still enforces that scope, while this copy only decides whether
+ * to draw the button.
  */
 const ARCHIVE_MANAGER_ROLES = {
-  leave: ["admin", "hrhead", "hrstaff", "regionaldirector"],
-  travel: ["admin", "hrhead", "hrstaff", "regionaldirector", "planningofficer"],
-  cto: ["admin", "hrhead", "hrstaff", "regionaldirector", "chief", "planningofficer"],
-  passSlip: ["admin", "hrhead", "hrstaff", "regionaldirector"],
-  overtime: ["admin", "hrhead", "hrstaff", "regionaldirector", "chief", "planningofficer"],
+  leave: [
+    "admin",
+    "cashier",
+    "chief",
+    "employee",
+    "hrhead",
+    "hrstaff",
+    "planningofficer",
+    "regionaldirector",
+  ],
+  travel: ["admin", "cashier", "chiefadmin", "employee", "hrhead", "hrstaff", "regionaldirector", "planningofficer"],
+  cto: ["admin", "cashier", "employee", "hrhead", "hrstaff", "regionaldirector", "chief", "planningofficer"],
+  passSlip: [
+    "admin",
+    "chief",
+    "planningofficer",
+    "cashier",
+    "employee",
+    "hrhead",
+    "hrstaff",
+    "regionaldirector",
+  ],
+  overtime: ["admin", "employee", "hrhead", "hrstaff", "regionaldirector", "chief", "planningofficer"],
   attendance: ["admin", "hrhead", "hrstaff"],
-  leaveBalance: ["admin", "hrhead"],
-  leaveMonetization: ["admin", "hrhead", "hrstaff", "regionaldirector"],
+  leaveBalance: ["admin", "hrhead", "hrstaff"],
+  leaveMonetization: [
+    "admin",
+    "cashier",
+    "employee",
+    "hrhead",
+    "hrstaff",
+    "planningofficer",
+    "regionaldirector",
+  ],
+  // Mirrors promotion_can_archive() in promotion.php: the desks that draft one and the desk that
+  // signs it file it away once it is settled.
+  promotions: ["admin", "hrhead", "hrstaff", "chief", "regionaldirector"],
 };
 
 export function canArchiveModule(roleKey, moduleKey) {

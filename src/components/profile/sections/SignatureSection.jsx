@@ -1,20 +1,29 @@
-import React, { useRef, useState } from "react";
+import React, { useRef } from "react";
 import SignatureCanvas from "react-signature-canvas";
 import { Eraser, ImagePlus, PenLine, PenSquare } from "lucide-react";
 import Button from "../../UI/button";
 import ProfileSectionCard from "../ProfileSectionCard";
 import { profileSectionAnchorId } from "../profileUtils";
 
+/*
+ * The signature has no Save button of its own: Edit Profile's Save Changes saves it with the rest of
+ * the profile. What the person draws or uploads is handed up as `pendingSignature` straight away --
+ * only the open tab is mounted, so a drawing kept here would be lost on switching tabs.
+ *
+ * `pendingSignature` is null when nothing has changed, `{ dataUrl, uploadName }` for a new signature,
+ * and `{ dataUrl: "" }` when the saved one is to be removed.
+ */
 export default function SignatureSection({
   values,
   readOnly,
-  saving,
   error,
-  onSave,
+  pendingSignature = null,
+  onPendingSignatureChange,
 }) {
   const signatureRef = useRef(null);
   const fileInputRef = useRef(null);
-  const [draftImage, setDraftImage] = useState("");
+
+  const previewSignature = pendingSignature ? pendingSignature.dataUrl : values.signatureDataUrl;
 
   const handleUpload = (event) => {
     const file = event.target.files?.[0];
@@ -24,43 +33,30 @@ export default function SignatureSection({
 
     const reader = new FileReader();
     reader.onload = () => {
-      setDraftImage(String(reader.result || ""));
+      signatureRef.current?.clear();
+      onPendingSignatureChange?.({ dataUrl: String(reader.result || ""), uploadName: "Uploaded signature" });
     };
     reader.readAsDataURL(file);
   };
 
+  const handleDrawEnd = () => {
+    if (readOnly || !signatureRef.current || signatureRef.current.isEmpty()) {
+      return;
+    }
+
+    onPendingSignatureChange?.({ dataUrl: signatureRef.current.toDataURL("image/png"), uploadName: "Drawn signature" });
+  };
+
+  /* Clears the pad and any unsaved drawing or upload; the saved signature is left as it is. */
   const handleClear = () => {
     signatureRef.current?.clear();
-    setDraftImage("");
+    onPendingSignatureChange?.(null);
   };
 
+  /* Marks the saved signature for removal when the profile is saved. */
   const handleClearAll = () => {
     signatureRef.current?.clear();
-    setDraftImage("");
-    // Call onSave with empty data to clear the saved signature
-    // The parent component needs to handle empty signatures without validation
-    if (!readOnly) {
-      onSave("", "");
-    }
-  };
-
-  const handleSave = () => {
-    if (readOnly) {
-      return;
-    }
-
-    const drawnSignature = signatureRef.current && !signatureRef.current.isEmpty()
-      ? signatureRef.current.toDataURL("image/png")
-      : "";
-
-    const signatureToSave = draftImage || drawnSignature || values.signatureDataUrl || "";
-    
-    // Only validate if trying to save a non-empty signature
-    if (!signatureToSave) {
-      return;
-    }
-
-    onSave(signatureToSave, draftImage ? "Uploaded signature" : "Drawn signature");
+    onPendingSignatureChange?.({ dataUrl: "", uploadName: "" });
   };
 
   return (
@@ -70,9 +66,6 @@ export default function SignatureSection({
       title="E-Signature"
       description="Upload or draw a reusable electronic signature for forms that require your authorized approval mark."
       readOnly={readOnly}
-      saving={saving}
-      onSave={handleSave}
-      saveLabel="Save Signature"
     >
       <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
@@ -87,6 +80,7 @@ export default function SignatureSection({
                 className: "h-56 w-full",
               }}
               penColor="#000000"
+              onEnd={handleDrawEnd}
             />
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -110,9 +104,9 @@ export default function SignatureSection({
         <div className="rounded-[24px] border border-slate-200 bg-white p-4">
           <div className="mb-3 text-sm font-semibold text-slate-700">Preview Signature</div>
           <div className="grid min-h-[224px] place-items-center rounded-[20px] border border-dashed border-slate-200 bg-slate-50 p-4">
-            {draftImage || values.signatureDataUrl ? (
+            {previewSignature ? (
               <img
-                src={draftImage || values.signatureDataUrl}
+                src={previewSignature}
                 alt="Signature preview"
                 className="max-h-48 max-w-full object-contain"
               />
@@ -122,6 +116,13 @@ export default function SignatureSection({
               </p>
             )}
           </div>
+          {pendingSignature ? (
+            <p className="m-0 mt-2 text-xs font-medium text-amber-700">
+              {pendingSignature.dataUrl
+                ? "New signature — saved when you press Save Changes."
+                : "Signature will be removed when you press Save Changes."}
+            </p>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="secondary" icon={Eraser} disabled={readOnly} onClick={handleClearAll}>
               Clear Signature

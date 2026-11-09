@@ -19,7 +19,7 @@ const publicUrl = process.env.PUBLIC_URL || "";
 
 export const AUTH_LOGO_SRC = `${publicUrl}/mgb.png`;
 export const AUTH_SEAL_SRC = `${publicUrl}/bagongpilipinas.png`;
-export const AUTH_BACKGROUND_SRC = `${publicUrl}/background.png`;
+export const AUTH_BACKGROUND_SRC = `${publicUrl}/background.jpg`;
 
 export const AUTH_REPUBLIC = "Republic of the Philippines";
 export const AUTH_DEPARTMENT = "Department of Environment and Natural Resources";

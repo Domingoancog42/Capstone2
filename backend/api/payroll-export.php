@@ -38,6 +38,7 @@ const PAYROLL_XLSX_STYLE_SIGN_NAME = 15;
 const PAYROLL_XLSX_STYLE_SIGN_TITLE = 16;
 const PAYROLL_XLSX_STYLE_CERT_TEXT = 17;
 const PAYROLL_XLSX_STYLE_BOX_LABEL = 18;
+const PAYROLL_XLSX_STYLE_STEP = 19;
 
 function payroll_xlsx_escape(mixed $value): string
 {
@@ -181,6 +182,8 @@ function payroll_xlsx_styles_xml(): string
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>',
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf>',
         '<xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>',
+        // A salary step: a whole number with no peso sign or decimals.
+        '<xf numFmtId="1" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>',
     ];
 
     $xml .= '<cellXfs count="' . count($xfs) . '">' . implode('', $xfs) . '</cellXfs>';
@@ -203,17 +206,27 @@ function payroll_xlsx_sheet_xml(array $sheet): string
     $freeze = (int)($sheet['freeze'] ?? 0);
     $rowHeights = is_array($sheet['rowHeights'] ?? null) ? $sheet['rowHeights'] : [];
     $hasImages = !empty($sheet['images']);
+    $page = is_array($sheet['page'] ?? null) ? $sheet['page'] : [];
+    $showGridLines = !array_key_exists('showGridLines', $sheet) || (bool)$sheet['showGridLines'];
+    $zoomScale = max(10, min(400, (int)($sheet['zoomScale'] ?? 100)));
 
     $xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
     $xml .= '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
         . ($hasImages ? ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' : '')
         . '>';
 
-    if ($freeze > 0) {
+    if ($page !== []) {
+        $xml .= '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>';
+    }
+
+    if ($freeze > 0 || !$showGridLines || $zoomScale !== 100) {
         $topLeft = 'A' . ($freeze + 1);
-        $xml .= '<sheetViews><sheetView workbookViewId="0">'
-            . '<pane ySplit="' . $freeze . '" topLeftCell="' . $topLeft . '" activePane="bottomLeft" state="frozen"/>'
-            . '</sheetView></sheetViews>';
+        $xml .= '<sheetViews><sheetView workbookViewId="0" showGridLines="'
+            . ($showGridLines ? '1' : '0') . '" zoomScale="' . $zoomScale . '">';
+        if ($freeze > 0) {
+            $xml .= '<pane ySplit="' . $freeze . '" topLeftCell="' . $topLeft . '" activePane="bottomLeft" state="frozen"/>';
+        }
+        $xml .= '</sheetView></sheetViews>';
     }
 
     if ($widths !== []) {
@@ -224,6 +237,43 @@ function payroll_xlsx_sheet_xml(array $sheet): string
         }
         $xml .= '</cols>';
     }
+
+    /*
+     * Excel keeps the style of every physical cell underneath a merged range. If only the
+     * top-left anchor is written, fills and -- most visibly on the DTR -- bottom/outer borders can
+     * stop after that first cell. Mirror the anchor style into otherwise-empty merged cells before
+     * serializing so merged headings, name rules and signature rules draw as continuous boxes.
+     */
+    $mergedAnchors = [];
+    foreach ($rows as $rowIndex => $cells) {
+        foreach ($cells as $columnIndex => $cell) {
+            if (!is_array($cell)) {
+                continue;
+            }
+
+            $across = max(0, (int)($cell['across'] ?? 0));
+            $down = max(0, (int)($cell['down'] ?? 0));
+            if ($across > 0 || $down > 0) {
+                $mergedAnchors[] = [$rowIndex, $columnIndex, $across, $down, (int)($cell['style'] ?? 0)];
+            }
+        }
+    }
+
+    foreach ($mergedAnchors as [$rowIndex, $columnIndex, $across, $down, $style]) {
+        for ($mergedRow = $rowIndex; $mergedRow <= $rowIndex + $down; $mergedRow++) {
+            $rows[$mergedRow] ??= [];
+            for ($mergedColumn = $columnIndex; $mergedColumn <= $columnIndex + $across; $mergedColumn++) {
+                if ($mergedRow === $rowIndex && $mergedColumn === $columnIndex) {
+                    continue;
+                }
+                if (!array_key_exists($mergedColumn, $rows[$mergedRow]) || $rows[$mergedRow][$mergedColumn] === null) {
+                    $rows[$mergedRow][$mergedColumn] = payroll_xlsx_blank($style);
+                }
+            }
+            ksort($rows[$mergedRow]);
+        }
+    }
+    ksort($rows);
 
     $merges = [];
     $xml .= '<sheetData>';
@@ -278,6 +328,25 @@ function payroll_xlsx_sheet_xml(array $sheet): string
         $xml .= '</mergeCells>';
     }
 
+    if ($page !== []) {
+        $orientation = in_array(($page['orientation'] ?? ''), ['portrait', 'landscape'], true)
+            ? $page['orientation']
+            : 'portrait';
+        $paperSize = max(1, (int)($page['paperSize'] ?? 9));
+        $fitToWidth = max(0, (int)($page['fitToWidth'] ?? 1));
+        $fitToHeight = max(0, (int)($page['fitToHeight'] ?? 1));
+        $margin = static fn (string $key, float $fallback): string => payroll_xlsx_escape(
+            (string)(float)($page[$key] ?? $fallback)
+        );
+
+        $xml .= '<printOptions horizontalCentered="1" verticalCentered="0"/>'
+            . '<pageMargins left="' . $margin('left', 0.25) . '" right="' . $margin('right', 0.25)
+            . '" top="' . $margin('top', 0.25) . '" bottom="' . $margin('bottom', 0.25)
+            . '" header="' . $margin('header', 0.1) . '" footer="' . $margin('footer', 0.1) . '"/>'
+            . '<pageSetup paperSize="' . $paperSize . '" orientation="' . $orientation
+            . '" fitToWidth="' . $fitToWidth . '" fitToHeight="' . $fitToHeight . '"/>';
+    }
+
     if ($hasImages) {
         $xml .= '<drawing r:id="rId1"/>';
     }
@@ -313,7 +382,9 @@ function payroll_xlsx_drawing_xml(array $images): string
             . '<xdr:row>' . $toRow . '</xdr:row><xdr:rowOff>' . $toRowOff . '</xdr:rowOff></xdr:to>'
             . '<xdr:pic>'
             . '<xdr:nvPicPr><xdr:cNvPr id="' . $id . '" name="' . $name . '"/>'
-            . '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'
+            . '<xdr:cNvPicPr><a:picLocks'
+            . (($image['lockAspect'] ?? true) ? ' noChangeAspect="1"' : '')
+            . '/></xdr:cNvPicPr></xdr:nvPicPr>'
             . '<xdr:blipFill><a:blip r:embed="rId' . $id . '"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
             . '<xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
             . '</xdr:pic><xdr:clientData/></xdr:twoCellAnchor>';
@@ -413,7 +484,7 @@ function payroll_xlsx_package_parts(array $sheet, string $sheetName, string $tit
             . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
             . '<sheets><sheet name="' . payroll_xlsx_escape($sheetName) . '" sheetId="1" r:id="rId1"/></sheets>'
             . '</workbook>',
-        'xl/styles.xml' => payroll_xlsx_styles_xml(),
+        'xl/styles.xml' => (string)($sheet['stylesXml'] ?? payroll_xlsx_styles_xml()),
         'xl/worksheets/sheet1.xml' => payroll_xlsx_sheet_xml($sheet),
         'docProps/core.xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             . '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">'
@@ -680,7 +751,8 @@ function payroll_export_contractual_row(array $record): array
     $calculatedPremiumRate = $basicSalary > 0 ? round(($premiumTotal / $basicSalary) * 100, 2) : 0.0;
     $premiumRate = $calculatedPremiumRate > 0 ? $calculatedPremiumRate : 0.20;
     $additionalSalary = payroll_export_amount($record['totalAllowance'] ?? 0);
-    $salaryTotal = round($basicSalary + $additionalSalary, 2);
+    $earnedBasicSalary = payroll_export_amount($record['periodBasicSalary'] ?? (payroll_export_amount($record['grossPay'] ?? 0) - $additionalSalary));
+    $salaryTotal = round($earnedBasicSalary + $additionalSalary, 2);
 
     // Pass slips only become their own deduction when attendance did not already cover the period.
     $undertimeDeduction = payroll_export_amount($record['undertimeDeduction'] ?? 0);
@@ -701,7 +773,7 @@ function payroll_export_contractual_row(array $record): array
         'premiumRate' => $premiumRate,
         'premiumTotal' => $premiumTotal,
         'rateWithPremium' => round($dailyRate * (1 + $premiumRate / 100), 2),
-        'periodSalary' => $basicSalary,
+        'periodSalary' => $earnedBasicSalary,
         'additionalSalary' => $additionalSalary,
         'salaryTotal' => $salaryTotal,
         'previousPayrollDeduction' => $previousPayrollDeduction,
@@ -769,6 +841,23 @@ function payroll_export_salary_period_label(mixed $startDate, mixed $endDate): s
 }
 
 /** Mirrors buildPayoutHalfColumnLabels(): both halves, dated from the period the payroll carries. */
+function payroll_export_payout_amounts(array $record): array
+{
+    $netPay = payroll_export_amount($record['netPay'] ?? 0);
+    $period = strtolower(trim((string)($record['payPeriod'] ?? '')));
+    if ($period === '1st half') {
+        return [$netPay, 0.0];
+    }
+    if ($period === '2nd half') {
+        return [0.0, $netPay];
+    }
+    if ($period === 'monthly') {
+        $firstHalf = floor($netPay / 2 * 100 + 0.5) / 100;
+        return [$firstHalf, round($netPay - $firstHalf, 2)];
+    }
+    return [0.0, 0.0];
+}
+
 function payroll_export_payout_half_labels(mixed $startDate, mixed $endDate): array
 {
     $start = payroll_export_date($startDate);
@@ -789,16 +878,54 @@ function payroll_export_payout_half_labels(mixed $startDate, mixed $endDate): ar
     ];
 }
 
-/** Mirrors the modal's sortedRecords: employee name, case-insensitive. */
+/**
+ * The name as the register lists it: "Lastname, Firstname Middlename". Mirrors
+ * formatRegisterEmployeeName() in module/payroll/PayrollManagementWorkspace.jsx; a record without
+ * the name parts keeps its full name.
+ */
+function payroll_export_register_name(array $record): string
+{
+    $lastName = trim((string)($record['lastName'] ?? ''));
+    $givenNames = trim(trim((string)($record['firstName'] ?? '')) . ' ' . trim((string)($record['middleName'] ?? '')));
+
+    if ($lastName === '') {
+        $fullName = trim((string)($record['employeeName'] ?? ''));
+        return $fullName !== '' ? $fullName : 'Employee';
+    }
+
+    return $givenNames !== '' ? $lastName . ', ' . $givenNames : $lastName;
+}
+
+/** The surname, first name, and middle name to sort by, in that order. */
+function payroll_export_name_sort_keys(array $record): array
+{
+    $lastName = trim((string)($record['lastName'] ?? ''));
+
+    return $lastName !== ''
+        ? [$lastName, trim((string)($record['firstName'] ?? '')), trim((string)($record['middleName'] ?? ''))]
+        : [payroll_export_register_name($record), '', ''];
+}
+
+/**
+ * Mirrors the modal's sortedRecords: alphabetical by surname, then first and middle name,
+ * case-insensitive. Comparing the parts rather than the joined name keeps "Dela, Maria" ahead of
+ * "Dela Cruz, Juan".
+ */
 function payroll_export_sort_records(array $records): array
 {
-    usort(
-        $records,
-        static fn (array $left, array $right): int => strcasecmp(
-            (string)($left['employeeName'] ?? ''),
-            (string)($right['employeeName'] ?? '')
-        )
-    );
+    usort($records, static function (array $left, array $right): int {
+        $rightKeys = payroll_export_name_sort_keys($right);
+
+        foreach (payroll_export_name_sort_keys($left) as $index => $value) {
+            $comparison = strcasecmp($value, $rightKeys[$index]);
+
+            if ($comparison !== 0) {
+                return $comparison;
+            }
+        }
+
+        return 0;
+    });
 
     return $records;
 }
@@ -827,8 +954,6 @@ function payroll_export_contractual_rows(array $records, string $salaryPeriodLab
     $sub = PAYROLL_XLSX_STYLE_SUB_HEADER;
     $money = PAYROLL_XLSX_STYLE_MONEY;
     $rows = [];
-    $images = [];
-    $rowHeights = [];
 
     // Header row one. `down => 1` is the screen's rowSpan={2}; `across` is its colSpan.
     $rows[] = [
@@ -884,7 +1009,7 @@ function payroll_export_contractual_rows(array $records, string $salaryPeriodLab
         $totalNetPay += $row['netPay'];
 
         $rows[] = [
-            payroll_xlsx_text($record['employeeName'] ?? 'Employee', PAYROLL_XLSX_STYLE_NAME),
+            payroll_xlsx_text(payroll_export_register_name($record), PAYROLL_XLSX_STYLE_NAME),
             payroll_xlsx_number($row['daysRendered'], PAYROLL_XLSX_STYLE_NUMBER),
             payroll_xlsx_number($row['dailyRate'], $money),
             payroll_xlsx_number($row['premiumRate'], PAYROLL_XLSX_STYLE_PERCENT),
@@ -927,6 +1052,9 @@ function payroll_export_contractual_rows(array $records, string $salaryPeriodLab
  * Kept in step with PAYROLL_TYPE_DEFINITIONS in module/payroll/PayrollManagementWorkspace.jsx so the
  * workbook prints the same headings the details modal shows. An unknown type falls back to Salary,
  * which is also what a record written before payroll types existed resolves to.
+ *
+ * An earnings column with `'kind' => 'step'` holds the employee's salary step, not an amount, so it
+ * is written as a plain whole number.
  */
 function payroll_export_type_labels(mixed $payrollType): array
 {
@@ -934,12 +1062,12 @@ function payroll_export_type_labels(mixed $payrollType): array
         'Salary' => [
             'groupLabel' => '',
             'earnings' => [
-                ['label' => 'Basic', 'field' => 'basicSalary'],
+                ['label' => 'Basic', 'field' => 'periodBasicSalary'],
                 ['label' => 'PERA', 'field' => 'pera'],
-                ['label' => 'Step Increment', 'field' => 'stepIncrement'],
+                ['label' => 'Step Increment', 'field' => 'stepIncrement', 'kind' => 'step'],
             ],
             'grossLabel' => 'Gross Amount Earned',
-            'netLabel' => 'Net Amount Due',
+            'netLabel' => 'Net Pay',
         ],
         'Mid-Year Bonus' => [
             'groupLabel' => 'Mid-Year Bonus',
@@ -949,7 +1077,7 @@ function payroll_export_type_labels(mixed $payrollType): array
                 ['label' => 'Other Adjustment', 'field' => 'salaryAdjustment'],
             ],
             'grossLabel' => 'Total Bonus Earned',
-            'netLabel' => 'Net Bonus Due',
+            'netLabel' => 'Net Pay',
         ],
         'Year-End Bonus' => [
             'groupLabel' => 'Year-End Bonus',
@@ -959,7 +1087,7 @@ function payroll_export_type_labels(mixed $payrollType): array
                 ['label' => 'Cash Gift', 'field' => 'otherAllowances'],
             ],
             'grossLabel' => 'Total Year-End Benefit',
-            'netLabel' => 'Net Amount Due',
+            'netLabel' => 'Net Pay',
         ],
         'Performance-Based Bonus (PBB)' => [
             'groupLabel' => 'Performance-Based Bonus',
@@ -999,6 +1127,54 @@ function payroll_export_type_labels(mixed $payrollType): array
 }
 
 /** The Regular table. Its deduction columns come from the catalog, exactly as the screen's do. */
+function payroll_export_is_undertime_column(array $column): bool
+{
+    return preg_replace('/[^a-z0-9]/', '', strtolower((string)($column['name'] ?? ''))) === 'undertimededuction';
+}
+
+/*
+ * The Regular register carries the same Pass Slip column the screen draws (see
+ * buildRegularDeductionColumns in PayrollManagementWorkspace.jsx). It is not a catalog type; it sits
+ * beside the undertime column whose amount it splits.
+ */
+function payroll_export_regular_deduction_columns(array $deductionColumns): array
+{
+    $columns = array_values($deductionColumns);
+    $passSlip = ['code' => 'pass_slip', 'name' => 'Pass Slip', 'category' => 'Attendance Deductions', 'passSlip' => true];
+    $insertAt = count($columns);
+
+    foreach ($columns as $index => $column) {
+        if (payroll_export_is_undertime_column($column)) {
+            $insertAt = $index + 1;
+            break;
+        }
+    }
+
+    array_splice($columns, $insertAt, 0, [$passSlip]);
+
+    return $columns;
+}
+
+/*
+ * Pass slips only become their own deduction when attendance did not cover the period, and the
+ * payroll stores that charge as the undertime deduction -- so Pass Slip and Undertime Deduction
+ * split one stored amount between them and never show it twice. Matches the details modal.
+ */
+function payroll_export_regular_deduction_cell(array $record, array $column): float
+{
+    $hasAttendanceCoverage = !empty($record['hasAttendanceCoverage']);
+
+    if (!empty($column['passSlip'])) {
+        return $hasAttendanceCoverage ? 0.0 : payroll_export_deduction_amount($record, ['Undertime Deduction']);
+    }
+
+    if (payroll_export_is_undertime_column($column) && !$hasAttendanceCoverage) {
+        return 0.0;
+    }
+
+    return payroll_export_deduction_amount($record, [$column['name'] ?? '']);
+}
+
 function payroll_export_regular_rows(
     array $records,
     array $deductionColumns,
@@ -1011,6 +1187,7 @@ function payroll_export_regular_rows(
     $group = PAYROLL_XLSX_STYLE_GROUP_HEADER;
     $sub = PAYROLL_XLSX_STYLE_SUB_HEADER;
     $money = PAYROLL_XLSX_STYLE_MONEY;
+    $deductionColumns = payroll_export_regular_deduction_columns($deductionColumns);
     $deductionCount = count($deductionColumns);
     $rows = [];
 
@@ -1074,10 +1251,18 @@ function payroll_export_regular_rows(
         $row = [
             payroll_xlsx_number($index + 1, PAYROLL_XLSX_STYLE_NUMBER),
             payroll_xlsx_text($record['employeeId'] ?? 'N/A', PAYROLL_XLSX_STYLE_TEXT),
-            payroll_xlsx_text($record['employeeName'] ?? 'Employee', PAYROLL_XLSX_STYLE_NAME),
+            payroll_xlsx_text(payroll_export_register_name($record), PAYROLL_XLSX_STYLE_NAME),
         ];
 
         foreach ($earnings as $earningIndex => $earning) {
+            if (($earning['kind'] ?? '') === 'step') {
+                $step = (int)($record[$earning['field']] ?? 0);
+                $row[3 + $earningIndex] = $step > 0
+                    ? payroll_xlsx_number($step, PAYROLL_XLSX_STYLE_STEP)
+                    : payroll_xlsx_blank(PAYROLL_XLSX_STYLE_STEP);
+                continue;
+            }
+
             $row[3 + $earningIndex] = payroll_xlsx_number(
                 payroll_export_amount($record[$earning['field']] ?? 0),
                 $money
@@ -1088,7 +1273,7 @@ function payroll_export_regular_rows(
 
         foreach (array_values($deductionColumns) as $columnIndex => $column) {
             $row[$deductionStart + $columnIndex] = payroll_xlsx_number(
-                payroll_export_deduction_amount($record, [$column['name'] ?? '']),
+                payroll_export_regular_deduction_cell($record, $column),
                 $money
             );
         }
@@ -1099,8 +1284,8 @@ function payroll_export_regular_rows(
         );
         $row[$deductionStart + $deductionCount + 1] = payroll_xlsx_number(payroll_export_amount($record['totalDeduction'] ?? 0), $money);
         $row[$deductionStart + $deductionCount + 2] = payroll_xlsx_number(payroll_export_amount($record['netPay'] ?? 0), $money);
-        $row[$deductionStart + $deductionCount + 3] = payroll_xlsx_number(payroll_export_amount($record['marchFirstHalf'] ?? 0), $money);
-        $row[$deductionStart + $deductionCount + 4] = payroll_xlsx_number(payroll_export_amount($record['marchSecondHalf'] ?? 0), $money);
+        $row[$deductionStart + $deductionCount + 3] = payroll_xlsx_number(payroll_export_payout_amounts($record)[0], $money);
+        $row[$deductionStart + $deductionCount + 4] = payroll_xlsx_number(payroll_export_payout_amounts($record)[1], $money);
         ksort($row);
         $rows[] = $row;
     }
@@ -1133,6 +1318,8 @@ function payroll_export_build_register_sheet(array $entry, array $deductionColum
     $showsBothTables = $contractual !== [] && $regular !== [];
 
     $rows = [];
+    $images = [];
+    $rowHeights = [];
 
     $salaryPeriodLabel = payroll_export_salary_period_label($entry['startDate'] ?? '', $entry['endDate'] ?? '');
     $payoutHalves = payroll_export_payout_half_labels($entry['startDate'] ?? '', $entry['endDate'] ?? '');
@@ -1170,7 +1357,12 @@ function payroll_export_build_register_sheet(array $entry, array $deductionColum
     $certificationBlock = payroll_export_certification_block(
         $entry['signatories'] ?? [],
         $entry['certificationStatement'] ?? '',
-        $records
+        $records,
+        [
+            'grossPay' => payroll_export_amount($entry['totalGrossPay'] ?? 0),
+            'deductions' => payroll_export_amount($entry['totalDeductions'] ?? 0),
+            'netPay' => payroll_export_amount($entry['totalNetPay'] ?? 0),
+        ]
     );
 
     foreach ($certificationBlock['rows'] ?? [] as $row) {
@@ -1342,8 +1534,63 @@ function payroll_export_signature_image(mixed $dataUrl, int $fromCol, int $fromR
     ]);
 }
 
-function payroll_export_certification_block(array $signatories, string $statement, array $records = []): array
+/*
+ * Where the registry totals sit in the certification block: to the right of the approving and
+ * paying officers (columns 7-11), so the officer signing for the payout reads the gross, the
+ * deductions and the net beside their own name. Label across two columns, amount in the third.
+ */
+const PAYROLL_XLSX_CERT_TOTALS_COLUMN = 13;
+
+/**
+ * The three registry totals as a small boxed table, written into `$rows` alongside the first
+ * certification: a header on the statement row, then one row each for gross, deductions and net.
+ * Rows that do not exist yet are created, so the panel is drawn even for a register with no
+ * certifying officers configured.
+ */
+function payroll_export_certification_totals(array &$rows, int $startRow, array $totals): void
 {
+    $column = PAYROLL_XLSX_CERT_TOTALS_COLUMN;
+    $lines = [
+        [payroll_xlsx_text('PAYROLL TOTALS', PAYROLL_XLSX_STYLE_GROUP_HEADER, 2)],
+        [
+            payroll_xlsx_text('Total Gross Pay', PAYROLL_XLSX_STYLE_TOTAL_LABEL, 1),
+            payroll_xlsx_number($totals['grossPay'] ?? 0, PAYROLL_XLSX_STYLE_TOTAL_MONEY),
+        ],
+        [
+            payroll_xlsx_text('Total Deductions', PAYROLL_XLSX_STYLE_TOTAL_LABEL, 1),
+            payroll_xlsx_number($totals['deductions'] ?? 0, PAYROLL_XLSX_STYLE_TOTAL_MONEY),
+        ],
+        [
+            payroll_xlsx_text('Total Net Pay', PAYROLL_XLSX_STYLE_TOTAL_LABEL, 1),
+            payroll_xlsx_number($totals['netPay'] ?? 0, PAYROLL_XLSX_STYLE_TOTAL_MONEY),
+        ],
+    ];
+
+    foreach ($lines as $offset => $cells) {
+        $rowIndex = $startRow + $offset;
+
+        while (!isset($rows[$rowIndex])) {
+            $rows[] = [];
+        }
+
+        $rows[$rowIndex][$column] = $cells[0];
+
+        if (isset($cells[1])) {
+            // The label merges across two columns, so the amount lands in the third.
+            $rows[$rowIndex][$column + 2] = $cells[1];
+        }
+
+        // The writer emits cells in array order, and a sheet's cells must ascend by column.
+        ksort($rows[$rowIndex]);
+    }
+}
+
+function payroll_export_certification_block(
+    array $signatories,
+    string $statement,
+    array $records = [],
+    array $totals = []
+): array {
     $signatories = payroll_export_certification_signatories($signatories, $records);
     $boxes = array_values(array_filter($signatories, static fn (array $slot): bool => ($slot['placement'] ?? '') === 'box'));
     $side = array_values(array_filter($signatories, static fn (array $slot): bool => ($slot['placement'] ?? '') === 'side'));
@@ -1357,6 +1604,9 @@ function payroll_export_certification_block(array $signatories, string $statemen
         11
     )];
     $rows[] = [];
+
+    // The totals panel starts level with the first certification, beside the approving officer.
+    $totalsStartRow = count($rows);
 
     foreach ($boxes as $index => $box) {
         $signatory = $side[$index] ?? null;
@@ -1424,6 +1674,10 @@ function payroll_export_certification_block(array $signatories, string $statemen
         $rows[] = $nameRow;
         $rows[] = $titleRow;
         $rows[] = [];
+    }
+
+    if ($totals !== []) {
+        payroll_export_certification_totals($rows, $totalsStartRow, $totals);
     }
 
     return [

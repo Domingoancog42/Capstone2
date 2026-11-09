@@ -12,11 +12,11 @@ const auditRangeOptions = [
   { value: "all", label: "All time" },
 ];
 
-const auditPageSizeOptions = [10, 25, 50, 100];
+const auditPageSizeOptions = [10, 20, 50, 100, 200];
 
 export const defaultAuditPagination = {
   page: 1,
-  perPage: 25,
+  perPage: 10,
   total: 0,
   totalPages: 1,
   from: 0,
@@ -52,6 +52,45 @@ function formatAuditDate(value) {
     : "";
 }
 
+function formatAuditAction(value) {
+  const label = String(value || "")
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .trim();
+
+  return label || "N/A";
+}
+
+function getAuditActionColor(value) {
+  const action = String(value || "").trim().toLowerCase();
+
+  if (/failed|locked|blocked|expired|rejected|revoked|deleted|archived|inactive|cancelled|invalid|missing/.test(action)) {
+    return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+
+  if (/success|created|added|imported|approved|granted|verified|completed|activated|restored|issued|assigned|uploaded/.test(action)) {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+
+  if (/updated|changed|edited|configured|settings/.test(action)) {
+    return "border-sky-200 bg-sky-50 text-sky-700";
+  }
+
+  if (/requested|submitted|pending|queued|resent|required|rate_limited/.test(action)) {
+    return "border-amber-200 bg-amber-50 text-amber-700";
+  }
+
+  if (/download|export|print|backup/.test(action)) {
+    return "border-violet-200 bg-violet-50 text-violet-700";
+  }
+
+  if (/login|logout|password|two_factor|verification|session/.test(action)) {
+    return "border-indigo-200 bg-indigo-50 text-indigo-700";
+  }
+
+  return "border-slate-200 bg-slate-100 text-slate-700";
+}
+
 /* `cardRole` lays these columns out as cards below `lg` — see `components/UI/table.jsx`. */
 const auditLogColumns = [
   {
@@ -67,6 +106,11 @@ const auditLogColumns = [
           <p className="m-0 font-semibold text-slate-900">{userName}</p>
           {userEmail ? (
             <p className="m-0 mt-1 text-xs text-slate-500">{userEmail}</p>
+          ) : null}
+          {row.actorRole ? (
+            <span className="mt-1.5 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+              {row.actorRole}
+            </span>
           ) : null}
         </div>
       );
@@ -91,9 +135,14 @@ const auditLogColumns = [
     cardFull: true,
     render: (row) => (
       <div>
-        <p className="m-0 font-semibold text-slate-900">{row.action || "N/A"}</p>
+        <span
+          className={`inline-flex max-w-full rounded-full border px-2.5 py-1 text-xs font-semibold leading-4 ${getAuditActionColor(row.action)}`}
+          title={row.action || "N/A"}
+        >
+          {formatAuditAction(row.action)}
+        </span>
         {row.summary ? (
-          <p className="m-0 mt-1 max-w-[260px] truncate text-xs text-slate-500">{row.summary}</p>
+          <p className="m-0 mt-1 max-w-[320px] truncate text-xs text-slate-500" title={row.summary}>{row.summary}</p>
         ) : null}
       </div>
     ),
@@ -138,7 +187,7 @@ export default function AuditLogsSettings({
   pagination = defaultAuditPagination,
   searchInput = "",
   dateRange = "30d",
-  pageSize = 25,
+  pageSize = 10,
   onSearchInputChange,
   onDateRangeChange,
   onPageSizeChange,
@@ -150,7 +199,7 @@ export default function AuditLogsSettings({
     <SettingsPanel
       icon={ClipboardList}
       title="Audit Logs"
-      description="Review login, logout, and system activity captured by the HRIS audit log table."
+      description="Monitor successful account and system actions performed by every signed-in user."
       notice={message}
       noticeTone={messageTone}
       actions={

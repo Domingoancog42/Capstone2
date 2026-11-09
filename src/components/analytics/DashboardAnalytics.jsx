@@ -2,11 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Download, AlertCircle } from 'lucide-react';
 import RoleDistributionCard from './RoleDistributionCard';
 import EmploymentStatusCard from './EmploymentStatusCard';
-import PWDDistributionCard from './PWDDistributionCard';
 import GenderDistributionCard from './GenderDistributionCard';
-import SeniorCitizenCard from './SeniorCitizenCard';
-import AgeGroupCard from './AgeGroupCard';
 import AttendanceTrendCard from './AttendanceTrendCard';
+import PerformanceManagementCard from './PerformanceManagementCard';
 import { fetchAllAnalytics } from '../../services/analyticsService';
 
 /**
@@ -193,53 +191,50 @@ const DashboardAnalytics = ({
         </div>
       )}
 
-      {/* Analytics Cards Grid */}
-      <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {/* Role Distribution */}
-        <RoleDistributionCard 
-          data={resolvedAnalyticsData?.role_distribution || []}
-          loading={resolvedLoading}
-        />
+      {/* Two-column desktop layout; each inner grid preserves the requested card order. */}
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 items-stretch gap-4">
+          <PerformanceManagementCard
+            data={resolvedAnalyticsData?.performance_management || {}}
+            loading={resolvedLoading}
+          />
 
-        {/* Employment Status */}
-        <EmploymentStatusCard 
-          data={resolvedAnalyticsData?.employment_status || []}
-          loading={resolvedLoading}
-        />
+          <EmploymentStatusCard
+            data={resolvedAnalyticsData?.employment_status || []}
+            loading={resolvedLoading}
+          />
+        </div>
 
-        {/* Gender Distribution */}
-        <GenderDistributionCard 
+        <div className="grid grid-cols-1 items-stretch gap-4">
+          <AttendanceTrendCard
+            data={resolvedAnalyticsData?.attendance_trend || []}
+            loading={resolvedLoading}
+          />
+
+          <RoleDistributionCard
+            data={resolvedAnalyticsData?.role_distribution || []}
+            loading={resolvedLoading}
+          />
+        </div>
+      </div>
+
+      {children ? (
+        <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
+          <GenderDistributionCard
+            data={resolvedAnalyticsData?.gender_distribution || []}
+            divisionData={resolvedAnalyticsData?.gender_by_division || []}
+            loading={resolvedLoading}
+          />
+
+          {children}
+        </div>
+      ) : (
+        <GenderDistributionCard
           data={resolvedAnalyticsData?.gender_distribution || []}
           divisionData={resolvedAnalyticsData?.gender_by_division || []}
           loading={resolvedLoading}
         />
-
-        {/* Age Group Distribution */}
-        <AgeGroupCard 
-          data={resolvedAnalyticsData?.age_group || []}
-          loading={resolvedLoading}
-        />
-
-        <AttendanceTrendCard
-          data={resolvedAnalyticsData?.attendance_trend || []}
-          loading={resolvedLoading}
-        />
-
-        {/* PWD Distribution */}
-        <PWDDistributionCard 
-          data={resolvedAnalyticsData?.pwd_distribution || []}
-          summary={resolvedAnalyticsData?.pwd_summary || {}}
-          loading={resolvedLoading}
-        />
-
-        {/* Senior Citizen */}
-        <SeniorCitizenCard 
-          data={resolvedAnalyticsData?.senior_citizen || {}}
-          loading={resolvedLoading}
-        />
-
-        {children}
-      </div>
+      )}
 
     </section>
   );

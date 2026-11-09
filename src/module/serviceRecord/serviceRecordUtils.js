@@ -18,6 +18,20 @@ export function formatServiceDate(value, fallback = "—") {
   return Number.isNaN(parsed.getTime()) ? text : dateFormatter.format(parsed);
 }
 
+/**
+ * Newest entry first, so the current appointment heads the list. On a shared start date the entry
+ * saved later wins, which is the one still in force.
+ */
+export function compareServiceRecordsNewestFirst(left, right) {
+  const dateComparison = String(right?.serviceFrom || "").localeCompare(String(left?.serviceFrom || ""));
+
+  if (dateComparison !== 0) {
+    return dateComparison;
+  }
+
+  return Number(right?.id || 0) - Number(left?.id || 0);
+}
+
 /** An open period reads as "Present" rather than a blank cell. */
 export function formatServiceTo(record) {
   if (record?.separationDate) {
@@ -60,7 +74,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-/** MM/DD/YYYY. Eleven columns in portrait leave no room for "January", so the form goes numeric. */
+/** MM-DD-YY, the way the printed form writes its inclusive dates ("09-19-24"). */
 function shortDate(value, fallback = "") {
   const text = String(value ?? "").trim();
 
@@ -77,30 +91,130 @@ function shortDate(value, fallback = "") {
   const month = String(parsed.getMonth() + 1).padStart(2, "0");
   const day = String(parsed.getDate()).padStart(2, "0");
 
-  return `${month}/${day}/${parsed.getFullYear()}`;
+  return `${month}-${day}-${String(parsed.getFullYear()).slice(-2)}`;
 }
 
-/** The salary column on the printed form carries no peso sign — the column header already says so. */
-function plainSalary(value) {
+/**
+ * The printed column is Salary/Annum: twelve times the monthly rate the record stores. No peso sign
+ * — the column header already says what the figure is.
+ */
+function annualSalary(value) {
   const amount = Number(value);
 
   if (!Number.isFinite(amount) || amount <= 0) {
     return "";
   }
 
-  return amount.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (amount * 12).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-/** "T-III/Step 2" — the printed column is Designation/Step, so the two are joined for it. */
-function designationWithStep(record) {
-  const designation = String(record?.designationTitle || "").trim();
-  const step = String(record?.stepIncrement || "").trim();
+/* The form's Status column carries the appointment's code -- "P" for a Regular (permanent) one. */
+const STATUS_CODES = {
+  regular: "P",
+  permanent: "P",
+  temporary: "T",
+  casual: "C",
+  coterminous: "CT",
+  contractual: "Cont.",
+  "contract of service": "COS",
+  "job order": "JO",
+};
 
-  if (!designation) {
+/** A status with no standard code prints as stored. */
+function statusCode(value) {
+  const status = String(value ?? "").trim();
+
+  return STATUS_CODES[status.toLowerCase()] || status;
+}
+
+/**
+ * The form's Branch column is the branch of government, National or Local, where an entry stores the
+ * agency itself ("Mines and Geosciences Bureau"). A local government unit prints as Local and every
+ * other agency as National.
+ */
+function governmentBranch(value) {
+  const branch = String(value ?? "").trim();
+
+  if (!branch) {
     return "";
   }
 
-  return step ? `${designation}/Step ${step}` : designation;
+  return /\blocal\b|\blgu\b|\b(?:city|municipal|provincial|barangay) government\b/i.test(branch)
+    ? "Local"
+    : "National";
+}
+
+/** The day after a YYYY-MM-DD date, in the same form; "" for anything unreadable. */
+function dayAfter(value) {
+  const parsed = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  parsed.setUTCDate(parsed.getUTCDate() + 1);
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+/**
+ * The separation half of the form's combined Separation/Remarks column.
+ *
+ * Entries are closed with a separation date and cause even when service simply carries on in the next
+ * entry ("Salary Adjustment", "Step Increment"), and that next entry's remarks already say why. So a
+ * separation prints only where service actually stopped: no entry begins the day after it.
+ */
+function separationNote(record, records) {
+  const date = String(record?.separationDate || "").slice(0, 10);
+  const cause = String(record?.separationCause || "").trim();
+
+  if (!date && !cause) {
+    return "";
+  }
+
+  const nextDay = date ? dayAfter(date) : "";
+
+  if (nextDay && records.some((other) => String(other?.serviceFrom || "").slice(0, 10) === nextDay)) {
+    return "";
+  }
+
+  return [date ? shortDate(date) : "", cause].filter(Boolean).join(" / ");
+}
+
+/* The printed table's column widths in percent: From, To, Designation, Status, Salary, Station, Branch, LWOP, Remarks. */
+export const SERVICE_RECORD_COLUMN_WIDTHS = [7.5, 7.5, 16, 6, 10, 13.5, 7.5, 8, 24];
+
+/**
+ * Each entry's nine printed cells, newest entry first: the one source for both the Print view and the
+ * downloaded PDF, so the two cannot disagree. The last cell is a list of lines — the remarks, which say
+ * why the entry began, then the separation where service stopped there.
+ */
+export function serviceRecordTableRows(records = []) {
+  return [...records].sort(compareServiceRecordsNewestFirst).map((record) => [
+    shortDate(record.serviceFrom),
+    record.separationDate ? shortDate(record.separationDate) : shortDate(record.serviceTo, "P"),
+    String(record.designationTitle || "").trim(),
+    statusCode(record.employmentStatus),
+    annualSalary(record.monthlySalary),
+    String(record.station || "").trim(),
+    governmentBranch(record.branch),
+    formatLwop(record.lwopDays),
+    [record.remarks, separationNote(record, records)].map((line) => String(line || "").trim()).filter(Boolean),
+  ]);
+}
+
+/**
+ * The NAME line in the order the form captions it — Last, Given, Middle — rather than the
+ * "Given Middle Last" of `fullName`. A Jr./Sr./III extension stays with the given name, as on the PDS.
+ */
+export function serviceRecordNameParts(employee) {
+  const part = (value) => String(value ?? "").trim();
+
+  return {
+    lastName: part(employee?.lastName),
+    givenName: [part(employee?.firstName), part(employee?.suffix)].filter(Boolean).join(" "),
+    middleName: part(employee?.middleName),
+  };
 }
 
 /**
@@ -118,23 +232,20 @@ export function printServiceRecord({ employee, records = [], certifiedBy = null,
   }
 
   const employeeName = employee?.fullName || "Employee";
-  const bodyRows = records
-    .map(
-      (record) => `
+  const nameParts = serviceRecordNameParts(employee);
+  const bodyRows = serviceRecordTableRows(records)
+    .map(([from, to, designation, status, salary, station, branch, lwop, remarks]) => `
         <tr>
-          <td>${escapeHtml(shortDate(record.serviceFrom))}</td>
-          <td>${escapeHtml(record.separationDate ? shortDate(record.separationDate) : shortDate(record.serviceTo, "To present"))}</td>
-          <td class="left">${escapeHtml(designationWithStep(record))}</td>
-          <td>${escapeHtml(record.employmentStatus || "")}</td>
-          <td class="right">${escapeHtml(plainSalary(record.monthlySalary))}</td>
-          <td class="left">${escapeHtml(record.station || "")}</td>
-          <td>${escapeHtml(record.branch || "")}</td>
-          <td>${escapeHtml(formatLwop(record.lwopDays))}</td>
-          <td>${escapeHtml(record.separationDate ? shortDate(record.separationDate) : "None")}</td>
-          <td>${escapeHtml(record.separationCause || "None")}</td>
-          <td class="left">${escapeHtml(record.remarks || "")}</td>
-        </tr>`
-    )
+          <td>${escapeHtml(from)}</td>
+          <td>${escapeHtml(to)}</td>
+          <td>${escapeHtml(designation)}</td>
+          <td>${escapeHtml(status)}</td>
+          <td class="right">${escapeHtml(salary)}</td>
+          <td>${escapeHtml(station)}</td>
+          <td>${escapeHtml(branch)}</td>
+          <td>${escapeHtml(lwop)}</td>
+          <td class="left">${remarks.map(escapeHtml).join("<br />")}</td>
+        </tr>`)
     .join("");
 
   printWindow.document.write(`
@@ -147,16 +258,26 @@ export function printServiceRecord({ employee, records = [], certifiedBy = null,
           body { background: #f8fafc; margin: 0; padding: 24px; }
           .sr { background: #fff; color: #000; font-family: "Times New Roman", Times, serif; margin: 0 auto; padding: 26px 30px; width: 794px; }
 
-          /* Masthead: two logos flanking the agency block, as on every other printed form here. */
-          .masthead { align-items: center; display: flex; gap: 12px; justify-content: center; }
-          .masthead img { height: 62px; object-fit: contain; width: 62px; }
-          .masthead .org { flex: 1; text-align: center; }
+          /*
+           * Masthead: two logos flanking the agency block. The block keeps its own width rather than
+           * stretching, so the logos sit right beside the bureau name instead of at the page edges.
+           */
+          .masthead { align-items: center; display: flex; gap: 16px; justify-content: center; }
+          .masthead img { flex-shrink: 0; height: 95px; object-fit: contain; width: 95px; }
+          .masthead .org { text-align: center; }
           .masthead .org p { margin: 1px 0; }
           .org-republic { font-size: 10px; }
           .org-department { font-size: 10px; }
           .org-bureau { font-size: 14px; font-weight: 700; }
           .org-region { font-size: 11px; font-weight: 700; }
           .org-address { font-size: 9px; }
+
+          /*
+           * The letterhead's yellow rule under the contact line, then the GSIS form number. The rule is a
+           * border rather than a background so it still prints with "background graphics" switched off.
+           */
+          .letterhead-rule { border-top: 6px solid #efe28b; margin-top: 8px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .form-number { font-family: Arial, Helvetica, sans-serif; font-size: 10px; margin: 14px 0 0; }
 
           h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; margin: 18px 0 14px; text-align: center; }
 
@@ -165,17 +286,23 @@ export function printServiceRecord({ employee, records = [], certifiedBy = null,
           .fill { border-bottom: 1px solid #000; display: inline-block; min-width: 90px; padding: 0 6px; }
           .fill.grow { flex: 1; }
           .fill.name { font-weight: 700; text-transform: uppercase; }
+          /* Each name part sits directly over its caption, so the two line up whatever the name's length. */
+          .name-grid { column-gap: 12px; display: grid; flex: 1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+          .name-grid .fill { text-align: center; }
+          .name-grid .caption { font-size: 10px; font-style: italic; text-align: center; }
           .note { font-size: 10px; }
           /* Caption row sits under the fills it labels, so the offsets are deliberate. */
           .captions { display: flex; font-size: 10px; font-style: italic; gap: 34px; padding-left: 62px; }
 
           .cert { font-size: 12px; line-height: 1.5; margin: 14px 0 10px; text-align: justify; }
 
-          table { border-collapse: collapse; font-size: 8.5px; table-layout: fixed; width: 100%; }
-          th, td { border: 1px solid #000; padding: 2px 3px; text-align: center; vertical-align: middle; word-wrap: break-word; }
-          th { font-weight: 700; }
-          th.group { font-size: 9px; text-transform: uppercase; }
-          th.num { font-size: 8px; font-weight: 400; }
+          /* The appointment table follows the paper form: sans-serif, with bold upper-case headings. */
+          table { border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 10.5px; table-layout: fixed; width: 100%; }
+          th, td { border: 1px solid #000; padding: 3px 4px; text-align: center; vertical-align: middle; word-wrap: break-word; }
+          th { font-size: 9px; font-weight: 700; line-height: 1.25; padding: 3px 2px; text-transform: uppercase; }
+          th .caption { text-transform: none; }
+          /* An entry's cells start at the top of its row, as the PDF draws them for Import Record to read line by line. */
+          td { vertical-align: top; }
           td.left { text-align: left; }
           td.right { text-align: right; }
 
@@ -215,18 +342,22 @@ export function printServiceRecord({ employee, records = [], certifiedBy = null,
             </div>
             <img src="/bagongpilipinas.png" alt="Bagong Pilipinas" />
           </div>
+          <div class="letterhead-rule"></div>
+          <p class="form-number">GSIS D 202 (Revised 1989)</p>
 
           <h1>SERVICE RECORD</h1>
 
           <div class="fields">
             <div class="field">
               <span>NAME:</span>
-              <span class="fill name grow">${escapeHtml(employeeName)}</span>
-            </div>
-            <div class="captions">
-              <span>(Last Name)</span>
-              <span>(Given Name)</span>
-              <span>(Middle Name)</span>
+              <div class="name-grid">
+                <span class="fill name">${escapeHtml(nameParts.lastName) || "&nbsp;"}</span>
+                <span class="fill name">${escapeHtml(nameParts.givenName) || "&nbsp;"}</span>
+                <span class="fill name">${escapeHtml(nameParts.middleName) || "&nbsp;"}</span>
+                <span class="caption">(Last Name)</span>
+                <span class="caption">(Given Name)</span>
+                <span class="caption">(Middle Name)</span>
+              </div>
             </div>
 
             <div class="field">
@@ -240,13 +371,6 @@ export function printServiceRecord({ employee, records = [], certifiedBy = null,
               <span>(Place)</span>
               <span style="font-style: normal;">birth certificates or other reliable records)</span>
             </div>
-
-            <div class="field">
-              <span>EMPLOYEE NUMBER:</span>
-              <span class="fill">${escapeHtml(employee?.employeeCode || "")}</span>
-              <span>OFFICE:</span>
-              <span class="fill grow">Mines and Geosciences Bureau, Regional Office No. X</span>
-            </div>
           </div>
 
           <p class="cert">
@@ -256,44 +380,26 @@ export function printServiceRecord({ employee, records = [], certifiedBy = null,
           </p>
 
           <table>
-            <colgroup>
-              <col style="width: 7%;" /><col style="width: 7%;" />
-              <col style="width: 13%;" /><col style="width: 10%;" /><col style="width: 10%;" />
-              <col style="width: 12%;" /><col style="width: 7%;" />
-              <col style="width: 8%;" />
-              <col style="width: 6%;" /><col style="width: 6%;" />
-              <col style="width: 14%;" />
-            </colgroup>
+            <colgroup>${SERVICE_RECORD_COLUMN_WIDTHS.map((width) => `<col style="width: ${width}%;" />`).join("")}</colgroup>
             <thead>
               <tr>
-                <th class="group" colspan="2">Service</th>
-                <th class="group" colspan="5">Record of Appointment</th>
-                <th rowspan="2">LV. / AB.<br />w/o Pay</th>
-                <th class="group" colspan="2" rowspan="2">Separation</th>
-                <th class="group" rowspan="3">Remarks</th>
-              </tr>
-              <tr>
-                <th colspan="2">Inclusive Dates</th>
-                <th>Designation/<br />Step</th>
-                <th>Status</th>
-                <th>Salary</th>
-                <th>Station/Place</th>
-                <th>Branch</th>
+                <th colspan="2">Service<br /><span class="caption">(Inclusive Date)</span></th>
+                <th colspan="3">Record of Appointment</th>
+                <th colspan="2">Office</th>
+                <th rowspan="2">Leave of<br />Absence<br />W/O Pay</th>
+                <th rowspan="2">Separation<br />Date/Cause<br />Remarks</th>
               </tr>
               <tr>
                 <th>From</th>
                 <th>To</th>
-                <th class="num">1</th>
-                <th class="num">2</th>
-                <th class="num">3</th>
-                <th class="num">4</th>
-                <th class="num">5</th>
-                <th class="num">6</th>
-                <th>Date</th>
-                <th>Cause</th>
+                <th>Designation</th>
+                <th>Status</th>
+                <th>Salary<br />/Annum</th>
+                <th>Station/Place<br />of Assignment</th>
+                <th>Branch</th>
               </tr>
             </thead>
-            <tbody>${bodyRows || '<tr><td colspan="11">No service record entries.</td></tr>'}</tbody>
+            <tbody>${bodyRows || '<tr><td colspan="9">No service record entries.</td></tr>'}</tbody>
           </table>
 
           <p class="issued">
@@ -302,7 +408,7 @@ export function printServiceRecord({ employee, records = [], certifiedBy = null,
           </p>
 
           <p class="issued-date">
-            Date: ${escapeHtml(formatServiceDate(new Date().toISOString().slice(0, 10)))}
+            Date: ${escapeHtml(formatServiceDate(new Date().toLocaleDateString("en-CA")))}
           </p>
 
           <div class="sign-block">

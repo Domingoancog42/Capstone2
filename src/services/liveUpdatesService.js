@@ -31,10 +31,17 @@ import { getChangeFeed } from "./api";
  *     its leadership, and the screens it holds refresh on focus anyway.
  */
 
+/**
+ * Shared hosting (the InfinityFree build) caps concurrent PHP processes and CPU time, and a parked
+ * request spends both for its whole hold. Setting REACT_APP_LIVE_UPDATES_POLL_SECONDS at build time
+ * switches to plain polling: ask for no hold, get an answer at once, wait that many seconds. Unset —
+ * XAMPP, `npm start`, the normal build — it is 0 and the long poll below is unchanged.
+ */
+const POLL_SECONDS = Math.max(0, Number(process.env.REACT_APP_LIVE_UPDATES_POLL_SECONDS) || 0);
 /** Must stay at or under the server's own cap, or every request would be cut short of its hold. */
-const HOLD_SECONDS = 25;
+const HOLD_SECONDS = POLL_SECONDS > 0 ? 0 : 25;
 /** A breath between reconnects, so a server answering instantly cannot spin this into a tight loop. */
-const RECONNECT_DELAY_MS = 250;
+const RECONNECT_DELAY_MS = POLL_SECONDS > 0 ? POLL_SECONDS * 1000 : 250;
 const MIN_BACKOFF_MS = 2000;
 /** Errors back off so a dead backend is not hammered for the whole session. */
 const MAX_BACKOFF_MS = 60000;

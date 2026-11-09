@@ -27,11 +27,14 @@ function travel_date_or_null(mixed $value): ?string
 function ensure_travel_order_rejected_note_column(PDO $pdo): void
 {
     $statement = $pdo->query("SHOW COLUMNS FROM travel_orders LIKE 'rejected_note'");
-    if ($statement !== false && $statement->fetch() !== false) {
-        return;
+    if ($statement === false || $statement->fetch() === false) {
+        $pdo->exec('ALTER TABLE travel_orders ADD COLUMN rejected_note TEXT NULL AFTER remarks');
     }
 
-    $pdo->exec('ALTER TABLE travel_orders ADD COLUMN rejected_note TEXT NULL AFTER remarks');
+    $roleStatement = $pdo->query("SHOW COLUMNS FROM travel_orders LIKE 'rejected_by_role'");
+    if ($roleStatement === false || $roleStatement->fetch() === false) {
+        $pdo->exec('ALTER TABLE travel_orders ADD COLUMN rejected_by_role VARCHAR(80) NULL AFTER rejected_note');
+    }
 }
 
 function ensure_travel_order_approved_by_employee_column(PDO $pdo): void
@@ -65,30 +68,56 @@ function ensure_travel_order_employee_authorized_column(PDO $pdo): void
 }
 
 /**
- * `reviewed` is the Planning Officer's recommendation resting between the desk that filed the order
- * and the Regional Director's final approval, so it has to exist before any row can carry it.
+ * `reviewed` is the Planning Officer's recommendation waiting on the Division Chief, and
+ * `chief_reviewed` is the Chief's approval waiting on the Regional Director, so both have to exist
+ * before any row can carry them.
  */
-function ensure_travel_order_reviewed_status(PDO $pdo): void
+function ensure_travel_order_workflow_statuses(PDO $pdo): void
 {
     $statement = $pdo->query("SHOW COLUMNS FROM travel_orders LIKE 'status'");
     $column = $statement !== false ? $statement->fetch() : false;
+    $columnType = $column !== false ? (string)($column['Type'] ?? '') : '';
 
-    if ($column === false || stripos((string)($column['Type'] ?? ''), "'reviewed'") !== false) {
+    if ($column === false || stripos($columnType, "'chief_reviewed'") !== false) {
         return;
     }
 
+    $hadReviewedStatus = stripos($columnType, "'reviewed'") !== false;
+
     $pdo->exec(
         "ALTER TABLE travel_orders
-         MODIFY COLUMN status ENUM('pending','reviewed','approved','rejected','cancelled')
+         MODIFY COLUMN status ENUM('pending','reviewed','chief_reviewed','approved','rejected','cancelled')
          NOT NULL DEFAULT 'pending'"
     );
+
+    /*
+     * Before the Chief stage existed, `reviewed` meant the order was already on the Regional
+     * Director's desk. Those orders keep their place rather than being sent back to a Chief.
+     */
+    if ($hadReviewedStatus) {
+        $pdo->exec("UPDATE travel_orders SET status = 'chief_reviewed' WHERE status = 'reviewed'");
+    }
+}
+
+/** Who approved the order at the Division Chief's desk, and when, like the recommendation columns. */
+function ensure_travel_order_chief_reviewed_columns(PDO $pdo): void
+{
+    $statement = $pdo->query("SHOW COLUMNS FROM travel_orders LIKE 'chief_reviewed_by_employee_id'");
+    if ($statement === false || $statement->fetch() === false) {
+        $pdo->exec('ALTER TABLE travel_orders ADD COLUMN chief_reviewed_by_employee_id INT UNSIGNED NULL AFTER recommended_at');
+    }
+
+    $statement = $pdo->query("SHOW COLUMNS FROM travel_orders LIKE 'chief_reviewed_at'");
+    if ($statement === false || $statement->fetch() === false) {
+        $pdo->exec('ALTER TABLE travel_orders ADD COLUMN chief_reviewed_at DATETIME NULL AFTER chief_reviewed_by_employee_id');
+    }
 }
 
 /**
  * Who filed the order, which is not who is travelling and no longer who recommends it.
  *
- * A chief files for the employees of their division and may still call the trip off, so the filer
- * has to be recorded separately now that the "Recommended by" line belongs to the Planning Officer.
+ * A chief may file for employees in any division and may still call the trip off, so the filer has
+ * to be recorded separately now that the "Recommended by" line belongs to the Planning Officer.
  */
 function ensure_travel_order_filed_by_column(PDO $pdo): void
 {
@@ -135,21 +164,62 @@ function travel_role_key(array $user): string
 function travel_can_archive(array $user): bool
 {
     $roleKey = travel_role_key($user);
-    return in_array($roleKey, ['admin', 'hrhead', 'hrstaff', 'regionaldirector', 'planningofficer'], true);
+    return in_array($roleKey, ['admin', 'hrhead', 'hrstaff', 'regionaldirector', 'planningofficer'], true)
+        || user_exact_role_key($user) === 'chiefadmin'
+        || travel_is_self_service_role($user);
 }
 
 /*
- * A travel order is signed in two desks. The Planning Officer recommends a filed order, which is
+ * The roles that only ever see their own orders. They may tidy those into the archive as well --
+ * archiving is not a decision. Request-only roles may archive their own orders at any stage.
+ */
+function travel_is_self_service_role(array $user): bool
+{
+    return in_array(travel_role_key($user), ['employee', 'cashier'], true);
+}
+
+/*
+ * A travel order is signed in three desks. The Planning Officer recommends a filed order, which is
  * what fills the "Recommended by" line on the printed form and moves the row to `reviewed`; the
- * Regional Director then gives the final approval. Neither desk may act out of turn -- a pending
- * order has no recommendation for the Director to approve, and a reviewed one is past the Planning
- * Officer. An admin sits in both so a stuck order always has a way through.
+ * Division Chief of the traveller's division approves it next (`chief_reviewed`); the Regional
+ * Director then gives the final approval. No desk may act out of turn -- a pending order has no
+ * recommendation for the Chief to approve, and a reviewed one is past the Planning Officer. An
+ * admin sits in all three so a stuck order always has a way through.
  */
 
-/** The Planning Officer's desk: recommends a filed order up to the Regional Director. */
+/** The Planning Officer's desk: recommends a filed order up to the Division Chief. */
 function travel_can_recommend(array $user): bool
 {
     return in_array(travel_role_key($user), ['admin', 'planningofficer'], true);
+}
+
+/**
+ * The Division Chief's desk. A Chief approves only for their own division, which the read scope
+ * alone does not guarantee (it also carries orders a Chief filed), so the traveller's division is
+ * checked against the Chief's here.
+ */
+function travel_can_chief_review(PDO $pdo, array $user, int $travellerEmployeeId): bool
+{
+    $roleKey = travel_role_key($user);
+
+    if (user_exact_role_key($user) === 'chiefadmin') {
+        return false;
+    }
+
+    if ($roleKey === 'admin') {
+        return true;
+    }
+
+    if ($roleKey !== 'chief') {
+        return false;
+    }
+
+    $statement = $pdo->prepare('SELECT division_id FROM employees WHERE id = :id LIMIT 1');
+    $statement->execute([':id' => $travellerEmployeeId]);
+    $travellerDivisionId = (int)$statement->fetchColumn();
+
+    return travel_request_routes_to_all_chiefs($pdo, $travellerEmployeeId)
+        || $travellerDivisionId === travel_session_division_id($pdo, $user);
 }
 
 /** The Regional Director's desk: the only one whose approval finishes a travel order. */
@@ -158,21 +228,98 @@ function travel_can_give_final_approval(array $user): bool
     return in_array(travel_role_key($user), ['admin', 'regionaldirector'], true);
 }
 
+/** Request-only roles whose travel orders are reviewed by every Division Chief. */
+function travel_request_routes_to_all_chiefs(PDO $pdo, int $travellerEmployeeId): bool
+{
+    $statement = $pdo->prepare(
+        'SELECT ' . employee_role_name_subselect('e') . ' AS employeeRole
+         FROM employees e
+         WHERE e.id = :employee_id
+           AND e.is_archived = 0
+         LIMIT 1'
+    );
+    $statement->execute([':employee_id' => $travellerEmployeeId]);
+
+    return in_array(
+        normalize_role($statement->fetchColumn() ?: ''),
+        ['hrhead', 'hrstaff', 'chiefadmin', 'cashier'],
+        true
+    );
+}
+
+/** SQL counterpart used by the Chief's list and single-record scope queries. */
+function travel_request_routes_to_all_chiefs_sql(string $employeeAlias = 'e'): string
+{
+    return 'LOWER(REPLACE(COALESCE(' . employee_role_name_subselect($employeeAlias) . ', ""), " ", ""))
+            IN ("hrhead", "hrstaff", "chiefadmin", "cashier")';
+}
+
+/**
+ * Every Planning Officer recommendation goes to the traveller's Division Chief before the
+ * Director. Individual filings from HR Head, HR Staff, Chief Admin, and Cashier are organization-
+ * wide Chief work and do not require one assigned division. Ordinary employee filings do: refuse
+ * their handoff rather than creating a Reviewed row no Chief can see in a division-scoped table.
+ */
+function travel_status_after_recommendation(PDO $pdo, int $travellerEmployeeId): string
+{
+    $statement = $pdo->prepare(
+        'SELECT division_id
+         FROM employees
+         WHERE id = :employee_id
+           AND is_archived = 0
+         LIMIT 1'
+    );
+    $statement->execute([':employee_id' => $travellerEmployeeId]);
+
+    if (
+        (int)$statement->fetchColumn() <= 0
+        && !travel_request_routes_to_all_chiefs($pdo, $travellerEmployeeId)
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'The employee must be assigned to a division before the travel order can be sent to a Division Chief.',
+        ], 422);
+    }
+
+    return 'reviewed';
+}
+
+/**
+ * Put open orders that used the former no-Chief shortcut back on the Division Chief's desk. A row
+ * already signed by the Regional Director remains where it is while the employee authorizes it.
+ */
+function repair_travel_orders_skipping_chief_review(PDO $pdo): void
+{
+    $pdo->exec(
+        "UPDATE travel_orders
+         SET status = 'reviewed'
+         WHERE status = 'chief_reviewed'
+           AND recommended_by_employee_id IS NOT NULL
+           AND chief_reviewed_by_employee_id IS NULL
+           AND approved_by_employee_id IS NULL"
+    );
+}
+
 function travel_can_view_all(array $user): bool
 {
-    return travel_role_key($user) !== 'employee';
+    if (user_exact_role_key($user) === 'chiefadmin') {
+        return false;
+    }
+
+    return !in_array(travel_role_key($user), ['employee', 'cashier', 'hrhead', 'hrstaff'], true);
 }
 
 /** The statuses a travel order can still be acted on from. */
 function travel_status_is_open(string $status): bool
 {
-    return in_array($status, ['pending', 'reviewed'], true);
+    return in_array($status, ['pending', 'reviewed', 'chief_reviewed'], true);
 }
 
 function travel_status_to_client(string $status): string
 {
     return match (strtolower($status)) {
         'reviewed' => 'Reviewed',
+        'chief_reviewed' => 'Chief Reviewed',
         'approved' => 'Approved',
         'rejected' => 'Rejected',
         'cancelled', 'canceled' => 'Cancelled',
@@ -184,6 +331,7 @@ function travel_status_to_database(mixed $status): string
 {
     return match (strtolower(travel_text($status))) {
         'reviewed' => 'reviewed',
+        'chief_reviewed', 'chief reviewed', 'chiefreviewed' => 'chief_reviewed',
         'approved' => 'approved',
         'rejected' => 'rejected',
         'cancelled', 'canceled' => 'cancelled',
@@ -334,11 +482,74 @@ function resolve_travel_employee_id(PDO $pdo, array $body, array $sessionUser): 
     ], 422);
 }
 
+function travel_session_division_id(PDO $pdo, array $user): int
+{
+    $employeeId = resolve_session_employee_id($pdo, $user);
+    $statement = $pdo->prepare(
+        'SELECT division_id
+         FROM employees
+         WHERE id = :id
+           AND is_archived = 0
+         LIMIT 1'
+    );
+    $statement->execute([':id' => $employeeId]);
+    $divisionId = (int)$statement->fetchColumn();
+
+    if ($divisionId <= 0) {
+        json_response([
+            'success' => false,
+            'message' => 'Your employee record is not assigned to a division.',
+        ], 422);
+    }
+
+    return $divisionId;
+}
+
+/**
+ * Employees, Cashiers, HR Head, and HR Staff receive only their own orders. The Planning Officer
+ * and Regional Director are the organization-wide dispatch and final-approval desks, so routed
+ * orders reach both roles regardless of division. A Chief normally sees travellers from their own
+ * division only. Individual requests belonging to HR Head, HR Staff, Chief Admin, and Cashier are
+ * the exception: those organization-wide roles appear on every Division Chief's approval desk.
+ * The list endpoint separately withholds those rows from the Chief until the Planning Officer has
+ * recorded a recommendation; Pending filings belong only to the Planning Officer's first-stage desk.
+ * Administrators retain organization-wide oversight.
+ */
+function travel_read_scopes(PDO $pdo, array $sessionUser): array
+{
+    if (user_exact_role_key($sessionUser) === 'chiefadmin') {
+        return [
+            'employeeId' => resolve_session_employee_id($pdo, $sessionUser),
+            'divisionId' => null,
+            'filedByEmployeeId' => null,
+        ];
+    }
+
+    return match (travel_role_key($sessionUser)) {
+        'employee', 'cashier', 'hrhead', 'hrstaff' => [
+            'employeeId' => resolve_session_employee_id($pdo, $sessionUser),
+            'divisionId' => null,
+            'filedByEmployeeId' => null,
+        ],
+        'chief' => [
+            'employeeId' => null,
+            'divisionId' => travel_session_division_id($pdo, $sessionUser),
+            'filedByEmployeeId' => null,
+        ],
+        'planningofficer', 'regionaldirector' => [
+            'employeeId' => null,
+            'divisionId' => null,
+            'filedByEmployeeId' => null,
+        ],
+        default => ['employeeId' => null, 'divisionId' => null, 'filedByEmployeeId' => null],
+    };
+}
+
 /**
  * The recommendation on a newly filed order.
  *
  * Recommending is the Planning Officer's step, so a planning officer filing for their division has
- * already made it and the order goes straight to the Regional Director. Every other filer -- a
+ * already made it and the order goes straight to the Division Chief. Every other filer -- a
  * division chief, an admin, or an employee filing for themselves -- leaves this null and waits for
  * the Planning Officer to recommend, which is what fills the "Recommended by" line on the form.
  */
@@ -368,6 +579,7 @@ function travel_normalize_request(PDO $pdo, array $request): array
     $request['id'] = (int)$request['id'];
     $request['employeeRecordId'] = (int)$request['employeeRecordId'];
     $request['rejectedNote'] = travel_text($request['rejectedNote'] ?? '');
+    $request['rejectedByRole'] = travel_text($request['rejectedByRole'] ?? '');
     $request['approvedByEmployeeRecordId'] = $request['approvedByEmployeeRecordId'] !== null
         ? (int)$request['approvedByEmployeeRecordId']
         : null;
@@ -377,6 +589,11 @@ function travel_normalize_request(PDO $pdo, array $request): array
         : null;
     $request['recommendedBy'] = travel_text($request['recommendedBy'] ?? '');
     $request['recommendedAt'] = travel_text($request['recommendedAt'] ?? '');
+    $request['chiefReviewedByEmployeeRecordId'] = ($request['chiefReviewedByEmployeeRecordId'] ?? null) !== null
+        ? (int)$request['chiefReviewedByEmployeeRecordId']
+        : null;
+    $request['chiefReviewedBy'] = travel_text($request['chiefReviewedBy'] ?? '');
+    $request['chiefReviewedAt'] = travel_text($request['chiefReviewedAt'] ?? '');
     $request['filedByEmployeeRecordId'] = ($request['filedByEmployeeRecordId'] ?? null) !== null
         ? (int)$request['filedByEmployeeRecordId']
         : null;
@@ -389,7 +606,7 @@ function travel_normalize_request(PDO $pdo, array $request): array
      * A Regional Director approval parks the order instead of approving it outright: the row keeps
      * its open status until the employee accepts the COA liquidation authorization on the form. An
      * open row that already carries an approver is therefore waiting on the employee, not on a
-     * signatory. Legacy rows were parked at `pending`, current ones at `reviewed`.
+     * signatory. Legacy rows were parked at `pending`, current ones at `chief_reviewed`.
      */
     $request['awaitingAuthorization'] = travel_status_is_open($statusKey)
         && $request['approvedByEmployeeRecordId'] !== null;
@@ -397,7 +614,13 @@ function travel_normalize_request(PDO $pdo, array $request): array
     return travel_apply_signatory_fallbacks($pdo, $request);
 }
 
-function fetch_travel_order(PDO $pdo, int $id, ?int $employeeScopeId = null): ?array
+function fetch_travel_order(
+    PDO $pdo,
+    int $id,
+    ?int $employeeScopeId = null,
+    ?int $divisionScopeId = null,
+    ?int $filedByEmployeeScopeId = null
+): ?array
 {
     $sql = 'SELECT
                 t.travel_order_id AS id,
@@ -405,8 +628,9 @@ function fetch_travel_order(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
                 e.employee_id AS employeeId,
                 TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
                 d.name AS division,
+                ' . employee_role_name_subselect() . ' AS employeeRole,
                 des.name AS position,
-                des.name AS designation,
+                e.designation,
                 t.destination,
                 t.purpose,
                 t.start_date AS startDate,
@@ -415,12 +639,16 @@ function fetch_travel_order(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
                 t.appropriations,
                 t.remarks,
                 COALESCE(t.rejected_note, "") AS rejectedNote,
+                COALESCE(t.rejected_by_role, "") AS rejectedByRole,
                 t.approved_by_employee_id AS approvedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(approved_employee.first_name, " ", COALESCE(approved_employee.middle_name, ""), " ", approved_employee.last_name)), ""), "") AS approvedBy,
                 t.employee_authorized_at AS employeeAuthorizedAt,
                 t.recommended_by_employee_id AS recommendedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(recommended_employee.first_name, " ", COALESCE(recommended_employee.middle_name, ""), " ", recommended_employee.last_name)), ""), "") AS recommendedBy,
                 t.recommended_at AS recommendedAt,
+                t.chief_reviewed_by_employee_id AS chiefReviewedByEmployeeRecordId,
+                COALESCE(NULLIF(TRIM(CONCAT(chief_reviewed_employee.first_name, " ", COALESCE(chief_reviewed_employee.middle_name, ""), " ", chief_reviewed_employee.last_name)), ""), "") AS chiefReviewedBy,
+                t.chief_reviewed_at AS chiefReviewedAt,
                 t.filed_by_employee_id AS filedByEmployeeRecordId,
                 COALESCE(filed_employee.employee_id, "") AS filedByEmployeeId,
                 COALESCE(NULLIF(TRIM(CONCAT(filed_employee.first_name, " ", COALESCE(filed_employee.middle_name, ""), " ", filed_employee.last_name)), ""), "") AS filedBy,
@@ -434,11 +662,23 @@ function fetch_travel_order(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
             LEFT JOIN designations des ON des.id = e.designation_id
             LEFT JOIN employees approved_employee ON approved_employee.id = t.approved_by_employee_id
             LEFT JOIN employees recommended_employee ON recommended_employee.id = t.recommended_by_employee_id
+            LEFT JOIN employees chief_reviewed_employee ON chief_reviewed_employee.id = t.chief_reviewed_by_employee_id
             LEFT JOIN employees filed_employee ON filed_employee.id = t.filed_by_employee_id
             WHERE t.travel_order_id = :id';
 
     if ($employeeScopeId !== null) {
         $sql .= ' AND t.employee_id = :employee_scope_id';
+    }
+
+    if ($divisionScopeId !== null && $filedByEmployeeScopeId !== null) {
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR t.filed_by_employee_id = :filed_by_employee_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
+    } elseif ($divisionScopeId !== null) {
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
+    } elseif ($filedByEmployeeScopeId !== null) {
+        $sql .= ' AND t.filed_by_employee_id = :filed_by_employee_scope_id';
     }
 
     $sql .= ' LIMIT 1';
@@ -447,6 +687,12 @@ function fetch_travel_order(PDO $pdo, int $id, ?int $employeeScopeId = null): ?a
     $params = [':id' => $id];
     if ($employeeScopeId !== null) {
         $params[':employee_scope_id'] = $employeeScopeId;
+    }
+    if ($divisionScopeId !== null) {
+        $params[':division_scope_id'] = $divisionScopeId;
+    }
+    if ($filedByEmployeeScopeId !== null) {
+        $params[':filed_by_employee_scope_id'] = $filedByEmployeeScopeId;
     }
     $statement->execute($params);
     $request = $statement->fetch();
@@ -473,7 +719,8 @@ function fetch_travel_order_notification_context(PDO $pdo, int $id): ?array
             COALESCE(t.assistance_labor, "") AS assistanceLabor,
             COALESCE(t.appropriations, "") AS appropriations,
             COALESCE(t.remarks, "") AS remarks,
-            COALESCE(t.rejected_note, "") AS rejectedNote
+            COALESCE(t.rejected_note, "") AS rejectedNote,
+            COALESCE(t.rejected_by_role, "") AS rejectedByRole
          FROM travel_orders t
          INNER JOIN employees e ON e.id = t.employee_id
          LEFT JOIN divisions d ON d.id = e.division_id
@@ -498,6 +745,7 @@ function fetch_travel_order_notification_context(PDO $pdo, int $id): ?array
     $request['appropriations'] = travel_text($request['appropriations'] ?? '');
     $request['remarks'] = travel_text($request['remarks'] ?? '');
     $request['rejectedNote'] = travel_text($request['rejectedNote'] ?? '');
+    $request['rejectedByRole'] = travel_text($request['rejectedByRole'] ?? '');
 
     return $request;
 }
@@ -507,13 +755,13 @@ function send_travel_rejection_notification(PDO $pdo, int $id): ?string
     $request = fetch_travel_order_notification_context($pdo, $id);
 
     if ($request === null) {
-        return 'Travel order rejected, but employee details could not be loaded for email notification.';
+        return 'Travel order disapproved, but employee details could not be loaded for email notification.';
     }
 
     $employeeEmail = travel_text($request['employeeEmail'] ?? '');
 
     if ($employeeEmail === '' || filter_var($employeeEmail, FILTER_VALIDATE_EMAIL) === false) {
-        return 'Travel order rejected, but no valid employee email address is available.';
+        return 'Travel order disapproved, but no valid employee email address is available.';
     }
 
     /*
@@ -540,7 +788,7 @@ function send_travel_rejection_notification(PDO $pdo, int $id): ?string
         );
     } catch (Throwable $exception) {
         error_log('Travel rejection email error: ' . $exception->getMessage());
-        return 'Travel order rejected, but the rejection email could not be sent.';
+        return 'Travel order disapproved, but the disapproval email could not be sent.';
     }
 
     return null;
@@ -548,7 +796,11 @@ function send_travel_rejection_notification(PDO $pdo, int $id): ?string
 
 function list_travel_orders(PDO $pdo, array $sessionUser): void
 {
-    $employeeScopeId = travel_can_view_all($sessionUser) ? null : resolve_session_employee_id($pdo, $sessionUser);
+    $viewerEmployeeId = session_employee_record_id($pdo, $sessionUser);
+    $scopes = travel_read_scopes($pdo, $sessionUser);
+    $employeeScopeId = $scopes['employeeId'];
+    $divisionScopeId = $scopes['divisionId'];
+    $filedByEmployeeScopeId = $scopes['filedByEmployeeId'];
 
     $sql = 'SELECT
                 t.travel_order_id AS id,
@@ -556,8 +808,9 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
                 e.employee_id AS employeeId,
                 TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
                 d.name AS division,
+                ' . employee_role_name_subselect() . ' AS employeeRole,
                 des.name AS position,
-                des.name AS designation,
+                e.designation,
                 t.destination,
                 t.purpose,
                 t.start_date AS startDate,
@@ -566,12 +819,16 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
                 t.appropriations,
                 t.remarks,
                 COALESCE(t.rejected_note, "") AS rejectedNote,
+                COALESCE(t.rejected_by_role, "") AS rejectedByRole,
                 t.approved_by_employee_id AS approvedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(approved_employee.first_name, " ", COALESCE(approved_employee.middle_name, ""), " ", approved_employee.last_name)), ""), "") AS approvedBy,
                 t.employee_authorized_at AS employeeAuthorizedAt,
                 t.recommended_by_employee_id AS recommendedByEmployeeRecordId,
                 COALESCE(NULLIF(TRIM(CONCAT(recommended_employee.first_name, " ", COALESCE(recommended_employee.middle_name, ""), " ", recommended_employee.last_name)), ""), "") AS recommendedBy,
                 t.recommended_at AS recommendedAt,
+                t.chief_reviewed_by_employee_id AS chiefReviewedByEmployeeRecordId,
+                COALESCE(NULLIF(TRIM(CONCAT(chief_reviewed_employee.first_name, " ", COALESCE(chief_reviewed_employee.middle_name, ""), " ", chief_reviewed_employee.last_name)), ""), "") AS chiefReviewedBy,
+                t.chief_reviewed_at AS chiefReviewedAt,
                 t.filed_by_employee_id AS filedByEmployeeRecordId,
                 COALESCE(filed_employee.employee_id, "") AS filedByEmployeeId,
                 COALESCE(NULLIF(TRIM(CONCAT(filed_employee.first_name, " ", COALESCE(filed_employee.middle_name, ""), " ", filed_employee.last_name)), ""), "") AS filedBy,
@@ -585,6 +842,7 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
             LEFT JOIN designations des ON des.id = e.designation_id
             LEFT JOIN employees approved_employee ON approved_employee.id = t.approved_by_employee_id
             LEFT JOIN employees recommended_employee ON recommended_employee.id = t.recommended_by_employee_id
+            LEFT JOIN employees chief_reviewed_employee ON chief_reviewed_employee.id = t.chief_reviewed_by_employee_id
             LEFT JOIN employees filed_employee ON filed_employee.id = t.filed_by_employee_id
             WHERE t.is_archived = :is_archived';
 
@@ -592,6 +850,31 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
     if ($employeeScopeId !== null) {
         $sql .= ' AND t.employee_id = :employee_scope_id';
         $params[':employee_scope_id'] = $employeeScopeId;
+    }
+    if ($divisionScopeId !== null && $filedByEmployeeScopeId !== null) {
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR t.filed_by_employee_id = :filed_by_employee_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
+        $params[':division_scope_id'] = $divisionScopeId;
+        $params[':filed_by_employee_scope_id'] = $filedByEmployeeScopeId;
+    } elseif ($divisionScopeId !== null) {
+        $sql .= ' AND (e.division_id = :division_scope_id
+                       OR ' . travel_request_routes_to_all_chiefs_sql('e') . ')';
+        $params[':division_scope_id'] = $divisionScopeId;
+    } elseif ($filedByEmployeeScopeId !== null) {
+        $sql .= ' AND t.filed_by_employee_id = :filed_by_employee_scope_id';
+        $params[':filed_by_employee_scope_id'] = $filedByEmployeeScopeId;
+    }
+
+    /*
+     * A newly filed employee order is the Planning Officer's work, not yet the Division Chief's.
+     * Use the recorded recommendation instead of only the public status: this also keeps an order
+     * rejected at the Planning Officer stage off the Chief's list. Once the Chief approves it, the
+     * open row belongs to the Regional Director and leaves the Chief's table.
+     */
+    if (travel_role_key($sessionUser) === 'chief' && user_exact_role_key($sessionUser) !== 'chiefadmin') {
+        $sql .= " AND t.recommended_by_employee_id IS NOT NULL
+                  AND NOT (t.status = 'chief_reviewed' AND t.approved_by_employee_id IS NULL)";
     }
 
     $sql .= ' ORDER BY t.created_at DESC, t.travel_order_id DESC';
@@ -602,6 +885,9 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
 
     foreach ($requests as &$request) {
         $request = travel_normalize_request($pdo, $request);
+        $request['isOwnTravelOrder'] = $viewerEmployeeId !== null
+            && $viewerEmployeeId > 0
+            && (int)$request['employeeRecordId'] === $viewerEmployeeId;
     }
     unset($request);
 
@@ -611,9 +897,28 @@ function list_travel_orders(PDO $pdo, array $sessionUser): void
     ]);
 }
 
+/** A Chief files travel orders only for employees in their own division (themselves included). */
+function assert_travel_employee_in_chief_division(PDO $pdo, array $sessionUser, int $employeeId): void
+{
+    if (travel_role_key($sessionUser) !== 'chief') {
+        return;
+    }
+
+    $statement = $pdo->prepare('SELECT division_id FROM employees WHERE id = :id AND is_archived = 0 LIMIT 1');
+    $statement->execute([':id' => $employeeId]);
+
+    if ((int)$statement->fetchColumn() !== travel_session_division_id($pdo, $sessionUser)) {
+        json_response([
+            'success' => false,
+            'message' => 'Chiefs may only file travel orders for employees in their own division.',
+        ], 403);
+    }
+}
+
 function create_travel_order(PDO $pdo, array $body, array $sessionUser): void
 {
     $employeeId = resolve_travel_employee_id($pdo, $body, $sessionUser);
+    assert_travel_employee_in_chief_division($pdo, $sessionUser, $employeeId);
     $destination = travel_text($body['destination'] ?? '');
     $purpose = travel_text($body['purpose'] ?? '');
     $startDate = travel_date_or_null($body['startDate'] ?? null);
@@ -658,11 +963,14 @@ function create_travel_order(PDO $pdo, array $body, array $sessionUser): void
     $recommendedByEmployeeId = resolve_travel_recommender_id($pdo, $sessionUser, $employeeId);
     $filedByEmployeeId = session_employee_record_id($pdo, $sessionUser);
     /*
-     * A planning officer filing has already made the recommendation, so their order starts at
-     * `reviewed` and goes straight to the Regional Director. Everyone else's starts at `pending`
-     * and waits for the Planning Officer.
+     * A planning officer filing has already made the recommendation, so their order starts on the
+     * Division Chief's desk. Everyone else's starts at `pending` and waits for the Planning Officer.
      */
-    $initialStatus = $recommendedByEmployeeId !== null ? 'reviewed' : 'pending';
+    $initialStatus = $recommendedByEmployeeId !== null
+        ? travel_status_after_recommendation($pdo, $employeeId)
+        : 'pending';
+
+    throttle_filing_request($pdo, $sessionUser);
 
     $statement = $pdo->prepare(
         'INSERT INTO travel_orders
@@ -686,10 +994,16 @@ function create_travel_order(PDO $pdo, array $body, array $sessionUser): void
     ]);
 
     $requestId = (int)$pdo->lastInsertId();
-    $employeeScopeId = travel_can_view_all($sessionUser) ? null : resolve_session_employee_id($pdo, $sessionUser);
+    $scopes = travel_read_scopes($pdo, $sessionUser);
     json_response([
         'success' => true,
-        'request' => fetch_travel_order($pdo, $requestId, $employeeScopeId),
+        'request' => fetch_travel_order(
+            $pdo,
+            $requestId,
+            $scopes['employeeId'],
+            $scopes['divisionId'],
+            $scopes['filedByEmployeeId']
+        ),
     ], 201);
 }
 
@@ -709,12 +1023,26 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
     if ($status === 'rejected' && $rejectedNote === '') {
         json_response([
             'success' => false,
-            'message' => 'Rejected note is required.',
+            'message' => 'Disapproval note is required.',
         ], 422);
     }
 
+    $scopes = travel_read_scopes($pdo, $sessionUser);
+    if (fetch_travel_order(
+        $pdo,
+        $id,
+        $scopes['employeeId'],
+        $scopes['divisionId'],
+        $scopes['filedByEmployeeId']
+    ) === null) {
+        json_response([
+            'success' => false,
+            'message' => 'Travel order not found.',
+        ], 404);
+    }
+
     $currentRequestStatement = $pdo->prepare(
-        'SELECT employee_id, filed_by_employee_id, recommended_by_employee_id, approved_by_employee_id, status
+        'SELECT employee_id, filed_by_employee_id, recommended_by_employee_id, chief_reviewed_by_employee_id, approved_by_employee_id, status
          FROM travel_orders
          WHERE travel_order_id = :id
          LIMIT 1'
@@ -740,27 +1068,43 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
 
     /*
      * Which desk the order is sitting on decides who may act. A pending order is the Planning
-     * Officer's to recommend or reject; a reviewed one is the Regional Director's to approve or
-     * reject. Cancelling is the way out for whoever owns the trip -- the traveller or the filer --
-     * for as long as the Director has not signed.
+     * Officer's to recommend or reject; a reviewed one is the traveller's Division Chief's to
+     * approve or reject; a chief_reviewed one is the Regional Director's. Cancelling is the way out
+     * for whoever owns the trip -- the traveller or the filer -- for as long as the Director has
+     * not signed.
      */
+    $travellerEmployeeId = (int)($currentRequest['employee_id'] ?? 0);
+    $isChiefRole = travel_role_key($sessionUser) === 'chief';
     $canRecommendNow = $currentStatus === 'pending' && travel_can_recommend($sessionUser);
-    $canFinallyApproveNow = $currentStatus === 'reviewed' && travel_can_give_final_approval($sessionUser);
+    $canChiefReviewNow = $currentStatus === 'reviewed'
+        && !$alreadyFinallyApproved
+        && travel_can_chief_review($pdo, $sessionUser, $travellerEmployeeId);
+    $canFinallyApproveNow = $currentStatus === 'chief_reviewed'
+        && !$alreadyFinallyApproved
+        && travel_can_give_final_approval($sessionUser);
     $isOwnCancellation = $status === 'cancelled'
         && ($isOwnRequest || $isFiler)
         && travel_status_is_open($currentStatus)
         && !$alreadyFinallyApproved;
 
-    if (!$canRecommendNow && !$canFinallyApproveNow && !$isOwnCancellation) {
+    if (!$canRecommendNow && !$canChiefReviewNow && !$canFinallyApproveNow && !$isOwnCancellation) {
         // Say which desk the order is waiting on rather than a flat "not allowed".
         json_response([
             'success' => false,
             'message' => match (true) {
                 !travel_status_is_open($currentStatus) => 'This travel order has already been ' . $currentStatus . '.',
-                $currentStatus === 'pending' && travel_can_give_final_approval($sessionUser) =>
+                $alreadyFinallyApproved =>
+                    'This travel order was already approved by the Regional Director and is waiting for the employee authorization.',
+                $currentStatus === 'pending' && ($isChiefRole || travel_can_give_final_approval($sessionUser)) =>
                     'This travel order is still waiting for the Planning Officer to recommend it.',
+                $currentStatus === 'reviewed' && $isChiefRole =>
+                    'Only the Chief of the employee\'s division can approve this travel order.',
                 $currentStatus === 'reviewed' && travel_can_recommend($sessionUser) =>
-                    'This travel order has already been recommended and is waiting for the Regional Director.',
+                    'This travel order has already been recommended and is waiting for the Division Chief.',
+                $currentStatus === 'reviewed' && travel_can_give_final_approval($sessionUser) =>
+                    'This travel order is still waiting for the Division Chief to approve it.',
+                $currentStatus === 'chief_reviewed' && ($isChiefRole || travel_can_recommend($sessionUser)) =>
+                    'This travel order has already been approved by the Division Chief and is waiting for the Regional Director.',
                 default => 'You are not allowed to update travel order status.',
             },
         ], 403);
@@ -774,16 +1118,17 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
     }
 
     $isRecommendation = $status === 'approved' && $canRecommendNow;
+    $isChiefReview = $status === 'approved' && $canChiefReviewNow;
     $isFinalApproval = $status === 'approved' && $canFinallyApproveNow;
 
-    if ($status === 'approved' && !$isRecommendation && !$isFinalApproval) {
+    if ($status === 'approved' && !$isRecommendation && !$isChiefReview && !$isFinalApproval) {
         json_response([
             'success' => false,
             'message' => 'You are not allowed to approve this travel order at its current stage.',
         ], 403);
     }
 
-    if (($isRecommendation || $isFinalApproval) && ($sessionEmployeeId === null || $sessionEmployeeId <= 0)) {
+    if (($isRecommendation || $isChiefReview || $isFinalApproval) && ($sessionEmployeeId === null || $sessionEmployeeId <= 0)) {
         json_response([
             'success' => false,
             'message' => 'Your account is not linked to an employee record, so the decision cannot be recorded.',
@@ -791,12 +1136,13 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
     }
 
     /*
-     * Both signatures on the order carry a solved captcha: the Planning Officer's recommendation,
-     * which authorizes the trip for dispatch, and the Regional Director's approval. Rejecting and
-     * cancelling do not; see the approval_workflow entry in captcha-utils.php.
+     * Every signature on the order carries a solved captcha: the Planning Officer's recommendation,
+     * which authorizes the trip for dispatch, the Division Chief's approval, and the Regional
+     * Director's. Rejecting and cancelling do not; see the approval_workflow entry in
+     * captcha-utils.php.
      */
-    if ($isRecommendation || $isFinalApproval) {
-        require_approval_captcha($body);
+    if ($isRecommendation || $isChiefReview || $isFinalApproval) {
+        require_approval_captcha($body, 'travel', $id);
     }
 
     /*
@@ -806,7 +1152,8 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
      * approved.
      */
     $nextStatus = match (true) {
-        $isRecommendation => 'reviewed',
+        $isRecommendation => travel_status_after_recommendation($pdo, $travellerEmployeeId),
+        $isChiefReview => 'chief_reviewed',
         $isFinalApproval => $currentStatus,
         default => $status,
     };
@@ -817,6 +1164,14 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
             ? (int)$currentRequest['recommended_by_employee_id']
             : null);
 
+    /* A Chief rejecting at their desk is recorded as that desk's signer, like the Director below. */
+    $isChiefSignature = $isChiefReview || ($status === 'rejected' && $canChiefReviewNow);
+    $nextChiefReviewedByEmployeeId = $isChiefSignature
+        ? $sessionEmployeeId
+        : (($currentRequest['chief_reviewed_by_employee_id'] ?? null) !== null
+            ? (int)$currentRequest['chief_reviewed_by_employee_id']
+            : null);
+
     /* A rejection records who signed it too, so the form prints "Disapproved by" with a name. */
     $isDeskRejection = $status === 'rejected' && $canFinallyApproveNow;
     $nextApprovedByEmployeeId = ($isFinalApproval || $isDeskRejection) ? $sessionEmployeeId : null;
@@ -825,9 +1180,12 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
         'UPDATE travel_orders
          SET status = :status,
              rejected_note = :rejected_note,
+             rejected_by_role = :rejected_by_role,
              recommended_by_employee_id = :recommended_by_employee_id,
              /* Only a fresh recommendation moves this; every other update leaves it standing. */
              recommended_at = COALESCE(:recommended_at, recommended_at),
+             chief_reviewed_by_employee_id = :chief_reviewed_by_employee_id,
+             chief_reviewed_at = COALESCE(:chief_reviewed_at, chief_reviewed_at),
              approved_by_employee_id = :approved_by_employee_id,
              employee_authorized_at = NULL
          WHERE travel_order_id = :id'
@@ -835,8 +1193,11 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
     $statement->execute([
         ':status' => $nextStatus,
         ':rejected_note' => $status === 'rejected' ? $rejectedNote : null,
+        ':rejected_by_role' => $status === 'rejected' ? travel_role_key($sessionUser) : null,
         ':recommended_by_employee_id' => $nextRecommendedByEmployeeId,
         ':recommended_at' => $isRecommendation ? date('Y-m-d H:i:s') : null,
+        ':chief_reviewed_by_employee_id' => $nextChiefReviewedByEmployeeId,
+        ':chief_reviewed_at' => $isChiefSignature ? date('Y-m-d H:i:s') : null,
         ':approved_by_employee_id' => $nextApprovedByEmployeeId,
         ':id' => $id,
     ]);
@@ -858,7 +1219,13 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
         $notificationWarning = send_travel_rejection_notification($pdo, $id);
     }
 
-    $updatedRequest = fetch_travel_order($pdo, $id);
+    $updatedRequest = fetch_travel_order(
+        $pdo,
+        $id,
+        $scopes['employeeId'],
+        $scopes['divisionId'],
+        $scopes['filedByEmployeeId']
+    );
 
     /*
      * The Director's approval is the employee's cue to act: the order is not finished until they
@@ -892,9 +1259,12 @@ function update_travel_order_status(PDO $pdo, array $body, array $sessionUser): 
             ? ($notificationWarning === null ? 'sent' : 'warning')
             : 'not_applicable',
         'message' => match (true) {
-            $status === 'rejected' => $notificationWarning ?? 'Travel order rejected and the employee was notified by email.',
+            $status === 'rejected' => $notificationWarning ?? 'Travel order disapproved and the employee was notified by email.',
             $status === 'cancelled' => 'Travel order cancelled.',
+            $isRecommendation && $nextStatus === 'reviewed' =>
+                'Travel order authorized for dispatch. It now goes to the Division Chief for approval.',
             $isRecommendation => 'Travel order authorized for dispatch. It now goes to the Regional Director for final approval.',
+            $isChiefReview => 'Travel order approved. It now goes to the Regional Director for final approval.',
             $isFinalApproval => 'Travel order approved. It now waits for the employee to accept the travel authorization.',
             default => 'Travel order updated.',
         },
@@ -970,7 +1340,7 @@ function authorize_travel_order(PDO $pdo, array $body, array $sessionUser): void
          SET status = "approved",
              employee_authorized_at = NOW()
          WHERE travel_order_id = :id
-           AND status IN ("pending", "reviewed")
+           AND status IN ("pending", "reviewed", "chief_reviewed")
            AND approved_by_employee_id IS NOT NULL'
     );
     $updateStatement->execute([':id' => $id]);
@@ -993,8 +1363,18 @@ function archive_travel_order(PDO $pdo, array $body, array $sessionUser, bool $a
     }
 
     $id = (int)($body['id'] ?? 0);
+    $scopes = travel_read_scopes($pdo, $sessionUser);
+    $request = $id > 0
+        ? fetch_travel_order(
+            $pdo,
+            $id,
+            $scopes['employeeId'],
+            $scopes['divisionId'],
+            $scopes['filedByEmployeeId']
+        )
+        : null;
 
-    if ($id <= 0 || fetch_travel_order($pdo, $id) === null) {
+    if ($request === null) {
         json_response([
             'success' => false,
             'message' => 'Travel order not found.',
@@ -1014,7 +1394,13 @@ function archive_travel_order(PDO $pdo, array $body, array $sessionUser, bool $a
     json_response([
         'success' => true,
         'message' => $archived ? 'Travel order archived.' : 'Travel order restored.',
-        'request' => fetch_travel_order($pdo, $id),
+        'request' => fetch_travel_order(
+            $pdo,
+            $id,
+            $scopes['employeeId'],
+            $scopes['divisionId'],
+            $scopes['filedByEmployeeId']
+        ),
     ]);
 }
 
@@ -1025,7 +1411,9 @@ try {
     ensure_travel_order_filed_by_column($pdo);
     ensure_travel_order_recommended_at_column($pdo);
     ensure_travel_order_employee_authorized_column($pdo);
-    ensure_travel_order_reviewed_status($pdo);
+    ensure_travel_order_chief_reviewed_columns($pdo);
+    ensure_travel_order_workflow_statuses($pdo);
+    repair_travel_orders_skipping_chief_review($pdo);
     ensure_archive_columns($pdo, 'travel_orders');
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';

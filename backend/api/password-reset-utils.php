@@ -2,9 +2,20 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../vendor/autoload.php';
-require_once __DIR__ . '/smtp-config.php';
 require_once __DIR__ . '/hris-mail.php';
 
+// Gitignored, so it may not exist -- see the note in connection-pdo.php. Missing means
+// password_reset_smtp_config() below reads empty credentials and send_reset_email()
+// raises "SMTP is not configured", which is the intended failure.
+$hrisSmtpConfig = __DIR__ . '/smtp-config.php';
+
+if (is_file($hrisSmtpConfig)) {
+    require_once $hrisSmtpConfig;
+}
+
+unset($hrisSmtpConfig);
+
+use PHPMailer\PHPMailer\Exception as PHPMailerException;
 use PHPMailer\PHPMailer\PHPMailer;
 
 function password_reset_smtp_config(): array
@@ -108,11 +119,9 @@ function generate_password_reset_code(): string
 /*
  * How many wrong guesses one issued code survives.
  *
- * The per-IP `passwordReset` throttle already bounds how fast a client may submit, but it bounds the
- * *client* -- and the one thing an address-keyed counter cannot see is the same guess arriving from a
- * hundred different addresses. This cap is keyed to the code itself, so a distributed attempt spends
- * the same five guesses a single-address one does, and spends them for good: the sixth wrong answer
- * destroys the code rather than merely delaying the next try.
+ * The per-account `passwordReset` throttle bounds submissions across clients. This tighter cap is
+ * keyed to the issued code itself, so every code gets only five wrong guesses and spends them for
+ * good: the sixth wrong answer destroys the code rather than merely delaying the next try.
  *
  * Five is chosen against a six-digit space. It leaves an honest user room to fat-finger the code they
  * are reading off their phone, while capping the odds any one issued code can be guessed at 5-in-a-
@@ -197,7 +206,15 @@ function password_reset_escape_html(string $value): string
 
 function password_reset_embed_logo(PHPMailer $mail): ?string
 {
-    $logoPath = realpath(__DIR__ . '/../../public/mgb.png');
+    // Brevo's API cannot carry a content-id image, so that transport links to the hosted copy instead.
+    if ($mail instanceof HrisBrevoMailer) {
+        return hosted_mail_logo_url();
+    }
+
+    // A 120px copy of mgb.png. The full-size logo is 130 KB and was most of every message it rode in,
+    // which on a six-digit code email makes a small, attachment-heavy message of the kind spam filters
+    // look twice at. The template draws it at 60px either way.
+    $logoPath = realpath(__DIR__ . '/../../public/mgb-email.png');
 
     if (!is_string($logoPath) || $logoPath === '' || !is_file($logoPath)) {
         return null;
@@ -231,10 +248,164 @@ function email_base_label(): string
     return $configuredSubject !== '' ? $configuredSubject : 'REGION X MGB';
 }
 
+/**
+ * Sends through Brevo's HTTPS API instead of SMTP.
+ *
+ * Railway disables outbound SMTP on its Free, Trial and Hobby plans, so Gmail cannot be reached from
+ * the container at all. PHPMailer hands a Mailer name it does not know to a method called
+ * <name>Send(), and that is the seam used here: callers build the message exactly as before --
+ * addAddress(), Subject, Body, AltBody -- and send() lands in brevoSend() rather than on a socket.
+ *
+ * Brevo's API has no content-id images, so inline parts are not sent: password_reset_embed_logo()
+ * gives this mailer the hosted logo's URL instead of embedding the file.
+ */
+final class HrisBrevoMailer extends PHPMailer
+{
+    private const ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
+
+    public function __construct(private string $apiKey)
+    {
+        parent::__construct(true);
+        $this->Mailer = 'brevo';
+    }
+
+    protected function brevoSend(string $header, string $body): bool
+    {
+        $contacts = static fn(array $addresses): array => array_map(
+            static fn(array $address): array => array_filter(
+                ['email' => (string)$address[0], 'name' => (string)($address[1] ?? '')],
+                static fn(string $value): bool => $value !== ''
+            ),
+            array_values($addresses)
+        );
+
+        // send() has already turned an HTML message with an AltBody into multipart/alternative, so
+        // ContentType alone no longer says text/html; an AltBody means Body is the HTML part.
+        $isHtml = $this->alternativeExists() || stripos($this->ContentType, 'html') !== false;
+        $payload = [
+            'sender' => array_filter(['email' => $this->From, 'name' => $this->FromName]),
+            'to' => $contacts($this->getToAddresses()),
+            'subject' => $this->Subject,
+            'htmlContent' => $isHtml ? $this->Body : nl2br(htmlspecialchars($this->Body, ENT_QUOTES, 'UTF-8')),
+        ];
+
+        $textContent = $isHtml ? $this->AltBody : $this->Body;
+
+        if (trim($textContent) !== '') {
+            $payload['textContent'] = $textContent;
+        }
+
+        foreach (['cc' => $this->getCcAddresses(), 'bcc' => $this->getBccAddresses()] as $field => $addresses) {
+            if ($addresses !== []) {
+                $payload[$field] = $contacts($addresses);
+            }
+        }
+
+        // Brevo rewrites a Gmail sender to its own domain, so replies need pointing back at the inbox.
+        $replyTo = $contacts($this->getReplyToAddresses())[0] ?? ['email' => $this->From];
+        $payload['replyTo'] = $replyTo;
+
+        foreach ($this->getAttachments() as $attachment) {
+            if (($attachment[6] ?? '') !== 'attachment') {
+                continue;
+            }
+
+            $content = !empty($attachment[5]) ? (string)$attachment[0] : (string)file_get_contents((string)$attachment[0]);
+            $payload['attachment'][] = ['name' => (string)$attachment[2], 'content' => base64_encode($content)];
+        }
+
+        $handle = curl_init(self::ENDPOINT);
+        curl_setopt_array($handle, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => [
+                'accept: application/json',
+                'content-type: application/json',
+                'api-key: ' . $this->apiKey,
+            ],
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 20,
+        ]);
+
+        $response = curl_exec($handle);
+        $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $transportError = curl_error($handle);
+
+        if ($response === false) {
+            throw new PHPMailerException('Could not reach the Brevo email API: ' . $transportError);
+        }
+
+        if ($status !== 201 && $status !== 202) {
+            $decoded = json_decode((string)$response, true);
+            $reason = is_array($decoded) ? trim((string)($decoded['message'] ?? '')) : '';
+
+            throw new PHPMailerException(
+                'Brevo refused the message (HTTP ' . $status . ')' . ($reason !== '' ? ': ' . $reason : '.')
+            );
+        }
+
+        return true;
+    }
+}
+
+/**
+ * The e-mail logo as a public URL, for a transport that cannot embed it. The React build serves
+ * public/mgb-email.png from the site root, which is the origin HRIS_LOGIN_URL points at.
+ */
+function hosted_mail_logo_url(): ?string
+{
+    $loginUrl = trim((string)(defined('HRIS_LOGIN_URL') ? HRIS_LOGIN_URL : (getenv('HRIS_LOGIN_URL') ?: '')));
+    $parts = parse_url($loginUrl);
+    $scheme = strtolower((string)(is_array($parts) ? ($parts['scheme'] ?? '') : ''));
+
+    if (!in_array($scheme, ['http', 'https'], true) || trim((string)($parts['host'] ?? '')) === '') {
+        return null;
+    }
+
+    $port = isset($parts['port']) ? ':' . (int)$parts['port'] : '';
+
+    return $scheme . '://' . $parts['host'] . $port . '/mgb-email.png';
+}
+
 function configured_mailer(): PHPMailer
 {
     $config = password_reset_smtp_config();
+    $brevoApiKey = trim((string)(defined('BREVO_API_KEY') ? BREVO_API_KEY : ''));
 
+    if ($brevoApiKey !== '') {
+        if ($config['from_email'] === '') {
+            throw new RuntimeException('BREVO_API_KEY is set but SMTP_FROM_EMAIL is not. Set it to the sender address verified in Brevo.');
+        }
+
+        $mail = new HrisBrevoMailer($brevoApiKey);
+    } else {
+        $mail = configured_smtp_mailer($config);
+    }
+
+    $mail->setFrom($config['from_email'], $config['from_name']);
+    $mail->CharSet = 'UTF-8';
+    $mail->isHTML(true);
+
+    /*
+     * Gmail's outbound filter refused a reset code to an employee as "suspicious". Two headers made
+     * the message read like a bulk script rather than a mail client: PHPMailer's own X-Mailer line,
+     * and a Message-ID ending in @localhost, taken from the Apache server name. The ID now carries the
+     * sender's domain, as a real client's does. Hostname also feeds HELO, which keeps the name it had.
+     */
+    $mail->XMailer = ' ';
+    $fromDomain = substr((string)strrchr($config['from_email'], '@'), 1);
+
+    if ($fromDomain !== '') {
+        $mail->Helo = (string)($_SERVER['SERVER_NAME'] ?? '') ?: (gethostname() ?: 'localhost');
+        $mail->Hostname = $fromDomain;
+    }
+
+    return $mail;
+}
+
+function configured_smtp_mailer(array $config): PHPMailer
+{
     if (
         $config['host'] === '' ||
         $config['username'] === '' ||
@@ -252,21 +423,17 @@ function configured_mailer(): PHPMailer
     $mail->Password = $config['password'];
     $mail->Port = $config['port'];
     $mail->Timeout = 15;
-    $mail->Timelimit = 15;
+    $mail->getSMTPInstance()->Timelimit = 15;
     $mail->SMTPKeepAlive = false;
 
     if ($config['encryption'] === 'ssl' || $config['encryption'] === 'smtps') {
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
     } elseif ($config['encryption'] === 'none' || $config['encryption'] === '') {
-        $mail->SMTPSecure = false;
+        $mail->SMTPSecure = '';
         $mail->SMTPAutoTLS = false;
     } else {
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
     }
-
-    $mail->setFrom($config['from_email'], $config['from_name']);
-    $mail->CharSet = 'UTF-8';
-    $mail->isHTML(true);
 
     return $mail;
 }
@@ -296,6 +463,22 @@ function mail_delivery_error(PHPMailer $mail, Throwable $exception): string
     }
 
     return $combined !== '' ? $combined : 'Unable to send email through the configured SMTP account.';
+}
+
+/**
+ * Send one prepared message, failing with the mail server's own reason.
+ *
+ * A bare $mail->send() throws PHPMailer's generic "SMTP Error: data not accepted.", and that was all
+ * that reached the error log and the audit trail. Gmail's reply saying why -- most often "5.4.5 Daily
+ * user sending limit exceeded" -- sits in ErrorInfo, and mail_delivery_error() reads it from there.
+ */
+function send_configured_mail(PHPMailer $mail): void
+{
+    try {
+        $mail->send();
+    } catch (Throwable $exception) {
+        throw new RuntimeException(mail_delivery_error($mail, $exception), 0, $exception);
+    }
 }
 
 function format_human_date(?string $value): string
@@ -484,7 +667,7 @@ function send_leave_request_rejection_email(
         $rejectedNote,
         $leaveDates
     );
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 function travel_order_rejection_subject(): string
@@ -627,7 +810,7 @@ function send_travel_order_rejection_email(
         $rejectedNote,
         $travelDates
     );
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 function compensatory_rejection_subject(): string
@@ -748,12 +931,46 @@ function send_compensatory_rejection_email(
         $rejectedNote,
         $inclusiveDates
     );
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 function employee_account_activation_subject(): string
 {
     return 'Mines and Geosciences Bureau | Employee Account Activation';
+}
+
+function employee_account_activation_forwarded_origin(): ?string
+{
+    $remoteAddress = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+
+    if (
+        $remoteAddress === ''
+        || !function_exists('trusted_proxy_addresses')
+        || !in_array($remoteAddress, trusted_proxy_addresses(), true)
+    ) {
+        return null;
+    }
+
+    $forwardedHosts = explode(',', (string)($_SERVER['HTTP_X_FORWARDED_HOST'] ?? ''));
+    $forwardedHost = trim((string)($forwardedHosts[0] ?? ''));
+
+    // Reject path, user-info, whitespace, and malformed port input before using this as a URL authority.
+    if (
+        $forwardedHost === ''
+        || preg_match('/[\\s\\\\\/@]/', $forwardedHost) === 1
+        || preg_match('/^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\\[[0-9a-f:]+\\])(?::[0-9]{1,5})?$/i', $forwardedHost) !== 1
+    ) {
+        return null;
+    }
+
+    $parts = parse_url('http://' . $forwardedHost);
+    $port = is_array($parts) ? (int)($parts['port'] ?? 0) : 0;
+
+    if (!is_array($parts) || trim((string)($parts['host'] ?? '')) === '' || $port > 65535) {
+        return null;
+    }
+
+    return request_scheme() . '://' . $forwardedHost;
 }
 
 function employee_account_activation_login_url(): string
@@ -764,6 +981,18 @@ function employee_account_activation_login_url(): string
         return $configuredUrl;
     }
 
+    /*
+     * The React development proxy addresses Apache as localhost and the dev-tunnel relay rewrites
+     * Origin to that same internal address. X-Forwarded-Host retains the public tunnel hostname,
+     * though, and connection-pdo.php already defines which proxy addresses may be trusted. Prefer it
+     * so a temporary-password email created from the tunnel links back to the tunnel, not localhost.
+     */
+    $forwardedOrigin = employee_account_activation_forwarded_origin();
+
+    if ($forwardedOrigin !== null) {
+        return rtrim($forwardedOrigin, '/') . '/';
+    }
+
     $origin = trim((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
 
     if ($origin !== '' && preg_match('#^https?://#i', $origin) === 1) {
@@ -772,10 +1001,15 @@ function employee_account_activation_login_url(): string
 
     $host = trim((string)($_SERVER['HTTP_HOST'] ?? ''));
 
+    /*
+     * request_scheme() rather than the HTTPS/SERVER_PORT pair this used to test itself. The two agree
+     * whenever Apache terminates TLS, and disagree in the one case this fallback is most likely to
+     * run in: behind the devtunnel named below, where the user is on https:// but Apache sees plain
+     * HTTP on port 80. That produced an http:// link in an activation e-mail for an account that had
+     * never been reachable over http, and a password link is the last thing that should downgrade.
+     */
     if ($host !== '') {
-        $isSecure = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
-            || (string)($_SERVER['SERVER_PORT'] ?? '') === '443';
-        return ($isSecure ? 'https' : 'http') . '://' . $host;
+        return request_scheme() . '://' . $host;
     }
 
     return 'https://r13nbfw7-3000.asse.devtunnels.ms/';
@@ -818,7 +1052,7 @@ function employee_account_activation_html_body(
     );
     $employeeId = employee_account_activation_value($employee['employeeId'] ?? $employee['employee_id'] ?? '');
     $employeeEmail = employee_account_activation_value($employee['employeeEmail'] ?? $employee['email'] ?? '');
-    $position = employee_account_activation_value($employee['position'] ?? $employee['designation'] ?? '');
+    $position = employee_account_activation_value($employee['position'] ?? '');
     $division = employee_account_activation_value($employee['division'] ?? $employee['department'] ?? '');
     $accessRole = employee_account_activation_role_label($employee['accessRole'] ?? $employee['role'] ?? 'Employee');
     $organization = 'Mines and Geosciences Bureau';
@@ -878,7 +1112,7 @@ function employee_account_activation_text_body(array $employee, string $temporar
     );
     $employeeId = employee_account_activation_value($employee['employeeId'] ?? $employee['employee_id'] ?? '');
     $employeeEmail = employee_account_activation_value($employee['employeeEmail'] ?? $employee['email'] ?? '');
-    $position = employee_account_activation_value($employee['position'] ?? $employee['designation'] ?? '');
+    $position = employee_account_activation_value($employee['position'] ?? '');
     $division = employee_account_activation_value($employee['division'] ?? $employee['department'] ?? '');
     $accessRole = employee_account_activation_role_label($employee['accessRole'] ?? $employee['role'] ?? 'Employee');
 
@@ -933,12 +1167,7 @@ function send_employee_account_activation_email(
     $logoContentId = password_reset_embed_logo($mail);
     $mail->Body = employee_account_activation_html_body($employee, $temporaryPassword, $resolvedLoginUrl, $logoContentId);
     $mail->AltBody = employee_account_activation_text_body($employee, $temporaryPassword, $resolvedLoginUrl);
-
-    try {
-        $mail->send();
-    } catch (Throwable $exception) {
-        throw new RuntimeException(mail_delivery_error($mail, $exception), 0, $exception);
-    }
+    send_configured_mail($mail);
 }
 
 /**
@@ -1020,5 +1249,5 @@ function send_password_reset_email(string $recipientEmail, string $username, str
     $logoContentId = password_reset_embed_logo($mail);
     $mail->Body = password_reset_html_body($username, $code, $expiresInMinutes, $logoContentId);
     $mail->AltBody = password_reset_text_body($username, $code, $expiresInMinutes);
-    $mail->send();
+    send_configured_mail($mail);
 }

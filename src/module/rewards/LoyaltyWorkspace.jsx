@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Award,
   Building2,
   Calendar,
   Filter,
   Search,
+  TrendingUp,
   X,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
@@ -20,24 +21,30 @@ import Card, {
 import InputField from "../../components/UI/InputField";
 import Pagination from "../../components/UI/Pagination";
 import Table from "../../components/UI/table";
+import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import { resolveEmployeeInitials } from "../../components/employee/AdminEmployeeCard";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
-import { separateEmployee } from "../../services/api";
+import { resolveUserRoleKey } from "../../utils/roleRoutes";
+import { fetchServiceRecordSteps, separateEmployee } from "../../services/api";
 import {
   computeAge,
   computeTenure,
   formatLongDate,
   formatTenure,
   formatTenureLong,
+  HIGHEST_SALARY_STEP,
   isRetirementEligible,
   isSeparatedStatus,
+  isSteplessEmploymentStatus,
   loyaltyStatusBadgeClass,
   normalizeEmployeeStatus,
   resolveAvatarPalette,
   resolveLoyaltyStatusLabel,
   resolveLoyaltyTier,
+  resolveServiceStep,
   RETIREMENT_ELIGIBLE_AGE,
   SEPARATION_TYPES,
+  STEP_INCREMENT_YEARS,
   todayAsDateInput,
   yearsUntilRetirement,
 } from "./loyaltyUtils";
@@ -59,6 +66,20 @@ const SORT_OPTIONS = [
   { value: "age", label: "Sort: Age (oldest)" },
   { value: "department", label: "Sort: Department" },
 ];
+
+/*
+ * Who sees only their own division on this roster. HR Staff, Admin, and the HR Head see the whole
+ * office. Same rule as
+ * DIVISION_SCOPED_SERVICE_RECORD_ROLE_KEYS in ServiceRecordWorkspace.jsx: the desk that maintains a
+ * division's records is the desk that reads its loyalty tiers.
+ */
+const DIVISION_SCOPED_LOYALTY_ROLE_KEYS = new Set();
+
+/*
+ * A scoped desk works one division, so ordering rows by department would put every row in the same
+ * bucket; the option is left out rather than offered as a no-op.
+ */
+const SCOPED_SORT_OPTIONS = SORT_OPTIONS.filter((option) => option.value !== "department");
 
 const DEFAULT_LOYALTY_ROWS_PER_PAGE = 10;
 
@@ -167,6 +188,91 @@ function AgeAndDepartment({ employee, age }) {
   );
 }
 
+/**
+ * The step as the roster and the detail card word it. `due` marks an increment that has fallen due
+ * but is not on the service record yet, which is HR's cue to enter it there.
+ */
+function describeServiceStep(record) {
+  const { serviceStep } = record;
+
+  if (!serviceStep) {
+    return {
+      title: "—",
+      detail: !record.stepsLoaded
+        ? ""
+        : isSteplessEmploymentStatus(record.employmentStatus)
+          ? "No salary steps"
+          : "No step on record",
+      tone: "muted",
+    };
+  }
+
+  const title = `Step ${serviceStep.step}`;
+
+  if (serviceStep.stopped) {
+    return { title, detail: `Stopped (${normalizeEmployeeStatus(record.status)})`, tone: "muted" };
+  }
+
+  if (serviceStep.dueSince) {
+    return { title, detail: `Due since ${formatLongDate(serviceStep.dueSince)}`, tone: "due" };
+  }
+
+  return {
+    title,
+    detail: serviceStep.nextStep
+      ? `Step ${serviceStep.nextStep} on ${formatLongDate(serviceStep.nextStepDate)}`
+      : "Highest step",
+    tone: "normal",
+  };
+}
+
+function StepIncrementCard({ record }) {
+  const { serviceStep } = record;
+  const { title, tone } = describeServiceStep(record);
+  let detail;
+
+  if (!serviceStep) {
+    detail = !record.stepsLoaded
+      ? "Loading the step from the service record..."
+      : isSteplessEmploymentStatus(record.employmentStatus)
+        ? `${record.employmentStatus} is not on the salary schedule, so there are no steps to move up.`
+        : "No step on the service record yet.";
+  } else if (serviceStep.stopped) {
+    detail = `Step increments stopped when they ${normalizeEmployeeStatus(record.status)}.`;
+  } else if (serviceStep.dueSince) {
+    detail = `Moved up to Step ${serviceStep.step} on ${formatLongDate(serviceStep.dueSince)}, but the service record still shows Step ${serviceStep.recordedStep}. Add a step increment entry there so the salary follows.`;
+  } else if (serviceStep.nextStep) {
+    detail = `Moves up to Step ${serviceStep.nextStep} on ${formatLongDate(serviceStep.nextStepDate)}.`;
+  } else {
+    detail = "Already at the highest step.";
+  }
+
+  return (
+    <div
+      className={`mt-3 flex items-start gap-2.5 rounded-xl border p-3.5 ${
+        tone === "due" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"
+      }`}
+    >
+      <TrendingUp
+        size={18}
+        className={`mt-0.5 shrink-0 ${tone === "due" ? "text-amber-600" : "text-emerald-600"}`}
+        aria-hidden="true"
+      />
+      <div>
+        <p className="m-0 text-sm font-semibold text-slate-900">
+          {title === "—" ? "Step increment" : title}
+          {record.salaryGrade ? ` · SG ${record.salaryGrade}` : ""}
+        </p>
+        <p className="m-0 text-xs leading-5 text-slate-600">{detail}</p>
+        <p className="m-0 mt-1 text-xs leading-5 text-slate-400">
+          One step for every {STEP_INCREMENT_YEARS} years of service, up to Step {HIGHEST_SALARY_STEP}, until
+          the employee resigns or retires.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function LoyaltyDetailModal({ record, onClose, onSeparate }) {
   const { employee, age, tier, retirementEligible, statusLabel, isSeparated, isActive } = record;
   const palette = resolveAvatarPalette(employee.id ?? employee.employeeId ?? employee.fullName);
@@ -210,6 +316,8 @@ function LoyaltyDetailModal({ record, onClose, onSeparate }) {
         </div>
 
         <AgeAndDepartment employee={employee} age={age} />
+
+        <StepIncrementCard record={record} />
 
         {retirementEligible && !isSeparated ? (
           <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3.5">
@@ -357,9 +465,6 @@ function SeparationModal({ record, type, busy, onClose, onConfirm }) {
         </div>
 
         <div className="mt-5 flex items-center justify-end gap-2.5">
-          <Button variant="secondary" onClick={requestClose} disabled={busy}>
-            Cancel
-          </Button>
           <button
             type="button"
             disabled={busy || !effectiveDate || (isRetirement && !retirementEligible)}
@@ -378,7 +483,12 @@ function SeparationModal({ record, type, busy, onClose, onConfirm }) {
   );
 }
 
-export default function LoyaltyWorkspace({ employees = [] }) {
+export default function LoyaltyWorkspace({ user = null, employees = [] }) {
+  const isDivisionScoped = DIVISION_SCOPED_LOYALTY_ROLE_KEYS.has(resolveUserRoleKey(user));
+  const scopedDivision = isDivisionScoped ? String(user?.division || user?.department || "").trim() : "";
+  const sortOptions = isDivisionScoped ? SCOPED_SORT_OPTIONS : SORT_OPTIONS;
+  const rosterHasNoDivision = isDivisionScoped && !scopedDivision;
+
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [sortBy, setSortBy] = useState("name");
@@ -393,16 +503,50 @@ export default function LoyaltyWorkspace({ employees = [] }) {
    * carries the same status and the overlay becomes a no-op.
    */
   const [separatedStatuses, setSeparatedStatuses] = useState(() => new Map());
+  /*
+   * Each employee's step and the date it took effect, keyed by employee record id, from the service
+   * records. Refetched whenever a service record or employee changes, so a step increment HR enters
+   * shows here without a reload. Null until the first load lands, which the step column shows as a dash.
+   */
+  const [stepsByEmployee, setStepsByEmployee] = useState(null);
+
+  useAutoRefreshOnChange(
+    useCallback(async () => {
+      const result = await fetchServiceRecordSteps();
+      const steps = Array.isArray(result?.steps) ? result.steps : [];
+
+      setStepsByEmployee(new Map(steps.map((entry) => [String(entry.employeeRecordId), entry])));
+    }, []),
+    { topics: ["service_record", "employee"] }
+  );
+
+  // The roster a scoped desk ranks is its own division only; an HR Staff account with no division
+  // on its employee profile gets an empty list rather than everyone's.
+  const scopedEmployees = useMemo(() => {
+    if (!isDivisionScoped) {
+      return employees || [];
+    }
+
+    const target = scopedDivision.toLowerCase();
+
+    return target
+      ? (employees || []).filter(
+        (employee) => String(employee.department || employee.division || "").trim().toLowerCase() === target
+      )
+      : [];
+  }, [employees, isDivisionScoped, scopedDivision]);
 
   const records = useMemo(() => {
     const today = new Date();
 
-    return (employees || []).map((employee) => {
+    return scopedEmployees.map((employee) => {
       const tenure = computeTenure(employee.dateHired, today);
       const age = computeAge(employee.dateOfBirth, today);
       const key = String(employee.id ?? employee.employeeId ?? employee.fullName);
       const status = separatedStatuses.get(key) || employee.status || "";
       const retirementEligible = isRetirementEligible(age);
+      const stepEntry = stepsByEmployee?.get(String(employee.id)) || null;
+      const employmentStatus = employee.employmentStatus || stepEntry?.employmentStatus || "";
 
       return {
         employee,
@@ -415,9 +559,22 @@ export default function LoyaltyWorkspace({ employees = [] }) {
         statusLabel: resolveLoyaltyStatusLabel({ status, retirementEligible }),
         isActive: normalizeEmployeeStatus(status) === "active",
         isSeparated: isSeparatedStatus(status),
+        employmentStatus,
+        salaryGrade: stepEntry?.salaryGrade || "",
+        stepsLoaded: Boolean(stepsByEmployee),
+        serviceStep: stepsByEmployee
+          ? resolveServiceStep({
+            recordedStep: stepEntry?.step ?? null,
+            stepSince: stepEntry?.stepSince,
+            dateHired: employee.dateHired,
+            employmentStatus,
+            separated: isSeparatedStatus(status),
+            today,
+          })
+          : null,
       };
     });
-  }, [employees, separatedStatuses]);
+  }, [scopedEmployees, separatedStatuses, stepsByEmployee]);
 
   const filteredRecords = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -525,16 +682,6 @@ export default function LoyaltyWorkspace({ employees = [] }) {
   /* `cardRole` lays these columns out as cards below `lg` — see `components/UI/table.jsx`. */
   const columns = [
     {
-      key: "index",
-      header: "#",
-      cardRole: "eyebrow",
-      render: (_record, index) => (
-        <span className="text-sm font-semibold text-slate-600">
-          {(safePage - 1) * DEFAULT_LOYALTY_ROWS_PER_PAGE + index + 1}
-        </span>
-      ),
-    },
-    {
       key: "employee",
       header: "Employee",
       cardRole: "title",
@@ -563,6 +710,31 @@ export default function LoyaltyWorkspace({ employees = [] }) {
       key: "tenure",
       header: "Time period",
       render: (record) => <span className="text-slate-600">{formatTenure(record.tenure)}</span>,
+    },
+    {
+      key: "step",
+      header: "Step",
+      render: (record) => {
+        const { title, detail, tone } = describeServiceStep(record);
+
+        return (
+          <span
+            className="block"
+            title={
+              tone === "due"
+                ? `The service record still shows Step ${record.serviceStep.recordedStep}. Add a step increment entry there.`
+                : undefined
+            }
+          >
+            <span className="block font-semibold text-slate-900">{title}</span>
+            {detail ? (
+              <span className={`block text-xs ${tone === "due" ? "font-semibold text-amber-700" : "text-slate-500"}`}>
+                {detail}
+              </span>
+            ) : null}
+          </span>
+        );
+      },
     },
     {
       key: "age",
@@ -639,45 +811,54 @@ export default function LoyaltyWorkspace({ employees = [] }) {
           <div>
             <CardTitle>Loyalty</CardTitle>
             <CardDescription>
-              Recognize tenure with loyalty tiers and see who is eligible for retirement.
+              Recognize tenure with loyalty tiers, follow step increments, and see who is eligible for retirement.
+              {isDivisionScoped && scopedDivision ? ` Showing ${scopedDivision} only.` : ""}
             </CardDescription>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 lg:grid-cols-[minmax(0,240px)_170px_180px]">
-            <label className="relative">
-              <span className="sr-only">Search employees</span>
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search by name, position, or department"
-                className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-              />
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Search Employees</span>
+              <span className="relative block">
+                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={isDivisionScoped ? "Search by name or position" : "Search by name, position, or department"}
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                />
+              </span>
             </label>
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-            >
-              <option value="">All statuses</option>
-              <option value="eligible">Eligible</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-              <option value="retired">Retired</option>
-              <option value="resigned">Resigned</option>
-            </select>
-            <select
-              value={sortBy}
-              onChange={(event) => setSortBy(event.target.value)}
-              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-            >
-              {SORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Status</span>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              >
+                <option value="">All statuses</option>
+                <option value="eligible">Eligible</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+                <option value="retired">Retired</option>
+                <option value="resigned">Resigned</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Sort By</span>
+              <select
+                value={sortBy}
+                onChange={(event) => setSortBy(event.target.value)}
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              >
+                {sortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {/* Plain container for the card grid below `lg`, framed box for the table from `lg` up. */}
@@ -692,10 +873,18 @@ export default function LoyaltyWorkspace({ employees = [] }) {
               emptyState={
                 <div className="py-5">
                   <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
-                    <Filter size={20} aria-hidden="true" />
+                    {rosterHasNoDivision ? <Building2 size={20} aria-hidden="true" /> : <Filter size={20} aria-hidden="true" />}
                   </div>
-                  <p className="m-0 mt-3 text-sm font-semibold text-slate-700">No employees match your search</p>
-                  <p className="m-0 mt-1 text-sm text-slate-500">Try a different name, position, or department.</p>
+                  <p className="m-0 mt-3 text-sm font-semibold text-slate-700">
+                    {rosterHasNoDivision ? "Your employee profile has no assigned division" : "No employees match your search"}
+                  </p>
+                  <p className="m-0 mt-1 text-sm text-slate-500">
+                    {rosterHasNoDivision
+                      ? "Loyalty is listed for your division only. Ask an administrator to set your division in Employee Management."
+                      : isDivisionScoped
+                        ? "Try a different name or position."
+                        : "Try a different name, position, or department."}
+                  </p>
                 </div>
               }
             />

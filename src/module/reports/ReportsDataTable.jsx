@@ -9,8 +9,8 @@ import {
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
 
-const DEFAULT_ROWS_PER_PAGE = 25;
-const ROWS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
+const DEFAULT_ROWS_PER_PAGE = 10;
+const ROWS_PER_PAGE_OPTIONS = [10, 20, 50, 100, 200];
 const AMOUNT_PATTERN = /(pay|salary|deduction|amount|allowance|net|gross|credits)/i;
 
 function sortValue(value) {
@@ -50,7 +50,7 @@ export function statusBadgeClasses(value = "") {
     return "border-emerald-200 bg-emerald-50 text-emerald-700";
   }
 
-  if (["pending", "reviewed", "draft", "assigned", "processing", "incomplete"].includes(token)) {
+  if (["pending", "endorsed", "reviewed", "draft", "assigned", "processing", "incomplete"].includes(token)) {
     return "border-amber-200 bg-amber-50 text-amber-800";
   }
 
@@ -97,26 +97,34 @@ export default function ReportsDataTable({
   cellRenderers = null,
   minWidth = 900,
   showSearch = true,
+  searchValue,
+  onSearchChange,
+  alwaysTable = false,
   emptyMessage = "No records found for the selected filters.",
 }) {
-  const [search, setSearch] = useState("");
+  const [internalSearch, setInternalSearch] = useState("");
   const [sortConfig, setSortConfig] = useState({ key: "", direction: "asc" });
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const [currentPage, setCurrentPage] = useState(1);
   const [columnWidths, setColumnWidths] = useState({});
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
   const resizeRef = useRef(null);
+  const isSearchControlled = searchValue !== undefined;
+  const search = isSearchControlled ? searchValue : internalSearch;
+  const setSearch = onSearchChange || setInternalSearch;
 
   const columnKeys = useMemo(() => columns.map((column) => column.key).join("|"), [columns]);
 
   // A new report brings a new column set — reset everything that is keyed to it.
   useEffect(() => {
-    setSearch("");
+    if (!isSearchControlled) {
+      setInternalSearch("");
+    }
     setSortConfig({ key: "", direction: "asc" });
     setCurrentPage(1);
     setColumnWidths({});
     setSelectedKeys(new Set());
-  }, [columnKeys]);
+  }, [columnKeys, isSearchControlled]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -296,52 +304,54 @@ export default function ReportsDataTable({
         * card view below `lg` turns each row into its own labelled block instead. The first visible
         * column heads the card — for every report here that is the row's identity.
         */}
-      <RecordCards
-        className={`lg:hidden transition-opacity duration-200 ${refreshing ? "opacity-60" : "opacity-100"}`}
-        items={paginatedRows}
-        itemKey={(row, index) => rowKeyFor(row, index)}
-        loading={loading}
-        loadingCards={3}
-        empty={{ title: emptyMessage }}
-        renderCard={(row, index) => {
-          const key = rowKeyFor(row, index);
-          const [leadColumn, ...restColumns] = visibleColumns;
+      {!alwaysTable ? (
+        <RecordCards
+          className={`lg:hidden transition-opacity duration-200 ${refreshing ? "opacity-60" : "opacity-100"}`}
+          items={paginatedRows}
+          itemKey={(row, index) => rowKeyFor(row, index)}
+          loading={loading}
+          loadingCards={3}
+          empty={{ title: emptyMessage }}
+          renderCard={(row, index) => {
+            const key = rowKeyFor(row, index);
+            const [leadColumn, ...restColumns] = visibleColumns;
 
-          return {
-            eyebrow: selectable ? (
-              <span className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={selectedKeys.has(key)}
-                  onChange={() =>
-                    updateSelection((next) => {
-                      if (next.has(key)) {
-                        next.delete(key);
-                      } else {
-                        next.add(key);
-                      }
+            return {
+              eyebrow: selectable ? (
+                <span className="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedKeys.has(key)}
+                    onChange={() =>
+                      updateSelection((next) => {
+                        if (next.has(key)) {
+                          next.delete(key);
+                        } else {
+                          next.add(key);
+                        }
 
-                      return next;
-                    })
-                  }
-                  aria-label={`Select row ${index + 1}`}
-                  className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-slate-900"
-                />
-                <span>{leadColumn?.label}</span>
-              </span>
-            ) : leadColumn?.label,
-            title: leadColumn ? (
-              <ReportCell column={leadColumn} row={row} renderer={cellRenderers?.[leadColumn.key]} />
-            ) : null,
-            fields: restColumns.map((column) => ({
-              label: column.label,
-              value: <ReportCell column={column} row={row} renderer={cellRenderers?.[column.key]} />,
-            })),
-          };
-        }}
-      />
+                        return next;
+                      })
+                    }
+                    aria-label={`Select row ${index + 1}`}
+                    className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-slate-900"
+                  />
+                  <span>{leadColumn?.label}</span>
+                </span>
+              ) : leadColumn?.label,
+              title: leadColumn ? (
+                <ReportCell column={leadColumn} row={row} renderer={cellRenderers?.[leadColumn.key]} />
+              ) : null,
+              fields: restColumns.map((column) => ({
+                label: column.label,
+                value: <ReportCell column={column} row={row} renderer={cellRenderers?.[column.key]} />,
+              })),
+            };
+          }}
+        />
+      ) : null}
 
-      <div className="hidden overflow-hidden rounded-xl border border-slate-200 lg:block">
+      <div className={`${alwaysTable ? "block" : "hidden lg:block"} overflow-hidden rounded-xl border border-slate-200`}>
         <div className={`max-h-[620px] overflow-auto transition-opacity duration-200 ${refreshing ? "opacity-60" : "opacity-100"}`}>
           <table className="w-full border-collapse" style={{ minWidth }}>
             <thead className="sticky top-0 z-10">

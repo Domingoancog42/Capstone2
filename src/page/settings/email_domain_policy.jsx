@@ -2,51 +2,13 @@ import React, { useEffect, useMemo, useState } from "react";
 import { MailCheck, MailX, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
 import Button from "../../components/UI/button";
 import { SettingsNotice, SettingsPanel, SettingsSection, SettingsToggleRow } from "../../components/settings";
+import {
+  defaultEmailDomainPolicy,
+  normalizeEmailDomainList,
+  normalizeEmailDomainPolicy,
+} from "../../utils/emailDomainPolicy";
 
-export const defaultEmailDomainPolicy = {
-  enabled: false,
-  allowListedOnly: false,
-  allowedDomains: ["gmail.com"],
-  blockedDomains: [
-    "10minutemail.com",
-    "guerrillamail.com",
-    "mailinator.com",
-    "tempmail.com",
-    "temp-mail.org",
-    "yopmail.com",
-  ],
-};
-
-function normalizeDomain(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/.*$/, "")
-    .replace(/^[@.]+/, "");
-}
-
-function normalizeDomainList(values) {
-  const source = Array.isArray(values) ? values : String(values || "").split(/[\s,;]+/);
-  return Array.from(
-    new Set(
-      source
-        .map(normalizeDomain)
-        .filter((domain) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(domain))
-    )
-  );
-}
-
-export function normalizeEmailDomainPolicy(policy = {}) {
-  return {
-    ...defaultEmailDomainPolicy,
-    ...policy,
-    enabled: Boolean(policy.enabled),
-    allowListedOnly: Boolean(policy.allowListedOnly),
-    allowedDomains: normalizeDomainList(policy.allowedDomains ?? defaultEmailDomainPolicy.allowedDomains),
-    blockedDomains: normalizeDomainList(policy.blockedDomains ?? defaultEmailDomainPolicy.blockedDomains),
-  };
-}
+export { defaultEmailDomainPolicy, normalizeEmailDomainPolicy };
 
 function DomainList({ domains = [], emptyMessage, onRemove }) {
   if (domains.length === 0) {
@@ -131,14 +93,14 @@ export default function EmailDomainPolicySettings({
   };
 
   const addDomain = (listKey, value, setValue) => {
-    const domains = normalizeDomainList(value);
+    const domains = normalizeEmailDomainList(value);
     if (domains.length === 0) {
       setLocalError("Enter a valid domain, like gmail.com.");
       return;
     }
 
     updateDraft({
-      [listKey]: normalizeDomainList([...draft[listKey], ...domains]),
+      [listKey]: normalizeEmailDomainList([...draft[listKey], ...domains]),
     });
     setValue("");
   };
@@ -194,7 +156,7 @@ export default function EmailDomainPolicySettings({
           id="emailPolicyAllowOnly"
           icon={MailCheck}
           label="Allow listed domains only"
-          description="Use this for Gmail-only rules. Blocked domains are still rejected first."
+          description="Accept only addresses from the Allowed Domains list. Blocked domains are still rejected first."
           checked={draft.allowListedOnly}
           disabled={saving}
           onToggle={() => updateDraft({ allowListedOnly: !draft.allowListedOnly })}
@@ -224,8 +186,14 @@ export default function EmailDomainPolicySettings({
           onRemove={(domain) => removeDomain("blockedDomains", domain)}
         />
 
+        {!draft.enabled ? (
+          <SettingsNotice tone="warning">
+            These domain lists are saved but are not enforced until Enable email domain rules is turned on.
+          </SettingsNotice>
+        ) : null}
+
         <SettingsNotice tone="info">
-          Domain rules block addresses by domain. They cannot verify whether a real Gmail inbox is fake or unused.
+          Domain rules validate the part after @. They cannot verify whether an inbox exists or is actively used.
         </SettingsNotice>
       </div>
     </SettingsPanel>

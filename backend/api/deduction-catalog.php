@@ -9,8 +9,8 @@ declare(strict_types=1);
  * structurally identical tables Settings wrote to and payroll ignored. Both Settings and payroll now
  * read these tables, so a rate edited in Settings is the rate payroll charges.
  *
- * Payroll stores what it charged in a column per deduction on `payroll`; `payrolldeduction` keeps
- * the itemised rows those columns are derived from.
+ * Payroll stores what it charged in a column per deduction and keeps the corresponding itemised
+ * list in `payroll.deduction_items_json`.
  *
  * @see backend/database/split_deduction_tables.php     the family split
  * @see backend/database/payroll_deduction_columns.php  the payroll columns
@@ -27,9 +27,9 @@ function deduction_catalog_slug(string $value): string
  * One table per deduction family. The key is the "category" the rest of the app talks in; `band` is
  * where that table's AUTO_INCREMENT starts.
  *
- * The bands matter: `payrolldeduction.deduction_type_id` can point into any of these six tables and
- * cannot carry a foreign key to all of them, so ids have to stay unique across the whole set for a
- * reference to resolve. Non-overlapping bands are what guarantees that.
+ * The bands matter because embedded payroll deduction items can point into any of these six tables,
+ * so ids have to stay unique across the whole set for a reference to resolve. Non-overlapping bands
+ * are what guarantees that.
  */
 const DEDUCTION_FAMILIES = [
     'attendance' => ['table' => 'attendance_deductions', 'label' => 'Attendance Deductions', 'band' => 1000],
@@ -82,22 +82,30 @@ function deduction_catalog_ensure_schema(PDO $pdo): void
 /**
  * The six family tables as one result set.
  *
- * `payrolldeduction.deduction_type_id` can point into any of them and carries no foreign key, so
- * every query that needs to turn an id back into a deduction joins this. It is inlined as a derived
+ * Embedded deduction items can point into any of them, so every query that needs to turn an id back
+ * into a deduction uses this union. It is inlined as a derived
  * table rather than kept as a view: `payroll` now stores each deduction in its own column, and the
  * `all_deductions` / `payroll_deduction_columns` views that used to stand in for that are gone.
  *
- * Always used as `... INNER JOIN ' . deduction_catalog_union_sql() . ' d ON d.id = ...`.
+ * Always used as `... INNER JOIN ' . deduction_catalog_union_sql($pdo) . ' d ON d.id = ...`.
  */
-function deduction_catalog_union_sql(): string
+function deduction_catalog_union_sql(PDO $pdo): string
 {
+    $otherAmountColumn = deduction_catalog_other_amount_column($pdo);
     $parts = [];
     foreach (DEDUCTION_FAMILIES as $key => $family) {
+        // Other deductions store a simple amount; expose the shared payroll shape at this boundary.
+        $amountColumns = $key === 'other'
+            ? "'fixed' AS calculation_type, {$otherAmountColumn} AS default_amount, 0 AS default_rate,
+               'basic_salary' AS basis, 0 AS threshold_amount, NULL AS threshold_rules,
+               0 AS base_floor, NULL AS base_cap"
+            : 'calculation_type, default_amount, default_rate, basis,
+               threshold_amount, threshold_rules, base_floor, base_cap';
         $parts[] = sprintf(
-            'SELECT id, code, name, description, calculation_type, default_amount, default_rate, basis,
-                    threshold_amount, threshold_rules, base_floor, base_cap, is_recurring, is_active,
+            'SELECT id, code, name, description, %s, is_recurring, is_active,
                     show_in_payroll, sort_order, %s AS deduction_family, %s AS source_table
              FROM `%s`',
+            $amountColumns,
             deduction_catalog_sql_string($key),
             deduction_catalog_sql_string($family['table']),
             $family['table']
@@ -105,6 +113,57 @@ function deduction_catalog_union_sql(): string
     }
 
     return '(' . implode(' UNION ALL ', $parts) . ')';
+}
+
+/** Support existing deployments without requiring a destructive catalog cleanup. */
+function deduction_catalog_other_amount_column(PDO $pdo): string
+{
+    $columns = $pdo->query("SHOW COLUMNS FROM other_deductions WHERE Field IN ('amount', 'default_amount')")
+        ->fetchAll(PDO::FETCH_COLUMN);
+    if (in_array('amount', $columns, true)) {
+        return 'amount';
+    }
+    if (in_array('default_amount', $columns, true)) {
+        return 'default_amount';
+    }
+    throw new RuntimeException('Other Deductions is missing its amount column.');
+}
+
+/** Write catalog fields while keeping the simple Other Deductions table free of calculation fields. */
+function deduction_catalog_update_fields(PDO $pdo, string $table, int $id, array $values): void
+{
+    $family = null;
+    foreach (DEDUCTION_FAMILIES as $candidate) {
+        if ($candidate['table'] === $table) {
+            $family = $candidate;
+            break;
+        }
+    }
+    if ($family === null) {
+        throw new InvalidArgumentException('Unknown deduction table.');
+    }
+
+    $allowed = ['name', 'description', 'default_amount', 'is_recurring', 'is_active', 'show_in_payroll', 'sort_order'];
+    if ($table !== DEDUCTION_FAMILIES['other']['table']) {
+        $allowed = array_merge($allowed, [
+            'calculation_type', 'default_rate', 'basis', 'threshold_amount', 'threshold_rules', 'base_floor', 'base_cap',
+        ]);
+    }
+
+    $assignments = [];
+    $params = [':id' => $id];
+    foreach (array_intersect_key($values, array_flip($allowed)) as $column => $value) {
+        $storedColumn = $table === DEDUCTION_FAMILIES['other']['table'] && $column === 'default_amount'
+            ? deduction_catalog_other_amount_column($pdo) : $column;
+        $assignments[] = "`{$storedColumn}` = :{$column}";
+        $params[':' . $column] = $value;
+    }
+    if ($assignments === []) {
+        return;
+    }
+
+    $statement = $pdo->prepare("UPDATE `{$table}` SET " . implode(', ', $assignments) . ' WHERE id = :id');
+    $statement->execute($params);
 }
 
 /**
@@ -124,7 +183,7 @@ function deduction_catalog_sql_string(string $value): string
  * `dt.deduction_name` / `dt.category_name`. Rather than rewrite each one around the family tables,
  * they join this and keep working — `category_name` resolves the family key back to its label.
  */
-function deduction_catalog_type_union_sql(): string
+function deduction_catalog_type_union_sql(PDO $pdo): string
 {
     $labels = [];
     foreach (DEDUCTION_FAMILIES as $key => $family) {
@@ -155,7 +214,7 @@ function deduction_catalog_type_union_sql(): string
                 d.is_active,
                 d.show_in_payroll,
                 d.sort_order
-             FROM ' . deduction_catalog_union_sql() . ' d)';
+             FROM ' . deduction_catalog_union_sql($pdo) . ' d)';
 }
 
 /** The `payroll` column a deduction is stored in. Codes are already slugs; 64 is MySQL's limit. */
@@ -178,8 +237,9 @@ function deduction_catalog_payroll_column(string $code): string
  *
  * This is what replaced the `payroll_deduction_columns` view. The trade-off is real and worth
  * naming: a new deduction now means an ALTER on the table holding financial history, where the view
- * cost nothing. `payrolldeduction` remains the record of truth — these columns are kept in step with
- * it by payroll_sync_deductions() — so a column that ever drifted can be rebuilt from it.
+ * cost nothing. `payroll.deduction_items_json` remains the itemised record of truth — these columns
+ * are kept in step with it by payroll_sync_deductions() — so a column that ever drifted can be
+ * rebuilt from it.
  */
 function deduction_catalog_sync_payroll_columns(PDO $pdo): void
 {
@@ -198,7 +258,7 @@ function deduction_catalog_sync_payroll_columns(PDO $pdo): void
 
     $after = isset($existing['total_allowance']) ? 'total_allowance' : null;
     $statement = $pdo->query(
-        'SELECT code FROM ' . deduction_catalog_union_sql() . ' d
+        'SELECT code FROM ' . deduction_catalog_union_sql($pdo) . ' d
          WHERE d.is_active = 1 AND d.show_in_payroll = 1 ORDER BY d.id'
     );
 
@@ -225,9 +285,9 @@ function deduction_catalog_sync_payroll_columns(PDO $pdo): void
 /**
  * Which of the six tables holds a given deduction id.
  *
- * Needed because `payrolldeduction.deduction_type_id` no longer has a foreign key to follow — with
- * the catalog split across six tables, no single constraint can cover it. Returns null if the id
- * belongs to none of them.
+ * Needed because an embedded deduction type id has no foreign key to follow — with the catalog
+ * split across six tables, no single constraint can cover it. Returns null if the id belongs to
+ * none of them.
  */
 function deduction_catalog_table_for_id(PDO $pdo, int $deductionId): ?string
 {
@@ -236,7 +296,7 @@ function deduction_catalog_table_for_id(PDO $pdo, int $deductionId): ?string
     }
 
     $statement = $pdo->prepare(
-        'SELECT d.source_table FROM ' . deduction_catalog_union_sql() . ' d WHERE d.id = :id LIMIT 1'
+        'SELECT d.source_table FROM ' . deduction_catalog_union_sql($pdo) . ' d WHERE d.id = :id LIMIT 1'
     );
     $statement->execute([':id' => $deductionId]);
     $table = $statement->fetchColumn();
@@ -258,6 +318,34 @@ function deduction_catalog_resolve_category(PDO $pdo, string $categoryName): int
 }
 
 /**
+ * The family label that already holds a deduction with this name, or null when none does.
+ *
+ * Families are checked in DEDUCTION_FAMILIES order, so a loan product GSIS or Pag-IBIG already
+ * carries is found there before `other` is considered. The seeder and the payroll loan collector
+ * ask this before filing a name under Other Deductions — without it each of them created a second
+ * "Policy Loan" there next to the GSIS row.
+ */
+function deduction_catalog_category_for_name(PDO $pdo, string $deductionName): ?string
+{
+    $name = trim($deductionName);
+
+    if ($name === '') {
+        return null;
+    }
+
+    foreach (DEDUCTION_FAMILIES as $family) {
+        $statement = $pdo->prepare("SELECT COUNT(*) FROM `{$family['table']}` WHERE name = :name");
+        $statement->execute([':name' => $name]);
+
+        if ((int)$statement->fetchColumn() > 0) {
+            return $family['label'];
+        }
+    }
+
+    return null;
+}
+
+/**
  * Resolves a (category, deduction) pair to a deduction id, creating the row if it is new.
  *
  * The category decides which of the six tables the row lives in. Name alone cannot identify a
@@ -276,6 +364,11 @@ function deduction_catalog_resolve_type(PDO $pdo, string $categoryName, string $
     $familyKey = deduction_family_key_for_name($categoryName);
     $table = DEDUCTION_FAMILIES[$familyKey]['table'];
 
+    // PhilHealth and PHIC are the same contribution. Keep one catalog row for both labels.
+    if ($familyKey === 'phic' && in_array(strtolower($name), ['phic', 'philhealth', 'philhealth premium'], true)) {
+        $name = 'PHIC';
+    }
+
     $statement = $pdo->prepare("SELECT id FROM `{$table}` WHERE name = :name LIMIT 1");
     $statement->execute([':name' => $name]);
     $id = (int)$statement->fetchColumn();
@@ -291,7 +384,7 @@ function deduction_catalog_resolve_type(PDO $pdo, string $categoryName, string $
     $base = deduction_catalog_slug($name) ?: 'deduction';
     $code = $base;
     $exists = $pdo->prepare(
-        'SELECT COUNT(*) FROM ' . deduction_catalog_union_sql() . ' d WHERE d.code = :code'
+        'SELECT COUNT(*) FROM ' . deduction_catalog_union_sql($pdo) . ' d WHERE d.code = :code'
     );
     $exists->execute([':code' => $code]);
 
@@ -367,7 +460,7 @@ function deduction_catalog_types(PDO $pdo, array $filters = []): array
 
     // The union spares callers from having to know which family table a deduction lives in.
     $statement = $pdo->prepare(
-        'SELECT d.* FROM ' . deduction_catalog_union_sql() . ' d' . $whereSql . ' ORDER BY d.id'
+        'SELECT d.* FROM ' . deduction_catalog_union_sql($pdo) . ' d' . $whereSql . ' ORDER BY d.id'
     );
 
     if (!empty($filters['categoryCode'])) {
@@ -403,6 +496,140 @@ function deduction_catalog_types(PDO $pdo, array $filters = []): array
             'payrollColumn' => deduction_catalog_payroll_column((string)$row['code']),
         ];
     }, $statement->fetchAll());
+}
+
+/**
+ * Loan products are configured alongside the deductions that collect their amortisation. The
+ * catalog has no separate loan flag, so loan rows are identified by their stable code/name or by
+ * the explanatory text saved in Deduction Setup. This deliberately excludes contribution rows
+ * such as GSIS, HDMF, Premium, and MP2.
+ */
+function deduction_catalog_type_is_loan(array $type): bool
+{
+    $name = strtolower(trim((string)($type['name'] ?? $type['type_name'] ?? '')));
+    $code = strtolower(trim((string)($type['code'] ?? '')));
+    $description = strtolower(trim((string)($type['description'] ?? '')));
+    $knownAbbreviations = ['l&r', 'gfal', 'mpl', 'mpl lite', 'cpl'];
+
+    if (in_array($name, $knownAbbreviations, true)) {
+        return true;
+    }
+
+    $searchable = $name . ' ' . str_replace('_', ' ', $code) . ' ' . $description;
+
+    return preg_match('/(?:^|[^a-z])loans?(?:[^a-z]|$)/', $searchable) === 1
+        || str_contains($searchable, 'amortisation')
+        || str_contains($searchable, 'amortization')
+        || str_contains($searchable, 'cash advance');
+}
+
+/** Active Deduction Setup rows that may be selected when filing a loan. */
+function deduction_catalog_loan_types(PDO $pdo): array
+{
+    return array_values(array_filter(
+        deduction_catalog_types($pdo, ['activeOnly' => true]),
+        static fn (array $type): bool => deduction_catalog_type_is_loan($type)
+    ));
+}
+
+/** Catalog rows keyed by globally unique deduction type id. */
+function deduction_catalog_type_map(PDO $pdo): array
+{
+    $map = [];
+
+    foreach (deduction_catalog_types($pdo) as $type) {
+        $map[(int)$type['id']] = $type;
+    }
+
+    return $map;
+}
+
+/**
+ * Normalize the compact JSON stored on a payroll row into the shape used by payroll, payslips,
+ * reports and the deduction API. Migrated items contain ids and amounts; new items also snapshot
+ * their names and categories so history remains readable after a catalog label changes.
+ */
+function deduction_catalog_normalize_payroll_items(
+    PDO $pdo,
+    array $items,
+    int $payrollId = 0,
+    ?array $types = null
+): array
+{
+    $types ??= deduction_catalog_type_map($pdo);
+    $normalized = [];
+
+    foreach ($items as $index => $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $typeId = (int)($item['deductionTypeId'] ?? $item['deduction_type_id'] ?? 0);
+        $type = $types[$typeId] ?? null;
+        $id = (int)($item['payrollDeductionId'] ?? $item['id'] ?? 0);
+        $name = trim((string)($item['deductionName'] ?? $item['name'] ?? ($type['name'] ?? '')));
+        $category = trim((string)($item['categoryName'] ?? $item['category'] ?? ($type['categoryName'] ?? '')));
+
+        if ($id <= 0) {
+            $id = $index + 1;
+        }
+
+        $normalized[] = [
+            'id' => $id,
+            'payrollDeductionId' => $id,
+            'payroll_id' => $payrollId,
+            'payrollId' => $payrollId,
+            'deduction_type_id' => $typeId,
+            'deductionTypeId' => $typeId,
+            'name' => $name,
+            'deductionName' => $name,
+            'category' => $category,
+            'categoryName' => $category,
+            'amount' => round((float)($item['amount'] ?? 0), 2),
+            'source' => trim((string)($item['source'] ?? '')),
+            'referenceId' => (int)($item['referenceId'] ?? 0),
+            'monthlyAmount' => round((float)($item['monthlyAmount'] ?? 0), 2),
+            'paidAmountBeforePayroll' => round((float)($item['paidAmountBeforePayroll'] ?? 0), 2),
+        ];
+    }
+
+    return $normalized;
+}
+
+function deduction_catalog_payroll_items(PDO $pdo, int $payrollId): array
+{
+    return deduction_catalog_normalize_payroll_items(
+        $pdo,
+        payroll_read_embedded_json_list($pdo, $payrollId, 'deduction_items_json'),
+        $payrollId
+    );
+}
+
+/** Number of embedded payroll items that use each deduction type. */
+function deduction_catalog_payroll_usage_counts(PDO $pdo): array
+{
+    $counts = [];
+    $statement = $pdo->query(
+        'SELECT payroll_id, deduction_items_json
+         FROM payroll
+         WHERE deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
+    );
+
+    foreach ($statement as $row) {
+        $items = payroll_decode_embedded_json_list($row['deduction_items_json'] ?? null);
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $typeId = (int)($item['deductionTypeId'] ?? $item['deduction_type_id'] ?? 0);
+            if ($typeId > 0) {
+                $counts[$typeId] = ($counts[$typeId] ?? 0) + 1;
+            }
+        }
+    }
+
+    return $counts;
 }
 
 /** The six family tables, presented the way the Settings screen expects categories. */

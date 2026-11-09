@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import Button from "../UI/button";
+import ActionsMenu from "../UI/ActionsMenu";
 import Card, { CardContent, CardDescription, CardHeader, CardTitle } from "../UI/card";
 import Modal from "../UI/modal";
 import NotificationTypeChip from "./NotificationTypeChip";
@@ -515,7 +516,7 @@ export default function NotificationCenter({ user, onNavigate }) {
             </SelectField>
 
             <SelectField id="notificationRowsPerPage" label="Rows Per Page" value={perPage} onChange={handlePerPageChange}>
-              {[10, 20, 50].map((option) => (
+              {[10, 20, 50, 100, 200].map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>
@@ -631,7 +632,7 @@ export default function NotificationCenter({ user, onNavigate }) {
                       },
                       { label: "Message", value: buildNotificationSnippet(notification.message), full: true },
                     ],
-                    actions: renderNotificationActions(notification, isBusy),
+                    actions: <ActionsMenu>{renderNotificationActions(notification, isBusy)}</ActionsMenu>,
                   };
                 }}
               />
@@ -738,9 +739,7 @@ export default function NotificationCenter({ user, onNavigate }) {
                               <StatusChip isRead={notification.isRead} />
                             </td>
                             <td className="border-b border-slate-200 px-4 py-4 align-top">
-                              <div className="flex flex-wrap gap-2">
-                                {renderNotificationActions(notification, isBusy)}
-                              </div>
+                              <ActionsMenu>{renderNotificationActions(notification, isBusy)}</ActionsMenu>
                             </td>
                           </tr>
                         );

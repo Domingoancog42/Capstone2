@@ -35,6 +35,70 @@ if (!payslip_scope_is_self()
     ], 403);
 }
 
+function payslip_can_archive(string $roleKey): bool
+{
+    return !payslip_scope_is_self() && in_array($roleKey, ['admin', 'hrhead', 'hrstaff', 'regionaldirector', 'cashier'], true);
+}
+
+function payslip_archive_view(): int
+{
+    return payslip_scope_is_self() ? 0 : (int)(($_GET['archived'] ?? '') === '1');
+}
+
+function payslip_ensure_archive_schema(PDO $pdo): void
+{
+    if (!database_column_exists($pdo, 'payroll', 'payslip_is_archived')) {
+        $pdo->exec('ALTER TABLE payroll ADD payslip_is_archived TINYINT(1) NOT NULL DEFAULT 0');
+    }
+}
+
+function payslip_set_archived(PDO $pdo, array $ids, bool $archived): int
+{
+    $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        throw new InvalidArgumentException('Select at least one payslip.');
+    }
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $pdo->beginTransaction();
+    try {
+        $check = $pdo->prepare("SELECT payroll_id FROM payroll WHERE status = 'Paid' AND payroll_id IN ($placeholders) FOR UPDATE");
+        $check->execute($ids);
+        if (count($check->fetchAll()) !== count($ids)) {
+            throw new InvalidArgumentException('One or more paid payslips could not be found. Refresh the list.');
+        }
+        $statement = $pdo->prepare("UPDATE payroll SET payslip_is_archived = ? WHERE payroll_id IN ($placeholders)");
+        $statement->execute(array_merge([(int)$archived], $ids));
+        $changed = $statement->rowCount();
+        $pdo->commit();
+        return $changed;
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+}
+
+payslip_ensure_archive_schema($pdo);
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    if (!payslip_can_archive($roleKey)) {
+        json_response(['success' => false, 'message' => 'You are not allowed to archive payslips.'], 403);
+    }
+    $body = read_json_body();
+    $archiveAction = $body['action'] ?? '';
+    if (!in_array($archiveAction, ['archive', 'restore'], true)) {
+        json_response(['success' => false, 'message' => 'Invalid payslip action.'], 422);
+    }
+    try {
+        $changed = payslip_set_archived($pdo, is_array($body['ids'] ?? null) ? $body['ids'] : [], $archiveAction === 'archive');
+        json_response(['success' => true, 'changed' => $changed]);
+    } catch (InvalidArgumentException $exception) {
+        json_response(['success' => false, 'message' => $exception->getMessage()], 422);
+    } catch (Throwable $exception) {
+        error_log('Payslip archive error: ' . $exception->getMessage());
+        json_response(['success' => false, 'message' => 'Unable to update payslip archive.'], 500);
+    }
+}
 require_method('GET');
 
 const PAYSLIP_DEFAULT_PERA_AMOUNT = 2000.0;
@@ -72,7 +136,7 @@ function payslip_lookup_allowance_amount(PDO $pdo, string $allowanceName, float 
 {
     $statement = $pdo->prepare(
         'SELECT amount
-         FROM Allowance
+         FROM allowance
          WHERE allowance_name = :allowance_name
          ORDER BY allowance_id DESC
          LIMIT 1'
@@ -88,9 +152,10 @@ function payslip_lookup_allowance_amount(PDO $pdo, string $allowanceName, float 
 }
 
 /**
- * The payslip is signed by whoever currently holds the HR Head role, so the name is read from the
- * account list instead of being fixed in code — a change of HR Head shows up on the next payslip.
- * `users` is joined back to `employees` on email, the same link the other signatory lookups use.
+ * The fallback signatory, for a paid row that carries no release stamp (see
+ * payslip_release_signatory() below): whoever currently holds the HR Head role, so the name is read
+ * from the account list instead of being fixed in code. `users` is joined back to `employees` on
+ * email, the same link the other signatory lookups use.
  *
  * The title under the line stays constant: it is the capacity the payslip is certified in, not the
  * signer's own designation.
@@ -122,6 +187,82 @@ function payslip_signatory(PDO $pdo): array
     }
 
     return $signatory;
+}
+
+/**
+ * The person who released a payslip, read from the `released_by` stamp the Cashier's Mark as Paid
+ * leaves on the payroll row (payroll_transition_status() in payroll.php). A released payslip is
+ * signed by them: their e-signature above the line, their name on it, and their role under it.
+ *
+ * Looked up rather than copied onto the row, the way the register's certification reads its
+ * signers. An archived account still resolves, because the slip records who released it at the
+ * time. The signature image is read only for the requests that draw a slip (`$withSignature`), so
+ * a month's roster does not carry one copy of it per row.
+ */
+function payslip_release_signatory(PDO $pdo, int $userId, bool $withSignature): ?array
+{
+    static $cache = [];
+
+    if ($userId <= 0) {
+        return null;
+    }
+
+    $cacheKey = $userId . ($withSignature ? ':signed' : '');
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT
+            u.username,
+            r.name AS role_name,
+            e.first_name,
+            e.middle_name,
+            e.last_name,
+            ' . ($withSignature ? 'e.e_signature' : 'NULL') . ' AS signature_data_url
+         FROM users u
+         LEFT JOIN roles r ON r.id = u.role_id
+         LEFT JOIN employees e
+            ON e.email COLLATE utf8mb4_unicode_ci = u.email COLLATE utf8mb4_unicode_ci
+         WHERE u.id = :user_id
+         ORDER BY e.is_archived ASC, e.id ASC
+         LIMIT 1'
+    );
+    $statement->execute([':user_id' => $userId]);
+    $row = $statement->fetch();
+
+    if ($row === false) {
+        return $cache[$cacheKey] = null;
+    }
+
+    $roleName = payslip_text($row['role_name'] ?? '');
+    $signature = payslip_text($row['signature_data_url'] ?? '');
+
+    return $cache[$cacheKey] = [
+        'userId' => $userId,
+        // An account with no employee record (the built-in admin) signs with its username.
+        'name' => full_name_from_row($row) ?: payslip_text($row['username'] ?? ''),
+        // Built-in roles print the label the rest of the app shows ("HR Head"); a custom role prints its own name.
+        'role' => builtin_permission_roles()[role_key_from_name($roleName)]['label'] ?? $roleName,
+        // employee_signature.php only ever stores an image data URL; anything else is left off the slip.
+        'signatureDataUrl' => preg_match('/^data:image\/(png|jpe?g|gif|webp|bmp);base64,/i', $signature) === 1 ? $signature : '',
+    ];
+}
+
+/** The signatory one payslip prints: whoever released it, or the fallback above for an unstamped row. */
+function payslip_signatory_for_employee(array $employee, array $fallbackSignatory): array
+{
+    $releasedBy = is_array($employee['releasedBy'] ?? null) ? $employee['releasedBy'] : [];
+
+    if (payslip_text($releasedBy['name'] ?? '') === '') {
+        return $fallbackSignatory;
+    }
+
+    return [
+        'name' => payslip_text($releasedBy['name']),
+        'title' => payslip_text($releasedBy['role'] ?? ''),
+        'signatureDataUrl' => payslip_text($releasedBy['signatureDataUrl'] ?? ''),
+    ];
 }
 
 function payslip_decode_meta(mixed $value): array
@@ -166,7 +307,7 @@ function payslip_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
     if (
         $payrollId <= 0
         || !database_table_exists($pdo, 'PayrollAllowance')
-        || !database_table_exists($pdo, 'Allowance')
+        || !database_table_exists($pdo, 'allowance')
     ) {
         return [];
     }
@@ -174,7 +315,7 @@ function payslip_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
     $statement = $pdo->prepare(
         'SELECT a.allowance_name AS name, a.amount
          FROM PayrollAllowance pa
-         INNER JOIN Allowance a ON a.allowance_id = pa.allowance_id
+         INNER JOIN allowance a ON a.allowance_id = pa.allowance_id
          WHERE pa.payroll_id = :payroll_id
          ORDER BY pa.payroll_allowance_id ASC'
     );
@@ -191,24 +332,9 @@ function payslip_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
 
 function payslip_fetch_deductions(PDO $pdo, int $payrollId): array
 {
-    if ($payrollId <= 0 || !database_table_exists($pdo, 'PayrollDeduction')) {
+    if ($payrollId <= 0) {
         return [];
     }
-
-    // The catalog is six family tables joined as one; deduction_catalog_type_union_sql() presents
-    // them under the column names this query was written against.
-    $amountExpression = database_column_exists($pdo, 'PayrollDeduction', 'amount')
-        ? 'COALESCE(pd.amount, dt.default_amount, 0.00)'
-        : 'dt.default_amount';
-    $typeUnion = deduction_catalog_type_union_sql();
-    $statement = $pdo->prepare(
-        "SELECT dt.deduction_name AS name, dt.category_name AS category, {$amountExpression} AS amount
-         FROM PayrollDeduction pd
-         INNER JOIN {$typeUnion} dt ON dt.deduction_type_id = pd.deduction_type_id
-         WHERE pd.payroll_id = :payroll_id
-         ORDER BY pd.payroll_deduction_id ASC"
-    );
-    $statement->execute([':payroll_id' => $payrollId]);
 
     return array_map(
         static fn (array $item): array => [
@@ -216,7 +342,7 @@ function payslip_fetch_deductions(PDO $pdo, int $payrollId): array
             'category' => payslip_text($item['category'] ?? ''),
             'amount' => payslip_amount($item['amount'] ?? 0),
         ],
-        $statement->fetchAll()
+        deduction_catalog_payroll_items($pdo, $payrollId)
     );
 }
 
@@ -279,8 +405,321 @@ function payslip_date_key(mixed $value): string
     return $timestamp === false ? '' : date('Y-m-d', $timestamp);
 }
 
+function payslip_empty_attendance_summary(): array
+{
+    return [
+        'daysWorked' => 0,
+        'renderedMinutes' => 0,
+        'lateMinutes' => 0,
+        'undertimeMinutes' => 0,
+        'absentDays' => 0,
+        'leaveDays' => 0,
+        'expectedWorkdays' => 0,
+        'hasAttendanceCoverage' => false,
+    ];
+}
+
+/** Work-week setting used by both the DTR and payroll screens. */
+function payslip_system_workday_numbers(PDO $pdo): array
+{
+    $configuration = json_decode(get_application_setting($pdo, 'system_configuration', '{}'), true);
+    $workWeek = is_array($configuration) && is_array($configuration['workWeek'] ?? null)
+        ? $configuration['workWeek']
+        : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    $dayMap = [
+        'mon' => 1,
+        'monday' => 1,
+        'tue' => 2,
+        'tuesday' => 2,
+        'wed' => 3,
+        'wednesday' => 3,
+        'thu' => 4,
+        'thursday' => 4,
+        'fri' => 5,
+        'friday' => 5,
+        'sat' => 6,
+        'saturday' => 6,
+        'sun' => 7,
+        'sunday' => 7,
+    ];
+    $days = [];
+
+    foreach ($workWeek as $day) {
+        $key = strtolower(trim((string)$day));
+        if (isset($dayMap[$key])) {
+            $days[$dayMap[$key]] = true;
+        }
+    }
+
+    if ($days === []) {
+        return [1, 2, 3, 4, 5];
+    }
+
+    $numbers = array_keys($days);
+    sort($numbers);
+
+    return $numbers;
+}
+
+function payslip_non_working_holiday_dates(PDO $pdo, string $startDate, string $endDate): array
+{
+    if (!database_table_exists($pdo, 'holidays')) {
+        return [];
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT holiday_date AS holidayDate, type, is_recurring AS isRecurring
+         FROM holidays
+         WHERE type <> "special_working"
+           AND (holiday_date BETWEEN :start_date AND :end_date OR is_recurring = 1)'
+    );
+    $statement->execute([
+        ':start_date' => $startDate,
+        ':end_date' => $endDate,
+    ]);
+
+    $holidays = [];
+    $startYear = (int)substr($startDate, 0, 4);
+    $endYear = (int)substr($endDate, 0, 4);
+
+    foreach ($statement->fetchAll() as $row) {
+        $holidayDate = payslip_date_key($row['holidayDate'] ?? null);
+        if ($holidayDate === '') {
+            continue;
+        }
+
+        if ((int)($row['isRecurring'] ?? 0) === 1) {
+            for ($year = $startYear; $year <= $endYear; $year++) {
+                $recurringDate = sprintf('%04d%s', $year, substr($holidayDate, 4));
+                if ($recurringDate >= $startDate && $recurringDate <= $endDate) {
+                    $holidays[$recurringDate] = true;
+                }
+            }
+            continue;
+        }
+
+        if ($holidayDate >= $startDate && $holidayDate <= $endDate) {
+            $holidays[$holidayDate] = true;
+        }
+    }
+
+    return $holidays;
+}
+
+function payslip_workday_dates(PDO $pdo, string $startDate, string $endDate): array
+{
+    $holidays = payslip_non_working_holiday_dates($pdo, $startDate, $endDate);
+    $workdayNumbers = array_flip(payslip_system_workday_numbers($pdo));
+    $workdays = [];
+    $current = new DateTimeImmutable($startDate);
+    $end = new DateTimeImmutable($endDate);
+
+    while ($current <= $end) {
+        $dateKey = $current->format('Y-m-d');
+        if (isset($workdayNumbers[(int)$current->format('N')]) && !isset($holidays[$dateKey])) {
+            $workdays[$dateKey] = true;
+        }
+
+        $current = $current->modify('+1 day');
+    }
+
+    return $workdays;
+}
+
+function payslip_approved_leave_dates(
+    PDO $pdo,
+    int $employeeRecordId,
+    string $startDate,
+    string $endDate,
+    array $workdayDates
+): array {
+    if (!database_table_exists($pdo, 'leave_requests')) {
+        return [];
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT start_date AS startDate, end_date AS endDate
+         FROM leave_requests
+         WHERE employee_id = :employee_id
+           AND LOWER(status) = "approved"
+           AND start_date <= :end_date
+           AND end_date >= :start_date'
+    );
+    $statement->execute([
+        ':employee_id' => $employeeRecordId,
+        ':start_date' => $startDate,
+        ':end_date' => $endDate,
+    ]);
+
+    $leaveDates = [];
+    foreach ($statement->fetchAll() as $row) {
+        $requestStart = payslip_date_key($row['startDate'] ?? null);
+        $requestEnd = payslip_date_key($row['endDate'] ?? null);
+        if ($requestStart === '' || $requestEnd === '') {
+            continue;
+        }
+
+        $current = new DateTimeImmutable(max($requestStart, $startDate));
+        $rangeEnd = new DateTimeImmutable(min($requestEnd, $endDate));
+        while ($current <= $rangeEnd) {
+            $dateKey = $current->format('Y-m-d');
+            if (isset($workdayDates[$dateKey])) {
+                $leaveDates[$dateKey] = true;
+            }
+
+            $current = $current->modify('+1 day');
+        }
+    }
+
+    return $leaveDates;
+}
+
+/**
+ * Count the pass slips an employee filed inside a payroll period.
+ *
+ * Every filed slip counts, the same way payroll_filed_pass_slip_hours() treats them: nothing in the
+ * app sets an approval status on pass_slip rows, so filing is the only event there is to count.
+ */
+function payslip_pass_slip_count(
+    PDO $pdo,
+    int $employeeRecordId,
+    mixed $startDateValue,
+    mixed $endDateValue
+): int {
+    $startDate = payslip_date_key($startDateValue);
+    $endDate = payslip_date_key($endDateValue);
+
+    if (
+        $employeeRecordId <= 0
+        || $startDate === ''
+        || $endDate === ''
+        || $startDate > $endDate
+        || !database_table_exists($pdo, 'pass_slip')
+    ) {
+        return 0;
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT COUNT(*)
+         FROM pass_slip
+         WHERE employee_id = :employee_id
+           AND pass_date BETWEEN :start_date AND :end_date'
+    );
+    $statement->execute([
+        ':employee_id' => $employeeRecordId,
+        ':start_date' => $startDate,
+        ':end_date' => $endDate,
+    ]);
+
+    return (int)$statement->fetchColumn();
+}
+
+/**
+ * Read the current DTR totals for the exact period printed on a paid payslip.
+ *
+ * The payroll snapshot remains the accounting record, but attendance is operational data that may
+ * be imported after a registry was prepared. Opening a payslip therefore refreshes this summary
+ * from attendance_daily_records. Most importantly, no employee row means zero days worked; it must
+ * never be replaced with the number of calendar days in the payroll period.
+ */
+function payslip_attendance_summary(
+    PDO $pdo,
+    int $employeeRecordId,
+    mixed $startDateValue,
+    mixed $endDateValue
+): array {
+    $empty = payslip_empty_attendance_summary();
+    $startDate = payslip_date_key($startDateValue);
+    $endDate = payslip_date_key($endDateValue);
+
+    if (
+        $employeeRecordId <= 0
+        || $startDate === ''
+        || $endDate === ''
+        || $startDate > $endDate
+        || !database_table_exists($pdo, 'attendance_daily_records')
+    ) {
+        return $empty;
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT
+            attendance_date AS attendanceDate,
+            time_in AS timeIn,
+            time_out AS timeOut,
+            total_minutes AS totalMinutes,
+            late_minutes AS lateMinutes,
+            undertime_minutes AS undertimeMinutes
+         FROM attendance_daily_records
+         WHERE employee_id = :employee_id
+           AND attendance_date BETWEEN :start_date AND :end_date
+         ORDER BY attendance_date ASC'
+    );
+    $statement->execute([
+        ':employee_id' => $employeeRecordId,
+        ':start_date' => $startDate,
+        ':end_date' => $endDate,
+    ]);
+
+    $records = $statement->fetchAll();
+    $summary = $empty;
+    $datesWithEntries = [];
+    $workedDates = [];
+
+    foreach ($records as $record) {
+        $recordDate = payslip_date_key($record['attendanceDate'] ?? null);
+        $totalMinutes = max((int)($record['totalMinutes'] ?? 0), 0);
+        $summary['renderedMinutes'] += $totalMinutes;
+        $summary['lateMinutes'] += max((int)($record['lateMinutes'] ?? 0), 0);
+        $summary['undertimeMinutes'] += max((int)($record['undertimeMinutes'] ?? 0), 0);
+
+        if ($recordDate === '') {
+            continue;
+        }
+
+        if (
+            payslip_text($record['timeIn'] ?? '') !== ''
+            || payslip_text($record['timeOut'] ?? '') !== ''
+            || $totalMinutes > 0
+        ) {
+            $datesWithEntries[$recordDate] = true;
+        }
+
+        if ($totalMinutes > 0) {
+            $workedDates[$recordDate] = true;
+        }
+    }
+
+    $workdayDates = payslip_workday_dates($pdo, $startDate, $endDate);
+    $leaveDates = payslip_approved_leave_dates(
+        $pdo,
+        $employeeRecordId,
+        $startDate,
+        $endDate,
+        $workdayDates
+    );
+
+    foreach ($workdayDates as $date => $_) {
+        if (!isset($datesWithEntries[$date]) && !isset($leaveDates[$date])) {
+            $summary['absentDays']++;
+        }
+    }
+
+    $summary['daysWorked'] = count($workedDates);
+    $summary['leaveDays'] = count($leaveDates);
+    $summary['expectedWorkdays'] = count($workdayDates);
+    $summary['hasAttendanceCoverage'] = $records !== [];
+
+    return $summary;
+}
+
 function payslip_matches_filters(array $employee, array $filters): bool
 {
+    $payrollId = (int)($filters['payrollId'] ?? 0);
+    if ($payrollId > 0 && (int)($employee['paidPayrollId'] ?? 0) !== $payrollId) {
+        return false;
+    }
+
     $employeeIds = $filters['employeeIds'] ?? [];
     if ($employeeIds !== [] && !in_array((int)($employee['id'] ?? 0), $employeeIds, true)) {
         return false;
@@ -326,9 +765,34 @@ function payslip_matches_filters(array $employee, array $filters): bool
     return true;
 }
 
+/**
+ * The `month` filter (YYYY-MM) picks one payroll month on the Payslip Records page. An empty value
+ * keeps the roster's default of each employee's latest paid payslip; anything else is rejected
+ * rather than silently falling back to that default, which would show the wrong month's slips.
+ */
+function payslip_read_month(): string
+{
+    $month = trim((string)($_GET['month'] ?? ''));
+
+    if ($month === '') {
+        return '';
+    }
+
+    if (preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month) !== 1) {
+        json_response([
+            'success' => false,
+            'message' => 'Payslip month must use the YYYY-MM format.',
+        ], 422);
+    }
+
+    return $month;
+}
+
 function payslip_read_filters(): array
 {
     return [
+        'month' => payslip_read_month(),
+        'payrollId' => (int)($_GET['payroll_id'] ?? 0),
         'employeeId' => $_GET['employee_id'] ?? '',
         'employeeIds' => payslip_parse_id_list($_GET['employee_ids'] ?? ''),
         'department' => $_GET['department'] ?? '',
@@ -339,19 +803,27 @@ function payslip_read_filters(): array
     ];
 }
 
-function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser): array
+function payslip_fetch_employees(
+    PDO $pdo,
+    string $roleKey,
+    array $sessionUser,
+    bool $refreshAttendance = false,
+    int $requestedPayrollId = 0,
+    string $month = '',
+    bool $withSignatures = false
+): array
 {
-    // The join below reads it, and a payslip can be opened before any payroll request has run.
-    ensure_payroll_meta_table($pdo);
+    // The query below reads it, and a payslip can be opened before any payroll request has run.
+    ensure_payroll_embedded_detail_columns($pdo);
 
     $params = [];
     $employeeScopeSql = '';
     $payrollJoinSql = 'LEFT JOIN (
             SELECT p.*
-            FROM Payroll p
+            FROM payroll p
             INNER JOIN (
                 SELECT employee_id, MAX(payroll_id) AS payroll_id
-                FROM Payroll
+                FROM payroll
                 WHERE status = "Paid"
                 GROUP BY employee_id
             ) latest_paid ON latest_paid.payroll_id = p.payroll_id
@@ -378,7 +850,38 @@ function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser):
 
         $employeeScopeSql = ' AND e.id = :employee_id';
         $params[':employee_id'] = $employeeRecordId;
-        $payrollJoinSql = 'INNER JOIN Payroll paid ON paid.employee_id = e.id AND paid.status = "Paid"';
+        $payrollJoinSql = 'INNER JOIN payroll paid ON paid.employee_id = e.id AND paid.status = "Paid"';
+        $orderBySql = 'ORDER BY paid.payroll_date DESC, paid.payroll_id DESC';
+    }
+
+    /*
+     * A picked month lists every paid payslip dated in it, not only each employee's latest, so past
+     * months stay browsable after newer payrolls are released. payroll_date is always written from
+     * the pay period's end date, so it places a 1st Half and a 2nd Half in the month they cover.
+     * Skipped for a single-record read: its join below would drop these placeholders, and native
+     * prepares fail on a bound parameter the SQL never uses.
+     */
+    if ($month !== '' && $requestedPayrollId <= 0) {
+        $monthStart = new DateTimeImmutable($month . '-01');
+        $payrollJoinSql = 'INNER JOIN payroll paid
+            ON paid.employee_id = e.id
+           AND paid.status = "Paid"
+           AND paid.payroll_date >= :month_start
+           AND paid.payroll_date < :month_end';
+        $params[':month_start'] = $monthStart->format('Y-m-d');
+        $params[':month_end'] = $monthStart->modify('+1 month')->format('Y-m-d');
+
+        if ($employeeScopeSql === '') {
+            $orderBySql = 'ORDER BY e.last_name ASC, e.first_name ASC, e.id ASC, paid.payroll_date DESC, paid.payroll_id DESC';
+        }
+    }
+
+    if ($requestedPayrollId > 0) {
+        $payrollJoinSql = 'INNER JOIN payroll paid
+            ON paid.employee_id = e.id
+           AND paid.status = "Paid"
+           AND paid.payroll_id = :requested_payroll_id';
+        $params[':requested_payroll_id'] = $requestedPayrollId;
         $orderBySql = 'ORDER BY paid.payroll_date DESC, paid.payroll_id DESC';
     }
 
@@ -399,13 +902,13 @@ function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser):
             paid.total_allowance AS paidTotalAllowance,
             paid.total_deduction AS paidTotalDeduction,
             paid.net_pay AS paidNetPay,
-            payroll_meta.meta_json AS paidPayrollMeta
+            paid.released_by AS releasedByUserId,
+            paid.meta_json AS paidPayrollSnapshot
          FROM employees e
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id
          ' . $payrollJoinSql . '
-         LEFT JOIN PayrollMeta payroll_meta ON payroll_meta.payroll_id = paid.payroll_id
-         WHERE e.is_archived = 0' . $employeeScopeSql . '
+         WHERE e.is_archived = 0 AND paid.payslip_is_archived = ' . payslip_archive_view() . $employeeScopeSql . '
          ' . $orderBySql
     );
     $statement->execute($params);
@@ -413,8 +916,8 @@ function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser):
 
     foreach ($statement->fetchAll() as $row) {
         $payrollId = (int)($row['paidPayrollId'] ?? 0);
-        $meta = payslip_decode_meta($row['paidPayrollMeta'] ?? null);
-        unset($row['paidPayrollMeta']);
+        $meta = payslip_decode_meta($row['paidPayrollSnapshot'] ?? null);
+        unset($row['paidPayrollSnapshot']);
 
         $row['salaryRate'] = payslip_text($meta['salaryRate'] ?? $row['salaryRate'] ?? '');
         $row['employmentStatus'] = payslip_normalize_employment_type($meta['employmentType'] ?? $row['employmentStatus'] ?? '');
@@ -429,6 +932,7 @@ function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser):
         $row['overtimeRate'] = payslip_meta_number($meta, 'overtimeRate');
         $row['hourlyRate'] = payslip_meta_number($meta, 'hourlyRate');
         $row['passSlipHours'] = payslip_meta_number($meta, 'passSlipHours');
+        $row['passSlipCount'] = payslip_meta_integer($meta, 'passSlipCount');
         $row['undertimeHours'] = payslip_meta_number($meta, 'undertimeHours');
         $row['lateHours'] = payslip_meta_number($meta, 'lateHours');
         $row['absenceDays'] = payslip_meta_integer($meta, 'absenceDays');
@@ -446,7 +950,33 @@ function payslip_fetch_employees(PDO $pdo, string $roleKey, array $sessionUser):
         $row['sss'] = payslip_amount($meta['sss'] ?? 0);
         $row['allowanceItems'] = payslip_fetch_allowances($pdo, $payrollId, $meta);
         $row['deductionItems'] = payslip_fetch_deductions($pdo, $payrollId);
+        $row['releasedBy'] = payslip_release_signatory($pdo, (int)($row['releasedByUserId'] ?? 0), $withSignatures);
+        unset($row['releasedByUserId']);
         $row['isPaid'] = $payrollId > 0 || strtolower(payslip_text($row['paidPayrollStatus'] ?? '')) === 'paid';
+
+        if ($refreshAttendance && $row['isPaid']) {
+            $attendance = payslip_attendance_summary(
+                $pdo,
+                (int)($row['id'] ?? 0),
+                $row['startDate'] ?? '',
+                $row['endDate'] ?? ''
+            );
+            $row['attendanceDaysWorked'] = (int)$attendance['daysWorked'];
+            $row['attendanceRenderedMinutes'] = (int)$attendance['renderedMinutes'];
+            $row['attendanceLateMinutes'] = (int)$attendance['lateMinutes'];
+            $row['attendanceUndertimeMinutes'] = (int)$attendance['undertimeMinutes'];
+            $row['attendanceExpectedWorkdays'] = (int)$attendance['expectedWorkdays'];
+            $row['attendanceLeaveDays'] = (int)$attendance['leaveDays'];
+            $row['absenceDays'] = (int)$attendance['absentDays'];
+            $row['hasAttendanceCoverage'] = (bool)$attendance['hasAttendanceCoverage'];
+            $row['passSlipCount'] = payslip_pass_slip_count(
+                $pdo,
+                (int)($row['id'] ?? 0),
+                $row['startDate'] ?? '',
+                $row['endDate'] ?? ''
+            );
+            $row['attendanceSummarySource'] = 'attendance';
+        }
 
         $employees[] = $row;
     }
@@ -497,6 +1027,55 @@ function payslip_summary(array $employees): array
     return $summary;
 }
 
+/**
+ * One row per payroll month for the Payslip Records cards, newest first. employeeCount counts the
+ * employees with a paid payslip that month -- what the month's table lists -- while payrollCount
+ * and paidCount let the page tell a fully released month from one still in progress. Archived
+ * payroll is left out (it no longer counts toward the month), and so are archived employees, whom
+ * the payslip roster never lists either. Reads only the Payroll columns, so it stays cheap for
+ * years of history where loading every payslip's line items would not.
+ */
+function payslip_fetch_periods(PDO $pdo, string $roleKey, array $sessionUser): array
+{
+    $params = [];
+    $employeeScopeSql = '';
+
+    if ($roleKey === 'employee' || payslip_scope_is_self()) {
+        $employeeRecordId = session_employee_record_id($pdo, $sessionUser);
+
+        if ($employeeRecordId === null) {
+            return [];
+        }
+
+        $employeeScopeSql = ' AND p.employee_id = :employee_id';
+        $params[':employee_id'] = $employeeRecordId;
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT
+            DATE_FORMAT(p.payroll_date, "%Y-%m") AS month,
+            COUNT(*) AS payrollCount,
+            SUM(p.status = "Paid") AS paidCount,
+            COUNT(DISTINCT CASE WHEN p.status = "Paid" THEN p.employee_id END) AS employeeCount,
+            MAX(CASE WHEN p.status = "Paid" THEN COALESCE(p.released_at, p.payroll_date) END) AS generatedAt
+         FROM payroll p
+         INNER JOIN employees e ON e.id = p.employee_id AND e.is_archived = 0
+         WHERE p.payroll_date IS NOT NULL
+           AND p.status <> "Archived" AND p.payslip_is_archived = ' . payslip_archive_view() . $employeeScopeSql . '
+         GROUP BY month
+         ORDER BY month DESC'
+    );
+    $statement->execute($params);
+
+    return array_map(static fn (array $row): array => [
+        'month' => (string)$row['month'],
+        'payrollCount' => (int)$row['payrollCount'],
+        'paidCount' => (int)$row['paidCount'],
+        'employeeCount' => (int)$row['employeeCount'],
+        'generatedAt' => $row['generatedAt'] !== null ? (string)$row['generatedAt'] : '',
+    ], $statement->fetchAll());
+}
+
 function payslip_normalize_key(mixed $value): string
 {
     return preg_replace('/[^a-z0-9]/', '', strtolower((string)($value ?? ''))) ?? '';
@@ -516,9 +1095,33 @@ function payslip_line_item_amount(array $items, array $aliases): float
     return $total;
 }
 
+/**
+ * Without attendance coverage the payroll charges pass-slip hours as "Undertime Deduction" (see
+ * payroll_apply_automatic_calculations). The slip prints that amount on its Pass Slip line instead,
+ * the same way the Contract-of-Service layout does, unless an explicit pass-slip item exists.
+ */
+function payslip_relabel_pass_slip_items(array $employee): array
+{
+    $items = $employee['deductionItems'] ?? [];
+    $hasExplicitPassSlip = payslip_line_item_amount($items, ['Pass Slip', 'Pass Slip Deduction']) > 0;
+
+    if (($employee['hasAttendanceCoverage'] ?? false) || $hasExplicitPassSlip) {
+        return $items;
+    }
+
+    $undertimeKey = payslip_normalize_key('Undertime Deduction');
+
+    return array_map(
+        static fn (array $item): array => payslip_normalize_key($item['name'] ?? '') === $undertimeKey
+            ? array_merge($item, ['name' => 'Pass Slip'])
+            : $item,
+        $items
+    );
+}
+
 function payslip_build_deduction_rows(array $employee): array
 {
-    return payslip_deduction_lines($employee['deductionItems'] ?? []);
+    return payslip_deduction_lines(payslip_relabel_pass_slip_items($employee));
 }
 
 function payslip_money(mixed $value): string
@@ -529,6 +1132,22 @@ function payslip_money(mixed $value): string
 function payslip_escape(mixed $value): string
 {
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * The block under "Certified true and correct": the e-signature when the signer has one, their
+ * name on the line, and the title or role under it. `signed` lets each layout pull the block up
+ * into the space a handwritten signature would otherwise take.
+ */
+function payslip_signature_html(mixed $name, mixed $title, mixed $signatureDataUrl): string
+{
+    $signatureDataUrl = payslip_text($signatureDataUrl);
+
+    return '<div class="signature' . ($signatureDataUrl !== '' ? ' signed' : '') . '">'
+        . ($signatureDataUrl !== '' ? '<img class="signature-image" src="' . payslip_escape($signatureDataUrl) . '" alt="" />' : '')
+        . '<div class="signature-name">' . payslip_escape($name) . '</div>'
+        . '<div class="signature-title">' . payslip_escape($title) . '</div>'
+        . '</div>';
 }
 
 function payslip_safe_filename(string $value): string
@@ -608,52 +1227,34 @@ function payslip_contract_period_range(array $employee): string
         : '';
 }
 
-function payslip_contract_period_day_count(array $employee): float
-{
-    $start = payslip_date_object($employee['startDate'] ?? null);
-    $end = payslip_date_object($employee['endDate'] ?? ($employee['paidPayrollDate'] ?? null));
-
-    if ($start === null || $end === null || $start > $end) {
-        return 0.0;
-    }
-
-    $count = 0;
-    $current = $start;
-
-    while ($current <= $end) {
-        if ((int)$current->format('w') !== 0) {
-            $count++;
-        }
-
-        $current = $current->modify('+1 day');
-    }
-
-    return (float)$count;
-}
-
 function payslip_contract_days_rendered(array $employee): float
 {
+    if (payslip_text($employee['attendanceSummarySource'] ?? '') === 'attendance') {
+        return max(payslip_amount($employee['attendanceDaysWorked'] ?? 0), 0.0);
+    }
+
     $renderedMinutes = payslip_amount($employee['attendanceRenderedMinutes'] ?? 0);
 
     if ($renderedMinutes > 0) {
         return payslip_amount($renderedMinutes / (PAYSLIP_WORKING_HOURS_PER_DAY * 60));
     }
 
-    $expectedWorkdays = payslip_amount($employee['attendanceExpectedWorkdays'] ?? 0);
-    if ($expectedWorkdays > 0) {
-        return max(payslip_amount($expectedWorkdays - payslip_amount($employee['absenceDays'] ?? 0)), 0.0);
-    }
-
-    $periodDays = payslip_contract_period_day_count($employee);
-    return $periodDays > 0 ? max(payslip_amount($periodDays - payslip_amount($employee['absenceDays'] ?? 0)), 0.0) : 0.0;
+    return 0.0;
 }
 
-function payslip_contract_daily_rate(array $employee, float $daysRendered, float $salaryAmount): float
+/**
+ * True only when the refreshed DTR summary says the employee rendered no days in the period.
+ * Such a payslip carries no deductions and no take-home pay. Rows not refreshed from attendance
+ * simply lack the figure, so they are never treated as zero. Mirrors hasNoDaysWorked() in the UI.
+ */
+function payslip_has_no_days_worked(array $employee): bool
 {
-    if ($daysRendered > 0 && $salaryAmount > 0) {
-        return payslip_amount($salaryAmount / $daysRendered);
-    }
+    return payslip_text($employee['attendanceSummarySource'] ?? '') === 'attendance'
+        && payslip_amount($employee['attendanceDaysWorked'] ?? 0) <= 0.0;
+}
 
+function payslip_contract_daily_rate(array $employee): float
+{
     $hourlyRate = payslip_amount($employee['hourlyRate'] ?? 0);
     if ($hourlyRate > 0) {
         return payslip_amount($hourlyRate * PAYSLIP_WORKING_HOURS_PER_DAY);
@@ -734,27 +1335,31 @@ function payslip_contract_days(mixed $value): string
 
 function payslip_contract_data(array $employee, array $signatory): array
 {
-    $salaryAmount = payslip_amount($employee['paidBasicSalary'] ?? ($employee['basicSalary'] ?? 0));
     $daysRendered = payslip_contract_days_rendered($employee);
-    $dailyRate = payslip_contract_daily_rate($employee, $daysRendered, $salaryAmount);
+    $dailyRate = payslip_contract_daily_rate($employee);
     $periodSalary = $daysRendered > 0 && $dailyRate > 0
         ? payslip_amount($daysRendered * $dailyRate)
-        : $salaryAmount;
+        : 0.0;
     $premiumUnit = payslip_amount($dailyRate * (PAYSLIP_CONTRACT_SERVICE_PREMIUM_RATE / 100));
     $storedPremiumTotal = payslip_line_item_amount($employee['allowanceItems'] ?? [], PAYSLIP_CONTRACT_SERVICE_PREMIUM_ALLOWANCE_NAMES);
-    $premiumTotal = $storedPremiumTotal > 0
-        ? $storedPremiumTotal
-        : payslip_amount($premiumUnit * $daysRendered);
+    $premiumTotal = $daysRendered > 0
+        ? ($storedPremiumTotal > 0 ? $storedPremiumTotal : payslip_amount($premiumUnit * $daysRendered))
+        : 0.0;
     $additionalSalary = payslip_contract_additional_salary($employee);
     $grossPay = payslip_amount($periodSalary + $premiumTotal + $additionalSalary);
-    $deductions = payslip_contract_deduction_rows($employee);
-    $totalDeductions = array_reduce(
+    $noDaysWorked = payslip_has_no_days_worked($employee);
+    $deductions = $noDaysWorked
+        ? array_map(
+            static fn (array $row): array => ['label' => $row['label'], 'value' => 0.0],
+            PAYSLIP_CONTRACT_SERVICE_DEDUCTION_ROWS
+        )
+        : payslip_contract_deduction_rows($employee);
+    $totalDeductions = $noDaysWorked ? 0.0 : payslip_amount(array_reduce(
         $deductions,
         static fn (float $total, array $item): float => $total + payslip_amount($item['value'] ?? 0),
         0.0
-    );
-    $totalDeductions = payslip_amount($totalDeductions);
-    $netPay = payslip_amount($grossPay - $totalDeductions);
+    ));
+    $netPay = $noDaysWorked ? 0.0 : payslip_amount($grossPay - $totalDeductions);
     $periodRange = payslip_contract_period_range($employee);
 
     return [
@@ -774,6 +1379,7 @@ function payslip_contract_data(array $employee, array $signatory): array
         'netPay' => $netPay,
         'signatoryName' => payslip_text($signatory['name'] ?? ''),
         'signatoryTitle' => payslip_text($signatory['title'] ?? PAYSLIP_SIGNATORY_TITLE),
+        'signatureDataUrl' => payslip_text($signatory['signatureDataUrl'] ?? ''),
     ];
 }
 
@@ -796,7 +1402,7 @@ function payslip_render_contract_service_download_html(array $employee, array $s
     }
 
     return '<!doctype html><html><head><meta charset="utf-8" /><title>Payslip</title><style>'
-        . '*{box-sizing:border-box}body{margin:0;background:#fff;color:#000;font-family:Arial,sans-serif}.page{display:flex;justify-content:center;padding:16px}.slip{width:430px;min-height:620px;background:#fff;padding:38px 28px 28px;font-size:12px;line-height:1.2}.office{text-align:center;font-weight:700}.title{margin-top:14px;text-align:center;font-size:14px;line-height:1.35}.employee{margin-top:14px;font-weight:700}.pay-row{display:grid;grid-template-columns:132px 16px 70px 16px 92px;align-items:end;column-gap:6px;line-height:1.25}.pay-row .days{text-align:center}.pay-row .amount{text-align:right}.add-row{display:grid;grid-template-columns:42px 108px 16px 70px 16px 92px;align-items:end;column-gap:6px;line-height:1.25}.add-row .amount{text-align:right}.gross-line{border-top:1px solid #000;font-weight:700}.deductions{margin-top:1px}.deduction-title{line-height:1.25}.deduction-row{display:grid;grid-template-columns:118px 1fr;line-height:1.35}.deduction-label{padding-left:70px;white-space:nowrap}.deduction-value{text-align:right}.total-deductions{display:grid;grid-template-columns:1fr 44px 96px;align-items:end;margin-top:2px;line-height:1.25}.total-deductions .label{font-style:italic;text-align:center}.total-deductions .dash{text-align:center}.net-row{display:grid;grid-template-columns:1fr 96px;column-gap:8px;margin-top:18px;align-items:end}.net-row .label{font-size:14px;font-style:italic;font-weight:700;text-align:center}.net-row .value{border-top:1px solid #000;font-size:15px;font-style:italic;font-weight:700;text-align:right}.certify{margin-top:30px;text-align:center;font-size:11px}.signature{margin-top:30px;text-align:center}.signature-name{font-weight:700;text-transform:uppercase}.signature-title{font-size:11px}@media print{.page{padding:0}.slip{width:100%;min-height:auto}}'
+        . '*{box-sizing:border-box}body{margin:0;background:#fff;color:#000;font-family:Arial,sans-serif}.page{display:flex;justify-content:center;padding:16px}.slip{width:430px;min-height:620px;background:#fff;padding:38px 28px 28px;font-size:12px;line-height:1.2}.office{text-align:center;font-weight:700}.title{margin-top:14px;text-align:center;font-size:14px;line-height:1.35}.employee{margin-top:14px;font-weight:700}.pay-row{display:grid;grid-template-columns:132px 16px 70px 16px 92px;align-items:end;column-gap:6px;line-height:1.25}.pay-row .days{text-align:center}.pay-row .amount{text-align:right}.add-row{display:grid;grid-template-columns:42px 108px 16px 70px 16px 92px;align-items:end;column-gap:6px;line-height:1.25}.add-row .amount{text-align:right}.gross-line{border-top:1px solid #000;font-weight:700}.deductions{margin-top:1px}.deduction-title{line-height:1.25}.deduction-row{display:grid;grid-template-columns:118px 1fr;line-height:1.35}.deduction-label{padding-left:70px;white-space:nowrap}.deduction-value{text-align:right}.total-deductions{display:grid;grid-template-columns:1fr 44px 96px;align-items:end;margin-top:2px;line-height:1.25}.total-deductions .label{font-style:italic;text-align:center}.total-deductions .dash{text-align:center}.net-row{display:grid;grid-template-columns:1fr 96px;column-gap:8px;margin-top:18px;align-items:end}.net-row .label{font-size:14px;font-style:italic;font-weight:700;text-align:center}.net-row .value{border-top:1px solid #000;font-size:15px;font-style:italic;font-weight:700;text-align:right}.certify{margin-top:30px;text-align:center;font-size:11px}.signature{margin-top:30px;text-align:center}.signature-name{font-weight:700;text-transform:uppercase}.signature-title{font-size:11px}.signature.signed{margin-top:8px}.signature-image{display:block;max-width:170px;max-height:56px;margin:0 auto -6px}@media print{.page{padding:0}.slip{width:100%;min-height:auto}}'
         . '</style></head><body><main class="page"><section class="slip">'
         . '<div class="office">' . $officeHtml . '</div>'
         . '<div class="title">' . $titleHtml . '</div>'
@@ -809,12 +1415,14 @@ function payslip_render_contract_service_download_html(array $employee, array $s
         . '<div class="total-deductions"><span class="label">Total Deduction</span><span class="dash">-</span><span class="deduction-value">' . payslip_escape(payslip_contract_money($data['totalDeductions'], true)) . '</span></div>'
         . '<div class="net-row"><span class="label">Total</span><span class="value">' . payslip_escape(payslip_contract_money($data['netPay'], true)) . '</span></div>'
         . '<div class="certify">CERTIFIED TRUE AND CORRECT</div>'
-        . '<div class="signature"><div class="signature-name">' . payslip_escape($data['signatoryName']) . '</div><div class="signature-title">' . payslip_escape($data['signatoryTitle']) . '</div></div>'
+        . payslip_signature_html($data['signatoryName'], $data['signatoryTitle'], $data['signatureDataUrl'])
         . '</section></main></body></html>';
 }
 
 function payslip_render_download_html(array $employee, float $peraAmount, array $signatory): string
 {
+    $signatory = payslip_signatory_for_employee($employee, $signatory);
+
     if (payslip_is_contract_service($employee)) {
         return payslip_render_contract_service_download_html($employee, $signatory);
     }
@@ -877,8 +1485,19 @@ function payslip_render_download_html(array $employee, float $peraAmount, array 
         $earningsHtml .= $rowHtml($earning['label'], $earning['value']);
     }
 
+    // With no days worked the deduction lines stay on the slip, each printed as 0.00.
+    $noDaysWorked = payslip_has_no_days_worked($employee);
+    $deductionRows = $noDaysWorked
+        ? array_map(
+            static fn (array $row): array => ['label' => $row['label'], 'value' => 0.0],
+            PAYSLIP_DEDUCTION_ROWS
+        )
+        : payslip_build_deduction_rows($employee);
+    $totalDeductions = $noDaysWorked ? 0.0 : payslip_amount($employee['paidTotalDeduction'] ?? 0);
+    $netPay = $noDaysWorked ? 0.0 : payslip_amount($employee['paidNetPay'] ?? 0);
+
     $deductionsHtml = '';
-    foreach (payslip_build_deduction_rows($employee) as $deduction) {
+    foreach ($deductionRows as $deduction) {
         $deductionsHtml .= $rowHtml($deduction['label'], $deduction['value']);
     }
 
@@ -889,20 +1508,26 @@ function payslip_render_download_html(array $employee, float $peraAmount, array 
     $period = payslip_text($employee['periodLabel'] ?? '') ?: payslip_text($employee['paidPayrollDate'] ?? '');
 
     return '<!doctype html><html><head><meta charset="utf-8" /><title>Payslip</title><style>'
-        . '*{box-sizing:border-box}body{margin:0;background:#f5f5f5;color:#262626;font-family:Arial,sans-serif}.page{display:flex;justify-content:center;padding:16px}.slip{width:280px;border:1px solid #d4d4d4;background:#fafafa;padding:16px;font-size:11px}.header{margin-bottom:8px;border-bottom:2px solid #d4d4d4;padding-bottom:8px;text-align:center}.title{margin:2px 0;font-size:13px;font-weight:700}.period{font-style:italic}.employee{font-weight:700}.section{margin-top:10px}.row{display:flex;justify-content:space-between;line-height:1.35}.label{width:60%}.value{width:40%;text-align:right}.bold{font-weight:700}.topline{margin-top:2px;border-top:1px solid #262626;padding-top:2px}.deduction-title{margin:10px 0 4px;font-weight:700}.total{margin-top:10px;border-top:1px solid #262626;padding-top:6px}.net{margin-top:10px;border-top:1px solid #262626;padding-top:6px;font-size:13px}.certify{margin-top:20px;text-align:center;font-size:10px;letter-spacing:.04em;text-transform:uppercase}.signature{margin-top:16px;text-align:center}.signature-name{font-weight:700;text-transform:uppercase}.signature-title{margin-top:2px}@media print{body{background:#fff}.page{padding:0}}'
+        . '*{box-sizing:border-box}body{margin:0;background:#f5f5f5;color:#262626;font-family:Arial,sans-serif}.page{display:flex;justify-content:center;padding:16px}.slip{width:280px;border:1px solid #d4d4d4;background:#fafafa;padding:16px;font-size:11px}.header{margin-bottom:8px;border-bottom:2px solid #d4d4d4;padding-bottom:8px;text-align:center}.title{margin:2px 0;font-size:13px;font-weight:700}.period{font-style:italic}.employee{font-weight:700}.section{margin-top:10px}.row{display:flex;justify-content:space-between;line-height:1.35}.label{width:60%}.value{width:40%;text-align:right}.bold{font-weight:700}.topline{margin-top:2px;border-top:1px solid #262626;padding-top:2px}.deduction-title{margin:10px 0 4px;font-weight:700}.total{margin-top:10px;border-top:1px solid #262626;padding-top:6px}.net{margin-top:10px;border-top:1px solid #262626;padding-top:6px;font-size:13px}.certify{margin-top:20px;text-align:center;font-size:10px;letter-spacing:.04em;text-transform:uppercase}.signature{margin-top:16px;text-align:center}.signature-name{font-weight:700;text-transform:uppercase}.signature-title{margin-top:2px}.signature.signed{margin-top:8px}.signature-image{display:block;max-width:150px;max-height:48px;margin:0 auto -4px}@media print{body{background:#fff}.page{padding:0}}'
         . '</style></head><body><main class="page"><section class="slip">'
         . '<div class="header"><div>' . payslip_escape(PAYSLIP_OFFICE) . '</div><div class="title">PAYSLIP</div><div class="period">For the period ' . payslip_escape($period) . '</div></div>'
         . '<div class="employee">' . payslip_escape($employeeLabel) . '</div>'
         . '<div class="section">' . $earningsHtml . '<div class="row bold topline"><span class="label"></span><span class="value">' . payslip_escape(payslip_money($earningsTotal)) . '</span></div></div>'
         . '<div class="section"><div class="deduction-title">DEDUCTIONS:</div>' . $deductionsHtml . '</div>'
-        . '<div class="row bold total"><span class="label">TOTAL DEDUCTIONS</span><span class="value">' . payslip_escape(payslip_money($employee['paidTotalDeduction'] ?? 0)) . '</span></div>'
-        . '<div class="row bold net"><span class="label">NET TAKE HOME PAY</span><span class="value">' . payslip_escape(payslip_money($employee['paidNetPay'] ?? 0)) . '</span></div>'
+        . '<div class="row bold total"><span class="label">TOTAL DEDUCTIONS</span><span class="value">' . payslip_escape(payslip_money($totalDeductions)) . '</span></div>'
+        . '<div class="row bold net"><span class="label">NET TAKE HOME PAY</span><span class="value">' . payslip_escape(payslip_money($netPay)) . '</span></div>'
         . '<div class="certify">Certified true and correct</div>'
-        . '<div class="signature"><div class="signature-name">' . payslip_escape($signatory['name'] ?? '') . '</div><div class="signature-title">' . payslip_escape($signatory['title'] ?? PAYSLIP_SIGNATORY_TITLE) . '</div></div>'
+        . payslip_signature_html($signatory['name'] ?? '', $signatory['title'] ?? PAYSLIP_SIGNATORY_TITLE, $signatory['signatureDataUrl'] ?? '')
         . '</section></main></body></html>';
 }
 
-function payslip_download_zip(array $employees, float $peraAmount, array $signatory): void
+function payslip_download_zip(
+    PDO $pdo,
+    array $sessionUser,
+    array $employees,
+    float $peraAmount,
+    array $signatory
+): void
 {
     if (count($employees) === 0) {
         json_response([
@@ -946,6 +1571,9 @@ function payslip_download_zip(array $employees, float $peraAmount, array $signat
     $zip->close();
 
     $filename = 'payslips-' . date('Y-m-d') . '.zip';
+    write_auth_audit($pdo, $sessionUser, 'payslip.bulk_downloaded', 'A bulk payslip ZIP was downloaded.', [
+        'recordCount' => count($employees),
+    ]);
     header_remove('Content-Type');
     header('Content-Type: application/zip');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
@@ -957,14 +1585,49 @@ function payslip_download_zip(array $employees, float $peraAmount, array $signat
 
 ensure_application_settings_table($pdo);
 
+$action = strtolower(payslip_text($_GET['action'] ?? ''));
 $filters = payslip_read_filters();
+
+if ($action === 'detail' && (int)($filters['payrollId'] ?? 0) <= 0) {
+    json_response([
+        'success' => false,
+        'message' => 'Paid payroll record is required.',
+    ], 422);
+}
+
+// Answered before the roster load below, which reads every payslip's line items.
+if ($action === 'periods') {
+    json_response([
+        'success' => true,
+        'periods' => payslip_fetch_periods($pdo, $roleKey, $sessionUser),
+        // The API pins Asia/Manila, so this is the office's month rather than the browser's.
+        'currentMonth' => date('Y-m'),
+    ]);
+}
+
+// The two reads that draw a slip: they refresh its attendance figures and carry the signer's e-signature.
+$drawsSlip = in_array($action, ['detail', 'bulk_zip'], true);
 $employees = array_values(array_filter(
-    payslip_fetch_employees($pdo, $roleKey, $sessionUser),
+    payslip_fetch_employees(
+        $pdo,
+        $roleKey,
+        $sessionUser,
+        $drawsSlip,
+        (int)($filters['payrollId'] ?? 0),
+        $filters['month'],
+        $drawsSlip
+    ),
     static fn (array $employee): bool => (bool)($employee['isPaid'] ?? false) && payslip_matches_filters($employee, $filters)
 ));
 $peraAmount = (float)payslip_lookup_allowance_amount($pdo, 'PERA', PAYSLIP_DEFAULT_PERA_AMOUNT);
 $signatory = payslip_signatory($pdo);
-$action = strtolower(payslip_text($_GET['action'] ?? ''));
+
+if ($action === 'detail' && $employees === []) {
+    json_response([
+        'success' => false,
+        'message' => 'Paid payslip record was not found.',
+    ], 404);
+}
 
 if ($action === 'summary') {
     json_response([
@@ -974,12 +1637,13 @@ if ($action === 'summary') {
 }
 
 if ($action === 'bulk_zip') {
-    payslip_download_zip($employees, $peraAmount, $signatory);
+    payslip_download_zip($pdo, $sessionUser, $employees, $peraAmount, $signatory);
 }
 
 json_response([
     'success' => true,
     'employees' => $employees,
+    'canArchive' => payslip_can_archive($roleKey),
     'summary' => payslip_summary($employees),
     'defaults' => [
         'pera' => payslip_decimal_string($peraAmount),

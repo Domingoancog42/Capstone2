@@ -142,7 +142,7 @@ function waitForImages(node) {
 }
 
 /**
- * The sheet exactly as it appears, as a one-page portrait A4 PDF.
+ * The two preview sheets exactly as they appear, fitted together on one portrait A4 PDF page.
  *
  * Painted from the rendered node rather than redrawn in jsPDF: CS Form No. 48 is a prescribed
  * government layout, and the component above is already the authority on what it looks like. Laying
@@ -174,7 +174,7 @@ export async function exportDailyTimeRecordPdf(node, fileName) {
   const pdf = new jsPDF("p", "mm", "a4");
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 10;
+  const margin = 8;
   const scale = Math.min(
     (pageWidth - margin * 2) / canvas.width,
     (pageHeight - margin * 2) / canvas.height,
@@ -193,7 +193,12 @@ export async function exportDailyTimeRecordPdf(node, fileName) {
   pdf.save(fileName);
 }
 
-export default function DailyTimeRecord({ dtr, editable = false, signatureDataUrl = "" }) {
+export default function DailyTimeRecord({
+  dtr,
+  editable = false,
+  signatureDataUrl = "",
+  copyLabel = "ORIGINAL COPY",
+}) {
   const generatedRows = useMemo(() => buildDailyTimeRecordRows(dtr), [dtr]);
   const [name, setName] = useState(dtr?.employee?.employeeName || "");
   const [month, setMonth] = useState(formatMonth(dtr?.month));
@@ -231,8 +236,8 @@ export default function DailyTimeRecord({ dtr, editable = false, signatureDataUr
     },
     timestamp: { fontSize: "10px", marginBottom: "5px" },
     formNum: { fontSize: "10px", fontStyle: "italic", display: "flex", justifyContent: "space-between", marginBottom: "10px" },
-    headerInner: { textAlign: "center", marginBottom: "10px", position: "relative" },
-    logo: { width: "50px", position: "absolute", left: "5px", top: 0, borderRadius: "50%", border: "1px solid #ddd", height: "50px", objectFit: "contain" },
+    headerInner: { textAlign: "center", marginBottom: "10px", minHeight: "80px", position: "relative" },
+    logo: { width: "50px", position: "absolute", left: "5px", top: "-8px", height: "80px", objectFit: "fill" },
     h1: { fontSize: "14px", margin: 0, textTransform: "uppercase" },
     h2: { fontSize: "12px", margin: 0, fontWeight: "bold" },
     empInput: { border: "none", borderBottom: "1px solid black", outline: "none", fontSize: "14px", fontWeight: "bold", textTransform: "uppercase", textAlign: "center", width: "85%", background: "transparent", fontFamily: '"Times New Roman", Times, serif', marginTop: "15px" },
@@ -271,7 +276,7 @@ export default function DailyTimeRecord({ dtr, editable = false, signatureDataUr
       <div style={s.timestamp}>{timestamp}</div>
       <div style={s.formNum}>
         <span>Civil Service Form No. 48</span>
-        <span>&gt;&gt;&gt; ORIGINAL COPY</span>
+        <span>&gt;&gt;&gt; {copyLabel}</span>
       </div>
 
       <div style={s.headerInner}>

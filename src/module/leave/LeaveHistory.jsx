@@ -23,7 +23,12 @@ export default function LeaveHistory({ requests = [] }) {
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <strong className="text-sm text-slate-900">{request.leaveType}</strong>
-                <LeaveStatusBadge status={request.status} />
+                <LeaveStatusBadge
+                  status={request.status}
+                  rejectedByRole={request.rejectedByRole}
+                  startDate={request.startDate}
+                  endDate={request.endDate}
+                />
               </div>
               <p className="m-0 mt-1 text-xs text-slate-600">
                 {formatDateDisplay(request.startDate)} - {formatDateDisplay(request.endDate)} •{" "}

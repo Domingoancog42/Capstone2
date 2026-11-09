@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import {
-  CalendarDays,
+  BarChart3,
   CalendarRange,
   ClipboardCheck,
   FileText,
   LayoutDashboard,
   MessageCircle,
+  TrendingUp,
   UserRound,
 } from "lucide-react";
 import AdminAnalyticsOverview from "../../components/dashboard/AdminAnalyticsOverview";
@@ -17,6 +18,8 @@ import AttendanceManagementWorkspace from "../../module/attendance/AttendanceMan
 import OvertimeWorkspace from "../../module/overtime/Overtime";
 import PayrollManagementWorkspace from "../../module/payroll/PayrollManagementWorkspace";
 import PayslipWorkspace from "../../module/payroll/PayslipWorkspace";
+import PromotionWorkspace from "../../module/promotion/PromotionWorkspace";
+import OpcrManagementWorkspace from "../../module/performance/OpcrManagementWorkspace";
 import BubbleChat from "../../components/bubble_chat/bubble_chat";
 import { getEmployees, getUsers } from "../../services/api";
 
@@ -24,51 +27,52 @@ const navigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/regionaldirector/dashboard" },
   { key: "profile", label: "My Profile", icon: UserRound, path: "/regionaldirector/profile" },
-  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/regionaldirector/calendar" },
-  { type: "section", label: "Communication" },
   { key: "messages", label: "Messages", icon: MessageCircle, path: "/regionaldirector/messages" },
   { key: "notifications", label: "Notifications", path: "/regionaldirector/notifications", hidden: true },
   { type: "section", label: "HR Operations" },
-  {
-    key: "attendance",
-    label: "Time & Attendance",
-    icon: ClipboardCheck,
-    path: "/regionaldirector/attendance/overtime",
-    children: [
-      { key: "overtime", label: "Overtime", path: "/regionaldirector/attendance/overtime" },
-    ],
-  },
+  /* The final signature on a promotion: HR prepares, the HR Head recommends, the Director approves. */
+  { key: "promotions", label: "Promotions", icon: TrendingUp, path: "/regionaldirector/promotions" },
+  /*
+   * The OPCR's last step: the HR Head assigns KPIs to a division, its chief submits the
+   * accomplishments and MOVs, and the Director validates and rates them here. The address matches
+   * the OPCR desk under every other role, so notifications open it the same way.
+   */
+  { key: "performanceOpcr", label: "OPCR Validation", icon: BarChart3, path: "/regionaldirector/masterfiles/performance-management/opcr" },
   {
     key: "leave",
-    label: "Leave Management",
+    label: "File Request",
     icon: CalendarRange,
     path: "/regionaldirector/leave",
     children: [
-      { key: "leave", label: "Leave", path: "/regionaldirector/leave", exact: true },
+      { key: "leave", label: "Leave Request", path: "/regionaldirector/leave", exact: true },
       { key: "travel", label: "Travel Order", path: "/regionaldirector/leave/travel-order" },
       { key: "cto", label: "Compensatory Time Off", path: "/regionaldirector/leave/compensatory-time-off" },
       { key: "passSlip", label: "Pass Slips", path: "/regionaldirector/leave/pass-slips" },
+      /*
+       * Overtime is otherwise gated by the `attendance` permission, which the Director does not hold:
+       * attendance records have no Director view. The Director's part in overtime is the final
+       * approval, the same kind of signature given on leave, travel orders and CTO, so it sits with
+       * them and opens under `leave`. The path is unchanged so existing links still land here.
+       */
+      { key: "overtime", label: "Overtime Request", path: "/regionaldirector/attendance/overtime", permissionModule: "leave" },
     ],
   },
-  {
-    key: "payroll",
-    label: "Payroll Management",
-    icon: FileText,
-    path: "/regionaldirector/payroll/generate",
-    children: [
-      { key: "payrollGenerate", label: "Payroll", path: "/regionaldirector/payroll/generate" },
-      { key: "payrollRecords", label: "Payslip", path: "/regionaldirector/payroll/payslip" },
-    ],
-  },
+  /*
+   * One destination, so it is a plain link rather than a group holding a single child. The key
+   * stays the one the module map renders, which is what the child already matched on.
+   */
+  { key: "payrollGenerate", label: "Payroll", icon: FileText, path: "/regionaldirector/payroll/generate" },
+  /* Reached from the Archive toggle on the registry, not from the sidebar. */
+  { key: "archivedPayroll", label: "Archived Payroll", path: "/regionaldirector/payroll/archived", hidden: true },
   { key: "legacyAttendance", label: "Time & Attendance", icon: ClipboardCheck, path: "/regionaldirector/attendance", hidden: true },
   ...buildSelfServiceNavItems("/regionaldirector"),
 ];
 
 /**
  * Shared wrapper that loads the employee list once and passes it into any payroll
- * sub-workspace (Create Payroll, Payslip).
+ * sub-workspace (Create Payroll, Archived Payroll, Payslip).
  */
-function RegionalPayrollWorkspace({ view = "generate", user }) {
+function RegionalPayrollWorkspace({ view = "generate", user, onNavigate }) {
   const [employees, setEmployees] = useState([]);
   const [error, setError] = useState("");
 
@@ -108,9 +112,11 @@ function RegionalPayrollWorkspace({ view = "generate", user }) {
       ) : null}
 
       {view === "payslip" ? (
-        <PayslipWorkspace employees={employees} />
+        <PayslipWorkspace />
+      ) : view === "archived" ? (
+        <PayrollManagementWorkspace employees={employees} view="archived" user={user} onNavigate={onNavigate} />
       ) : (
-        <PayrollManagementWorkspace employees={employees} view="generate" user={user} />
+        <PayrollManagementWorkspace employees={employees} view="generate" user={user} onNavigate={onNavigate} />
       )}
     </div>
   );
@@ -163,20 +169,6 @@ function RegionalOvertimeWorkspace({ user }) {
       />
     </div>
   );
-}
-
-function moduleCards(description) {
-  return [
-    {
-      title: "Role Workspace",
-      description,
-      items: [
-        { label: "Dashboard aligned", helper: "This section follows the Admin sidebar structure for consistent navigation.", value: "Ready" },
-        { label: "Regional scope", helper: "Regional Director access remains limited to review and visibility workflows.", value: "Scoped" },
-        { label: "Reporting", helper: "Use Reports and Leave Management for regional operating signals.", value: "Available" },
-      ],
-    },
-  ];
 }
 
 function RegionalDirectorDashboardOverview({ user }) {
@@ -241,7 +233,10 @@ function RegionalDirectorDashboardOverview({ user }) {
         user={user}
         employees={employees}
         users={users}
+        welcomeDivision="All Divisions"
+        welcomeDivisionHelper="Organization-wide access"
         loading={loading}
+        canCreateCalendarEntries={false}
       />
     </div>
   );
@@ -275,7 +270,7 @@ const modules = {
   },
   travel: {
     title: "Travel Order",
-    description: "Monitor travel orders from the regional director workspace.",
+    description: "Review travel orders from every division and provide final approval.",
     hidePageIntro: true,
     render: ({ user }) => (
       <LeaveDashboard
@@ -288,7 +283,7 @@ const modules = {
   },
   cto: {
     title: "Compensatory Time Off",
-    description: "Monitor compensatory time off records from the regional director workspace.",
+    description: "Review HR-approved compensatory requests from every division and provide final approval.",
     hidePageIntro: true,
     render: ({ user }) => (
       <LeaveDashboard
@@ -332,9 +327,16 @@ const modules = {
   },
   payrollGenerate: {
     title: "Create Payroll",
+    breadcrumbLabel: "Payroll",
     description: "Create payroll batches, review and approve computed payroll totals from the Regional Director workspace.",
     hidePageIntro: true,
-    render: ({ user }) => <RegionalPayrollWorkspace view="generate" user={user} />,
+    render: ({ user, onNavigate }) => <RegionalPayrollWorkspace view="generate" user={user} onNavigate={onNavigate} />,
+  },
+  archivedPayroll: {
+    title: "Archived Payroll",
+    description: "View archived payroll records kept for audit review.",
+    hidePageIntro: true,
+    render: ({ user, onNavigate }) => <RegionalPayrollWorkspace view="archived" user={user} onNavigate={onNavigate} />,
   },
   payrollRecords: {
     title: "Payslip",
@@ -347,6 +349,18 @@ const modules = {
     description: "Coordinate regional conversations and employee communication.",
     hidePageIntro: true,
     render: ({ user }) => <BubbleChat user={user} />,
+  },
+  promotions: {
+    title: "Promotions",
+    description: "Give the final approval on promotions the HR Head has recommended.",
+    hidePageIntro: true,
+    render: ({ user }) => <PromotionWorkspace user={user} />,
+  },
+  performanceOpcr: {
+    title: "OPCR Validation",
+    description: "Validate and rate the accomplishments and MOVs division chiefs submit on their OPCR forms.",
+    hidePageIntro: true,
+    render: () => <OpcrManagementWorkspace mode="director" canManage={false} canAssign={false} canValidate />,
   },
   ...SELF_SERVICE_MODULES,
 };

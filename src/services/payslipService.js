@@ -1,7 +1,33 @@
 import api from "./api";
 
+export async function setPayslipsArchived(ids, archived = true) {
+  const response = await api.post("/payslip.php", { action: archived ? "archive" : "restore", ids });
+  return response.data;
+}
+
 export async function fetchPayslipData(params = {}) {
   const response = await api.get("/payslip.php", { params });
+  return response.data;
+}
+
+export async function fetchPayslipPeriods(params = {}) {
+  const response = await api.get("/payslip.php", {
+    params: {
+      ...params,
+      action: "periods",
+    },
+  });
+  return response.data;
+}
+
+export async function fetchPayslipRecord(payrollId, params = {}) {
+  const response = await api.get("/payslip.php", {
+    params: {
+      ...params,
+      action: "detail",
+      payroll_id: payrollId,
+    },
+  });
   return response.data;
 }
 

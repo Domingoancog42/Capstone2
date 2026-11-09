@@ -37,6 +37,12 @@ const { createProxyMiddleware } = require("http-proxy-middleware");
 const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "/Capstone2/frontend/backend/api";
 
 module.exports = function setupProxy(app) {
+  // Google sign-in returns its credential through a cross-origin popup.
+  app.use((request, response, next) => {
+    response.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+    next();
+  });
+
   if (/^https?:\/\//i.test(apiBaseUrl)) {
     return;
   }

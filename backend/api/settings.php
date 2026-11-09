@@ -190,6 +190,81 @@ function store_application_setting(PDO $pdo, string $key, string $value): void
 }
 
 /**
+ * Display controls for filing-form signatories. Keep both switches in one settings row so a reader
+ * always sees the complete saved policy. Stored workflow dates and employee signatures are untouched.
+ */
+function settings_filing_signatories(PDO $pdo): array
+{
+    $stored = json_decode(get_application_setting($pdo, 'filing_signatories', ''), true);
+    $settings = ['showTimestamps' => true, 'showESignatures' => true];
+
+    foreach ($settings as $key => $default) {
+        if (is_array($stored) && array_key_exists($key, $stored) && is_bool($stored[$key])) {
+            $settings[$key] = $stored[$key];
+        }
+    }
+
+    return $settings;
+}
+
+function list_filing_signatories_settings(PDO $pdo): void
+{
+    json_response([
+        'status' => 'success',
+        'success' => true,
+        'filingSignatories' => settings_filing_signatories($pdo),
+    ]);
+}
+
+function settings_update_filing_signatories(PDO $pdo, array $sessionUser, array $body): void
+{
+    // This administrator control must not be inherited through a custom role's base role.
+    if (user_exact_role_key($sessionUser) !== 'admin') {
+        json_response([
+            'success' => false,
+            'message' => 'Only administrators can update filing signatory settings.',
+        ], 403);
+    }
+
+    require_permission($sessionUser, 'settings', 'edit');
+
+    $settings = [];
+    foreach (['showTimestamps', 'showESignatures'] as $key) {
+        if (!array_key_exists($key, $body) || !is_bool($body[$key])) {
+            json_response([
+                'success' => false,
+                'message' => 'Timestamp and e-signature visibility must both be true or false.',
+            ], 422);
+        }
+        $settings[$key] = $body[$key];
+    }
+
+    try {
+        store_application_setting(
+            $pdo,
+            'filing_signatories',
+            json_encode($settings, JSON_THROW_ON_ERROR)
+        );
+    } catch (Throwable $exception) {
+        error_log('Unable to save filing signatory settings: ' . $exception->getMessage());
+        json_response([
+            'success' => false,
+            'message' => 'Unable to save filing signatory settings.',
+        ], 500);
+    }
+
+    write_auth_audit(
+        $pdo,
+        $sessionUser,
+        'settings.filing_signatories_updated',
+        'Filing form timestamp and e-signature visibility were updated.',
+        ['settings' => $settings]
+    );
+
+    list_filing_signatories_settings($pdo);
+}
+
+/**
  * Fallbacks for the branding fields of the System Configuration tab, used until an
  * administrator saves one. settings_default_system_configuration() builds its own
  * defaults on top of these so the two never drift apart.
@@ -247,6 +322,11 @@ function builtin_permission_roles(): array
             'label' => 'Chief',
             'description' => 'Manages division-level requests and team visibility.',
         ],
+        'chiefadmin' => [
+            'label' => 'Chief Admin',
+            'description' => 'Uses the Division Chief workspace for administrative division oversight.',
+            'baseRole' => 'chief',
+        ],
         'planningofficer' => [
             'label' => 'Planning Officer',
             'description' => 'Monitors division plans, performance records, and workforce requests.',
@@ -276,8 +356,8 @@ function role_key_from_name(string $name): string
 }
 
 /**
- * Custom roles add `base_role` and `description` to the roles table. Built-in roles
- * leave base_role NULL, which is what distinguishes the two.
+ * Custom roles add `base_role` and `description` to the roles table. Chief Admin is the one
+ * built-in alias with a base role: it owns a route/page but deliberately inherits Chief authority.
  */
 function ensure_role_columns(PDO $pdo): void
 {
@@ -294,6 +374,21 @@ function ensure_role_columns(PDO $pdo): void
     if (!database_column_exists($pdo, 'roles', 'description')) {
         $pdo->exec('ALTER TABLE roles ADD COLUMN description VARCHAR(255) NULL DEFAULT NULL AFTER base_role');
     }
+
+    /* Existing installations receive the new built-in role without requiring a full SQL re-import. */
+    $pdo->exec(
+        'INSERT INTO roles (name, base_role, description)
+         SELECT "ChiefAdmin", "chief", "Uses the Division Chief workspace for administrative division oversight."
+         WHERE NOT EXISTS (
+            SELECT 1 FROM roles WHERE LOWER(REPLACE(name, " ", "")) = "chiefadmin"
+         )'
+    );
+    $pdo->exec(
+        'UPDATE roles
+         SET base_role = "chief",
+             description = COALESCE(NULLIF(description, ""), "Uses the Division Chief workspace for administrative division oversight.")
+         WHERE LOWER(REPLACE(name, " ", "")) = "chiefadmin"'
+    );
 
     $ensured = true;
 }
@@ -361,8 +456,8 @@ function permission_roles(?PDO $pdo = null): array
 }
 
 /**
- * The built-in role whose dashboard and routes a role uses. Built-ins map to
- * themselves; a custom role maps to whatever it was based on.
+ * The built-in capability role used by access checks. Chief Admin has a distinct page/route but
+ * maps to Chief here; ordinary built-ins map to themselves and custom roles map to their base.
  */
 function role_base_key(PDO $pdo, string $roleKey): string
 {
@@ -370,15 +465,40 @@ function role_base_key(PDO $pdo, string $roleKey): string
     $builtin = builtin_permission_roles();
 
     if (isset($builtin[$normalized])) {
-        return $normalized;
+        return (string)($builtin[$normalized]['baseRole'] ?? $normalized);
     }
 
-    return custom_permission_roles($pdo)[$normalized]['baseRole'] ?? '';
+    $baseRole = custom_permission_roles($pdo)[$normalized]['baseRole'] ?? '';
+
+    return (string)($builtin[$baseRole]['baseRole'] ?? $baseRole);
+}
+
+function permission_available_actions(): array
+{
+    return [
+        'dashboard' => ['view'],
+        'profile' => ['view', 'edit', 'submit', 'upload', 'download', 'print'],
+        'serviceRecord' => ['view', 'create', 'edit', 'import', 'export', 'print', 'download', 'submit', 'upload'],
+        'users' => ['view', 'create', 'edit', 'archive', 'restore'],
+        'permissions' => ['view', 'create', 'edit', 'approve', 'reject'],
+        'settings' => ['view', 'create', 'edit', 'archive', 'restore', 'import', 'export', 'download', 'upload', 'backup', 'unlock'],
+        'auditLogs' => ['view'],
+        'calendar' => ['view', 'create', 'edit'],
+        'employees' => ['view', 'create', 'edit', 'approve', 'reject', 'archive', 'restore', 'import', 'export', 'print', 'download', 'upload'],
+        'rewardsRecognition' => ['view', 'create', 'edit', 'archive', 'restore', 'print', 'download', 'export', 'upload', 'generate', 'nominate', 'close', 'reopen'],
+        'promotions' => ['view', 'create', 'edit', 'approve', 'reject', 'cancel', 'archive', 'restore', 'export', 'print'],
+        'attendance' => ['view', 'create', 'edit', 'approve', 'reject', 'submit', 'cancel', 'archive', 'restore', 'import', 'export', 'print', 'download'],
+        'leave' => ['view', 'create', 'edit', 'approve', 'reject', 'submit', 'cancel', 'accept', 'archive', 'restore', 'export', 'print', 'download', 'upload'],
+        'leaveBalance' => ['view', 'create', 'edit', 'import', 'export'],
+        'payroll' => ['view', 'create', 'edit', 'approve', 'reject', 'return', 'submit', 'archive', 'restore', 'export', 'print', 'download', 'upload', 'generate', 'release'],
+        'reports' => ['view', 'create', 'edit', 'assign', 'rate', 'submit', 'archive', 'restore', 'upload', 'export', 'print', 'download', 'generate'],
+        'payslip' => ['view', 'generate', 'export', 'print', 'download'],
+    ];
 }
 
 function permission_items(): array
 {
-    return [
+    $items = [
         [
             'key' => 'dashboard',
             'defaultActions' => ['view'],
@@ -393,7 +513,7 @@ function permission_items(): array
         ],
         [
             'key' => 'users',
-            'defaultActions' => ['view', 'create', 'edit', 'delete'],
+            'defaultActions' => ['view', 'create', 'edit'],
         ],
         [
             'key' => 'permissions',
@@ -413,13 +533,19 @@ function permission_items(): array
         ],
         [
             'key' => 'employees',
-            'defaultActions' => ['view', 'create', 'edit', 'delete'],
+            'defaultActions' => ['view', 'create', 'edit'],
         ],
         [
             // Awards used to be gated by the `employees` resource, which conflated "may edit
             // employee records" with "may issue a certificate in the Regional Director's name".
             'key' => 'rewardsRecognition',
             'defaultActions' => ['view', 'create', 'edit'],
+        ],
+        [
+            // Moving somebody up the designation hierarchy rewrites their appointment and salary, so
+            // it is its own resource rather than a right that comes bundled with `employees`.
+            'key' => 'promotions',
+            'defaultActions' => ['view', 'create', 'edit', 'approve', 'reject'],
         ],
         [
             'key' => 'attendance',
@@ -446,6 +572,14 @@ function permission_items(): array
             'defaultActions' => ['view'],
         ],
     ];
+
+    $catalog = permission_available_actions();
+    foreach ($items as &$item) {
+        $item['availableActions'] = $catalog[$item['key']];
+    }
+    unset($item);
+
+    return $items;
 }
 
 function default_role_permission_access(): array
@@ -456,12 +590,14 @@ function default_role_permission_access(): array
             'dashboard',
             'profile',
             'serviceRecord',
+            'payslip',
             'users',
             'permissions',
             'auditLogs',
             'calendar',
             'employees',
             'rewardsRecognition',
+            'promotions',
             'attendance',
             'leave',
             'leaveBalance',
@@ -472,9 +608,11 @@ function default_role_permission_access(): array
             'dashboard',
             'profile',
             'serviceRecord',
+            'payslip',
             'calendar',
             'employees',
             'rewardsRecognition',
+            'promotions',
             'attendance',
             'leave',
             'leaveBalance',
@@ -484,27 +622,46 @@ function default_role_permission_access(): array
             'dashboard',
             'profile',
             'serviceRecord',
+            'payslip',
             'calendar',
+            'rewardsRecognition',
+            // Prepares promotions for the Regular employees of their division; the HR Head
+            // recommends and the Regional Director signs.
+            'promotions',
+            'attendance',
+            'leave',
+            // Runtime access is limited to the Chief assigned to FAD/FAM.
+            'payroll',
+            'reports',
+        ],
+        // Chief Admin no longer participates in payroll; the FAD Division Chief owns that stage.
+        'chiefadmin' => [
+            'dashboard',
+            'profile',
+            'serviceRecord',
+            'payslip',
+            'calendar',
+            'rewardsRecognition',
+            'promotions',
             'attendance',
             'leave',
             'reports',
         ],
-        // A planning officer works the same division-scoped desk a chief does, minus payroll --
-        // the approval chain there runs HR Head -> Chief -> Regional Director and gains nothing
-        // from a fourth reader.
+        // A planning officer works the same division-scoped desk a chief does, but never inherits
+        // the FAD Chief's organization-wide payroll approval desk.
         'planningofficer' => [
             'dashboard',
             'profile',
             'serviceRecord',
+            'payslip',
             'calendar',
             'attendance',
             'leave',
             'reports',
         ],
-        // The payout desk. `payroll` opens the register and `payslip` the released slips; `leave` is
-        // here only because leave monetization is gated by the leave resource (see
-        // MODULE_PERMISSION_MAP in utils/permissions.js) -- the cashier has no leave screens.
-        // Approving stays with the chain, so none of these grants an approval right.
+        // The payout desk. `payroll` opens the register and `payslip` the released slips; `leave`
+        // opens a self-only filing page. Approving stays with the leave chain, so this grants no
+        // access to another employee's leave record and no leave approval right.
         'cashier' => [
             'dashboard',
             'profile',
@@ -518,10 +675,13 @@ function default_role_permission_access(): array
             'dashboard',
             'profile',
             'serviceRecord',
+            'payslip',
             'calendar',
             'leave',
             'reports',
             'rewardsRecognition',
+            // The final signature on a promotion; preparing one stays with HR.
+            'promotions',
             'auditLogs',
         ],
         'employee' => [
@@ -532,6 +692,30 @@ function default_role_permission_access(): array
             'attendance',
             'leave',
             'payslip',
+            // My Promotion: the employee's own approved promotions, read-only (promotion.php scopes it).
+            'promotions',
+        ],
+    ];
+}
+
+/*
+ * Where a role's default actions in a module are narrower than the module's own defaults. An
+ * employee's Promotions is My Promotion, a read-only page of their own approved promotions. The
+ * FAD Chief approves or returns payroll but never prepares it; runtime division checks keep every
+ * other Chief out. Mirrors rolePermissionActionOverrides in frontend/src/page/settings/permission.jsx.
+ */
+function default_role_permission_action_overrides(): array
+{
+    return [
+        'employee' => [
+            'promotions' => ['view', 'print'],
+        ],
+        'chief' => [
+            'promotions' => ['view', 'create', 'edit', 'cancel', 'archive', 'restore', 'export', 'print'],
+            'payroll' => ['view', 'approve', 'return', 'archive', 'restore'],
+        ],
+        'chiefadmin' => [
+            'promotions' => ['view', 'create', 'edit', 'cancel', 'archive', 'restore', 'export', 'print'],
         ],
     ];
 }
@@ -539,12 +723,15 @@ function default_role_permission_access(): array
 function default_permission_templates(?PDO $pdo = null): array
 {
     $accessByRole = default_role_permission_access();
+    $actionOverrides = default_role_permission_action_overrides();
     $templates = [];
 
     foreach (permission_roles($pdo) as $roleKey => $role) {
         // A custom role starts life with its base role's access; the admin narrows it
         // from there with the module checklist.
-        $access = $accessByRole[$roleKey] ?? ($accessByRole[$role['baseRole'] ?? ''] ?? []);
+        $baseRoleKey = (string)($role['baseRole'] ?? '');
+        $access = $accessByRole[$roleKey] ?? ($accessByRole[$baseRoleKey] ?? []);
+        $overrides = $actionOverrides[$roleKey] ?? ($actionOverrides[$baseRoleKey] ?? []);
         $modules = [];
 
         foreach (permission_items() as $item) {
@@ -553,7 +740,7 @@ function default_permission_templates(?PDO $pdo = null): array
 
             $modules[$moduleKey] = [
                 'enabled' => $enabled,
-                'actions' => $enabled ? $item['defaultActions'] : [],
+                'actions' => $enabled ? ($overrides[$moduleKey] ?? $item['defaultActions']) : [],
             ];
         }
 
@@ -603,7 +790,7 @@ function normalize_permission_templates(array $templates, ?PDO $pdo = null): arr
             $sourceActions = isset($sourceModule['actions']) && is_array($sourceModule['actions'])
                 ? $sourceModule['actions']
                 : $defaultModule['actions'];
-            $allowedActions = array_flip($item['defaultActions']);
+            $allowedActions = array_flip($item['availableActions']);
             $actions = [];
 
             foreach ($sourceActions as $action) {
@@ -633,6 +820,232 @@ function normalize_permission_templates(array $templates, ?PDO $pdo = null): arr
     return $normalized;
 }
 
+/**
+ * Existing installations already have a complete role template stored in `settings`, so changing
+ * the built-in default alone would leave Chief's new Nomination page disabled. Promote that one
+ * resource once, then leave later RBAC edits untouched.
+ */
+function migrate_chief_nomination_permission(PDO $pdo, array $templates): array
+{
+    $migrationKey = 'permission_migration_chief_nomination_v1';
+
+    if (get_boolean_application_setting($pdo, $migrationKey, false)) {
+        return $templates;
+    }
+
+    if (isset($templates['chief']) && is_array($templates['chief'])) {
+        $modules = isset($templates['chief']['modules']) && is_array($templates['chief']['modules'])
+            ? $templates['chief']['modules']
+            : [];
+        $modules['rewardsRecognition'] = [
+            'enabled' => true,
+            'actions' => ['view', 'create', 'edit'],
+        ];
+        $templates['chief']['modules'] = $modules;
+
+        $encodedTemplates = json_encode($templates, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($encodedTemplates === false) {
+            throw new RuntimeException('Unable to migrate the Chief nomination permission.');
+        }
+
+        store_application_setting($pdo, 'role_permissions', $encodedTemplates);
+    }
+
+    store_boolean_application_setting($pdo, $migrationKey, true);
+
+    return $templates;
+}
+
+/*
+ * My Promotion arrived after templates were first saved, so a stored Employee template still has
+ * Promotions switched off. Switch it on once, read-only, unless an administrator has already set it.
+ */
+function migrate_employee_promotions_permission(PDO $pdo, array $templates): array
+{
+    $migrationKey = 'permission_migration_employee_promotions_v1';
+
+    if (get_boolean_application_setting($pdo, $migrationKey, false)) {
+        return $templates;
+    }
+
+    if (isset($templates['employee']) && is_array($templates['employee'])) {
+        $modules = isset($templates['employee']['modules']) && is_array($templates['employee']['modules'])
+            ? $templates['employee']['modules']
+            : [];
+
+        if (($modules['promotions']['enabled'] ?? false) !== true) {
+            $modules['promotions'] = [
+                'enabled' => true,
+                'actions' => default_role_permission_action_overrides()['employee']['promotions'],
+            ];
+            $templates['employee']['modules'] = $modules;
+
+            $encodedTemplates = json_encode($templates, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if ($encodedTemplates === false) {
+                throw new RuntimeException('Unable to migrate the Employee promotions permission.');
+            }
+
+            store_application_setting($pdo, 'role_permissions', $encodedTemplates);
+        }
+    }
+
+    store_boolean_application_setting($pdo, $migrationKey, true);
+
+    return $templates;
+}
+
+/*
+ * The Chief's Promotions desk arrived after templates were first saved, so a stored Chief template
+ * still has Promotions switched off. Switch it on once with the preparer's actions, unless an
+ * administrator has already enabled it.
+ */
+function migrate_chief_promotions_permission(PDO $pdo, array $templates): array
+{
+    $migrationKey = 'permission_migration_chief_promotions_v1';
+
+    if (get_boolean_application_setting($pdo, $migrationKey, false)) {
+        return $templates;
+    }
+
+    if (isset($templates['chief']) && is_array($templates['chief'])) {
+        $modules = isset($templates['chief']['modules']) && is_array($templates['chief']['modules'])
+            ? $templates['chief']['modules']
+            : [];
+
+        if (($modules['promotions']['enabled'] ?? false) !== true) {
+            $modules['promotions'] = [
+                'enabled' => true,
+                'actions' => default_role_permission_action_overrides()['chief']['promotions'],
+            ];
+            $templates['chief']['modules'] = $modules;
+
+            $encodedTemplates = json_encode($templates, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if ($encodedTemplates === false) {
+                throw new RuntimeException('Unable to migrate the Chief promotions permission.');
+            }
+
+            store_application_setting($pdo, 'role_permissions', $encodedTemplates);
+        }
+    }
+
+    store_boolean_application_setting($pdo, $migrationKey, true);
+
+    return $templates;
+}
+
+/*
+ * The shared My Records navigation already gives every non-admin role a My Payslip page, but
+ * installations with saved permission templates hide that entry unless the separate `payslip`
+ * resource is enabled. Grant the self-scoped page once for every current non-admin role. The API
+ * pins `scope=self` to the signed-in employee, so this does not grant access to anybody else's
+ * payslip or to the payroll register.
+ */
+function migrate_non_admin_payslip_permission(PDO $pdo, array $templates): array
+{
+    $migrationKey = 'permission_migration_non_admin_payslip_v1';
+
+    if (get_boolean_application_setting($pdo, $migrationKey, false)) {
+        return $templates;
+    }
+
+    $changed = false;
+
+    foreach (permission_roles($pdo) as $roleKey => $role) {
+        if ($roleKey === 'admin' || !isset($templates[$roleKey]) || !is_array($templates[$roleKey])) {
+            continue;
+        }
+
+        $modules = isset($templates[$roleKey]['modules']) && is_array($templates[$roleKey]['modules'])
+            ? $templates[$roleKey]['modules']
+            : [];
+        $payslip = isset($modules['payslip']) && is_array($modules['payslip'])
+            ? $modules['payslip']
+            : [];
+        $actions = isset($payslip['actions']) && is_array($payslip['actions'])
+            ? $payslip['actions']
+            : [];
+
+        if (!in_array('view', $actions, true)) {
+            array_unshift($actions, 'view');
+        }
+
+        if (($payslip['enabled'] ?? false) !== true || $actions !== ($payslip['actions'] ?? [])) {
+            $modules['payslip'] = [
+                'enabled' => true,
+                'actions' => array_values(array_unique($actions)),
+            ];
+            $templates[$roleKey]['modules'] = $modules;
+            $changed = true;
+        }
+    }
+
+    if ($changed) {
+        $encodedTemplates = json_encode($templates, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($encodedTemplates === false) {
+            throw new RuntimeException('Unable to migrate the non-admin My Payslip permission.');
+        }
+
+        store_application_setting($pdo, 'role_permissions', $encodedTemplates);
+    }
+
+    store_boolean_application_setting($pdo, $migrationKey, true);
+
+    return $templates;
+}
+
+/*
+ * Payroll's second approval now belongs to the FAD/FAM Division Chief. Existing installations may
+ * still carry the preceding migration's Chief Admin grant, so move that module back to the Chief
+ * template once. Runtime payroll checks and ChiefDashboard then limit the shared Chief template to
+ * the one account assigned to FAD/FAM; all other Division Chiefs remain without a payroll surface.
+ */
+function migrate_fad_chief_payroll_permission(PDO $pdo, array $templates): array
+{
+    $migrationKey = 'permission_migration_fad_chief_payroll_v1';
+
+    if (get_boolean_application_setting($pdo, $migrationKey, false)) {
+        return $templates;
+    }
+
+    $changed = false;
+    if (isset($templates['chief']) && is_array($templates['chief'])) {
+        $modules = isset($templates['chief']['modules']) && is_array($templates['chief']['modules'])
+            ? $templates['chief']['modules']
+            : [];
+        $modules['payroll'] = [
+            'enabled' => true,
+            'actions' => default_role_permission_action_overrides()['chief']['payroll'],
+        ];
+        $templates['chief']['modules'] = $modules;
+        $changed = true;
+    }
+
+    if (isset($templates['chiefadmin']) && is_array($templates['chiefadmin'])) {
+        $modules = isset($templates['chiefadmin']['modules']) && is_array($templates['chiefadmin']['modules'])
+            ? $templates['chiefadmin']['modules']
+            : [];
+        $modules['payroll'] = [
+            'enabled' => false,
+            'actions' => [],
+        ];
+        $templates['chiefadmin']['modules'] = $modules;
+        $changed = true;
+    }
+
+    if ($changed) {
+        $encodedTemplates = json_encode($templates, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($encodedTemplates === false) {
+            throw new RuntimeException('Unable to migrate the FAD Division Chief payroll permission.');
+        }
+
+        store_application_setting($pdo, 'role_permissions', $encodedTemplates);
+    }
+
+    store_boolean_application_setting($pdo, $migrationKey, true);
+
+    return $templates;
+}
+
 function permission_templates(PDO $pdo): array
 {
     $rawPermissions = get_application_setting($pdo, 'role_permissions', '{}');
@@ -641,6 +1054,12 @@ function permission_templates(PDO $pdo): array
     if (!is_array($permissions) || $permissions === []) {
         return default_permission_templates($pdo);
     }
+
+    $permissions = migrate_chief_nomination_permission($pdo, $permissions);
+    $permissions = migrate_employee_promotions_permission($pdo, $permissions);
+    $permissions = migrate_chief_promotions_permission($pdo, $permissions);
+    $permissions = migrate_non_admin_payslip_permission($pdo, $permissions);
+    $permissions = migrate_fad_chief_payroll_permission($pdo, $permissions);
 
     return normalize_permission_templates($permissions, $pdo);
 }
@@ -712,7 +1131,7 @@ function normalize_single_permission_template(array $template): array
         $sourceActions = isset($sourceModule['actions']) && is_array($sourceModule['actions'])
             ? $sourceModule['actions']
             : [];
-        $allowedActions = array_flip($item['defaultActions']);
+        $allowedActions = array_flip($item['availableActions']);
         $actions = [];
 
         foreach ($sourceActions as $action) {
@@ -1557,7 +1976,156 @@ function ensure_organization_structure_columns(PDO $pdo): void
     $pdo->exec('UPDATE divisions SET is_archived = 0 WHERE is_archived IS NULL');
     $pdo->exec('UPDATE designations SET is_archived = 0 WHERE is_archived IS NULL');
 
+    ensure_designation_hierarchy_columns($pdo);
+
     $ensured = true;
+}
+
+/**
+ * The rank a designation holds in the office hierarchy, and the salary grade it is paid at.
+ *
+ * `designations` used to be a flat list of names, so nothing could say that Administrative
+ * Assistant II sits above Administrative Assistant I or that a Division Chief outranks a Unit Head.
+ * The promotion module needs exactly that answer: a promotion is a move to a designation whose
+ * level is strictly higher, and anything else is a transfer. Level 1 is the lowest rung.
+ *
+ * Installations that predate the column get their levels seeded once from the designation names
+ * (DESIGNATION_LEVEL_SEEDS below), which is what hris.sql ships for the stock catalog; the
+ * Designations settings page is where an administrator corrects them afterwards.
+ */
+const DESIGNATION_DEFAULT_LEVEL = 1;
+const DESIGNATION_MAX_LEVEL = 20;
+
+/**
+ * Name fragments to level. Each seed UPDATE only touches rows still at the default, so the first
+ * fragment a name matches is the one that sticks -- which is why the longer, more specific title
+ * is always listed before the fragment it contains ("assistant regional director" before "regional
+ * director", "engineer v" before "engineer"). Anything unmatched stays at the default.
+ */
+const DESIGNATION_LEVEL_SEEDS = [
+    ['assistant regional director', 8],
+    ['regional director', 9],
+    ['division chief', 7],
+    ['chief administrative officer', 7],
+    ['supervisor', 6],
+    ['unit head', 6],
+    ['engineer v', 6],
+    ['accountant', 5],
+    ['hr officer', 5],
+    ['system administrator', 5],
+    ['administrative assistant iii', 4],
+    ['engineer', 4],
+    ['specialist', 4],
+    ['administrative assistant ii', 3],
+    ['cartographer', 3],
+    ['administrative assistant', 2],
+    ['clerk', 2],
+    ['hr staff', 2],
+    ['aide', 1],
+    ['support staff', 1],
+    ['field staff', 1],
+];
+
+function ensure_designation_hierarchy_columns(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    $seedLevels = false;
+
+    if (!database_column_exists($pdo, 'designations', 'hierarchy_level')) {
+        $pdo->exec(
+            'ALTER TABLE designations
+             ADD COLUMN hierarchy_level TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER name'
+        );
+        $seedLevels = true;
+    }
+
+    if (!database_column_exists($pdo, 'designations', 'salary_grade')) {
+        $pdo->exec(
+            'ALTER TABLE designations
+             ADD COLUMN salary_grade VARCHAR(20) NULL AFTER hierarchy_level'
+        );
+    }
+
+    if ($seedLevels) {
+        $statement = $pdo->prepare(
+            'UPDATE designations
+             SET hierarchy_level = :level
+             WHERE hierarchy_level = 1
+               AND LOWER(name) LIKE :pattern'
+        );
+
+        foreach (DESIGNATION_LEVEL_SEEDS as [$fragment, $level]) {
+            if ($level === DESIGNATION_DEFAULT_LEVEL) {
+                continue;
+            }
+
+            $statement->execute([
+                ':level' => $level,
+                ':pattern' => '%' . $fragment . '%',
+            ]);
+        }
+    }
+
+    $ensured = true;
+}
+
+/** The level a request carries, clamped to the allowed band; null when it is absent or not a number. */
+function settings_designation_level_from_body(array $body): ?int
+{
+    if (!array_key_exists('hierarchyLevel', $body)) {
+        return null;
+    }
+
+    $raw = settings_text($body['hierarchyLevel'] ?? '');
+
+    if ($raw === '' || !is_numeric($raw)) {
+        return null;
+    }
+
+    return max(DESIGNATION_DEFAULT_LEVEL, min(DESIGNATION_MAX_LEVEL, (int)$raw));
+}
+
+/** "SG-11", "11" and " sg 11 " all become "11"; anything that is not a 1-33 grade becomes "". */
+function settings_designation_salary_grade_from_body(array $body): string
+{
+    $raw = strtolower(settings_text($body['salaryGrade'] ?? ''));
+    $digits = preg_replace('/[^0-9]/', '', $raw) ?? '';
+
+    if ($digits === '') {
+        return '';
+    }
+
+    $grade = (int)$digits;
+
+    return $grade >= 1 && $grade <= 33 ? (string)$grade : '';
+}
+
+/**
+ * The catalog holds positions only. A name like "Engineer IV / Chief, Mineral Land Survey Section"
+ * folds a designation into it, which is what employee_designation_split_combined_titles() took apart,
+ * so it is turned away with a pointer to where the designation goes instead.
+ */
+function settings_reject_combined_position_title(string $name): void
+{
+    $parts = employee_designation_split_title($name);
+
+    if ($parts === null) {
+        return;
+    }
+
+    json_response([
+        'success' => false,
+        'message' => sprintf(
+            'Enter only the position here ("%s"). "%s" is a designation: set it on the employee record instead.',
+            $parts[0],
+            $parts[1]
+        ),
+    ], 422);
 }
 
 function ensure_user_security_columns(PDO $pdo): void
@@ -1688,6 +2256,8 @@ function settings_designation_record(PDO $pdo, int $id): ?array
             id,
             division_id,
             name,
+            hierarchy_level,
+            salary_grade,
             is_archived
          FROM designations
          WHERE id = :id
@@ -1778,7 +2348,8 @@ function settings_signatory_employee_options(PDO $pdo): array
         'SELECT
             e.id,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS name,
-            des.name AS designation,
+            des.name AS position,
+            e.designation,
             d.name AS division
          FROM employees e
          LEFT JOIN designations des ON des.id = e.designation_id
@@ -1791,6 +2362,7 @@ function settings_signatory_employee_options(PDO $pdo): array
         static fn (array $row): array => [
             'employeeRecordId' => (int)$row['id'],
             'name' => settings_text($row['name'] ?? ''),
+            'position' => settings_text($row['position'] ?? ''),
             'designation' => settings_text($row['designation'] ?? ''),
             'division' => settings_text($row['division'] ?? ''),
         ],
@@ -1829,6 +2401,34 @@ function settings_leave_types(PDO $pdo): array
     );
 
     return $statement->fetchAll();
+}
+
+function settings_update_leave_type_status(PDO $pdo, array $sessionUser, array $body): void
+{
+    settings_require_admin($sessionUser);
+
+    $id = filter_var($body['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+    $isActive = $body['isActive'] ?? null;
+    if ($id === false || !in_array($isActive, [0, 1, '0', '1', false, true], true)) {
+        json_response([
+            'success' => false,
+            'message' => 'A valid leave type and active status are required.',
+        ], 422);
+    }
+
+    $statement = $pdo->prepare('SELECT leave_type_id FROM leave_types WHERE leave_type_id = :id');
+    $statement->execute([':id' => $id]);
+    if ($statement->fetchColumn() === false) {
+        json_response([
+            'success' => false,
+            'message' => 'Leave type was not found.',
+        ], 404);
+    }
+
+    $statement = $pdo->prepare('UPDATE leave_types SET is_active = :is_active WHERE leave_type_id = :id');
+    $statement->execute([':id' => $id, ':is_active' => (int)$isActive]);
+
+    list_settings($pdo);
 }
 
 function settings_default_system_configuration(): array
@@ -2142,7 +2742,8 @@ function settings_permission_users(PDO $pdo): array
             u.status,
             TRIM(CONCAT(COALESCE(e.first_name, ""), " ", COALESCE(e.middle_name, ""), " ", COALESCE(e.last_name, ""))) AS full_name,
             d.name AS division,
-            des.name AS designation
+            des.name AS position,
+            e.designation
          FROM users u
          LEFT JOIN roles r ON r.id = u.role_id
          LEFT JOIN employees e
@@ -2175,6 +2776,7 @@ function settings_permission_users(PDO $pdo): array
             'roleKey' => $roleKey,
             'status' => settings_text($row['status'] ?? ''),
             'division' => settings_text($row['division'] ?? ''),
+            'position' => settings_text($row['position'] ?? ''),
             'designation' => settings_text($row['designation'] ?? ''),
             'profileImage' => settings_text($row['profile_image'] ?? ''),
             'hasOverride' => isset($overrides[$id]),
@@ -2203,7 +2805,7 @@ function settings_locked_account_row(array $row): array
         'employeeId' => settings_text($row['employeeId'] ?? ''),
         'employeeName' => settings_text($row['employeeName'] ?? ''),
         'division' => settings_text($row['division'] ?? ''),
-        'designation' => settings_text($row['designation'] ?? ''),
+        'position' => settings_text($row['position'] ?? ''),
         'failedLoginAttempts' => max(0, (int)($row['failedLoginAttempts'] ?? 0)),
         'lockedUntil' => $lockedUntil,
         'secondsRemaining' => $lockedUntilTimestamp === null ? 0 : max(0, $lockedUntilTimestamp - time()),
@@ -2227,7 +2829,7 @@ function settings_locked_accounts(PDO $pdo): array
             e.employee_id AS employeeId,
             TRIM(CONCAT(COALESCE(e.first_name, ""), " ", COALESCE(e.middle_name, ""), " ", COALESCE(e.last_name, ""))) AS employeeName,
             d.name AS division,
-            des.name AS designation
+            des.name AS position
          FROM users u
          LEFT JOIN roles r ON r.id = u.role_id
          LEFT JOIN employees e
@@ -2264,7 +2866,7 @@ function settings_account_security_record(PDO $pdo, int $id): ?array
             e.employee_id AS employeeId,
             TRIM(CONCAT(COALESCE(e.first_name, ""), " ", COALESCE(e.middle_name, ""), " ", COALESCE(e.last_name, ""))) AS employeeName,
             d.name AS division,
-            des.name AS designation
+            des.name AS position
          FROM users u
          LEFT JOIN roles r ON r.id = u.role_id
          LEFT JOIN employees e
@@ -2325,6 +2927,7 @@ function settings_write_account_unlock_audit(PDO $pdo, array $sessionUser, array
             ':details_json' => audit_details_json($details, $context),
             ':user_agent' => $context['userAgent'],
         ]);
+        audit_mark_entry_written();
     } catch (Throwable $exception) {
         error_log('Account unlock audit error: ' . $exception->getMessage());
     }
@@ -2388,6 +2991,7 @@ function list_settings(PDO $pdo): void
     ensure_organization_structure_columns($pdo);
 
     $loginCaptchaEnabled = get_boolean_application_setting($pdo, 'login_captcha_enabled', true);
+    $payrollWorkflowOtpEnabled = get_boolean_application_setting($pdo, 'payroll_workflow_otp_enabled', true);
     $securitySettings = security_settings($pdo);
     $twoFactorSettings = two_factor_settings($pdo);
 
@@ -2407,12 +3011,14 @@ function list_settings(PDO $pdo): void
             des.id,
             des.name,
             des.division_id,
+            des.hierarchy_level,
+            des.salary_grade,
             des.is_archived,
             d.name AS division_name,
             d.is_archived AS division_is_archived
          FROM designations des
          INNER JOIN divisions d ON d.id = des.division_id
-         ORDER BY d.is_archived ASC, d.name, des.is_archived ASC, des.name'
+         ORDER BY d.is_archived ASC, d.name, des.is_archived ASC, des.hierarchy_level DESC, des.name'
     )->fetchAll();
 
     json_response([
@@ -2426,7 +3032,10 @@ function list_settings(PDO $pdo): void
          * security settings, then two-factor.
          */
         'security' => array_merge(
-            ['loginCaptchaEnabled' => $loginCaptchaEnabled],
+            [
+                'loginCaptchaEnabled' => $loginCaptchaEnabled,
+                'payrollWorkflowOtpEnabled' => $payrollWorkflowOtpEnabled,
+            ],
             $securitySettings,
             ['twoFactor' => $twoFactorSettings]
         ),
@@ -2512,6 +3121,9 @@ function list_public_settings(PDO $pdo): void
         // title itself with whatever the administrator saved.
         'branding' => system_branding($pdo),
         'uiThemeColor' => settings_system_configuration($pdo)['uiThemeColor'],
+        // The OAuth client the "Sign in with Google" button is drawn for. Empty when google-config.php
+        // is absent or resolves nothing, which is what tells the login screen to draw no button at all.
+        'googleClientId' => defined('GOOGLE_CLIENT_ID') ? GOOGLE_CLIENT_ID : '',
         'security' => [
             'maximumPasswordLength' => $securitySettings['maximumPasswordLength'],
             'sessionTimeoutMinutes' => $securitySettings['sessionTimeoutMinutes'],
@@ -2570,6 +3182,13 @@ if ($section === 'public') {
 }
 
 $sessionUser = require_session_user();
+
+// Every signed-in filing workspace needs these two rendering flags, without the administrative
+// details in the full settings payload or permission to edit system settings.
+if ($method === 'GET' && $section === 'filingSignatories') {
+    list_filing_signatories_settings($pdo);
+}
+
 ensure_organization_structure_columns($pdo);
 
 if ($method === 'GET') {
@@ -2583,6 +3202,10 @@ if ($method === 'GET') {
 
 $body = read_json_body();
 $type = settings_text($body['type'] ?? '');
+
+if (($method === 'POST' || $method === 'PUT') && $type === 'filing_signatories') {
+    settings_update_filing_signatories($pdo, $sessionUser, $body);
+}
 
 if ($method === 'POST' && $type === 'division') {
     $name = settings_text($body['name'] ?? '');
@@ -2627,9 +3250,11 @@ if ($method === 'POST' && $type === 'designation') {
     if ($name === '' || $divisionId <= 0) {
         json_response([
             'success' => false,
-            'message' => 'Designation name and division are required.',
+            'message' => 'Position title and division are required.',
         ], 422);
     }
+
+    settings_reject_combined_position_title($name);
 
     $division = settings_division_record($pdo, $divisionId);
 
@@ -2643,31 +3268,33 @@ if ($method === 'POST' && $type === 'designation') {
     if (settings_organization_record_is_archived($division)) {
         json_response([
             'success' => false,
-            'message' => 'Designations cannot be assigned to an archived division.',
+            'message' => 'Positions cannot be assigned to an archived division.',
         ], 409);
     }
 
     if (settings_designation_duplicate_exists($pdo, $divisionId, $name)) {
         json_response([
             'success' => false,
-            'message' => 'Designation already exists in this division.',
+            'message' => 'Position already exists in this division.',
         ], 409);
     }
 
     try {
         $statement = $pdo->prepare(
-            'INSERT INTO designations (division_id, name, is_archived)
-             VALUES (:division_id, :name, 0)'
+            'INSERT INTO designations (division_id, name, hierarchy_level, salary_grade, is_archived)
+             VALUES (:division_id, :name, :hierarchy_level, :salary_grade, 0)'
         );
         $statement->execute([
             ':division_id' => $divisionId,
             ':name' => $name,
+            ':hierarchy_level' => settings_designation_level_from_body($body) ?? DESIGNATION_DEFAULT_LEVEL,
+            ':salary_grade' => settings_designation_salary_grade_from_body($body) ?: null,
         ]);
     } catch (PDOException $exception) {
         if ($exception->getCode() === '23000') {
             json_response([
                 'success' => false,
-                'message' => 'Unable to create designation. Check the selected division.',
+                'message' => 'Unable to create position. Check the selected division.',
             ], 409);
         }
 
@@ -2675,6 +3302,10 @@ if ($method === 'POST' && $type === 'designation') {
     }
 
     list_settings($pdo);
+}
+
+if ($method === 'PUT' && $type === 'leave_type') {
+    settings_update_leave_type_status($pdo, $sessionUser, $body);
 }
 
 if ($method === 'POST' && $type === 'leave_type') {
@@ -2829,7 +3460,7 @@ if ($method === 'PUT' && $type === 'designation') {
     if ($id <= 0) {
         json_response([
             'success' => false,
-            'message' => 'Designation is required.',
+            'message' => 'Position is required.',
         ], 422);
     }
 
@@ -2839,7 +3470,7 @@ if ($method === 'PUT' && $type === 'designation') {
         if ($designation === null) {
             json_response([
                 'success' => false,
-                'message' => 'Designation was not found.',
+                'message' => 'Position was not found.',
             ], 404);
         }
 
@@ -2859,7 +3490,7 @@ if ($method === 'PUT' && $type === 'designation') {
         if ($designation === null) {
             json_response([
                 'success' => false,
-                'message' => 'Designation was not found.',
+                'message' => 'Position was not found.',
             ], 404);
         }
 
@@ -2868,7 +3499,7 @@ if ($method === 'PUT' && $type === 'designation') {
         if ($division === null || settings_organization_record_is_archived($division)) {
             json_response([
                 'success' => false,
-                'message' => 'Restore the assigned division before restoring this designation.',
+                'message' => 'Restore the assigned division before restoring this position.',
             ], 409);
         }
 
@@ -2880,7 +3511,7 @@ if ($method === 'PUT' && $type === 'designation') {
         )) {
             json_response([
                 'success' => false,
-                'message' => 'Designation already exists in this division.',
+                'message' => 'Position already exists in this division.',
             ], 409);
         }
 
@@ -2897,9 +3528,11 @@ if ($method === 'PUT' && $type === 'designation') {
     if ($name === '' || $divisionId <= 0) {
         json_response([
             'success' => false,
-            'message' => 'Designation name and division are required.',
+            'message' => 'Position title and division are required.',
         ], 422);
     }
+
+    settings_reject_combined_position_title($name);
 
     $division = settings_division_record($pdo, $divisionId);
 
@@ -2913,25 +3546,37 @@ if ($method === 'PUT' && $type === 'designation') {
     if (settings_organization_record_is_archived($division)) {
         json_response([
             'success' => false,
-            'message' => 'Designations cannot be assigned to an archived division.',
+            'message' => 'Positions cannot be assigned to an archived division.',
         ], 409);
     }
 
     if (settings_designation_duplicate_exists($pdo, $divisionId, $name, $id)) {
         json_response([
             'success' => false,
-            'message' => 'Designation already exists in this division.',
+            'message' => 'Position already exists in this division.',
         ], 409);
     }
 
+    $currentDesignation = settings_designation_record($pdo, $id);
+    $hierarchyLevel = settings_designation_level_from_body($body)
+        ?? (int)($currentDesignation['hierarchy_level'] ?? DESIGNATION_DEFAULT_LEVEL);
+    $salaryGrade = array_key_exists('salaryGrade', $body)
+        ? settings_designation_salary_grade_from_body($body)
+        : settings_text($currentDesignation['salary_grade'] ?? '');
+
     $statement = $pdo->prepare(
         'UPDATE designations
-         SET name = :name, division_id = :division_id
+         SET name = :name,
+             division_id = :division_id,
+             hierarchy_level = :hierarchy_level,
+             salary_grade = :salary_grade
          WHERE id = :id'
     );
     $statement->execute([
         ':name' => $name,
         ':division_id' => $divisionId,
+        ':hierarchy_level' => $hierarchyLevel,
+        ':salary_grade' => $salaryGrade !== '' ? $salaryGrade : null,
         ':id' => $id,
     ]);
 
@@ -2939,11 +3584,21 @@ if ($method === 'PUT' && $type === 'designation') {
 }
 
 if (($method === 'POST' || $method === 'PUT') && $type === 'security') {
-    store_boolean_application_setting(
-        $pdo,
-        'login_captcha_enabled',
-        $body['loginCaptchaEnabled'] ?? true
-    );
+    if (array_key_exists('loginCaptchaEnabled', $body)) {
+        store_boolean_application_setting(
+            $pdo,
+            'login_captcha_enabled',
+            $body['loginCaptchaEnabled']
+        );
+    }
+
+    if (array_key_exists('payrollWorkflowOtpEnabled', $body)) {
+        store_boolean_application_setting(
+            $pdo,
+            'payroll_workflow_otp_enabled',
+            $body['payrollWorkflowOtpEnabled']
+        );
+    }
 
     list_settings($pdo);
 }

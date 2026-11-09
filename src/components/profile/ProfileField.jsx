@@ -10,13 +10,19 @@ export default function ProfileField({
   helper = "",
   placeholder = "",
   type = "text",
+  inputMode,
+  maxLength,
+  pattern,
+  min,
+  max,
+  step,
   as = "input",
   options = [],
   rows = 4,
   readOnly = false,
   className = "",
 }) {
-  const baseClasses = `profile-field-input min-h-[40px] w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition duration-150 ${
+  const baseClasses = `profile-field-input min-h-11 w-full min-w-0 rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition duration-150 ${
     readOnly
       ? "cursor-not-allowed border-slate-200 bg-slate-50 text-slate-500"
       : error
@@ -27,12 +33,12 @@ export default function ProfileField({
   const labelNode = (
     <label htmlFor={name} className="profile-field-label mb-1.5 block text-sm font-semibold text-slate-700">
       {label}
-      {required ? <span className="profile-field-required ml-1 text-[#D61E1E]">*</span> : null}
+      {required ? <span className="app-required-marker profile-field-required ml-1 !text-[#D61E1E]">*</span> : null}
     </label>
   );
 
   return (
-    <div className="profile-field w-full">
+    <div className="profile-field min-w-0 w-full" data-validation-field>
       {labelNode}
       {as === "textarea" ? (
         <textarea
@@ -70,6 +76,12 @@ export default function ProfileField({
           id={name}
           name={name}
           type={type}
+          inputMode={inputMode}
+          maxLength={maxLength}
+          pattern={pattern}
+          min={min}
+          max={max}
+          step={step}
           value={value}
           onChange={onChange}
           placeholder={placeholder}

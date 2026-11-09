@@ -2,13 +2,17 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
+require_once __DIR__ . '/employee-id-utils.php';
 require_once __DIR__ . '/email-domain-policy.php';
 require_once __DIR__ . '/leave-credit-utils.php';
 require_once __DIR__ . '/password-reset-utils.php';
+require_once __DIR__ . '/admin-user-otp-utils.php';
 
 $sessionUser = require_session_user();
 ensure_user_security_columns($pdo);
 ensure_email_verification_columns($pdo);
+ensure_employee_assignment_optional($pdo);
+migrate_legacy_employee_ids($pdo);
 
 /**
  * Account administration is admin/HR-head work. Before this gate the only check on the file was
@@ -38,6 +42,22 @@ function user_text(mixed $value): string
     return trim((string)($value ?? ''));
 }
 
+function user_role_is_admin(PDO $pdo, int $roleId): bool
+{
+    $statement = $pdo->prepare('SELECT name FROM roles WHERE id = :id');
+    $statement->execute([':id' => $roleId]);
+    return strtolower(trim((string)$statement->fetchColumn())) === 'admin';
+}
+
+function user_verify_admin_creation(array $sessionUser, string $email, array $body): void
+{
+    try {
+        admin_user_otp_consume($sessionUser, $email, user_text($body['otpCode'] ?? ''));
+    } catch (RuntimeException $exception) {
+        json_response(['success' => false, 'message' => $exception->getMessage()], 422);
+    }
+}
+
 function user_int(mixed $value): int
 {
     return (int)($value ?? 0);
@@ -60,7 +80,7 @@ function user_activation_details(array $user): array
         'employeeName' => user_text($user['full_name'] ?? $user['username'] ?? ''),
         'employeeId' => user_text($user['employee_id'] ?? ''),
         'employeeEmail' => user_text($user['email'] ?? ''),
-        'position' => user_text($user['designation'] ?? ''),
+        'position' => user_text($user['position'] ?? ''),
         'division' => user_text($user['division'] ?? ''),
         'accessRole' => user_text($user['role'] ?? 'Employee'),
     ];
@@ -68,19 +88,7 @@ function user_activation_details(array $user): array
 
 function user_next_employee_code(PDO $pdo): string
 {
-    $year = date('Y');
-    $prefix = 'EMP' . $year . '-';
-    $statement = $pdo->prepare(
-        'SELECT MAX(CAST(SUBSTRING(employee_id, :offset) AS UNSIGNED))
-         FROM employees
-         WHERE employee_id LIKE :prefix'
-    );
-    $statement->execute([
-        ':offset' => strlen($prefix) + 1,
-        ':prefix' => $prefix . '%',
-    ]);
-
-    return $prefix . str_pad((string)(((int)$statement->fetchColumn()) + 1), 4, '0', STR_PAD_LEFT);
+    return next_employee_id($pdo);
 }
 
 function user_split_full_name(string $fullName): array
@@ -93,72 +101,6 @@ function user_split_full_name(string $fullName): array
         'firstName' => trim($firstName),
         'middleName' => trim(implode(' ', $parts)),
         'lastName' => trim($lastName),
-    ];
-}
-
-function user_unassigned_employee_assignment(PDO $pdo): array
-{
-    $divisionStatement = $pdo->prepare(
-        'SELECT id
-         FROM divisions
-         WHERE code = :code OR name = :name
-         ORDER BY code = :preferred_code DESC, id
-         LIMIT 1'
-    );
-    $divisionStatement->execute([
-        ':code' => 'UNASSIGNED',
-        ':name' => 'Unassigned',
-        ':preferred_code' => 'UNASSIGNED',
-    ]);
-    $divisionId = (int)$divisionStatement->fetchColumn();
-
-    if ($divisionId > 0) {
-        $pdo->prepare('UPDATE divisions SET is_archived = 0 WHERE id = :id')
-            ->execute([':id' => $divisionId]);
-    } else {
-        $statement = $pdo->prepare(
-            'INSERT INTO divisions (name, description, code, is_archived)
-             VALUES (:name, :description, :code, 0)'
-        );
-        $statement->execute([
-            ':name' => 'Unassigned',
-            ':description' => 'Temporary placement for user records created before full employee details are completed.',
-            ':code' => 'UNASSIGNED',
-        ]);
-        $divisionId = (int)$pdo->lastInsertId();
-    }
-
-    $designationStatement = $pdo->prepare(
-        'SELECT id
-         FROM designations
-         WHERE division_id = :division_id AND name = :name
-         ORDER BY id
-         LIMIT 1'
-    );
-    $designationStatement->execute([
-        ':division_id' => $divisionId,
-        ':name' => 'Unassigned',
-    ]);
-    $designationId = (int)$designationStatement->fetchColumn();
-
-    if ($designationId > 0) {
-        $pdo->prepare('UPDATE designations SET is_archived = 0 WHERE id = :id')
-            ->execute([':id' => $designationId]);
-    } else {
-        $statement = $pdo->prepare(
-            'INSERT INTO designations (division_id, name, is_archived)
-             VALUES (:division_id, :name, 0)'
-        );
-        $statement->execute([
-            ':division_id' => $divisionId,
-            ':name' => 'Unassigned',
-        ]);
-        $designationId = (int)$pdo->lastInsertId();
-    }
-
-    return [
-        'divisionId' => $divisionId,
-        'designationId' => $designationId,
     ];
 }
 
@@ -227,6 +169,7 @@ function user_fetch_employee(PDO $pdo, int $id): ?array
             d.name AS department,
             e.designation_id AS designationId,
             des.name AS position,
+            e.designation,
             e.basic_salary AS basicSalary,
             e.salary_rate AS salaryRate,
             e.date_hired AS dateHired,
@@ -243,8 +186,8 @@ function user_fetch_employee(PDO $pdo, int $id): ?array
             e.emp_philhealth_id_no AS philhealthIdNo,
             e.tin_no AS tinNo
          FROM employees e
-         INNER JOIN divisions d ON d.id = e.division_id
-         INNER JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE e.id = :id AND e.is_archived = 0
          LIMIT 1'
     );
@@ -259,6 +202,10 @@ function create_linked_employee_user(PDO $pdo, array $sessionUser, array $body):
     $fullName = user_text($body['fullName'] ?? '');
     $email = user_text($body['email'] ?? '');
     $roleId = user_int($body['roleId'] ?? 0);
+    $isAdmin = user_role_is_admin($pdo, $roleId);
+    /* Optional placement; an administrator has no employee record, so it is ignored for that role. */
+    $divisionId = $isAdmin ? 0 : user_int($body['divisionId'] ?? 0);
+    $designationId = $isAdmin ? 0 : user_int($body['designationId'] ?? 0);
     $nameParts = user_split_full_name($fullName);
     $errors = [];
 
@@ -290,6 +237,30 @@ function create_linked_employee_user(PDO $pdo, array $sessionUser, array $body):
             $errors[] = 'Selected role is not available.';
         }
     }
+    if ($divisionId > 0) {
+        $divisionStatement = $pdo->prepare('SELECT COUNT(*) FROM divisions WHERE id = :id AND is_archived = 0');
+        $divisionStatement->execute([':id' => $divisionId]);
+        if ((int)$divisionStatement->fetchColumn() === 0) {
+            $errors[] = 'Selected division is not available.';
+        }
+    }
+    if ($designationId > 0) {
+        if ($divisionId <= 0) {
+            $errors[] = 'Select the division the position belongs to.';
+        } else {
+            /* The same rule the employee form enforces: a position is only valid inside its own division. */
+            $designationStatement = $pdo->prepare(
+                'SELECT COUNT(*) FROM designations
+                 WHERE id = :id
+                   AND division_id = :division_id
+                   AND is_archived = 0'
+            );
+            $designationStatement->execute([':id' => $designationId, ':division_id' => $divisionId]);
+            if ((int)$designationStatement->fetchColumn() === 0) {
+                $errors[] = 'Selected position does not belong to the selected division.';
+            }
+        }
+    }
 
     if ($errors !== []) {
         json_response([
@@ -319,33 +290,40 @@ function create_linked_employee_user(PDO $pdo, array $sessionUser, array $body):
     $employeeRecordId = 0;
     $userId = 0;
     $temporaryPassword = user_temporary_password($pdo);
+    if ($isAdmin) {
+        user_verify_admin_creation($sessionUser, $email, $body);
+    }
 
     try {
         $pdo->beginTransaction();
-        $assignment = user_unassigned_employee_assignment($pdo);
-        $employeeCode = user_next_employee_code($pdo);
+        $employeeCode = $isAdmin ? 'ADMIN' : user_next_employee_code($pdo);
         $username = user_unique_employee_username($pdo, $fullName, $employeeCode);
 
-        $statement = $pdo->prepare(
-            'INSERT INTO employees
-                (employee_id, first_name, middle_name, last_name, email, division_id, designation_id, status)
-             VALUES
-                (:employee_id, :first_name, :middle_name, :last_name, :email, :division_id, :designation_id, :status)'
-        );
-        $statement->execute([
-            ':employee_id' => $employeeCode,
-            ':first_name' => $nameParts['firstName'],
-            ':middle_name' => $nameParts['middleName'] !== '' ? $nameParts['middleName'] : null,
-            ':last_name' => $nameParts['lastName'],
-            ':email' => $email,
-            ':division_id' => $assignment['divisionId'],
-            ':designation_id' => $assignment['designationId'],
-            ':status' => 'Active',
-        ]);
-        $employeeRecordId = (int)$pdo->lastInsertId();
+        if (!$isAdmin) {
+            // The placement is whatever the form chose; left blank, division and designation stay
+            // empty and are filled in later from Employee Management, whose edit form requires both.
+            $statement = $pdo->prepare(
+                'INSERT INTO employees
+                    (employee_id, first_name, middle_name, last_name, email, division_id, designation_id, status)
+                 VALUES
+                    (:employee_id, :first_name, :middle_name, :last_name, :email, :division_id, :designation_id, :status)'
+            );
+            $statement->execute([
+                ':employee_id' => $employeeCode,
+                ':first_name' => $nameParts['firstName'],
+                ':middle_name' => $nameParts['middleName'] !== '' ? $nameParts['middleName'] : null,
+                ':last_name' => $nameParts['lastName'],
+                ':email' => $email,
+                ':division_id' => $divisionId > 0 ? $divisionId : null,
+                ':designation_id' => $designationId > 0 ? $designationId : null,
+                ':status' => 'Active',
+            ]);
+            $employeeRecordId = (int)$pdo->lastInsertId();
 
-        ensure_employee_default_leave_credits($pdo, $employeeRecordId);
-        recalculate_employee_leave_credit_usage($pdo, $employeeRecordId);
+            // A brand-new employee record: vacation and sick leave open at 0.
+            ensure_employee_default_leave_credits($pdo, $employeeRecordId, null, true);
+            recalculate_employee_leave_credit_usage($pdo, $employeeRecordId);
+        }
 
         $statement = $pdo->prepare(
             'INSERT INTO users
@@ -383,7 +361,7 @@ function create_linked_employee_user(PDO $pdo, array $sessionUser, array $body):
         throw $exception;
     }
 
-    $employee = user_fetch_employee($pdo, $employeeRecordId);
+    $employee = $isAdmin ? null : user_fetch_employee($pdo, $employeeRecordId);
     $createdUser = fetch_user($pdo, $userId);
     $emailNotification = null;
     $emailMessage = '';
@@ -398,7 +376,7 @@ function create_linked_employee_user(PDO $pdo, array $sessionUser, array $body):
                 $temporaryPassword
             );
             $emailNotification = 'sent';
-            $emailMessage = 'Activation email sent to the employee.';
+            $emailMessage = $isAdmin ? 'Activation email sent to the Admin.' : 'Activation email sent to the employee.';
         } catch (Throwable $exception) {
             error_log('Employee activation email failed: ' . $exception->getMessage());
             $emailNotification = 'warning';
@@ -419,11 +397,11 @@ function create_linked_employee_user(PDO $pdo, array $sessionUser, array $body):
             $pdo,
             [$userId],
             'Account Activated',
-            'Your employee profile and HRIS account have been created.',
+            $isAdmin ? 'Your Admin account has been created.' : 'Your employee profile and HRIS account have been created.',
             'account_activated',
             (string)$employeeRecordId
         );
-        write_auth_audit($pdo, $sessionUser, 'user.created', 'A linked employee and user account were created.', [
+        write_auth_audit($pdo, $sessionUser, 'user.created', $isAdmin ? 'An Admin account was created after OTP verification of the acting account.' : 'A linked employee and user account were created.', [
             'employeeRecordId' => $employeeRecordId,
             'userId' => $userId,
             'employeeId' => $employee['employeeId'] ?? null,
@@ -446,7 +424,7 @@ function create_linked_employee_user(PDO $pdo, array $sessionUser, array $body):
     ], 201);
 }
 
-function fetch_user(PDO $pdo, int $id): ?array
+function fetch_user(PDO $pdo, int $id, bool $archived = false): ?array
 {
     $statement = $pdo->prepare(
         'SELECT
@@ -458,11 +436,14 @@ function fetch_user(PDO $pdo, int $id): ?array
             u.role_id AS roleId,
             r.name AS role,
             u.status,
+            u.is_archived AS isArchived,
+            u.created_at AS createdAt,
             u.must_change_password AS mustChangePassword,
             e.employee_id,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS full_name,
             d.name AS division,
-            des.name AS designation
+            des.name AS position,
+            e.designation
          FROM users u
          INNER JOIN roles r ON r.id = u.role_id
          LEFT JOIN employees e
@@ -471,18 +452,21 @@ function fetch_user(PDO $pdo, int $id): ?array
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id
          WHERE u.id = :id
-           AND u.is_archived = 0
+           AND u.is_archived = :is_archived
          LIMIT 1'
     );
-    $statement->execute([':id' => $id]);
+    $statement->execute([
+        ':id' => $id,
+        ':is_archived' => $archived ? 1 : 0,
+    ]);
     $user = $statement->fetch();
 
     return $user ?: null;
 }
 
-function list_users(PDO $pdo): void
+function list_users(PDO $pdo, bool $archived = false): void
 {
-    $users = $pdo->query(
+    $statement = $pdo->prepare(
         'SELECT
             u.id,
             u.username,
@@ -492,11 +476,14 @@ function list_users(PDO $pdo): void
             u.role_id AS roleId,
             r.name AS role,
             u.status,
+            u.is_archived AS isArchived,
+            u.created_at AS createdAt,
             u.must_change_password AS mustChangePassword,
             e.employee_id,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS full_name,
             d.name AS division,
-            des.name AS designation
+            des.name AS position,
+            e.designation
          FROM users u
          INNER JOIN roles r ON r.id = u.role_id
          LEFT JOIN employees e
@@ -504,12 +491,14 @@ function list_users(PDO $pdo): void
            AND e.is_archived = 0
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id
-         WHERE u.is_archived = 0
+         WHERE u.is_archived = :is_archived
          ORDER BY u.created_at DESC, u.id DESC'
-    )->fetchAll();
+    );
+    $statement->execute([':is_archived' => $archived ? 1 : 0]);
+    $users = $statement->fetchAll();
 
-    // base_role marks an admin-created role and names the built-in dashboard it reuses;
-    // it is NULL for the built-in roles.
+    // base_role usually marks an admin-created role and names the built-in capability set it
+    // reuses. Chief Admin is the built-in exception: it has its own route but inherits Chief.
     ensure_role_columns($pdo);
 
     $roles = $pdo->query(
@@ -636,6 +625,35 @@ function user_sync_employee_status(PDO $pdo, string $email, bool $isActive): int
     return $statement->rowCount();
 }
 
+/**
+ * The employee record an account is linked to: the one active employee whose e-mail is the account's.
+ *
+ * The link between the two tables is the shared address and nothing else (see fetch_user() and
+ * enrich_user_with_employee()), which is why an e-mail edit has to move both rows together --
+ * change only `users.email` and the account silently stops being that employee.
+ */
+function user_linked_employee_id(PDO $pdo, string $email): ?int
+{
+    $email = trim($email);
+
+    if ($email === '') {
+        return null;
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT id
+         FROM employees
+         WHERE is_archived = 0
+           AND LOWER(TRIM(email)) = LOWER(:email)
+         ORDER BY id ASC
+         LIMIT 1'
+    );
+    $statement->execute([':email' => $email]);
+    $employeeId = (int)$statement->fetchColumn();
+
+    return $employeeId > 0 ? $employeeId : null;
+}
+
 function update_user(PDO $pdo, int $id, array $user, string $password, mixed $permissions = null): void
 {
     $existingUser = fetch_user($pdo, $id);
@@ -651,6 +669,36 @@ function update_user(PDO $pdo, int $id, array $user, string $password, mixed $pe
         trim((string)($existingUser['email'] ?? '')),
         trim((string)($user['email'] ?? ''))
     ) !== 0;
+
+    /*
+     * An e-mail edit travels to the employee record the account is linked to, or the two fall out
+     * of step: User Management would show the new address while Employee Management, the profile
+     * and every screen that pairs the tables on the address kept the old one -- and the account,
+     * no longer matching any employee, would lose its name, employee ID and division on the spot.
+     * Checked before anything is written, so a clash with another employee's address refuses the
+     * whole edit rather than leaving the account changed and the employee not.
+     */
+    $linkedEmployeeId = $emailChanged ? user_linked_employee_id($pdo, (string)($existingUser['email'] ?? '')) : null;
+
+    if ($linkedEmployeeId !== null) {
+        $clashStatement = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM employees
+             WHERE LOWER(TRIM(email)) = LOWER(:email)
+               AND id <> :employee_id'
+        );
+        $clashStatement->execute([
+            ':email' => $user['email'],
+            ':employee_id' => $linkedEmployeeId,
+        ]);
+
+        if ((int)$clashStatement->fetchColumn() > 0) {
+            json_response([
+                'success' => false,
+                'message' => 'Another employee record already uses this email.',
+            ], 409);
+        }
+    }
 
     $query = 'UPDATE users
               SET username = :username,
@@ -688,9 +736,25 @@ function update_user(PDO $pdo, int $id, array $user, string $password, mixed $pe
                 AND is_archived = 0';
 
     try {
+        $pdo->beginTransaction();
+
         $statement = $pdo->prepare($query);
         $statement->execute($params);
+
+        if ($linkedEmployeeId !== null) {
+            $employeeStatement = $pdo->prepare('UPDATE employees SET email = :email WHERE id = :id');
+            $employeeStatement->execute([
+                ':email' => $user['email'],
+                ':id' => $linkedEmployeeId,
+            ]);
+        }
+
+        $pdo->commit();
     } catch (PDOException $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
         if ($exception->getCode() === '23000') {
             json_response([
                 'success' => false,
@@ -811,19 +875,110 @@ function archive_user(PDO $pdo, array $sessionUser, int $id): void
     json_response([
         'success' => true,
         'message' => 'User archived successfully.',
+        'user' => array_merge($targetUser ?: [], ['isArchived' => 1]),
+    ]);
+}
+
+function restore_user(PDO $pdo, int $id): void
+{
+    if ($id <= 0) {
+        json_response([
+            'success' => false,
+            'message' => 'User record is required.',
+        ], 422);
+    }
+
+    $targetUser = fetch_user($pdo, $id, true);
+
+    if ($targetUser === null) {
+        json_response([
+            'success' => false,
+            'message' => 'Archived user record not found.',
+        ], 404);
+    }
+
+    $statement = $pdo->prepare(
+        'UPDATE users
+         SET is_archived = 0
+         WHERE id = :id
+           AND is_archived = 1'
+    );
+    $statement->execute([':id' => $id]);
+
+    if ($statement->rowCount() === 0) {
+        json_response([
+            'success' => false,
+            'message' => 'Archived user record not found.',
+        ], 404);
+    }
+
+    $restoredUser = fetch_user($pdo, $id);
+
+    try {
+        $notificationMessage = sprintf(
+            'User %s has been restored.',
+            (string)($restoredUser['username'] ?? $targetUser['username'] ?? ('#' . $id))
+        );
+
+        notify_roles($pdo, ['admin'], 'Account Restored', $notificationMessage, 'account_activated', (string)$id);
+        notify_users(
+            $pdo,
+            [$id],
+            'Account Restored',
+            'Your HRIS account has been restored.',
+            'account_activated',
+            (string)$id
+        );
+    } catch (Throwable $notificationException) {
+        error_log('User restore notification error: ' . $notificationException->getMessage());
+    }
+
+    json_response([
+        'success' => true,
+        'message' => 'User restored successfully.',
+        'user' => $restoredUser,
     ]);
 }
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($method === 'GET') {
-    list_users($pdo);
+    $archived = in_array(
+        strtolower(trim((string)($_GET['archived'] ?? ''))),
+        ['1', 'true', 'yes'],
+        true
+    );
+    list_users($pdo, $archived);
 }
 
 $body = read_json_body();
 
 // Everything past this point creates, rewrites or archives an account.
 users_require_account_manager($sessionUser);
+
+if ($method === 'POST' && strtolower(user_text($body['action'] ?? '')) === 'sendadminotp') {
+    $email = user_text($body['email'] ?? '');
+    if (!user_role_is_admin($pdo, user_int($body['roleId'] ?? 0))) {
+        json_response(['success' => false, 'message' => 'Select the Admin role to request verification.'], 422);
+    }
+    if (strlen($email) > 150 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        json_response(['success' => false, 'message' => 'Enter a valid Admin email address.'], 422);
+    }
+    $violation = email_domain_policy_violation($pdo, $email);
+    if ($violation !== null) {
+        json_response(['success' => false, 'message' => $violation], 422);
+    }
+    $existing = $pdo->prepare('SELECT id FROM users WHERE LOWER(TRIM(email)) = LOWER(:email) LIMIT 1');
+    $existing->execute([':email' => $email]);
+    if ($existing->fetchColumn()) {
+        json_response(['success' => false, 'message' => 'A user with this email already exists.'], 409);
+    }
+    try {
+        json_response(admin_user_otp_issue($sessionUser, $email));
+    } catch (RuntimeException $exception) {
+        json_response(['success' => false, 'message' => $exception->getMessage()], 422);
+    }
+}
 
 if (
     $method === 'POST'
@@ -840,10 +995,14 @@ if ($method === 'POST') {
         'email' => user_text($body['email'] ?? ''),
         'role_id' => user_int($body['roleId'] ?? 0),
         'status' => normalize_user_status($body['status'] ?? ''),
-        'must_change_password' => (int)(($body['mustChangePassword'] ?? false) === true || ($body['mustChangePassword'] ?? '0') === '1'),
+        // user_bool(): the edit form posts the stored 1/0 back, which the old strict === checks read as off.
+        'must_change_password' => (int)user_bool($body['mustChangePassword'] ?? false),
     ];
 
     validate_user_payload($pdo, $user, $password);
+    if (user_role_is_admin($pdo, $user['role_id'])) {
+        user_verify_admin_creation($sessionUser, $user['email'], $body);
+    }
 
     try {
         $statement = $pdo->prepare(
@@ -956,6 +1115,10 @@ if ($method === 'POST') {
     ], 201);
 }
 
+if ($method === 'PUT' && strtolower(user_text($body['action'] ?? '')) === 'restore') {
+    restore_user($pdo, user_int($body['id'] ?? 0));
+}
+
 if ($method === 'PUT') {
     $id = user_int($body['id'] ?? 0);
     $password = (string)($body['password'] ?? '');
@@ -964,7 +1127,8 @@ if ($method === 'PUT') {
         'email' => user_text($body['email'] ?? ''),
         'role_id' => user_int($body['roleId'] ?? 0),
         'status' => normalize_user_status($body['status'] ?? ''),
-        'must_change_password' => (int)(($body['mustChangePassword'] ?? false) === true || ($body['mustChangePassword'] ?? '0') === '1'),
+        // user_bool(): the edit form posts the stored 1/0 back, which the old strict === checks read as off.
+        'must_change_password' => (int)user_bool($body['mustChangePassword'] ?? false),
     ];
 
     if ($id <= 0) {

@@ -3,6 +3,14 @@ import api from "./api";
 export const LOAN_REQUESTS_CHANGED_EVENT = "loan-requests:changed";
 
 export const LOAN_TYPES = [
+  "SSS Salary Loan",
+  "SSS Calamity Loan",
+  "Pag-IBIG Multi-Purpose Loan",
+  "Pag-IBIG Housing Loan",
+  "GSIS Salary Loan",
+  "GSIS Emergency Loan",
+  "GSIS Policy Loan",
+  "Company Loan",
   "Emergency Loan",
   "Policy Loan",
   "Consolidated Loan",
@@ -23,34 +31,6 @@ function notifyLoanRequestsChanged() {
   }
 }
 
-function buildLoanFormData(payload = {}) {
-  const formData = new FormData();
-
-  Object.entries(payload).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === "") {
-      return;
-    }
-
-    if (key === "supportingDocument" && typeof File !== "undefined" && value instanceof File) {
-      formData.append(key, value);
-      return;
-    }
-
-    if (typeof value === "object") {
-      formData.append(key, JSON.stringify(value));
-      return;
-    }
-
-    formData.append(key, typeof value === "string" ? value : String(value));
-  });
-
-  return formData;
-}
-
-function hasDocument(payload = {}) {
-  return typeof File !== "undefined" && payload.supportingDocument instanceof File;
-}
-
 export async function fetchLoanRequests(params = {}) {
   const response = await api.get("/loan_request.php", { params });
   return response.data;
@@ -69,13 +49,7 @@ export async function createLoanRequest(payload) {
     action: "create",
   };
 
-  const response = hasDocument(payload)
-    ? await api.post("/loan_request.php", buildLoanFormData(requestPayload), {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      })
-    : await api.post("/loan_request.php", requestPayload);
+  const response = await api.post("/loan_request.php", requestPayload);
 
   notifyLoanRequestsChanged();
   return response.data;
@@ -88,13 +62,7 @@ export async function updateLoanRequest(id, payload) {
     action: "update",
   };
 
-  const response = hasDocument(payload)
-    ? await api.post("/loan_request.php", buildLoanFormData(requestPayload), {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      })
-    : await api.put("/loan_request.php", requestPayload);
+  const response = await api.put("/loan_request.php", requestPayload);
 
   notifyLoanRequestsChanged();
   return response.data;
@@ -106,6 +74,26 @@ export async function updateLoanStatus(id, status, remarks = "") {
     status,
     remarks,
     action: "status",
+  });
+  notifyLoanRequestsChanged();
+  return response.data;
+}
+
+export async function disburseLoanRequest(id, disbursedAt) {
+  const response = await api.put("/loan_request.php", {
+    id,
+    disbursedAt,
+    action: "disburse",
+  });
+  notifyLoanRequestsChanged();
+  return response.data;
+}
+
+export async function recordLoanPayment(id, payload = {}) {
+  const response = await api.post("/loan_request.php", {
+    ...payload,
+    id,
+    action: "payment",
   });
   notifyLoanRequestsChanged();
   return response.data;

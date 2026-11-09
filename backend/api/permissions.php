@@ -70,12 +70,13 @@ function permissions_template_from_permissions(PDO $pdo, string $roleKey, array 
 
     $template = $defaults[$roleKey];
     $template['enabled'] = $enabled;
+    $availableActions = permission_available_actions();
 
     foreach ($template['modules'] as $moduleKey => $modulePermission) {
         $sourceActions = isset($permissions[$moduleKey]) && is_array($permissions[$moduleKey])
             ? $permissions[$moduleKey]
             : [];
-        $allowedActions = array_flip($modulePermission['actions']);
+        $allowedActions = array_flip($availableActions[$moduleKey] ?? []);
         $actions = [];
 
         foreach ($sourceActions as $action) {
@@ -144,7 +145,9 @@ if ($method === 'GET') {
     json_response([
         'success' => true,
         'roleKey' => $targetRoleKey,
-        'permissions' => permissions_for_role_key($pdo, $targetRoleKey),
+        'permissions' => $targetUserId > 0
+            ? permissions_for_user($pdo, $targetUserId, $targetRoleKey)
+            : permissions_for_role_key($pdo, $targetRoleKey),
     ]);
 }
 

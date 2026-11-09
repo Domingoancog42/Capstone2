@@ -45,6 +45,25 @@ function mixColors(color, target, amount) {
   return `#${toHex(mix(sourceRgb.r, targetRgb.r))}${toHex(mix(sourceRgb.g, targetRgb.g))}${toHex(mix(sourceRgb.b, targetRgb.b))}`.toUpperCase();
 }
 
+/*
+ * The `accent` Tailwind scale (tailwind.config.js) as "r g b" triplets, so its classes keep their
+ * opacity modifiers. Lighter shades mix toward white and darker ones toward black, around the
+ * selected color itself at 600. The defaults for the stock crimson sit in tailwind.css.
+ */
+const ACCENT_SCALE = [
+  [50, "#FFFFFF", 0.92],
+  [100, "#FFFFFF", 0.84],
+  [200, "#FFFFFF", 0.68],
+  [300, "#FFFFFF", 0.5],
+  [400, "#FFFFFF", 0.26],
+  [500, "#FFFFFF", 0.12],
+  [600, "#000000", 0],
+  [700, "#000000", 0.16],
+  [800, "#000000", 0.34],
+  [900, "#000000", 0.48],
+  [950, "#000000", 0.62],
+];
+
 function contrastText(color) {
   const { r, g, b } = hexToRgb(color);
   const linear = (channel) => {
@@ -79,7 +98,9 @@ export function applyUiThemeColor(value, { persist = true } = {}) {
   root.style.setProperty("--ui-accent-soft", mixColors(color, "#FFFFFF", 0.82));
   root.style.setProperty("--ui-accent-border", mixColors(color, "#FFFFFF", 0.68));
   root.style.setProperty("--ui-accent-border-hover", mixColors(color, "#FFFFFF", 0.5));
-  root.style.setProperty("--ui-accent-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
+  root.style.setProperty("--ui-accent-on-dark", mixColors(color, "#FFFFFF", 0.3));
+  root.style.setProperty("--ui-accent-soft-on-dark", mixColors(color, "#FFFFFF", 0.5));
+  root.style.setProperty("--ui-accent-rgb", `${rgb.r} ${rgb.g} ${rgb.b}`);
   root.style.setProperty("--ui-on-accent", contrastText(color));
   root.style.setProperty("--ui-surface-top", mixColors(color, "#FFFFFF", 0.97));
   root.style.setProperty("--ui-surface", mixColors(color, "#FFFFFF", 0.93));
@@ -105,6 +126,10 @@ export function applyUiThemeColor(value, { persist = true } = {}) {
   root.style.setProperty("--surface-top", mixColors(color, "#FFFFFF", 0.97));
   root.style.setProperty("--surface", mixColors(color, "#FFFFFF", 0.93));
   root.style.setProperty("--surface-bottom", mixColors(color, "#FFFFFF", 0.86));
+  ACCENT_SCALE.forEach(([shade, target, amount]) => {
+    const shadeRgb = hexToRgb(mixColors(color, target, amount));
+    root.style.setProperty(`--accent-${shade}-rgb`, `${shadeRgb.r} ${shadeRgb.g} ${shadeRgb.b}`);
+  });
 
   if (persist && typeof window !== "undefined") {
     window.localStorage.setItem(UI_THEME_STORAGE_KEY, color);

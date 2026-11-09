@@ -18,7 +18,8 @@ declare(strict_types=1);
  *     throttle_password_reset()          reset-code submissions
  *     throttle_password_reset_request()  reset-code requests, on its own budget
  *     throttle_two_factor()              one-time passcode submissions
- *     throttle_leave_request()           the daily filing quota
+ *     throttle_two_factor_resend()       replacement two-factor codes
+ *     throttle_filing_request()          the shared request-filing quota
  *     throttle_request()                 the general ceiling, on every request
  *
  * Adding a throttle to an endpoint means calling one of these. Adding a *kind* of throttle means a
@@ -85,15 +86,22 @@ function throttle_login(PDO $pdo, string $identifier): void
 }
 
 /**
- * Reset-code submissions, keyed by address rather than by account -- otherwise a client starts its
- * budget over simply by naming a different user.
+ * Reset-code submissions, keyed by a one-way hash of the account identifier. This preserves the
+ * brute-force limit while keeping employees on the same office network out of each other's bucket.
  */
-function throttle_password_reset(PDO $pdo): void
+function password_reset_throttle_identifier(string $identifier): string
+{
+    $normalized = strtolower(trim($identifier));
+
+    return $normalized === '' ? '' : 'account:' . hash('sha256', $normalized);
+}
+
+function throttle_password_reset(PDO $pdo, string $identifier): void
 {
     throttle(
         $pdo,
         'passwordReset',
-        rate_limit_client_ip(),
+        password_reset_throttle_identifier($identifier),
         null,
         'Too many password reset attempts.'
     );
@@ -110,13 +118,14 @@ function throttle_password_reset(PDO $pdo): void
  *
  * Kept separate from throttle_password_reset() rather than sharing its bucket so the two cannot rob
  * each other: mistyping the code should not consume the ability to request a new one.
+ * The account identifier is hashed before it reaches storage, so the counter does not retain email.
  */
-function throttle_password_reset_request(PDO $pdo): void
+function throttle_password_reset_request(PDO $pdo, string $identifier): void
 {
     throttle(
         $pdo,
         'passwordResetRequest',
-        rate_limit_client_ip(),
+        password_reset_throttle_identifier($identifier),
         null,
         'Too many password reset requests.'
     );
@@ -132,24 +141,45 @@ function throttle_two_factor(PDO $pdo): void
     throttle(
         $pdo,
         'twoFactor',
-        rate_limit_client_ip(),
+        rate_limit_client_ip() . '|verify',
         null,
         'Too many verification attempts.'
     );
 }
 
 /**
- * The daily leave-filing allowance. A quota rather than an abuse guard, which is why it is keyed by
- * the account doing the filing: somebody filing on behalf of others spends their own allowance.
+ * Replacement login codes. This deliberately uses the same administrator-configured rule as code
+ * submission but a different bucket, so requesting a replacement never consumes the attempts the
+ * user still needs in order to submit the code that arrives.
  */
-function throttle_leave_request(PDO $pdo, array $user, string $identifier): void
+function throttle_two_factor_resend(PDO $pdo): void
 {
     throttle(
         $pdo,
+        'twoFactor',
+        rate_limit_client_ip() . '|resend',
+        null,
+        'You have reached the maximum number of verification code resends.'
+    );
+}
+
+/**
+ * One filing allowance shared by all request modules. Count the account doing the filing, even
+ * when the employee on the form is somebody else. Call after validation and before any transaction
+ * or write, so invalid forms do not use the allowance and a refused filing cannot save a record.
+ */
+function throttle_filing_request(PDO $pdo, array $user): void
+{
+    $userId = (int)($user['id'] ?? 0);
+    $identifier = $userId > 0 ? 'user:' . $userId : 'ip:' . rate_limit_client_ip();
+
+    throttle(
+        $pdo,
+        // Retain the legacy rule key to preserve saved settings and existing counters.
         'leaveRequest',
         $identifier,
         $user,
-        'You have reached the limit for leave requests filed from this account.'
+        'You have reached the shared request filing limit for this account.'
     );
 }
 
@@ -157,12 +187,13 @@ function throttle_leave_request(PDO $pdo, array $user, string $identifier): void
  * The endpoints the general ceiling never counts.
  *
  * Settings is the way back: an administrator who sets the limit too low has to be able to reach the
- * screen that raises it again. Logout is here so a throttled caller can still sign out cleanly, and
- * csrf.php because the client fetches a token before it can send anything at all.
+ * screen that raises it again. Session restoration must still distinguish a live session from an
+ * expired one; refusing it makes the client show a login form whose CAPTCHA is also blocked by the
+ * same account's exhausted bucket. Logout and CSRF must remain available for recovery as well.
  */
 function throttle_exempt_scripts(): array
 {
-    return ['settings.php', 'logout.php', 'csrf.php'];
+    return ['settings.php', 'logout.php', 'csrf.php', 'session.php'];
 }
 
 /**

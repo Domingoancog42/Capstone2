@@ -19,9 +19,9 @@ export default function ProfileSectionCard({
     <section
       id={id}
       // scroll-mt clears the fixed header plus the sticky nav, which wraps to two rows below xl.
-      className={`profile-section-card scroll-mt-[236px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:scroll-mt-[188px] ${className}`.trim()}
+      className={`profile-section-card min-w-0 scroll-mt-[236px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:scroll-mt-[188px] ${className}`.trim()}
     >
-      <header className="profile-section-card-header flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3">
+      <header className="profile-section-card-header flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-3 py-3 sm:px-4">
         <div className="flex min-w-0 items-start gap-3">
           {Icon ? (
             <span className="profile-section-card-icon grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[#F8BFBF] bg-[#FEF1F1] text-[#D61E1E]">
@@ -42,19 +42,20 @@ export default function ProfileSectionCard({
         </div>
 
         {actions ? (
-          <div className="profile-section-card-actions flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
+          <div className="profile-section-card-actions flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">{actions}</div>
         ) : null}
       </header>
 
-      <div className="profile-section-card-body space-y-5 p-4">{children}</div>
+      <div className="profile-section-card-body min-w-0 space-y-4 p-3 sm:space-y-5 sm:p-4">{children}</div>
 
       {onSave ? (
-        <div className="profile-section-card-footer flex items-center justify-end border-t border-slate-100 bg-white px-4 py-3">
+        <div className="profile-section-card-footer flex items-center justify-end border-t border-slate-100 bg-white px-3 py-3 sm:px-4">
           <Button
             variant="primary"
             loading={saving}
             disabled={readOnly}
             onClick={onSave}
+            className="w-full sm:w-auto"
           >
             {saveLabel}
           </Button>

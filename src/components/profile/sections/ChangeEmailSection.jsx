@@ -12,6 +12,10 @@ import {
 } from "../../../services/api";
 import { getResponseMessage, getRetryAfterSeconds } from "../../../utils/apiResponse";
 import { maskEmail } from "../../../utils/format";
+import {
+  getEmailDomainPolicyViolation,
+  normalizeEmailDomainPolicy,
+} from "../../../utils/emailDomainPolicy";
 
 /**
  * Compact email-change form for the account card.
@@ -58,6 +62,18 @@ export default function ChangeEmailSection({ onUserChange, onDone }) {
 
   const pending = emailVerification?.pending || null;
   const currentEmail = emailVerification?.currentEmail || "";
+  const emailDomainPolicy = useMemo(
+    () => normalizeEmailDomainPolicy(emailVerification?.emailDomainPolicy),
+    [emailVerification?.emailDomainPolicy]
+  );
+  const allowedDomains = emailDomainPolicy.enabled && emailDomainPolicy.allowListedOnly
+    ? emailDomainPolicy.allowedDomains
+    : [];
+  const emailPlaceholder = allowedDomains.length === 1
+    ? `name@${allowedDomains[0]}`
+    : allowedDomains.length > 1
+      ? "Enter an email using an allowed domain"
+      : "name@example.com";
   /* Shown in place of the address itself — the raw value stays available for the requests below. */
   const maskedCurrentEmail = maskEmail(currentEmail);
 
@@ -115,8 +131,20 @@ export default function ChangeEmailSection({ onUserChange, onDone }) {
       return;
     }
 
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+
     if (newEmail.toLowerCase() !== confirmNewEmail.toLowerCase()) {
       setError("The two email addresses do not match.");
+      return;
+    }
+
+    const emailPolicyViolation = getEmailDomainPolicyViolation(newEmail, emailDomainPolicy);
+
+    if (emailPolicyViolation) {
+      setError(emailPolicyViolation);
       return;
     }
 
@@ -258,7 +286,7 @@ export default function ChangeEmailSection({ onUserChange, onDone }) {
           onChange={setField("newEmail")}
           disabled={Boolean(pending)}
           autoComplete="email"
-          placeholder="name@example.com"
+          placeholder={emailPlaceholder}
         />
 
         <InputField
@@ -269,9 +297,15 @@ export default function ChangeEmailSection({ onUserChange, onDone }) {
           onChange={setField("confirmNewEmail")}
           disabled={Boolean(pending)}
           autoComplete="email"
-          placeholder="name@example.com"
+          placeholder={emailPlaceholder}
         />
       </div>
+
+      {allowedDomains.length > 0 && !pending ? (
+        <p className="m-0 text-xs font-semibold text-slate-500">
+          Allowed email domains: {allowedDomains.join(", ")}
+        </p>
+      ) : null}
 
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
         {pending ? (

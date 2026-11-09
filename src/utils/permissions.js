@@ -1,4 +1,3 @@
-import { normalizeRole } from "./roleRoutes";
 import { REPORT_CATEGORIES } from "../module/reports/reportCategories";
 
 export const MODULE_PERMISSION_MAP = {
@@ -7,10 +6,19 @@ export const MODULE_PERMISSION_MAP = {
   serviceRecord: "serviceRecord",
   users: "users",
   permissions: "permissions",
+  rbac: "permissions",
   settings: "settings",
+  signatories: "settings",
+  divisions: "settings",
+  designations: "settings",
+  salaryManagement: "employees",
+  salaryAdjustment: "employees",
+  noticeSalaryAdjustment: "employees",
+  noticeStepIncrement: "employees",
   auditLogs: "auditLogs",
   calendar: "calendar",
   employees: "employees",
+  team: "employees",
   // Awards have their own resource: being able to edit employee records is not the same right as
   // issuing a certificate that carries the Regional Executive Director's name.
   rewardsRecognition: "rewardsRecognition",
@@ -20,6 +28,9 @@ export const MODULE_PERMISSION_MAP = {
   rewardsNomination: "rewardsRecognition",
   rewardsLoyalty: "rewardsRecognition",
   rewardsCertificateTemplate: "rewardsRecognition",
+  // Moving somebody up the designation hierarchy rewrites their appointment, so it is its own
+  // resource rather than a right bundled with editing employee records.
+  promotions: "promotions",
   attendance: "attendance",
   legacyAttendance: "attendance",
   overtime: "attendance",
@@ -49,26 +60,27 @@ export const MODULE_PERMISSION_MAP = {
   performanceRatingPeriods: "reports",
   payslip: "payslip",
   ipcr: "serviceRecord",
+  /*
+   * My Attendance is the signed-in person's own DTR, so it follows the personal-records resource the
+   * way My IPCR does, not `attendance`, which opens everybody's records. The Regional Director and
+   * the Cashier hold no `attendance` right, and under it they had no way to their own DTR.
+   */
+  myAttendance: "serviceRecord",
+  myPayslip: "payslip",
+  myIpcr: "serviceRecord",
+  myServiceRecord: "serviceRecord",
+  // The signed-in person's own awards: a personal record, not the right to run nominations.
+  myRewards: "serviceRecord",
+  // An employee's own ballot follows My Rewards for the same reason: casting a vote is taking part in
+  // an award, not running one. The API is what limits voting to the Employee role.
+  awardVoting: "serviceRecord",
 };
 
-/**
- * The `my*` entries are a user's own attendance, payslip, and IPCR. They are scoped to the signed-in
- * user by the workspace itself, so they must not be gated behind the management permissions that
- * govern seeing *other* people's records — an HR Staff member with no payroll permission still has
- * their own payslip.
- *
- * `myNomination` follows the same rule for the same reason: casting one vote is not the same right
- * as running the award. The `rewardsRecognition` resource still gates the HR screen that creates and
- * closes cycles, which is the only place those actions exist.
- */
+// These utilities have no module checkbox in RBAC. Personal record pages do, and
+// follow that resource's permission while retaining their own-record data scope.
 const ALWAYS_ALLOWED_MODULES = new Set([
   "messages",
   "notifications",
-  "myAttendance",
-  "myPayslip",
-  "myIpcr",
-  "myServiceRecord",
-  "myNomination",
 ]);
 
 function permissionListHasAction(permissionList, action) {
@@ -77,6 +89,10 @@ function permissionListHasAction(permissionList, action) {
   }
 
   if (!permissionList || typeof permissionList !== "object") {
+    return false;
+  }
+
+  if (permissionList.enabled === false) {
     return false;
   }
 
@@ -96,11 +112,15 @@ function permissionListHasAnyAction(permissionList) {
     return false;
   }
 
+  if (permissionList.enabled === false) {
+    return false;
+  }
+
   if (Array.isArray(permissionList.actions)) {
     return permissionList.enabled !== false && permissionList.actions.length > 0;
   }
 
-  return Object.values(permissionList).some((allowed) => allowed === true);
+  return Object.entries(permissionList).some(([action, allowed]) => action !== "enabled" && allowed === true);
 }
 
 export function permissionResourceForModule(moduleKey) {
@@ -114,10 +134,6 @@ export function userHasPermission(user, resource, action = "view") {
     return false;
   }
 
-  if (normalizeRole(user.roleKey || user.role) === "admin") {
-    return true;
-  }
-
   const permissions = user.permissions || {};
   const resourcePermissions = permissions[resource];
 
@@ -129,27 +145,27 @@ export function userCanAccessResource(user, resource) {
     return false;
   }
 
-  if (normalizeRole(user.roleKey || user.role) === "admin") {
-    return true;
-  }
-
   return permissionListHasAnyAction(user.permissions?.[resource]);
 }
 
 export function userCanAccessModule(user, moduleKey) {
   const key = String(moduleKey || "").trim();
 
-  if (!key || ALWAYS_ALLOWED_MODULES.has(key)) {
+  if (!user || !key) {
+    return false;
+  }
+
+  if (ALWAYS_ALLOWED_MODULES.has(key)) {
     return true;
   }
 
   const resource = permissionResourceForModule(key);
 
   if (!resource) {
-    return true;
+    return false;
   }
 
-  return userHasPermission(user, resource, "view") || userCanAccessResource(user, resource);
+  return userHasPermission(user, resource, "view");
 }
 
 export function canAccessNavigationItem(item, user) {

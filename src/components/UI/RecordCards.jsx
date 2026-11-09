@@ -21,6 +21,7 @@ import React from "react";
  *     title,             // the one thing that identifies this record
  *     subtitle,          // the next most useful line — usually a date or a date range
  *     badge,             // a node pinned top-right, normally the status pill
+ *     selection,         // optional row-selection checkbox beside the badge
  *     fields: [          // the remaining columns, as label/value pairs
  *       { label, value, full? }   // `full` spans both columns, for long text
  *     ],
@@ -83,12 +84,17 @@ function RecordCard({ card }) {
       <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4">
         <div className="min-w-0">
           {card.eyebrow ? (
-            <p className="m-0 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">{card.eyebrow}</p>
+            <div className="m-0 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">{card.eyebrow}</div>
           ) : null}
-          <p className="m-0 mt-0.5 break-words text-sm font-semibold text-slate-900">{card.title}</p>
-          {card.subtitle ? <p className="m-0 mt-1 break-words text-xs text-slate-500">{card.subtitle}</p> : null}
+          <div className="m-0 mt-0.5 break-words text-sm font-semibold text-slate-900">{card.title}</div>
+          {card.subtitle ? <div className="m-0 mt-1 break-words text-xs text-slate-500">{card.subtitle}</div> : null}
         </div>
-        {card.badge ? <div className="shrink-0">{card.badge}</div> : null}
+        {card.selection || card.badge ? (
+          <div className="flex shrink-0 items-center gap-2">
+            {card.selection || null}
+            {card.badge || null}
+          </div>
+        ) : null}
       </div>
 
       {fields.length ? (

@@ -2,7 +2,8 @@ import React from "react";
 import { IdCard } from "lucide-react";
 import ProfileField from "../ProfileField";
 import ProfileSectionCard from "../ProfileSectionCard";
-import { profileSectionAnchorId } from "../profileUtils";
+import { isRegularEmploymentStatus, profileSectionAnchorId } from "../profileUtils";
+import { getGovernmentIdMaxLength } from "../../../utils/governmentId";
 
 export default function GovernmentIdsSection({
   values,
@@ -23,10 +24,12 @@ export default function GovernmentIdsSection({
       onSave={onSave}
     >
       <div className="grid gap-4 md:grid-cols-2">
-        <ProfileField label="GSIS Number" name="gsisIdNo" value={values.gsisIdNo} onChange={onChange} error={errors.gsisIdNo} readOnly={readOnly} />
-        <ProfileField label="PhilHealth Number" name="philhealthIdNo" value={values.philhealthIdNo} onChange={onChange} error={errors.philhealthIdNo} readOnly={readOnly} />
-        <ProfileField label="Pag-IBIG Number" name="pagibigIdNo" value={values.pagibigIdNo} onChange={onChange} error={errors.pagibigIdNo} readOnly={readOnly} />
-        <ProfileField label="TIN Number" name="tinNo" value={values.tinNo} onChange={onChange} error={errors.tinNo} readOnly={readOnly} />
+        {isRegularEmploymentStatus(values.employmentStatus) ? (
+          <ProfileField label="GSIS ID No." name="gsisIdNo" value={values.gsisIdNo} onChange={onChange} error={errors.gsisIdNo} readOnly={readOnly} placeholder="e.g. 12345678901" inputMode="numeric" maxLength={getGovernmentIdMaxLength("gsisIdNo")} pattern="[0-9-]*" />
+        ) : null}
+        <ProfileField label="PhilHealth Number" name="philhealthIdNo" value={values.philhealthIdNo} onChange={onChange} error={errors.philhealthIdNo} readOnly={readOnly} placeholder="e.g. 12-345678901-2" inputMode="numeric" maxLength={getGovernmentIdMaxLength("philhealthIdNo")} pattern="[0-9-]*" />
+        <ProfileField label="Pag-IBIG Number" name="pagibigIdNo" value={values.pagibigIdNo} onChange={onChange} error={errors.pagibigIdNo} readOnly={readOnly} placeholder="e.g. 1234-5678-9012" inputMode="numeric" maxLength={getGovernmentIdMaxLength("pagibigIdNo")} pattern="[0-9-]*" />
+        <ProfileField label="TIN Number" name="tinNo" value={values.tinNo} onChange={onChange} error={errors.tinNo} readOnly={readOnly} placeholder="e.g. 123-456-789-000" inputMode="numeric" maxLength={getGovernmentIdMaxLength("tinNo")} pattern="[0-9-]*" />
       </div>
     </ProfileSectionCard>
   );

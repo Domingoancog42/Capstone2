@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   CalendarDays,
   Check,
@@ -7,16 +8,31 @@ import {
   Clock3,
   FilePenLine,
   Search,
+  UserRound,
   X,
 } from "lucide-react";
-import { faBan, faBoxArchive, faCheck, faEye, faFileLines, faPrint, faRotateLeft, faXmark } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBan,
+  faBoxArchive,
+  faCheck,
+  faFileArrowDown,
+  faPrint,
+  faRotateLeft,
+  faXmark,
+} from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 import ActionIconButton from "../../components/UI/ActionIconButton";
+import { getDisapprovedStatusLabel } from "../../components/leave/LeaveStatusBadge";
+import ViewFormActions from "../../components/UI/ViewFormActions";
+import BulkSelectionToolbar from "../../components/UI/BulkSelectionToolbar";
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
+import SelectionCheckbox from "../../components/UI/SelectionCheckbox";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
+import { downloadFormSheetPdf } from "../../utils/formSheetPdf";
 import { getEmployeeSignature } from "../../services/api";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
@@ -24,8 +40,8 @@ import {
   canViewAllLeaves,
   countPendingRecords,
   formatDateDisplay,
-  isPastDate,
   isRegionalDirectorApproved,
+  getRequestTableStatusLabel,
   matchesUserRecordScope,
   matchesUserEmployeeOption,
   normalizeLeaveStatus,
@@ -35,6 +51,7 @@ import {
 import {
   canArchiveModule,
   confirmArchiveRecord,
+  confirmArchiveRecords,
   confirmRestoreRecord,
 } from "../../utils/archiveActions";
 import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
@@ -48,7 +65,11 @@ import {
   unpackSelectedDates,
 } from "../../utils/dateSelection";
 import { formatSignatureTimestamp } from "../../utils/signatureTimestamp";
+import { formatRecordDivision } from "../../utils/divisionDisplay";
 import { requestApprovalCaptcha, isCaptchaFailure } from "../../utils/approvalCaptcha";
+import { confirmBulkApproval } from "../../utils/bulkRequestActions";
+import useRowSelection from "../../hooks/useRowSelection";
+import { normalizeRole } from "../../utils/roleRoutes";
 import {
   fetchCompensatoryCreditBalance,
   fetchCompensatoryRequests,
@@ -57,43 +78,106 @@ import {
 } from "../../services/compensatoryService";
 
 /*
- * A compensatory time off filing is signed three times before it is good: the division Chief
- * recommends it, the HR Head certifies the credits behind it, and the Regional Director approves it.
- * Each signature is a status of its own, so the row itself says whose desk the filing is sitting on.
+ * A standard compensatory time off filing goes through the Division Chief, HR, and the Regional
+ * Director. FAD uses the same direct Chief Admin -> Regional Director route already used by ORD;
+ * other divisions go through their Division Chief before Chief Admin.
  *
- * Mirrors COMPENSATORY_APPROVAL_CHAIN in frontend/backend/api/compensatory.php — the API enforces
- * the order, and this only decides which buttons are worth showing.
+ * Mirrors compensatory-workflow-utils.php on the backend, where the API enforces
+ * the order, and this only decides which buttons are worth showing for the route returned by it.
  */
-const COMPENSATORY_APPROVAL_CHAIN = {
-  Pending: { role: "chief", desk: "Division Chief", next: "Endorsed" },
-  Endorsed: { role: "hrhead", desk: "HR Head", next: "Reviewed" },
-  Reviewed: { role: "regionaldirector", desk: "Regional Director", next: "Approved" },
+const COMPENSATORY_APPROVAL_ROUTE_CHIEF_ADMIN = "chief_admin_regional_director";
+
+const STANDARD_COMPENSATORY_APPROVAL_CHAIN = {
+  Pending: { roles: ["chief"], desk: "Division Chief", next: "Endorsed" },
+  Endorsed: { roles: ["chiefadmin"], desk: "Chief Admin", next: "Reviewed" },
+  Reviewed: { roles: ["regionaldirector"], desk: "Regional Director", next: "Approved" },
+};
+
+/* FAD and the already-configured ORD route go to Chief Admin, then Regional Director. */
+const CHIEF_ADMIN_COMPENSATORY_APPROVAL_CHAIN = {
+  Pending: { roles: ["chiefadmin"], desk: "Chief Admin", next: "Reviewed" },
+  /* Lets an in-flight legacy ORD request continue after the route migration. */
+  Endorsed: { roles: ["chiefadmin"], desk: "Chief Admin", next: "Reviewed" },
+  Reviewed: { roles: ["regionaldirector"], desk: "Regional Director", next: "Approved" },
 };
 
 /* A status names the signature just given, which reads more plainly than the stored word. */
 const COMPENSATORY_STATUS_LABELS = {
   Endorsed: "Chief Approved",
-  Reviewed: "HR Approved",
+  Reviewed: "Chief Admin Approved",
+  Rejected: "Disapproved",
 };
 
-const COMPENSATORY_STATUSES = ["Pending", "Endorsed", "Reviewed", "Approved", "Rejected", "Cancelled"];
+const COMPENSATORY_FILTER_STATUSES = ["Pending", "Approved", "Rejected", "Cancelled"];
+const compensatoryRowKey = (record) => record?.id;
+
+function usesChiefAdminCompensatoryRoute(record) {
+  return String(record?.approvalRoute || "").trim().toLowerCase()
+    === COMPENSATORY_APPROVAL_ROUTE_CHIEF_ADMIN;
+}
 
 function compensatoryStatusLabel(status) {
   return COMPENSATORY_STATUS_LABELS[status] || status;
 }
 
 /** The desk a filing is waiting on, or null once it has been decided. */
-function compensatoryStage(status) {
-  return COMPENSATORY_APPROVAL_CHAIN[status] || null;
+function compensatoryStage(status, record) {
+  const chain = usesChiefAdminCompensatoryRoute(record)
+    ? CHIEF_ADMIN_COMPENSATORY_APPROVAL_CHAIN
+    : STANDARD_COMPENSATORY_APPROVAL_CHAIN;
+
+  return chain[status] || null;
+}
+
+/** Names the role whose approval is required while a compensatory request remains open. */
+function compensatoryPendingRoleLabel(status, record) {
+  const stage = compensatoryStage(normalizeLeaveStatus(status), record);
+
+  return stage ? `Pending by ${stage.desk}` : "";
 }
 
 /*
  * Whether this role is the desk the filing is waiting on. Admin stands in at any open stage so a
  * filing is never stranded while an approver is away; nobody else may sign out of turn.
  */
-function canActOnCompensatoryStage(roleKey, status) {
-  const stage = compensatoryStage(status);
-  return Boolean(stage) && (roleKey === "admin" || roleKey === stage.role);
+function canActOnCompensatoryStage(roleKey, status, record) {
+  const stage = compensatoryStage(status, record);
+  return Boolean(stage) && (roleKey === "admin" || stage.roles.includes(roleKey));
+}
+
+/**
+ * Prevents a downstream approval desk from seeing a filing before the preceding role forwards it.
+ * The API applies the same rule; this client check keeps stale or cached responses from flashing a
+ * request in the wrong inbox.
+ */
+function compensatoryRecordReachedRole(record, roleKey) {
+  const status = normalizeLeaveStatus(record?.status);
+  const rejectedByRole = String(record?.rejectedByRole || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+
+  if (["hrhead", "hrstaff"].includes(roleKey)) {
+    return false;
+  }
+
+  if (roleKey === "chiefadmin") {
+    return usesChiefAdminCompensatoryRoute(record)
+      || ["Endorsed", "Reviewed", "Approved"].includes(status)
+      || (status === "Rejected" && ["chiefadmin", "regionaldirector"].includes(rejectedByRole));
+  }
+
+  /* FAD/ORD direct filings do not stop at the ordinary Chief or Planning desk. */
+  if (usesChiefAdminCompensatoryRoute(record) && ["chief", "planningofficer"].includes(roleKey)) {
+    return false;
+  }
+
+  if (roleKey === "regionaldirector") {
+    return ["Reviewed", "Approved"].includes(status)
+      || (status === "Rejected" && rejectedByRole === "regionaldirector");
+  }
+
+  return true;
 }
 
 // Stable identity for the default prop: a literal `[]` in the signature is a fresh array on every
@@ -154,14 +238,14 @@ const ctoPreviewStyles = {
   },
   header: {
     display: "grid",
-    gridTemplateColumns: "75px 1fr 75px",
+    gridTemplateColumns: "130px minmax(0, 1fr) 130px",
     alignItems: "center",
     marginBottom: "18px",
     gap: "8px",
   },
   logoImage: {
-    width: "68px",
-    height: "68px",
+    width: "130px",
+    height: "130px",
     objectFit: "contain",
     display: "block",
   },
@@ -294,11 +378,7 @@ function PreviewSelectionBox({ checked = false }) {
 }
 
 function getStatusBadgeClasses(status) {
-  switch (status) {
-    case "Endorsed":
-      return "border border-indigo-200 bg-indigo-50 text-indigo-700";
-    case "Reviewed":
-      return "border border-sky-200 bg-sky-50 text-sky-700";
+  switch (normalizeLeaveStatus(status)) {
     case "Approved":
       return "border border-emerald-200 bg-emerald-50 text-emerald-700";
     case "Rejected":
@@ -487,10 +567,17 @@ function formatCreditHours(hours) {
   return Number.isFinite(value) ? value.toFixed(2) : "0.00";
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, record, plainPending = false }) {
+  const displayStatus = getRequestTableStatusLabel(status);
+  const pendingRoleLabel = compensatoryPendingRoleLabel(status, record);
+  const settledLabel = displayStatus === "Rejected"
+    ? getDisapprovedStatusLabel(record?.rejectedByRole)
+    : displayStatus;
+  const displayLabel = pendingRoleLabel && plainPending ? "Pending" : pendingRoleLabel || settledLabel;
+
   return (
-    <span className={`inline-flex min-h-7 items-center rounded-full px-2.5 text-xs font-semibold ${getStatusBadgeClasses(status)}`}>
-      {compensatoryStatusLabel(status)}
+    <span className={`inline-flex min-h-7 items-center rounded-full px-2.5 text-xs font-semibold ${getStatusBadgeClasses(displayStatus)}`}>
+      {displayLabel}
     </span>
   );
 }
@@ -588,12 +675,47 @@ function EmployeeSearchSelect({
   );
 }
 
+/* The CTO form's print window styles; the Download PDF copy is laid out with them too. */
+const CTO_PRINT_CSS = `
+  @page {
+    size: auto;
+    margin: 10mm;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  body {
+    font-family: Arial, sans-serif;
+    color: #000000;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-shell {
+    width: 100%;
+    max-width: 190mm;
+    margin: 0 auto;
+  }
+`;
+
 function CompensatoryPreviewModal({
   record,
   employees = [],
   autoPrint = false,
+  autoDownload = false,
   onClose,
 }) {
+  const { showESignatures, showTimestamps, loading: signatorySettingsLoading } = useFilingSignatories();
   const [visible, setVisible] = useState(false);
   const [applicantSignature, setApplicantSignature] = useState("");
   const [chiefReviewerSignature, setChiefReviewerSignature] = useState("");
@@ -601,14 +723,23 @@ function CompensatoryPreviewModal({
   const [authorizedOfficialSignature, setAuthorizedOfficialSignature] = useState("");
   const printRef = useRef(null);
   /*
-   * Opened from the Print action in the table rather than by a reader: print the form once the
-   * signatures below have landed, then hand back to the caller so it does not linger on screen.
-   * `handlePrint` is only called from inside the frame callback, well after it is initialised.
+   * Opened from the Print or Download PDF action in the table rather than by a reader: print or
+   * save the form once the signatures below have landed, then hand back to the caller so it does
+   * not linger on screen. `handlePrint` and `handleDownloadPdf` are only called from inside the
+   * frame callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: Boolean(record) && autoPrint,
-    onPrint: () => handlePrint(),
-    onDone: onClose,
+    active: Boolean(record) && !signatorySettingsLoading && (autoPrint || autoDownload),
+    /* The PDF is saved asynchronously, so a download closes the form only once the file is out. */
+    onPrint: () => {
+      if (autoDownload) {
+        void handleDownloadPdf().finally(() => onClose?.());
+        return;
+      }
+
+      handlePrint();
+    },
+    onDone: autoDownload ? undefined : onClose,
   });
 
   useEffect(() => {
@@ -691,8 +822,8 @@ function CompensatoryPreviewModal({
   }, [record, trackLoad]);
 
   /*
-   * The COC certification is HR's to make -- the credits behind the filing are counted off the HR
-   * ledger -- so the HR Head's approval is what signs part (a) of the action on the application.
+   * Chief Admin certifies the COC balance before the request reaches the Regional Director, so the
+   * second approval signs part (a) of the action on the application for standard-route divisions.
    */
   useEffect(() => {
     let mounted = true;
@@ -771,7 +902,7 @@ function CompensatoryPreviewModal({
   const employee = findCompensatoryEmployee(record, employees);
   const applicantName = String(record.employeeName || employee?.fullName || "").trim();
   const nameParts = getCompensatoryNameParts(record, employee);
-  const position = String(record.position || employee?.position || employee?.designation || "").trim();
+  const position = String(record.position || employee?.position || "").trim();
   const division = String(record.division || employee?.department || "").trim();
   const hoursLabel = formatCtoHours(record.hoursApplied);
   /*
@@ -801,6 +932,28 @@ function CompensatoryPreviewModal({
   const authorizedOfficialName = String(record.approvedByName || ctoPreviewDefaults.authorizedOfficial).trim();
   const showChiefReviewerSignature = chiefReviewerName !== "" || Number(record.endorsedByEmployeeRecordId || 0) > 0;
   const showCreditCertifierSignature = creditCertifierName !== "" || Number(record.reviewedByEmployeeRecordId || 0) > 0;
+  /*
+   * ORD and FAD have only two approvers: Chief Admin signs Recommending Approval, then the Regional
+   * Director. Every other division has three, with the Division Chief recommending and Chief Admin
+   * certifying the COC balance on a line of their own.
+   */
+  const usesDirectRoute = usesChiefAdminCompensatoryRoute(record);
+  /*
+   * Once a desk has signed, its line is captioned with the signer's own designation (or position, when
+   * they have none) and, beside it, the desk they signed for; the role title only holds the line until
+   * then, or when neither is on file for the signer. The desk is joined with a non-breaking space so a long position wraps
+   * before "(Chief Admin)" rather than splitting it across two lines.
+   */
+  const withDesk = (position, desk) => `${position} (${desk.replace(/ /g, " ")})`;
+  const chiefReviewerPosition = showChiefReviewerSignature ? String(record.endorsedByPosition || "").trim() : "";
+  const chiefReviewerDesk = usesDirectRoute ? "Chief Admin" : "Division Chief";
+  const chiefReviewerCaption = chiefReviewerPosition
+    ? withDesk(chiefReviewerPosition, chiefReviewerDesk)
+    : usesDirectRoute ? "(Chief Admin)" : "(Head of Office/Division Chief)";
+  const creditCertifierPosition = showCreditCertifierSignature ? String(record.reviewedByPosition || "").trim() : "";
+  const creditCertifierCaption = creditCertifierPosition
+    ? withDesk(creditCertifierPosition, "Chief Admin")
+    : "(Chief Admin)";
   const applicantTimestampLabel = formatSignatureTimestamp(record.createdAt || record.dateFiled);
   const chiefReviewerTimestampLabel = showChiefReviewerSignature
     ? formatSignatureTimestamp(record.endorsedAt || record.updatedAt || record.createdAt || record.dateFiled)
@@ -832,37 +985,7 @@ function CompensatoryPreviewModal({
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <title>Compensatory Time Off Form</title>
-          <style>
-            @page {
-              size: auto;
-              margin: 10mm;
-            }
-
-            html, body {
-              margin: 0;
-              padding: 0;
-              background: #ffffff;
-            }
-
-            body {
-              font-family: Arial, sans-serif;
-              color: #000000;
-            }
-
-            *,
-            *::before,
-            *::after {
-              box-sizing: border-box;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-
-            .print-shell {
-              width: 100%;
-              max-width: 190mm;
-              margin: 0 auto;
-            }
-          </style>
+          <style>${CTO_PRINT_CSS}</style>
         </head>
         <body>
           <div class="print-shell">${formClone.outerHTML}</div>
@@ -905,7 +1028,26 @@ function CompensatoryPreviewModal({
     });
   };
 
-  return (
+  /* The Download PDF row action: the form Print would send to the printer, saved as a file instead. */
+  const handleDownloadPdf = async () => {
+    const toastId = toast.loading("Preparing the compensatory time off form PDF...");
+    const employeeName = applicantName
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+    try {
+      await downloadFormSheetPdf(printRef.current, {
+        fileName: `CTO-Form-${employeeName || "Employee"}-${record.id || "request"}.pdf`,
+        printCss: CTO_PRINT_CSS,
+      });
+      toast.success("Compensatory time off form PDF downloaded.", { id: toastId });
+    } catch (error) {
+      toast.error(error?.message || "Unable to download the compensatory time off form PDF.", { id: toastId });
+    }
+  };
+
+  // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
+  return createPortal((
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -926,11 +1068,13 @@ function CompensatoryPreviewModal({
             <h2 className="m-0 text-lg font-semibold text-slate-950">Compensatory Time Off Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted CTO request.</p>
           </div>
-          {/* Printing is a row action in the table now, so the preview only offers Close. */}
+          {/* Print and Download PDF are row actions in the table, so the preview only offers Close. */}
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close compensatory time off preview"
+              title="Close"
               className="grid h-9 w-9 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
             >
               <X size={16} />
@@ -1019,39 +1163,31 @@ function CompensatoryPreviewModal({
               <div>
                 <div style={{ fontSize: "10px", marginBottom: "4px" }}>Recommending Approval:</div>
                 <div style={ctoPreviewStyles.signaturePreview}>
-                  {showChiefReviewerSignature && chiefReviewerSignature ? (
-                    <>
-                      <img
-                        src={chiefReviewerSignature}
-                        alt={`${chiefReviewerName || "Chief"} signature`}
-                        style={ctoPreviewStyles.signatureImage}
-                      />
-                      {chiefReviewerTimestampLabel ? (
-                        <div style={ctoPreviewStyles.signatureTimestamp}>{chiefReviewerTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : chiefReviewerTimestampLabel ? (
+                  {showESignatures && showChiefReviewerSignature && chiefReviewerSignature ? (
+                    <img
+                      src={chiefReviewerSignature}
+                      alt={`${chiefReviewerName || "Chief"} signature`}
+                      style={ctoPreviewStyles.signatureImage}
+                    />
+                  ) : null}
+                  {showTimestamps && chiefReviewerTimestampLabel ? (
                     <div style={ctoPreviewStyles.signatureTimestamp}>{chiefReviewerTimestampLabel}</div>
                   ) : null}
                 </div>
                 <div style={ctoPreviewStyles.signatureName}>{showChiefReviewerSignature ? chiefReviewerName : ""}</div>
                 <div style={ctoPreviewStyles.signatureUnderline} />
-                <div style={ctoPreviewStyles.sigLabel}>(Head of Office/Division Chief)</div>
+                <div style={ctoPreviewStyles.sigLabel}>{chiefReviewerCaption}</div>
               </div>
               <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
                 <div style={ctoPreviewStyles.signaturePreview}>
-                  {applicantSignature ? (
-                    <>
-                      <img
-                        src={applicantSignature}
-                        alt={`${applicantName || "Applicant"} signature`}
-                        style={ctoPreviewStyles.signatureImage}
-                      />
-                      {applicantTimestampLabel ? (
-                        <div style={ctoPreviewStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : applicantTimestampLabel ? (
+                  {showESignatures && applicantSignature ? (
+                    <img
+                      src={applicantSignature}
+                      alt={`${applicantName || "Applicant"} signature`}
+                      style={ctoPreviewStyles.signatureImage}
+                    />
+                  ) : null}
+                  {showTimestamps && applicantTimestampLabel ? (
                     <div style={ctoPreviewStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -1085,26 +1221,28 @@ function CompensatoryPreviewModal({
                   <div style={{ fontSize: "10px", marginBottom: "3px" }}>Number of Hours Earned</div>
                   <div style={{ ...ctoPreviewStyles.fv, width: "110px", textAlign: "left" }}>{hoursEarnedLabel}</div>
                 </div>
-                <div style={{ marginTop: "10px", width: "170px" }}>
+                {/* On ORD and FAD Chief Admin has already signed Recommending Approval, so this second
+                    line is hidden. Its space is kept so the Regional Director's block below sits
+                    exactly where it does on every other form. */}
+                <div
+                  data-testid="cto-credit-certifier"
+                  style={{ marginTop: "10px", width: "170px", ...(usesDirectRoute ? { visibility: "hidden" } : null) }}
+                >
                   <div style={ctoPreviewStyles.signaturePreview}>
-                    {showCreditCertifierSignature && creditCertifierSignature ? (
-                      <>
-                        <img
-                          src={creditCertifierSignature}
-                          alt={`${creditCertifierName || "HR Head"} signature`}
-                          style={ctoPreviewStyles.signatureImage}
-                        />
-                        {creditCertifierTimestampLabel ? (
-                          <div style={ctoPreviewStyles.signatureTimestamp}>{creditCertifierTimestampLabel}</div>
-                        ) : null}
-                      </>
-                    ) : creditCertifierTimestampLabel ? (
+                    {showESignatures && showCreditCertifierSignature && creditCertifierSignature ? (
+                      <img
+                        src={creditCertifierSignature}
+                        alt={`${creditCertifierName || "Chief Admin"} signature`}
+                        style={ctoPreviewStyles.signatureImage}
+                      />
+                    ) : null}
+                    {showTimestamps && creditCertifierTimestampLabel ? (
                       <div style={ctoPreviewStyles.signatureTimestamp}>{creditCertifierTimestampLabel}</div>
                     ) : null}
                   </div>
                   <div style={ctoPreviewStyles.signatureName}>{showCreditCertifierSignature ? creditCertifierName : ""}</div>
                   <div style={ctoPreviewStyles.signatureUnderline} />
-                  <div style={ctoPreviewStyles.sigLabel}>(HR Head)</div>
+                  <div style={ctoPreviewStyles.sigLabel}>{creditCertifierCaption}</div>
                 </div>
               </div>
               <div>
@@ -1125,18 +1263,14 @@ function CompensatoryPreviewModal({
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "30px" }}>
               <div style={{ width: "48%", textAlign: "center" }}>
                 <div style={ctoPreviewStyles.signaturePreview}>
-                  {authorizedOfficialSignature ? (
-                    <>
-                      <img
-                        src={authorizedOfficialSignature}
-                        alt={`${authorizedOfficialName || "Authorized official"} signature`}
-                        style={ctoPreviewStyles.signatureImage}
-                      />
-                      {authorizedOfficialTimestampLabel ? (
-                        <div style={ctoPreviewStyles.signatureTimestamp}>{authorizedOfficialTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : authorizedOfficialTimestampLabel ? (
+                  {showESignatures && authorizedOfficialSignature ? (
+                    <img
+                      src={authorizedOfficialSignature}
+                      alt={`${authorizedOfficialName || "Authorized official"} signature`}
+                      style={ctoPreviewStyles.signatureImage}
+                    />
+                  ) : null}
+                  {showTimestamps && authorizedOfficialTimestampLabel ? (
                     <div style={ctoPreviewStyles.signatureTimestamp}>{authorizedOfficialTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -1159,7 +1293,7 @@ function CompensatoryPreviewModal({
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 function CompensatoryModal({
@@ -1251,15 +1385,6 @@ function CompensatoryModal({
     return null;
   }
 
-  /*
-   * Compensatory time off is applied for ahead of the days being taken, so the calendar starts
-   * today. This holds for every role, admin included -- a back-dated filing is not something any
-   * account may enter through this form.
-   *
-   * Recomputed each render rather than memoised, so a form left open past midnight still moves on.
-   */
-  const today = todayDateInputValue();
-
   const updateField = (field) => (event) => {
     setForm((current) => ({ ...current, [field]: event.target.value }));
     setErrors((current) => ({ ...current, [field]: "" }));
@@ -1295,18 +1420,16 @@ function CompensatoryModal({
     if (canSelectEmployee && !form.employeeRecordId) nextErrors.employeeRecordId = "Employee is required.";
     if (form.selectedDates.length === 0) {
       nextErrors.selectedDates = "Select at least one inclusive date.";
+    } else if (form.selectedDates.some((day) => day.date.slice(0, 7) > todayDateInputValue().slice(0, 7))) {
+      nextErrors.selectedDates = "Select inclusive dates in the current month or an earlier month.";
     } else if (hours < 4) {
       nextErrors.selectedDates = "Minimum of 4 hours is required per request — pick at least a half day.";
     }
 
     /*
-     * The picker already refuses these days, but a form left open past midnight can age into a past
-     * date, so the rule is enforced again rather than trusted.
+     * No past-date rule here. Compensatory time off is filed for days that have often already been
+     * taken, so a date behind today is the ordinary case rather than something to refuse.
      */
-    if (form.selectedDates.some((day) => isPastDate(day.date))) {
-      nextErrors.selectedDates = "Inclusive dates cannot be in the past. Choose today or a later date.";
-    }
-
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
       return;
@@ -1363,7 +1486,8 @@ function CompensatoryModal({
     (employee) => String(employee.employeeRecordId) === String(form.employeeRecordId)
   ) || selectedEmployee;
 
-  return (
+  // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
+  return createPortal((
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -1395,6 +1519,8 @@ function CompensatoryModal({
               <button
                 type="button"
                 onClick={onClose}
+                aria-label="Close compensatory time off form"
+                title="Close"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
               >
                 <X size={16} />
@@ -1407,7 +1533,9 @@ function CompensatoryModal({
           <div className="grid gap-4 sm:grid-cols-2">
             {canSelectEmployee ? (
               <label className="sm:col-span-2">
-                <span className="mb-1.5 block text-sm font-semibold text-slate-700">Employee *</span>
+                <span className="mb-1.5 block text-sm font-semibold text-slate-700">
+                  Employee <span className="app-required-marker font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+                </span>
                 <EmployeeSearchSelect
                   employeeOptions={employeeOptions}
                   selectedEmployee={resolvedEmployee || null}
@@ -1441,17 +1569,25 @@ function CompensatoryModal({
             <div>
               <span className="mb-1.5 flex items-center gap-1 text-sm font-semibold text-slate-700">
                 <CalendarDays size={15} />
-                Inclusive Dates *
+                Inclusive Dates <span className="app-required-marker font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
               </span>
+              {/*
+                * No lower bound, and no rolling past-date check either. Compensatory time off is
+                * routinely logged after the fact — the employee takes the day and the filing catches
+                * up — so a calendar that started at today made the common case impossible to enter.
+                */}
               <MultiDatePicker
                 value={form.selectedDates}
-                minDate={today}
-                allowWeekends
+                minDate=""
+                disableFutureMonths
+                allowWeekends={false}
                 placeholder="Select inclusive dates"
+                floating
                 onChange={updateSelectedDates}
               />
               <p className="m-0 mt-1 text-xs text-slate-500">
-                Pick each day the time off is taken. Days in between that are not picked stay working days.
+                Pick each day the time off is taken in the current month or an earlier month. Days in between
+                that are not picked stay working days. Saturdays and Sundays cannot be selected.
               </p>
               {errors.selectedDates ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.selectedDates}</p> : null}
             </div>
@@ -1471,13 +1607,6 @@ function CompensatoryModal({
 
         <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-4">
           <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-          <button
             type="submit"
             disabled={submitting}
             className="inline-flex min-h-10 items-center justify-center rounded-xl bg-teal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
@@ -1487,7 +1616,7 @@ function CompensatoryModal({
         </div>
       </form>
     </div>
-  );
+  ), document.body);
 }
 
 export default function CompensatoryWorkspace({
@@ -1499,34 +1628,60 @@ export default function CompensatoryWorkspace({
   showHeaderCloseButton = true,
   onPendingCountChange,
 }) {
+  const roleKey = resolveRoleKey(user);
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  const approvalRoleKey = exactRoleKey === "chiefadmin" ? exactRoleKey : roleKey;
+  const ownRequestsOnly = ["hrhead", "cashier", "hrstaff", "planningofficer"].includes(roleKey);
+  const defaultStatusFilter = ownRequestsOnly || roleKey === "employee" ? "" : "Pending";
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [printRecord, setPrintRecord] = useState(false);
+  const [downloadRecord, setDownloadRecord] = useState(false);
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState(defaultStatusFilter);
   const [rowsPerPage, setRowsPerPage] = useState("10");
   const [currentPage, setCurrentPage] = useState(1);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
-  const roleKey = resolveRoleKey(user);
-  const managePermission = canManageLeave(user) || ["chief", "planningofficer"].includes(roleKey);
-  const viewAllPermission = canViewAllLeaves(user);
+  const managePermission = !ownRequestsOnly && canManageLeave(user);
+  const viewAllPermission = !ownRequestsOnly && canViewAllLeaves(user);
   const allowEmployeeSelection = roleKey === "admin";
   const canArchive = canArchiveModule(roleKey, "cto");
+  /*
+   * Applicants tidy their own settled requests into the archive; the desks that decide
+   * may archive any. The same rule compensatory.php enforces, so the button is never a dead end.
+   */
+  const archivesOwnSettledOnly = ownRequestsOnly || roleKey === "employee";
+  const canArchiveRecord = useCallback((record) => (
+    canArchive
+    && (!archivesOwnSettledOnly || ["Approved", "Rejected", "Cancelled"].includes(normalizeLeaveStatus(record?.status)))
+  ), [archivesOwnSettledOnly, canArchive]);
   const [archiveView, setArchiveView] = useState(false);
-  const pendingCount = useMemo(() => countPendingRecords(records), [records]);
+  /*
+   * Same split as the Leave Requests screen. The organization-wide list is for filings the viewer
+   * acts on, so their own goes straight to the Chief's queue and is followed under "View My CTO"
+   * instead. Roles without the organization-wide list already only see their own, so the toggle is
+   * theirs to skip.
+   */
+  const [myView, setMyView] = useState(false);
+  const canToggleMyView = viewAllPermission && roleKey !== "admin";
 
   const loadRecords = useCallback(async ({ background = false } = {}) => {
     setLoading(!background);
     try {
       const result = await fetchCompensatoryRequests({ archived: archiveView });
       const nextRecords = result.records || [];
+      /* A desk's own filing is followed from the moment it is filed, whichever desk it sits on. */
+      const routedRecords = nextRecords.filter((record) => (
+        matchesUserRecordScope(record, user) || compensatoryRecordReachedRole(record, approvalRoleKey)
+      ));
       setRecords(
         viewAllPermission
-          ? nextRecords
-          : nextRecords.filter((record) => matchesUserRecordScope(record, user))
+          ? routedRecords
+          : routedRecords.filter((record) => matchesUserRecordScope(record, user))
       );
     } catch (error) {
       if (!background) {
@@ -1535,7 +1690,25 @@ export default function CompensatoryWorkspace({
     } finally {
       setLoading(false);
     }
-  }, [archiveView, user, viewAllPermission]);
+  }, [approvalRoleKey, archiveView, user, viewAllPermission]);
+
+  const isOwnRecord = useCallback((record) => matchesUserRecordScope(record, user), [user]);
+  /*
+   * The organization-wide list never carries the viewer's own filing; "View My CTO" carries only it.
+   * The archive keeps every record, since My CTO never shows archived rows.
+   */
+  const scopedRecords = useMemo(() => {
+    if (!canToggleMyView || archiveView) {
+      return records;
+    }
+
+    return records.filter((record) => (myView ? isOwnRecord(record) : !isOwnRecord(record)));
+  }, [archiveView, canToggleMyView, isOwnRecord, myView, records]);
+  /* The badge counts what is waiting on this desk, so the viewer's own filing is not in it. */
+  const pendingCount = useMemo(
+    () => countPendingRecords(canToggleMyView ? records.filter((record) => !isOwnRecord(record)) : records),
+    [canToggleMyView, isOwnRecord, records]
+  );
 
   const employeeOptions = useMemo(
     () =>
@@ -1603,7 +1776,7 @@ export default function CompensatoryWorkspace({
   const filteredRecords = useMemo(() => {
     const search = query.trim().toLowerCase();
 
-    return records.filter((record) => {
+    return scopedRecords.filter((record) => {
       const matchesSearch = !search || [
         record.employeeName,
         record.division,
@@ -1611,21 +1784,36 @@ export default function CompensatoryWorkspace({
         getNoteDisplay(record.remarks),
         record.status,
         compensatoryStatusLabel(record.status),
+        compensatoryPendingRoleLabel(record.status, record),
         record.hoursApplied,
       ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(search));
 
-      const matchesStatus = !statusFilter || record.status === statusFilter;
+      const matchesStatus = !statusFilter
+        || (statusFilter === "Pending"
+          ? Boolean(compensatoryStage(normalizeLeaveStatus(record.status), record))
+          : getRequestTableStatusLabel(record.status) === statusFilter);
 
       return matchesSearch && matchesStatus;
     });
-  }, [query, records, statusFilter]);
+  }, [query, scopedRecords, statusFilter]);
 
   const pageSize = Number(rowsPerPage) || 10;
   const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const paginatedRecords = filteredRecords.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const selection = useRowSelection(filteredRecords, compensatoryRowKey);
+  const canBulkApproveRecord = useCallback((record) => (
+    managePermission
+    && !matchesUserRecordScope(record, user)
+    && canActOnCompensatoryStage(approvalRoleKey, normalizeLeaveStatus(record.status), record)
+  ), [approvalRoleKey, managePermission, user]);
+  const bulkApprovableRecords = selection.selectedRows.filter(canBulkApproveRecord);
+  const bulkArchivableRecords = canArchive && !archiveView ? selection.selectedRows.filter(canArchiveRecord) : [];
+  const selectablePageRecords = !archiveView
+    ? paginatedRecords.filter((record) => canArchiveRecord(record) || canBulkApproveRecord(record))
+    : [];
 
   useEffect(() => {
     setCurrentPage(1);
@@ -1663,12 +1851,21 @@ export default function CompensatoryWorkspace({
 
   const handleOpenPreview = (record) => {
     setPrintRecord(false);
+    setDownloadRecord(false);
     setSelectedRecord(record);
   };
 
   /* The preview is the print source: it opens, prints itself once loaded, and closes again. */
   const handlePrintRecord = (record) => {
+    setDownloadRecord(false);
     setPrintRecord(true);
+    setSelectedRecord(record);
+  };
+
+  /* Download PDF works like Print: the form opens, saves itself as a PDF once loaded, and closes. */
+  const handleDownloadRecord = (record) => {
+    setPrintRecord(false);
+    setDownloadRecord(true);
     setSelectedRecord(record);
   };
 
@@ -1689,7 +1886,7 @@ export default function CompensatoryWorkspace({
     const isOwnRecord = matchesUserRecordScope(record, user);
     const isSelfCancellation = action === "cancel" && isOwnRecord;
     const currentStatus = normalizeLeaveStatus(record.status);
-    const stage = compensatoryStage(currentStatus);
+    const stage = compensatoryStage(currentStatus, record);
 
     if (isOwnRecord && !isSelfCancellation) {
       toast.error("You cannot update your own compensatory time off request. Please ask another authorized user to review it.");
@@ -1713,43 +1910,51 @@ export default function CompensatoryWorkspace({
     }
 
     /* Each desk signs in turn, so a request only answers to whoever it is waiting on right now. */
-    if (!isSelfCancellation && !canActOnCompensatoryStage(roleKey, currentStatus)) {
+    if (!isSelfCancellation && !canActOnCompensatoryStage(approvalRoleKey, currentStatus, record)) {
       toast.error(stage
         ? `This compensatory time off request is waiting on ${stage.desk}.`
-        : `This compensatory time off request has already been ${currentStatus.toLowerCase()}.`);
+        : `This compensatory time off request has already been ${compensatoryStatusLabel(currentStatus).toLowerCase()}.`);
       return;
     }
 
     const isRejectAction = action === "reject";
     /* Everything short of the Regional Director's signature hands the request on to the next desk. */
-    const forwardDesk = action === "approve" ? compensatoryStage(nextStatus)?.desk : null;
-    const actionTitle = action === "approve" ? "Approve CTO Request?" : `${nextStatus} Request?`;
+    const forwardDesk = action === "approve" ? compensatoryStage(nextStatus, record)?.desk : null;
+    const actionTitle = action === "approve"
+      ? "Approve CTO Request?"
+      : isRejectAction
+        ? "Disapprove CTO Request?"
+        : `${nextStatus} Request?`;
     const actionText = isSelfCancellation
       ? `Cancel your compensatory time off request for ${formatDateDisplay(record.startDate)} to ${formatDateDisplay(record.endDate)}?`
       : forwardDesk
         ? `Approve the compensatory request for ${record.employeeName} and forward it to ${forwardDesk} for approval?`
         : action === "approve"
           ? `Give final approval to the compensatory request for ${record.employeeName}?`
-          : `Update the compensatory request for ${record.employeeName} to ${nextStatus.toLowerCase()}?`;
+          : `Update the compensatory request for ${record.employeeName} to ${compensatoryStatusLabel(nextStatus).toLowerCase()}?`;
     const confirmation = await Swal.fire({
       title: actionTitle,
       text: actionText,
       icon: action === "approve" ? "success" : "warning",
       input: isRejectAction ? "textarea" : undefined,
-      inputLabel: isRejectAction ? "Rejected note" : undefined,
-      inputPlaceholder: isRejectAction ? "Explain why this compensatory request is being rejected." : undefined,
+      inputLabel: isRejectAction ? "Disapproval note" : undefined,
+      inputPlaceholder: isRejectAction ? "Explain why this compensatory request is being disapproved." : undefined,
       inputValue: isRejectAction ? String(record.rejectedNote || "") : undefined,
       inputAttributes: isRejectAction
         ? {
-          "aria-label": "Rejected note",
+          "aria-label": "Disapproval note",
           autocapitalize: "sentences",
         }
         : undefined,
       inputValidator: isRejectAction
-        ? (value) => (!String(value || "").trim() ? "Rejected note is required." : undefined)
+        ? (value) => (!String(value || "").trim() ? "Disapproval note is required." : undefined)
         : undefined,
       showCancelButton: true,
-      confirmButtonText: action === "approve" ? "Yes, approve" : `Yes, mark ${nextStatus.toLowerCase()}`,
+      confirmButtonText: action === "approve"
+        ? "Yes, approve"
+        : isRejectAction
+          ? "Yes, disapprove"
+          : `Yes, mark ${nextStatus.toLowerCase()}`,
       cancelButtonText: "Keep current status",
       confirmButtonColor: action === "approve" ? "#0f766e" : "#dc2626",
       cancelButtonColor: "#64748b",
@@ -1764,7 +1969,7 @@ export default function CompensatoryWorkspace({
     const rejectedNote = isRejectAction ? String(confirmation.value || "").trim() : "";
 
     /*
-     * One sum covers whichever signature this turns out to be -- the Chief endorsing, HR Head
+     * One sum covers whichever signature this turns out to be -- the Chief endorsing, Chief Admin
      * reviewing or the Director approving -- because compensatory.php resolves the stage itself and
      * gates all three the same way. What comes back is the pair to send, not a verdict.
      */
@@ -1782,7 +1987,7 @@ export default function CompensatoryWorkspace({
 
     const progressMessage = {
       approve: "Approving compensatory time off request...",
-      reject: "Rejecting compensatory time off request...",
+      reject: "Disapproving compensatory time off request...",
       cancel: "Cancelling compensatory time off request...",
     }[action] || "Updating compensatory time off request...";
     const toastId = toast.loading(progressMessage);
@@ -1814,9 +2019,54 @@ export default function CompensatoryWorkspace({
     }
   };
 
+  const handleBulkApprove = async () => {
+    if (bulkApprovableRecords.length === 0 || bulkBusy) return;
+
+    setBulkBusy(true);
+    try {
+      await confirmBulkApproval({
+        records: bulkApprovableRecords,
+        noun: "compensatory request",
+        getTarget: (record) => `compensatory:${record.id}`,
+        approveRecord: (record, captcha) => {
+          const nextStatus = compensatoryStage(normalizeLeaveStatus(record.status), record)?.next;
+          return updateCompensatoryStatus(record.id, nextStatus, "", captcha);
+        },
+        confirmationText: `Approve ${bulkApprovableRecords.length} selected CTO request${bulkApprovableRecords.length === 1 ? "" : "s"} and move each one to its next workflow stage?`,
+        captchaNote: "Answer the sum below to confirm the selected compensatory time off approvals.",
+        progressText: "Approving selected compensatory requests...",
+        onComplete: async () => {
+          selection.clearSelection();
+          await loadRecords({ background: true });
+        },
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkArchive = async () => {
+    if (bulkArchivableRecords.length === 0 || bulkBusy) return;
+
+    setBulkBusy(true);
+    try {
+      await confirmArchiveRecords({
+        records: bulkArchivableRecords,
+        getModule: () => "cto",
+        noun: "compensatory request",
+        onArchived: async () => {
+          selection.clearSelection();
+          await loadRecords({ background: true });
+        },
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   /*
    * Which actions a row offers depends on the viewer's role and where the request sits in the Chief,
-   * HR Head, then Regional Director chain. That decision lives here so the table and the
+   * Chief Admin, then Regional Director chain. That decision lives here so the table and the
    * narrow-screen cards below it cannot drift apart.
    */
   const renderRecordActions = (record) => {
@@ -1824,58 +2074,52 @@ export default function CompensatoryWorkspace({
     const normalizedStatus = normalizeLeaveStatus(record.status);
     const canDecide = managePermission
       && !isOwnRecord
-      && canActOnCompensatoryStage(roleKey, normalizedStatus);
+      && canActOnCompensatoryStage(approvalRoleKey, normalizedStatus, record);
     /* The Chief and Regional Director decide requests with Approve or Reject; neither withdraws them. */
     const showCancelAction = !["chief", "regionaldirector"].includes(roleKey)
       && (canDecide || (isOwnRecord && normalizedStatus === "Pending"));
-    const forwardDesk = compensatoryStage(compensatoryStage(normalizedStatus)?.next)?.desk;
-    const canReviewRecord = managePermission;
+    const forwardDesk = compensatoryStage(
+      compensatoryStage(normalizedStatus, record)?.next,
+      record
+    )?.desk;
     /* The form is only worth printing once the Regional Director has given final approval. */
     const showPrintAction = isRegionalDirectorApproved(record);
+    // Download PDF saves the same approved form, so it is offered exactly when Print is.
+    const printActions = showPrintAction ? (
+      <>
+        <ActionIconButton
+          label="Print compensatory form"
+          icon={faPrint}
+          tone="print"
+          onClick={() => handlePrintRecord(record)}
+        />
+        <ActionIconButton
+          label="Download compensatory form as PDF"
+          text="Download PDF"
+          icon={faFileArrowDown}
+          tone="export"
+          onClick={() => handleDownloadRecord(record)}
+        />
+      </>
+    ) : null;
 
     if (archiveView) {
       return (
-        <>
-          <ActionIconButton
-            label="View compensatory form"
-            icon={faEye}
-            tone="view"
-            onClick={() => handleOpenPreview(record)}
-          />
-          {showPrintAction ? (
-            <ActionIconButton
-              label="Print compensatory form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => handlePrintRecord(record)}
-            />
-          ) : null}
+        <ViewFormActions viewLabel="View compensatory form" onView={() => handleOpenPreview(record)}>
+          {printActions}
           <ActionIconButton
             label="Restore compensatory request"
             icon={faRotateLeft}
             tone="restore"
             onClick={() => handleArchiveRecord(record, true)}
           />
-        </>
+        </ViewFormActions>
       );
     }
 
     return (
-      <>
-        <ActionIconButton
-          label={canReviewRecord ? "Review compensatory request" : "View compensatory form"}
-          icon={canReviewRecord ? faFileLines : faEye}
-          tone={canReviewRecord ? "review" : "view"}
-          onClick={() => handleOpenPreview(record)}
-        />
-        {showPrintAction ? (
-          <ActionIconButton
-            label="Print compensatory form"
-            icon={faPrint}
-            tone="print"
-            onClick={() => handlePrintRecord(record)}
-          />
-        ) : null}
+      <ViewFormActions viewLabel="View compensatory form" onView={() => handleOpenPreview(record)}>
+        {printActions}
         {canDecide ? (
           <>
             <ActionIconButton
@@ -1885,9 +2129,10 @@ export default function CompensatoryWorkspace({
               onClick={() => handleStatusAction("approve", record)}
             />
             <ActionIconButton
-              label="Reject compensatory request"
+              label="Disapprove compensatory request"
               icon={faXmark}
               tone="reject"
+              text="Disapprove"
               onClick={() => handleStatusAction("reject", record)}
             />
           </>
@@ -1900,7 +2145,7 @@ export default function CompensatoryWorkspace({
             onClick={() => handleStatusAction("cancel", record)}
           />
         ) : null}
-        {canArchive ? (
+        {canArchiveRecord(record) ? (
           <ActionIconButton
             label="Archive compensatory request"
             icon={faBoxArchive}
@@ -1908,7 +2153,7 @@ export default function CompensatoryWorkspace({
             onClick={() => handleArchiveRecord(record)}
           />
         ) : null}
-      </>
+      </ViewFormActions>
     );
   };
 
@@ -1920,22 +2165,52 @@ export default function CompensatoryWorkspace({
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h3 className="m-0 text-base font-semibold text-slate-950">
-                {archiveView ? "Archived Compensatory Requests" : title}
+                {archiveView
+                  ? "Archived Compensatory Requests"
+                  : ownRequestsOnly || myView
+                    ? "My CTO Requests"
+                    : title}
               </h3>
               <p className="m-0 mt-1 text-sm text-slate-500">
                 {archiveView
                   ? "Compensatory requests moved to archive. Restore one to put it back in the list."
-                  : description}
+                  : ownRequestsOnly || myView
+                    ? "Follow the compensatory time off requests filed under your employee account and see whose desk each one is on."
+                    : description}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
+              {canToggleMyView && !archiveView ? (
+                <button
+                  type="button"
+                  aria-pressed={myView}
+                  onClick={() => {
+                    selection.clearSelection();
+                    setMyView((current) => !current);
+                    /* Own filings are followed at every stage, so the desk filter gives way to all. */
+                    setStatusFilter(myView ? defaultStatusFilter : "");
+                    setCurrentPage(1);
+                  }}
+                  className={`inline-flex min-h-9 items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition ${
+                    myView
+                      ? "border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100"
+                      : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  <UserRound size={16} />
+                  {myView ? "View All CTO Requests" : "View My CTO"}
+                </button>
+              ) : null}
               {canArchive ? (
                 <ArchiveViewToggle
                   archiveView={archiveView}
-                  onToggle={(next) => {
-                    setArchiveView(next);
-                    setCurrentPage(1);
-                  }}
+                onToggle={(next) => {
+                  selection.clearSelection();
+                  setArchiveView(next);
+                  setMyView(false);
+                  setStatusFilter(next ? "" : defaultStatusFilter);
+                  setCurrentPage(1);
+                }}
                   label="compensatory requests"
                 />
               ) : null}
@@ -1952,35 +2227,60 @@ export default function CompensatoryWorkspace({
             </div>
           </div>
 
+          {!archiveView ? (
+            <BulkSelectionToolbar
+              selectedCount={selection.selectedCount}
+              approveCount={bulkApprovableRecords.length}
+              archiveCount={bulkArchivableRecords.length}
+              busy={bulkBusy}
+              onApprove={handleBulkApprove}
+              onArchive={handleBulkArchive}
+              onClear={selection.clearSelection}
+            />
+          ) : null}
+
           <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,260px)_170px_120px]">
-            <label className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={viewAllPermission ? "Search employee, remarks, hours, status" : "Search remarks, hours, status"}
-                className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-              />
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Search Compensatory Requests</span>
+              <span className="relative block">
+                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={viewAllPermission ? "Search employee, remarks, hours, status" : "Search remarks, hours, status"}
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                />
+              </span>
             </label>
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-            >
-              <option value="">All statuses</option>
-              {COMPENSATORY_STATUSES.map((item) => (
-                <option key={item} value={item}>{compensatoryStatusLabel(item)}</option>
-              ))}
-            </select>
-            <select
-              value={rowsPerPage}
-              onChange={(event) => setRowsPerPage(event.target.value)}
-              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-            >
-              <option value="5">5 rows</option>
-              <option value="10">10 rows</option>
-              <option value="20">20 rows</option>
-            </select>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Status</span>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              >
+                {COMPENSATORY_FILTER_STATUSES.map((item) => (
+                  <option key={item} value={item}>
+                    {item === "Pending" && roleKey !== "admin" ? "Pending by Role" : compensatoryStatusLabel(item)}
+                  </option>
+                ))}
+                <option value="">All Status</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Rows Per Page</span>
+              <select
+                value={rowsPerPage}
+                onChange={(event) => setRowsPerPage(event.target.value)}
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              >
+                <option value="10">10 rows</option>
+                <option value="20">20 rows</option>
+                <option value="50">50 rows</option>
+                <option value="100">100 rows</option>
+                <option value="200">200 rows</option>
+              </select>
+            </label>
           </div>
         </div>
 
@@ -1996,17 +2296,23 @@ export default function CompensatoryWorkspace({
               title: "No compensatory requests found",
               description: "Submit a request or adjust the filters.",
             }}
-            renderCard={(record, index) => ({
-              eyebrow: `#${(safePage - 1) * pageSize + index + 1}`,
+            renderCard={(record) => ({
               title: `${Number(record.hoursApplied).toFixed(2)} hrs applied`,
               subtitle: formatRecordDates(record),
-              badge: <StatusBadge status={record.status} />,
+              badge: <StatusBadge status={record.status} record={record} plainPending={roleKey === "admin"} />,
+              selection: !archiveView && (canArchiveRecord(record) || canBulkApproveRecord(record)) ? (
+                <SelectionCheckbox
+                  checked={selection.isSelected(record)}
+                  onChange={() => selection.toggleRow(record)}
+                  label={`Select ${record.employeeName || "compensatory request"}`}
+                />
+              ) : null,
               fields: [
                 { label: "Employee", value: record.employeeName },
                 ...(record.isLeaveWithoutPay
                   ? [{ label: "Leave Without Pay", value: `${formatCreditHours(record.unpaidHours)} hrs uncovered` }]
                   : []),
-                { label: "Division", value: record.division || "Unassigned" },
+                { label: "Division", value: formatRecordDivision(record) },
                 { label: "Date Filed", value: formatDateDisplay(record.dateFiled) },
                 { label: "Remarks", value: getNoteDisplay(record.remarks) || "No remarks provided.", full: true },
               ],
@@ -2019,7 +2325,17 @@ export default function CompensatoryWorkspace({
               <table className="min-w-[1180px] w-full border-collapse">
                 <thead className="bg-slate-50">
                   <tr>
-                    {["#", "Employee", "Division", "Hours", "Inclusive Dates", "Remarks", "Status", "Date Filed", "Actions"].map((header) => (
+                    <th className="border-b border-slate-200 px-3 py-3 text-left">
+                      {!archiveView && selectablePageRecords.length > 0 ? (
+                        <SelectionCheckbox
+                          checked={selection.areAllSelected(selectablePageRecords)}
+                          indeterminate={selection.areSomeSelected(selectablePageRecords) && !selection.areAllSelected(selectablePageRecords)}
+                          onChange={() => selection.toggleRows(selectablePageRecords)}
+                          label="Select all compensatory requests on this page"
+                        />
+                      ) : null}
+                    </th>
+                    {["Employee", "Division", "Hours", "Inclusive Dates", "Remarks", "Status", "Date Filed", "Actions"].map((header) => (
                       <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
                         {header}
                       </th>
@@ -2030,14 +2346,14 @@ export default function CompensatoryWorkspace({
                   {loading ? (
                     Array.from({ length: 4 }).map((_, index) => (
                       <tr key={index} className="animate-pulse border-b border-slate-100">
-                        <td colSpan={9} className="px-3 py-3">
+                      <td colSpan={9} className="px-3 py-3">
                           <div className="h-5 rounded bg-slate-200" />
                         </td>
                       </tr>
                     ))
                   ) : paginatedRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-12 text-center">
+                    <td colSpan={9} className="px-4 py-12 text-center">
                         <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
                           <Clock3 size={20} />
                         </div>
@@ -2046,16 +2362,22 @@ export default function CompensatoryWorkspace({
                       </td>
                     </tr>
                   ) : (
-                    paginatedRecords.map((record, index) => {
+                    paginatedRecords.map((record) => {
                       return (
                         <tr key={record.id} className="border-b border-slate-100 transition hover:bg-slate-50">
-                          <td className="px-3 py-3 text-sm font-semibold text-slate-600">
-                            {(safePage - 1) * pageSize + index + 1}
+                          <td className="px-3 py-3">
+                            {!archiveView && (canArchiveRecord(record) || canBulkApproveRecord(record)) ? (
+                              <SelectionCheckbox
+                                checked={selection.isSelected(record)}
+                                onChange={() => selection.toggleRow(record)}
+                                label={`Select ${record.employeeName || "compensatory request"}`}
+                              />
+                            ) : null}
                           </td>
                           <td className="px-3 py-3 text-sm text-slate-800">
                             <div className="font-semibold text-slate-900">{record.employeeName}</div>
                           </td>
-                          <td className="px-3 py-3 text-sm text-slate-600">{record.division || "Unassigned"}</td>
+                          <td className="px-3 py-3 text-sm text-slate-600">{formatRecordDivision(record)}</td>
                           <td className="px-3 py-3 text-sm font-semibold text-slate-700">
                             {Number(record.hoursApplied).toFixed(2)} hrs
                             {/* The credits did not cover all of it, which is what the payroll desk needs to see. */}
@@ -2071,10 +2393,10 @@ export default function CompensatoryWorkspace({
                           <td className="max-w-[260px] px-3 py-3 text-sm text-slate-700">
                             <p className="m-0 line-clamp-2">{getNoteDisplay(record.remarks) || "No remarks provided."}</p>
                           </td>
-                          <td className="px-3 py-3"><StatusBadge status={record.status} /></td>
+                          <td className="px-3 py-3"><StatusBadge status={record.status} record={record} plainPending={roleKey === "admin"} /></td>
                           <td className="px-3 py-3 text-sm text-slate-600">{formatDateDisplay(record.dateFiled)}</td>
                           <td className="px-3 py-3">
-                            <div className="flex flex-wrap gap-2">{renderRecordActions(record)}</div>
+                            {renderRecordActions(record)}
                           </td>
                         </tr>
                       );
@@ -2110,9 +2432,11 @@ export default function CompensatoryWorkspace({
         record={selectedRecord}
         employees={employees}
         autoPrint={printRecord}
+        autoDownload={downloadRecord}
         onClose={() => {
           setSelectedRecord(null);
           setPrintRecord(false);
+          setDownloadRecord(false);
         }}
       />
     </div>

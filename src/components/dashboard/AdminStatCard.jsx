@@ -1,8 +1,9 @@
 import React from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import Card from "../UI/card";
 
 export default function AdminStatCard({ stat, index = 0 }) {
+  const reducedMotion = useReducedMotion();
   const Icon = stat.icon;
   const isClickable = typeof stat.onClick === "function";
   const Wrapper = isClickable ? motion.button : motion.div;
@@ -31,9 +32,18 @@ export default function AdminStatCard({ stat, index = 0 }) {
               </strong>
             </div>
 
-            <div className={`grid h-12 w-12 place-items-center rounded-2xl text-white shadow-lg ${stat.iconTone}`}>
+            <motion.div
+              animate={{ y: reducedMotion ? 0 : [0, -5, 0] }}
+              transition={reducedMotion ? { duration: 0 } : {
+                duration: 3,
+                repeat: Infinity,
+                ease: "easeInOut",
+                delay: index * 0.2,
+              }}
+              className={`grid h-12 w-12 place-items-center rounded-2xl text-white shadow-lg ${stat.iconTone}`}
+            >
               <Icon size={22} />
-            </div>
+            </motion.div>
           </div>
         </div>
       </Card>

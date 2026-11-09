@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Baby,
   CalendarDays,
+  CalendarPlus,
   Clock3,
   Download,
   FileClock,
@@ -30,7 +31,9 @@ import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 import ActionIconButton from "../../components/UI/ActionIconButton";
+import ActionsMenu from "../../components/UI/ActionsMenu";
 import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
+import LeaveCreditSnapshot from "../../components/leave/LeaveCreditSnapshot";
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
@@ -53,6 +56,7 @@ import {
 } from "../../utils/archiveActions";
 import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
 import { resolveRoleKey } from "../../utils/leaveHelpers";
+import { useOrganizationFilterOptions } from "../../hooks/useFilterOptions";
 
 /*
  * The header row sticks to the top of its own scroll box, and `border-collapse` paints cell
@@ -65,10 +69,6 @@ const TABLE_BALANCE_COLUMNS = [
   { key: "VL", label: "Vacation Leave Balance" },
   { key: "SL", label: "Sick Leave Balance" },
   { key: "SPL", label: "Special Leave Balance" },
-  { key: "SOPL", label: "Solo Parent Leave" },
-  { key: "STL", label: "Study Leave" },
-  { key: "ML", label: "Maternity Leave" },
-  { key: "PL", label: "Paternity Leave" },
 ];
 
 /*
@@ -129,13 +129,6 @@ function isCocEligibleEmployeeRow(row = {}) {
   const status = String(row.employmentStatus || "").trim().toLowerCase();
   return COC_ELIGIBLE_EMPLOYMENT_STATUSES.has(status);
 }
-
-/*
- * "Unassigned" is the holding division a new employee record is parked in until HR files them
- * against a real one, not a posting anybody belongs to, so it is kept out of the division picker.
- * Those rows still appear under "All divisions" — they are only unreachable as a filter choice.
- */
-const PLACEHOLDER_DIVISION_NAME = "unassigned";
 
 function formatBalanceValue(value) {
   const numericValue = Number(value) || 0;
@@ -252,7 +245,22 @@ function normalizeBalanceRecord(balance = {}) {
     total: Number(balance.total) || 0,
     used: Number(balance.used) || 0,
     remaining: Number(balance.remaining) || 0,
+    /* Vacation and sick leave earn credits on the 1st of every month; the API says how much and when next. */
+    monthlyAccrual: Number(balance.monthlyAccrual) || 0,
+    nextAccrualDate: String(balance.nextAccrualDate || "").trim(),
   };
+}
+
+/**
+ * "+1.25 on Nov 01, 2026" — the posting this balance is about to receive, so the registry reads as
+ * what the balance is becoming and not only what it is. Empty for pools that do not accrue.
+ */
+function formatUpcomingAccrual(balance) {
+  if (!(balance?.monthlyAccrual > 0) || !balance?.nextAccrualDate) {
+    return "";
+  }
+
+  return `+${formatBalanceValue(balance.monthlyAccrual)} on ${formatDateOnly(balance.nextAccrualDate)}`;
 }
 
 function getBalanceRecord(row, code) {
@@ -322,6 +330,8 @@ function getDisplayBalanceRecord(row, code) {
     total: 0,
     used: 0,
     remaining: 0,
+    monthlyAccrual: 0,
+    nextAccrualDate: "",
     applicable: false,
   };
 }
@@ -344,9 +354,11 @@ function getBalanceHealth(balance) {
   const total = Number(balance?.total) || 0;
 
   if (remaining <= 0) {
+    const leaveCode = String(balance?.code || "").trim().toUpperCase();
+
     return {
       tone: "depleted",
-      label: "Depleted",
+      label: ["VL", "SL"].includes(leaveCode) ? "Insufficient" : "Depleted",
       amountClass: "border-rose-200 bg-rose-50 text-rose-700",
       badgeClass: "bg-rose-600 text-white",
     };
@@ -501,13 +513,13 @@ function BalanceStatusBadge({ balance }) {
 }
 
 function BalanceCell({ balance }) {
-  // A leave the employee's gender cannot file for reads as a plain 0 day rather
+  // A leave the employee's gender cannot file for reads as a plain 0 credits rather
   // than a red "Depleted" balance, which would be misleading.
   if (balance.applicable === false) {
     return (
       <div className="space-y-1">
         <div className="inline-flex min-h-8 items-center rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-400">
-          0 days
+          0 credits
         </div>
         <div className="text-[11px] text-slate-400">Not applicable</div>
       </div>
@@ -515,15 +527,23 @@ function BalanceCell({ balance }) {
   }
 
   const health = getBalanceHealth(balance);
+  const upcomingAccrual = formatUpcomingAccrual(balance);
 
+  // A column, so the next posting and the status badge sit under the balance, not beside it.
   return (
-    <div className="space-y-1">
+    <div className="flex flex-col items-start gap-1">
       <div className={`inline-flex min-h-8 items-center rounded-xl border px-2.5 text-xs font-semibold ${health.amountClass}`}>
-        {formatBalanceValue(balance.remaining)} day{Number(balance.remaining) === 1 ? "" : "s"}
+        {formatBalanceValue(balance.remaining)} credit{Number(balance.remaining) === 1 ? "" : "s"}
       </div>
-      <div className="text-[11px] text-slate-500">
-        Used {formatBalanceValue(balance.used)} / Total {formatBalanceValue(balance.total)}
-      </div>
+      {upcomingAccrual ? (
+        <div
+          className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold text-emerald-700"
+          title={`${balance.type} earns ${formatBalanceValue(balance.monthlyAccrual)} credit(s) on the 1st of every month.`}
+        >
+          <CalendarPlus size={12} aria-hidden="true" />
+          <span>{upcomingAccrual}</span>
+        </div>
+      ) : null}
       <BalanceStatusBadge balance={balance} />
     </div>
   );
@@ -1499,13 +1519,6 @@ function LeaveBalanceAdjustmentModal({
           </p>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              Cancel
-            </button>
-            <button
               type="submit"
               disabled={saving || pendingChanges.length === 0 || invalidChanges.length > 0}
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-[#D61E1E] px-4 text-sm font-semibold text-white transition hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:opacity-60"
@@ -1572,44 +1585,7 @@ function LeaveBalanceHistoryModal({
           </div>
 
           <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                <FolderSync size={16} />
-                <span>Current Leave Credit Snapshot</span>
-              </div>
-              <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
-                <div className="overflow-x-auto">
-                  <table className="min-w-full border-collapse">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        {["Leave Type", "Total", "Used", "Remaining", "Updated"].map((header) => (
-                          <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
-                            {header}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {snapshot.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
-                            No leave credit snapshot is available yet.
-                          </td>
-                        </tr>
-                      ) : snapshot.map((item) => (
-                        <tr key={item.code} className="border-b border-slate-100">
-                          <td className="px-3 py-3 text-sm font-semibold text-slate-900">{item.type}</td>
-                          <td className="px-3 py-3 text-sm text-slate-700">{formatBalanceValue(item.total)}</td>
-                          <td className="px-3 py-3 text-sm text-slate-700">{formatBalanceValue(item.used)}</td>
-                          <td className="px-3 py-3 text-sm text-slate-700">{formatBalanceValue(item.remaining)}</td>
-                          <td className="px-3 py-3 text-sm text-slate-500">{formatDateTime(item.updatedAt || row?.lastUpdated)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
+            <LeaveCreditSnapshot snapshot={snapshot} fallbackUpdatedAt={row?.lastUpdated} />
 
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
@@ -1912,13 +1888,6 @@ function BulkLeaveCreditModal({
 
         <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-4">
           <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-          <button
             type="submit"
             disabled={saving || selectedRows.length === 0}
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-[#D61E1E] px-4 text-sm font-semibold text-white transition hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:opacity-60"
@@ -1944,12 +1913,10 @@ function CocCreditRegistry({
   drafts = {},
   loading = false,
   allowActions = true,
-  startIndex = 0,
-  columnCount = 7,
+  columnCount = 6,
   onDraftChange,
 }) {
   const headers = [
-    "#",
     "Employee",
     "Division",
     "Rendered Overtime",
@@ -1971,13 +1938,12 @@ function CocCreditRegistry({
         empty={{
           icon: Clock3,
           title: "No COC credit records found",
-          description: "Adjust the filters, or set compensatory overtime credits for an employee.",
+          description: "Set compensatory overtime credits for an employee to create a record.",
         }}
-        renderCard={(row, index) => {
+        renderCard={(row) => {
           const entry = getCocTotals(totals, row.employeeRecordId);
 
           return {
-            eyebrow: `#${startIndex + index + 1}`,
             title: row.employeeName,
             subtitle: `${row.division || "Unassigned"} - ${row.position || "Not set"}`,
             fields: [
@@ -2008,7 +1974,7 @@ function CocCreditRegistry({
         }}
       />
 
-      <div className="hidden overflow-hidden rounded-[26px] border border-slate-200 bg-white xl:block">
+      <div className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white xl:block">
         <div className="max-h-[70vh] overflow-auto">
           <table className="min-w-[1180px] w-full border-collapse">
             <thead className="sticky top-0 z-10 bg-slate-50">
@@ -2028,7 +1994,7 @@ function CocCreditRegistry({
                 Array.from({ length: 6 }).map((_, index) => (
                   <tr key={index} className="animate-pulse border-b border-slate-100">
                     <td colSpan={columnCount} className="px-4 py-4">
-                      <div className="h-9 rounded-2xl bg-slate-200" />
+                      <div className="h-9 rounded bg-slate-200" />
                     </td>
                   </tr>
                 ))
@@ -2040,11 +2006,11 @@ function CocCreditRegistry({
                     </div>
                     <p className="m-0 mt-4 text-base font-semibold text-slate-800">No COC credit records found</p>
                     <p className="m-0 mt-2 text-sm text-slate-500">
-                      Adjust the filters, or set compensatory overtime credits for an employee.
+                      Set compensatory overtime credits for an employee to create a record.
                     </p>
                   </td>
                 </tr>
-              ) : rows.map((row, index) => {
+              ) : rows.map((row) => {
                 const entry = getCocTotals(totals, row.employeeRecordId);
                 const draft = drafts[row.employeeRecordId];
                 const hasChange = draft !== undefined
@@ -2056,10 +2022,9 @@ function CocCreditRegistry({
                   <tr
                     key={row.employeeRecordId}
                     className={`border-b border-slate-100 align-top transition ${
-                      hasChange ? "bg-emerald-50/70" : "hover:bg-emerald-50/35"
+                      hasChange ? "bg-emerald-50/70" : "hover:bg-slate-50"
                     }`}
                   >
-                    <td className="px-3 py-4 text-sm font-semibold text-slate-600">{startIndex + index + 1}</td>
                     <td className="px-3 py-4 text-sm text-slate-900">
                       <div className="font-semibold">{row.employeeName}</div>
                       {row.employmentStatus ? (
@@ -2100,7 +2065,6 @@ export default function LeaveBalanceManagementWorkspace({
   user,
   allowActions = true,
   showEmployeeIdColumn = true,
-  showRowNumberColumn = false,
 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2122,7 +2086,6 @@ export default function LeaveBalanceManagementWorkspace({
     search: "",
     division: "",
     employmentStatus: "",
-
     rowsPerPage: "10",
   });
   const sortBy = "employeeName";
@@ -2149,7 +2112,8 @@ export default function LeaveBalanceManagementWorkspace({
 
   const currentYear = new Date().getFullYear();
   const updaterName = String(user?.full_name || user?.username || "HR Head").trim();
-  const canArchive = allowActions && canArchiveModule(resolveRoleKey(user), "leaveBalance");
+  const roleKey = resolveRoleKey(user);
+  const canArchive = allowActions && canArchiveModule(roleKey, "leaveBalance");
 
   const loadRows = useCallback(async ({ background = false } = {}) => {
     setLoading(!background);
@@ -2216,30 +2180,14 @@ export default function LeaveBalanceManagementWorkspace({
     refreshOnMount: false,
   });
 
-  const divisionOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          rows
-            .map((row) => String(row.division || "").trim())
-            .filter((division) => division && division.toLowerCase() !== PLACEHOLDER_DIVISION_NAME)
-        )
-      ).sort((left, right) => left.localeCompare(right)),
-    [rows]
-  );
-
-  const employmentStatusOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          rows
-            .map((row) => String(row.employmentStatus || "").trim())
-            .filter(Boolean)
-        )
-      ).sort((left, right) => left.localeCompare(right)),
-    [rows]
-  );
-
+  /*
+   * Division and employment status choices come from the database, not from the rows on screen, so
+   * a division or status with no balance rows yet can still be picked.
+   */
+  const {
+    divisions: divisionOptions,
+    employmentStatuses: employmentStatusOptions,
+  } = useOrganizationFilterOptions();
 
   const filteredRows = useMemo(() => {
     const search = filters.search.trim().toLowerCase();
@@ -2256,13 +2204,17 @@ export default function LeaveBalanceManagementWorkspace({
 
       const matchesDivision = !filters.division || row.division === filters.division;
       const rowEmploymentStatus = String(row.employmentStatus || "").trim();
-      const matchesEmploymentStatus = !filters.employmentStatus || rowEmploymentStatus === filters.employmentStatus;
+      const matchesEmploymentStatus =
+        !filters.employmentStatus || rowEmploymentStatus === filters.employmentStatus;
 
       return matchesSearch && matchesDivision && matchesEmploymentStatus;
     });
   }, [filters, rows]);
 
-  const sortedRows = useMemo(() => sortRows(filteredRows, sortBy, sortDirection), [filteredRows, sortBy, sortDirection]);
+  const sortedRows = useMemo(
+    () => sortRows(filteredRows, sortBy, sortDirection),
+    [filteredRows, sortBy, sortDirection]
+  );
 
   const pageSize = Number(filters.rowsPerPage) || 10;
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
@@ -2273,7 +2225,6 @@ export default function LeaveBalanceManagementWorkspace({
     setCurrentPage(1);
   }, [filters.search, filters.division, filters.employmentStatus, filters.rowsPerPage, sortBy, sortDirection]);
 
-  // Keep selection coherent with the employment-status verification context.
   useEffect(() => {
     setSelectedIds(new Set());
   }, [filters.employmentStatus]);
@@ -2318,37 +2269,6 @@ export default function LeaveBalanceManagementWorkspace({
   }, [selectableIds]);
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
-
-  const summary = useMemo(() => {
-    let lowCount = 0;
-    let depletedCount = 0;
-
-    rows.forEach((row) => {
-      TABLE_BALANCE_COLUMNS.forEach((column) => {
-        const balance = getDisplayBalanceRecord(row, column.key);
-
-        // Leave the employee can never file for is not a depleted balance.
-        if (balance.applicable === false) {
-          return;
-        }
-
-        const health = getBalanceHealth(balance);
-
-        if (health.tone === "low") {
-          lowCount += 1;
-        }
-        if (health.tone === "depleted") {
-          depletedCount += 1;
-        }
-      });
-    });
-
-    return {
-      totalEmployees: rows.length,
-      lowCount,
-      depletedCount,
-    };
-  }, [rows]);
 
   const cocTotals = useMemo(() => buildCocTotals(cocRecords), [cocRecords]);
 
@@ -2458,10 +2378,10 @@ export default function LeaveBalanceManagementWorkspace({
   );
   // Bulk leave credits are a leave-ledger action, so the COC table drops the selection column.
   const showSelectionColumn = allowActions && !isCocMode;
-  const visibleLeadColumns = 1 + (showEmployeeIdColumn ? 1 : 0) + (showRowNumberColumn ? 1 : 0) + 2;
+  const visibleLeadColumns = 1 + (showEmployeeIdColumn ? 1 : 0) + 2;
   const tableColumnCount = (showSelectionColumn ? 1 : 0) + visibleLeadColumns + TABLE_BALANCE_COLUMNS.length + 1 + (allowActions ? 1 : 0);
-  // #, Employee, Division, Rendered, HR-posted, Total, Latest date (+ the stepper when editable).
-  const cocTableColumnCount = 7 + (allowActions ? 1 : 0);
+  // Employee, Division, Rendered, HR-posted, Total, Latest date (+ the stepper when editable).
+  const cocTableColumnCount = 6 + (allowActions ? 1 : 0);
 
 
   const openEditor = (mode, row, creditType = "leave") => {
@@ -2562,7 +2482,7 @@ export default function LeaveBalanceManagementWorkspace({
         "Employee Name",
         "Employee ID",
         "Division",
-        "Designation",
+        "Position",
         "Employment Status",
         "Rendered Overtime (hrs)",
         "HR-Posted Credits (hrs)",
@@ -2573,7 +2493,7 @@ export default function LeaveBalanceManagementWorkspace({
         "Employee Name",
         "Employee ID",
         "Division",
-        "Designation",
+        "Position",
         "Employment Status",
         ...balanceColumns.map((type) => `${type.label} (Remaining)`),
         "Last Updated",
@@ -2732,6 +2652,21 @@ export default function LeaveBalanceManagementWorkspace({
 
   const handleArchiveBalances = async (row, restore = false) => {
     const confirmAction = restore ? confirmRestoreRecordGroup : confirmArchiveRecordGroup;
+    const removeFromCurrentRegistry = (employeeRecordId) => {
+      setRows((current) =>
+        current.filter((item) => item.employeeRecordId !== employeeRecordId)
+      );
+      setSelectedIds((current) => {
+        if (!current.has(employeeRecordId)) {
+          return current;
+        }
+
+        const next = new Set(current);
+        next.delete(employeeRecordId);
+        return next;
+      });
+      void loadRows({ background: true });
+    };
 
     await confirmAction({
       module: "leaveBalance",
@@ -2739,8 +2674,8 @@ export default function LeaveBalanceManagementWorkspace({
       year: currentYear,
       noun: "leave balances",
       owner: row.employeeName,
-      onArchived: () => loadRows({ background: true }),
-      onRestored: () => loadRows({ background: true }),
+      onArchived: removeFromCurrentRegistry,
+      onRestored: removeFromCurrentRegistry,
     });
   };
 
@@ -2767,7 +2702,7 @@ export default function LeaveBalanceManagementWorkspace({
         row.employeeRecordId,
         currentYear,
         new Date().toISOString().slice(0, 10),
-        "Reset from HR Head leave balance workspace."
+        "Reset from leave balance management workspace."
       );
 
       setRows(result.rows || []);
@@ -2824,9 +2759,9 @@ export default function LeaveBalanceManagementWorkspace({
   );
 
   return (
-    <section className="space-y-4">
+    <section className="leave-credit-registry space-y-4">
 
-      <section className="rounded-[30px] border border-slate-200 bg-white shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 px-5 py-5 sm:px-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -2842,7 +2777,7 @@ export default function LeaveBalanceManagementWorkspace({
                   ? "Overtime credits posted once the Regional Director gives the final approval, plus the credits HR sets here."
                   : archiveView
                     ? "Leave balances moved to archive. Restore an employee to return their credits to the registry."
-                    : "Search, filter, sort, and update leave balances for active employee records."}
+                    : "Search, filter, sort, and update leave balances for active employee records. Vacation and sick leave earn 1.25 credits on the 1st of every month; each balance shows its next posting."}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -2890,55 +2825,6 @@ export default function LeaveBalanceManagementWorkspace({
             </div>
           </div>
 
-          <div className={`mt-5 grid gap-3 md:grid-cols-2 ${
-            isCocMode
-              ? "xl:grid-cols-[minmax(0,200px)_150px_150px_120px]"
-              : "xl:grid-cols-[minmax(0,200px)_150px_150px_150px_120px]"
-          }`}>
-            <label className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <input
-                value={filters.search}
-                onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
-                placeholder="Search employee name or ID"
-                className="h-9 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-
-            <select
-              value={filters.division}
-              onChange={(event) => setFilters((current) => ({ ...current, division: event.target.value }))}
-              className="h-9 rounded-2xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-            >
-              <option value="">All divisions</option>
-              {divisionOptions.map((division) => (
-                <option key={division} value={division}>{division}</option>
-              ))}
-            </select>
-
-            <select
-              value={filters.employmentStatus}
-              onChange={(event) => setFilters((current) => ({ ...current, employmentStatus: event.target.value }))}
-              className="h-9 rounded-2xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-            >
-              <option value="">All employment statuses</option>
-              {employmentStatusOptions.map((status) => (
-                <option key={status} value={status}>{status}</option>
-              ))}
-            </select>
-
-            <select
-              value={filters.rowsPerPage}
-              onChange={(event) => setFilters((current) => ({ ...current, rowsPerPage: event.target.value }))}
-              className="h-9 rounded-2xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-            >
-              <option value="5">5 rows</option>
-              <option value="10">10 rows</option>
-              <option value="20">20 rows</option>
-              <option value="50">50 rows</option>
-            </select>
-          </div>
-
           {/* Every posted credit needs a date and a reason, and one save covers the whole sheet. */}
           {allowActions && isCocMode ? (
             <div className="mt-3 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-[170px_minmax(0,1fr)_auto] md:items-center">
@@ -2977,6 +2863,81 @@ export default function LeaveBalanceManagementWorkspace({
             </div>
           ) : null}
 
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,220px)_170px_190px_120px]">
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Search Employees</span>
+              <span className="relative block">
+                <Search
+                  size={16}
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+                <input
+                  type="search"
+                  value={filters.search}
+                  onChange={(event) =>
+                    setFilters((current) => ({ ...current, search: event.target.value }))
+                  }
+                  placeholder="Search employee name or ID"
+                  className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </span>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Division</span>
+              <select
+                value={filters.division}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, division: event.target.value }))
+                }
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              >
+                <option value="">All divisions</option>
+                {divisionOptions.map((division) => (
+                  <option key={division} value={division}>
+                    {division}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Employment Status</span>
+              <select
+                value={filters.employmentStatus}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, employmentStatus: event.target.value }))
+                }
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              >
+                <option value="">All employment statuses</option>
+                {employmentStatusOptions.filter((employmentStatus) => employmentStatus.trim().toLowerCase() !== "contractual").map((employmentStatus) => (
+                  <option key={employmentStatus} value={employmentStatus}>
+                    {employmentStatus}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Rows Per Page</span>
+              <select
+                value={filters.rowsPerPage}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, rowsPerPage: event.target.value }))
+                }
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              >
+                {[10, 20, 50, 100, 200].map((rowCount) => (
+                  <option key={rowCount} value={rowCount}>
+                    {rowCount} rows
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
         </div>
 
         {allowActions && !isCocMode && selectedIds.size > 0 ? (
@@ -2990,7 +2951,9 @@ export default function LeaveBalanceManagementWorkspace({
                   {selectedIds.size} employee{selectedIds.size === 1 ? "" : "s"} selected
                 </p>
                 <p className="m-0 text-xs text-emerald-700">
-                  {filters.employmentStatus ? `Employment status: ${filters.employmentStatus}` : "All employment statuses"}
+                  {filters.employmentStatus
+                    ? `Employment status: ${filters.employmentStatus}`
+                    : "All employment statuses"}
                 </p>
               </div>
             </div>
@@ -3022,17 +2985,12 @@ export default function LeaveBalanceManagementWorkspace({
               drafts={cocDrafts}
               loading={loading || cocLoading}
               allowActions={allowActions}
-              startIndex={(safePage - 1) * pageSize}
               columnCount={cocTableColumnCount}
               onDraftChange={updateCocDraft}
             />
           ) : (
           <>
-          {/*
-            * The ledger is 2050px of table — every leave type gets its own column — so anything
-            * narrower than a desktop reads it as cards instead, with the balances kept together in
-            * their own grid. The table returns at `xl`; zooming the browser out reaches it.
-            */}
+          {/* Narrow screens use cards; desktop screens keep the core balances and actions together. */}
           <RecordCards
             className="xl:hidden"
             /* One column: the balance grid inside each card needs the full width. */
@@ -3044,9 +3002,9 @@ export default function LeaveBalanceManagementWorkspace({
             empty={{
               icon: FolderSync,
               title: "No leave balance records found",
-              description: "Adjust the filters or refresh the registry to load employee leave credit records.",
+              description: "Refresh the registry to load employee leave credit records.",
             }}
-            renderCard={(row, index) => ({
+            renderCard={(row) => ({
               eyebrow: (
                 <span className="inline-flex items-center gap-2">
                   {showSelectionColumn ? (
@@ -3059,7 +3017,6 @@ export default function LeaveBalanceManagementWorkspace({
                     />
                   ) : null}
                   <span>
-                    {showRowNumberColumn ? `#${(safePage - 1) * pageSize + index + 1} - ` : ""}
                     {showEmployeeIdColumn ? (row.employeeId || "N/A") : "Employee"}
                   </span>
                 </span>
@@ -3092,16 +3049,14 @@ export default function LeaveBalanceManagementWorkspace({
                 },
                 { label: "Last Updated", value: formatDateTime(row.lastUpdated), full: true },
               ],
-              actions: allowActions ? renderRowActions(row) : null,
+              actions: allowActions ? <ActionsMenu>{renderRowActions(row)}</ActionsMenu> : null,
             })}
           />
 
-          {/* The scroll box is capped to the viewport so its horizontal scrollbar stays on screen —
-              otherwise a full page of rows pushes the bar below the fold and the wide balance
-              columns can only be reached after scrolling the whole page down. */}
-          <div className="hidden overflow-hidden rounded-[26px] border border-slate-200 bg-white xl:block">
+          {/* Keep the registry compact so the row actions remain visible beside the core balances. */}
+          <div className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white xl:block">
             <div className="max-h-[70vh] overflow-auto">
-              <table className="min-w-[2050px] w-full border-collapse">
+              <table className="w-full border-collapse">
                 <thead className="sticky top-0 z-10 bg-slate-50">
                   <tr>
                     {showSelectionColumn ? (
@@ -3122,11 +3077,10 @@ export default function LeaveBalanceManagementWorkspace({
                       </th>
                     ) : null}
                     {[
-                      ...(showRowNumberColumn ? [{ key: "rowNumber", label: "#" }] : []),
                       { key: "employeeName", label: "Employee Name" },
                       ...(showEmployeeIdColumn ? [{ key: "employeeId", label: "Employee ID" }] : []),
                       { key: "division", label: "Division" },
-                      { key: "position", label: "Designation" },
+                      { key: "position", label: "Position" },
                       ...TABLE_BALANCE_COLUMNS,
                       { key: "lastUpdated", label: "Last Updated" },
                     ].map((column) => (
@@ -3149,7 +3103,7 @@ export default function LeaveBalanceManagementWorkspace({
                     Array.from({ length: 6 }).map((_, index) => (
                       <tr key={index} className="animate-pulse border-b border-slate-100">
                         <td colSpan={tableColumnCount} className="px-4 py-4">
-                          <div className="h-9 rounded-2xl bg-slate-200" />
+                          <div className="h-9 rounded bg-slate-200" />
                         </td>
                       </tr>
                     ))
@@ -3161,17 +3115,17 @@ export default function LeaveBalanceManagementWorkspace({
                         </div>
                         <p className="m-0 mt-4 text-base font-semibold text-slate-800">No leave balance records found</p>
                         <p className="m-0 mt-2 text-sm text-slate-500">
-                          Adjust the filters or refresh the registry to load employee leave credit records.
+                          Refresh the registry to load employee leave credit records.
                         </p>
                       </td>
                     </tr>
-                  ) : paginatedRows.map((row, index) => {
+                  ) : paginatedRows.map((row) => {
                     const isSelected = selectedIds.has(row.employeeRecordId);
 
                     return (
                     <tr
                       key={row.employeeRecordId}
-                      className={`border-b border-slate-100 align-top transition ${isSelected ? "bg-emerald-50/70" : "hover:bg-emerald-50/35"}`}
+                      className={`border-b border-slate-100 align-top transition ${isSelected ? "bg-emerald-50/70" : "hover:bg-slate-50"}`}
                     >
                       {showSelectionColumn ? (
                         <td className="px-3 py-4">
@@ -3182,11 +3136,6 @@ export default function LeaveBalanceManagementWorkspace({
                             checked={isSelected}
                             onChange={() => toggleRowSelected(row.employeeRecordId)}
                           />
-                        </td>
-                      ) : null}
-                      {showRowNumberColumn ? (
-                        <td className="px-3 py-4 text-sm font-semibold text-slate-600">
-                          {(safePage - 1) * pageSize + index + 1}
                         </td>
                       ) : null}
                       <td className="px-3 py-4 text-sm text-slate-900">
@@ -3212,7 +3161,7 @@ export default function LeaveBalanceManagementWorkspace({
                         <td className="whitespace-nowrap px-3 py-4">
                           {/* `flex-nowrap` keeps the four buttons on one line at every zoom level;
                               the row grows the table's width instead of stacking them. */}
-                          <div className="flex flex-nowrap items-center gap-2">{renderRowActions(row)}</div>
+                          <ActionsMenu>{renderRowActions(row)}</ActionsMenu>
                         </td>
                       ) : null}
                     </tr>

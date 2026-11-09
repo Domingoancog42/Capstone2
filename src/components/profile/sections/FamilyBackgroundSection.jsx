@@ -43,16 +43,16 @@ export default function FamilyBackgroundSection({
       <div className="space-y-4 rounded-3xl border border-slate-200 bg-slate-50/60 p-4">
         <SubsectionTitle>Spouse</SubsectionTitle>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <ProfileField label="Surname" name="spouseLastName" value={values.spouseLastName} onChange={onChange} readOnly={readOnly} />
-          <ProfileField label="First Name" name="spouseFirstName" value={values.spouseFirstName} onChange={onChange} readOnly={readOnly} />
-          <ProfileField label="Middle Name" name="spouseMiddleName" value={values.spouseMiddleName} onChange={onChange} readOnly={readOnly} />
+          <ProfileField label="Surname" name="spouseLastName" value={values.spouseLastName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Dela Cruz" />
+          <ProfileField label="First Name" name="spouseFirstName" value={values.spouseFirstName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Maria" />
+          <ProfileField label="Middle Name" name="spouseMiddleName" value={values.spouseMiddleName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Santos" />
           <ProfileField label="Name Extension" name="spouseSuffix" as="select" value={values.spouseSuffix} onChange={onChange} readOnly={readOnly} options={suffixChoices} />
-          <ProfileField label="Occupation" name="spouseOccupation" value={values.spouseOccupation} onChange={onChange} readOnly={readOnly} />
-          <ProfileField label="Employer / Business Name" name="spouseEmployer" value={values.spouseEmployer} onChange={onChange} readOnly={readOnly} />
+          <ProfileField label="Occupation" name="spouseOccupation" value={values.spouseOccupation} onChange={onChange} readOnly={readOnly} placeholder="e.g. Public School Teacher" />
+          <ProfileField label="Employer / Business Name" name="spouseEmployer" value={values.spouseEmployer} onChange={onChange} readOnly={readOnly} placeholder="e.g. Department of Education" />
           <div className="md:col-span-2 xl:col-span-1">
-            <ProfileField label="Business Address" name="spouseBusinessAddress" value={values.spouseBusinessAddress} onChange={onChange} readOnly={readOnly} />
+            <ProfileField label="Business Address" name="spouseBusinessAddress" value={values.spouseBusinessAddress} onChange={onChange} readOnly={readOnly} placeholder="e.g. 123 Rizal St., Poblacion, Cebu City" />
           </div>
-          <ProfileField label="Telephone No." name="spouseTelephone" value={values.spouseTelephone} onChange={onChange} readOnly={readOnly} />
+          <ProfileField label="Telephone No." name="spouseTelephone" value={values.spouseTelephone} onChange={onChange} readOnly={readOnly} placeholder="e.g. 0917 123 4567" />
         </div>
       </div>
 
@@ -60,9 +60,9 @@ export default function FamilyBackgroundSection({
         <div className="space-y-4 rounded-3xl border border-slate-200 bg-slate-50/60 p-4">
           <SubsectionTitle>Father</SubsectionTitle>
           <div className="grid gap-4 sm:grid-cols-2">
-            <ProfileField label="Surname" name="fatherLastName" value={values.fatherLastName} onChange={onChange} readOnly={readOnly} />
-            <ProfileField label="First Name" name="fatherFirstName" value={values.fatherFirstName} onChange={onChange} readOnly={readOnly} />
-            <ProfileField label="Middle Name" name="fatherMiddleName" value={values.fatherMiddleName} onChange={onChange} readOnly={readOnly} />
+            <ProfileField label="Surname" name="fatherLastName" value={values.fatherLastName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Dela Cruz" />
+            <ProfileField label="First Name" name="fatherFirstName" value={values.fatherFirstName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Juan" />
+            <ProfileField label="Middle Name" name="fatherMiddleName" value={values.fatherMiddleName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Santos" />
             <ProfileField label="Name Extension" name="fatherSuffix" as="select" value={values.fatherSuffix} onChange={onChange} readOnly={readOnly} options={suffixChoices} />
           </div>
         </div>
@@ -70,9 +70,9 @@ export default function FamilyBackgroundSection({
         <div className="space-y-4 rounded-3xl border border-slate-200 bg-slate-50/60 p-4">
           <SubsectionTitle>Mother&apos;s Maiden Name</SubsectionTitle>
           <div className="grid gap-4 sm:grid-cols-2">
-            <ProfileField label="Maiden Surname" name="motherMaidenLastName" value={values.motherMaidenLastName} onChange={onChange} readOnly={readOnly} />
-            <ProfileField label="First Name" name="motherFirstName" value={values.motherFirstName} onChange={onChange} readOnly={readOnly} />
-            <ProfileField label="Middle Name" name="motherMiddleName" value={values.motherMiddleName} onChange={onChange} readOnly={readOnly} />
+            <ProfileField label="Maiden Surname" name="motherMaidenLastName" value={values.motherMaidenLastName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Reyes" />
+            <ProfileField label="First Name" name="motherFirstName" value={values.motherFirstName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Ana" />
+            <ProfileField label="Middle Name" name="motherMiddleName" value={values.motherMiddleName} onChange={onChange} readOnly={readOnly} placeholder="e.g. Cruz" />
           </div>
         </div>
       </div>
@@ -106,6 +106,7 @@ export default function FamilyBackgroundSection({
                   label={`Child ${index + 1} — Full Name`}
                   name={`child-${index}-fullName`}
                   value={child.fullName}
+                  placeholder="e.g. Juan S. Dela Cruz Jr."
                   onChange={(event) => onChildChange(index, "fullName", event.target.value)}
                   readOnly={readOnly}
                 />

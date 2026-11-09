@@ -1,4 +1,5 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useId } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import Button from "./button";
@@ -6,10 +7,12 @@ import Button from "./button";
 export default function Modal({
   open,
   title,
+  description,
   children,
   footer,
   onClose,
   closeLabel = "Close",
+  showCloseButton = true,
   maxWidth = "max-w-[520px]",
   maxHeight = "max-h-[92dvh]",
   panelClassName = "",
@@ -18,7 +21,10 @@ export default function Modal({
   footerClassName = "",
   backdropClassName = "",
   containerClassName = "",
+  portal = false,
 }) {
+  const titleId = useId();
+
   useEffect(() => {
     if (!open) {
       return undefined;
@@ -36,10 +42,10 @@ export default function Modal({
     };
   }, [onClose, open]);
 
-  return (
+  const dialog = (
     <AnimatePresence>
       {open ? (
-        <div className={`fixed inset-0 z-50 grid place-items-center p-3 sm:p-5 ${containerClassName}`.trim()} role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div className={`fixed inset-0 z-50 grid place-items-center p-3 sm:p-5 ${containerClassName}`.trim()} role="dialog" aria-modal="true" aria-labelledby={titleId}>
           <motion.button
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -58,10 +64,17 @@ export default function Modal({
             className={`app-modal-panel relative z-10 flex w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 ${maxWidth} ${maxHeight} ${panelClassName}`.trim()}
           >
             <div className={`flex items-center justify-between gap-3 border-b border-slate-200 px-3.5 py-2.5 dark:border-slate-700 sm:px-4 sm:py-3 ${headerClassName}`.trim()}>
-              <h2 id="modal-title" className="m-0 text-sm font-semibold text-slate-900 dark:text-slate-100 sm:text-base">
-                {title}
-              </h2>
-              <Button variant="icon" size="sm" icon={X} onClick={onClose} aria-label={closeLabel} />
+              <div className="min-w-0">
+                <h2 id={titleId} className="m-0 text-sm font-semibold text-slate-900 dark:text-slate-100 sm:text-base">
+                  {title}
+                </h2>
+                {description ? (
+                  <p className="m-0 mt-0.5 text-xs text-slate-500 dark:text-slate-400 sm:text-sm">{description}</p>
+                ) : null}
+              </div>
+              {showCloseButton ? (
+                <Button variant="icon" size="sm" icon={X} onClick={onClose} aria-label={closeLabel} />
+              ) : null}
             </div>
             <div className={`app-modal-content overflow-y-auto px-3.5 py-3.5 text-sm text-slate-600 dark:text-slate-300 sm:px-4 sm:py-4 ${contentClassName}`.trim()}>{children}</div>
             {footer ? <div className={`app-modal-footer flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-200 px-3.5 py-2.5 dark:border-slate-700 sm:px-4 sm:py-3 ${footerClassName}`.trim()}>{footer}</div> : null}
@@ -70,4 +83,6 @@ export default function Modal({
       ) : null}
     </AnimatePresence>
   );
+
+  return portal && typeof document !== "undefined" ? createPortal(dialog, document.body) : dialog;
 }

@@ -143,9 +143,9 @@ function email_domain_matches(string $domain, array $rules): bool
     return false;
 }
 
-function email_domain_policy_violation(PDO $pdo, string $email): ?string
+function email_domain_policy_violation(PDO $pdo, string $email, ?array $policy = null): ?string
 {
-    $policy = email_domain_policy($pdo);
+    $policy ??= email_domain_policy($pdo);
 
     if (!$policy['enabled']) {
         return null;
@@ -158,11 +158,24 @@ function email_domain_policy_violation(PDO $pdo, string $email): ?string
     }
 
     if (email_domain_matches($domain, $policy['blockedDomains'])) {
-        return "Email domain {$domain} is blocked by the Temp Mail Blocker.";
+        if ($policy['allowListedOnly'] && count($policy['allowedDomains']) === 1) {
+            return "Email addresses from {$domain} cannot be used. Only {$policy['allowedDomains'][0]} email addresses are allowed.";
+        }
+
+        if ($policy['allowListedOnly'] && count($policy['allowedDomains']) > 1) {
+            return 'Email addresses from ' . $domain . ' cannot be used. Use an allowed domain: '
+                . implode(', ', $policy['allowedDomains']) . '.';
+        }
+
+        return "Email addresses from {$domain} cannot be used because this domain is blocked by the Temp Mail Blocker.";
     }
 
     if ($policy['allowListedOnly'] && !email_domain_matches($domain, $policy['allowedDomains'])) {
-        return 'Email domain ' . $domain . ' is not allowed. Allowed domains: ' . implode(', ', $policy['allowedDomains']) . '.';
+        if (count($policy['allowedDomains']) === 1) {
+            return "Only {$policy['allowedDomains'][0]} email addresses are allowed.";
+        }
+
+        return 'Use an allowed email domain: ' . implode(', ', $policy['allowedDomains']) . '.';
     }
 
     return null;

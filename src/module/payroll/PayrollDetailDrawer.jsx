@@ -1,3 +1,4 @@
+import { payrollPayoutAmounts, payrollPayoutLabels } from "./payrollPayout";
 import React, { useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
@@ -82,9 +83,10 @@ function buildPeriodLabel(record = {}) {
 }
 
 /*
- * The three rungs of the payroll approval chain -- HR Head, then Chief of Division, then Regional
+ * The three rungs of the payroll approval chain -- HR Head, then the FAD Division Chief, then Regional
  * Director. Kept in step with PAYROLL_APPROVAL_CHAIN in backend/api/payroll.php, where the stored
- * values are abbreviated to fit `payroll.status` (varchar(20)).
+ * values are abbreviated to fit `payroll.status` (varchar(20)); the FAD Chief's rung is still
+ * stored as "Pending Chief".
  */
 const HR_HEAD_STATUS = "Pending Approval";
 const CHIEF_STATUS = "Pending Chief";
@@ -92,7 +94,7 @@ const DIRECTOR_STATUS = "Pending Director";
 
 const STATUS_DISPLAY_LABELS = {
   [HR_HEAD_STATUS]: "Pending HR Head",
-  [CHIEF_STATUS]: "Pending Chief",
+  [CHIEF_STATUS]: "Pending FAD Division Chief",
   [DIRECTOR_STATUS]: "Pending Director",
   Rejected: "Returned for Correction",
 };
@@ -438,11 +440,12 @@ export default function PayrollDetailDrawer({
             <dl className="mt-4 grid gap-3 md:grid-cols-2">
               <DetailRow label="Employee Name" value={record.employeeName} />
               <DetailRow label="Employee ID" value={record.employeeId} />
-              <DetailRow label="Designation" value={record.designation} />
+              <DetailRow label="Position" value={record.position} />
               <DetailRow label="Division" value={record.division} />
-              <DetailRow label="Basic Salary" value={formatCurrency(record.basicSalary)} />
+              <DetailRow label="Basic Salary" value={formatCurrency(record.periodBasicSalary ?? (Number(record.grossPay || 0) - Number(record.totalAllowance || 0)))} />
               <DetailRow label="PERA" value={formatCurrency(record.pera)} />
-              <DetailRow label="Step Increment" value={formatCurrency(record.stepIncrement)} />
+              {/* The salary step from the service record -- a number, not an amount. */}
+              <DetailRow label="Step Increment" value={record.stepIncrement ? String(record.stepIncrement) : ""} />
               <DetailRow label="Gross Pay Amount Earned" value={formatCurrency(record.grossPay)} />
               <DetailRow label="Employment Type" value={record.employmentType} />
               <DetailRow label="Payroll Type" value={record.payrollType || "Salary"} />
@@ -567,9 +570,9 @@ export default function PayrollDetailDrawer({
             <dl className="mt-4 grid gap-3 md:grid-cols-2">
               <DetailRow label="Due Date" value={formatDate(record.dueDate)} />
               <DetailRow label="Total Deductions" value={formatCurrency(record.totalDeduction)} />
-              <DetailRow label="Net Amount Due" value={formatCurrency(record.netPay)} />
-              <DetailRow label="March 1-15, 2026" value={formatCurrency(record.marchFirstHalf)} />
-              <DetailRow label="March 16-31, 2026" value={formatCurrency(record.marchSecondHalf)} />
+              <DetailRow label="Net Pay" value={formatCurrency(record.netPay)} />
+              <DetailRow label={payrollPayoutLabels(record)[0]} value={formatCurrency(payrollPayoutAmounts(record)[0])} />
+              <DetailRow label={payrollPayoutLabels(record)[1]} value={formatCurrency(payrollPayoutAmounts(record)[1])} />
             </dl>
           </section>
 

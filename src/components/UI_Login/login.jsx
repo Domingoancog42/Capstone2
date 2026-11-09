@@ -18,6 +18,7 @@ import {
   forceChangePassword,
   getLoginCaptcha,
   getPublicSettings,
+  googleLogin,
   login,
   logout,
   verifyLoginCaptcha,
@@ -31,6 +32,7 @@ import { getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
 import ForgotPassword from "./forgot_password";
 import LegalConsentNotice from "./legal_documents";
 import TwoFactorVerification from "./two_factor_verification";
+import { registerGoogleCredentialHandler } from "../../utils/googleIdentity";
 
 const REMEMBERED_EMAIL_KEY = "mgb_hris_remembered_email";
 const LEGACY_REMEMBERED_USERNAME_KEY = "mgb_hris_remembered_username";
@@ -85,7 +87,7 @@ const DEFAULT_BRANDING = {
 
 const publicUrl = process.env.PUBLIC_URL || "";
 const mgbLogo = `${publicUrl}/mgb.png`;
-const backgroundImage = `${publicUrl}/background.png`;
+const backgroundImage = `${publicUrl}/background.jpg`;
 
 /**
  * Bottom-weighted scrim for the photo panel: light enough at the top that the regional office stays
@@ -220,6 +222,27 @@ function readLockoutFromResponse(response) {
   return null;
 }
 
+/**
+ * The e-mail address a Google credential names, or "" for anything that does not decode.
+ *
+ * Display only. A credential is a JWT, and its middle segment is plain base64url JSON that anyone can
+ * read -- which is also why nothing read here can be trusted: the signature that makes the claims
+ * mean anything is checked by google_login.php, with Google, and never in this browser. The one thing
+ * the login screen wants from the payload is the address to key a lock notice by, so that a locked
+ * account refused through Google is reported against the same address a locked password attempt is.
+ */
+function readGoogleCredentialEmail(credential) {
+  try {
+    const payload = String(credential || "").split(".")[1] || "";
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const claims = JSON.parse(window.atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")));
+
+    return String(claims?.email || "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function formatCaptchaCountdown(seconds) {
   const safeSeconds = Math.max(0, Number(seconds) || 0);
   const minutes = Math.floor(safeSeconds / 60);
@@ -250,9 +273,7 @@ function showLoginToast({ icon, text, title }) {
     timer: isSuccess ? LOGIN_SUCCESS_ALERT_DURATION_MS : LOGIN_ERROR_ALERT_DURATION_MS,
     timerProgressBar: true,
     showConfirmButton: false,
-    allowOutsideClick: false,
     allowEscapeKey: !isSuccess,
-    backdrop: false,
     customClass: isSuccess
       ? {
         popup: "rounded-2xl px-4 py-3",
@@ -312,6 +333,7 @@ function LoginField({
   error,
   id,
   label,
+  requiredMarker = false,
   rightElement,
   ...props
 }) {
@@ -319,7 +341,12 @@ function LoginField({
 
   return (
     <label htmlFor={id} className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>
+      <span className="mb-1.5 block text-sm font-medium text-slate-600">
+        {label}
+        {requiredMarker ? (
+          <span aria-hidden="true" className="app-required-marker ml-1 !text-[#D61E1E]">*</span>
+        ) : null}
+      </span>
       <div className="relative">
         <input
           id={id}
@@ -507,6 +534,126 @@ function CaptchaVerification({
   );
 }
 
+/**
+ * The "Sign in with Google" button, drawn by Google's own library into the box below.
+ *
+ * Nothing about the credential is handled here. Google Identity Services opens its own popup, signs
+ * the user into Google, and hands back a signed ID token through `callback`; that token goes straight
+ * to `onCredential`, which posts it to google_login.php for the server to verify. This component's
+ * whole job is to get the library to draw its button and to say so when it cannot.
+ *
+ * The library is loaded by a plain <script async defer> in public/index.html, so it may not exist yet
+ * when this mounts -- on a cold load it usually does not. Rather than poll, the effect listens for that
+ * script's `load` event, and for its `error` event, which is what an ad blocker or an offline machine
+ * produces. There is no way to disable the button itself -- it lives in an iframe Google draws -- so
+ * a sign-in already in flight is guarded by taking the pointer away from the box around it.
+ *
+ * `ux_mode: "popup"` is the whole reason there is no redirect URI and no client secret anywhere in
+ * this project: the popup finishes on Google's side and the token comes back to this page in memory.
+ */
+function GoogleSignInButton({ clientId, disabled, onCredential }) {
+  const containerRef = useRef(null);
+  // The latest handler, so the callback registered once with Google never closes over a stale one.
+  const onCredentialRef = useRef(onCredential);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    onCredentialRef.current = onCredential;
+  }, [onCredential]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+
+    if (!clientId || !container) {
+      return undefined;
+    }
+
+    let active = true;
+    let releaseCredentialHandler;
+
+    const draw = () => {
+      const google = window.google?.accounts?.id;
+
+      if (!active || !google) {
+        return false;
+      }
+
+      releaseCredentialHandler?.();
+      releaseCredentialHandler = registerGoogleCredentialHandler(google, clientId, (credential) => {
+        onCredentialRef.current?.(credential);
+      });
+      container.innerHTML = "";
+      google.renderButton(container, {
+        type: "standard",
+        theme: "outline",
+        size: "large",
+        text: "signin_with",
+        shape: "rectangular",
+        logo_alignment: "left",
+        // Google caps the button at 400px; below that it fills whatever the card gives it.
+        width: Math.min(400, Math.max(200, container.offsetWidth || 0)),
+      });
+      setUnavailable(false);
+
+      return true;
+    };
+
+    if (draw()) {
+      return () => {
+        active = false;
+        releaseCredentialHandler?.();
+      };
+    }
+
+    const script = document.querySelector('script[src^="https://accounts.google.com/gsi/client"]');
+
+    if (!script) {
+      setUnavailable(true);
+
+      return () => {
+        active = false;
+      };
+    }
+
+    const handleLoad = () => {
+      if (active && !draw()) {
+        setUnavailable(true);
+      }
+    };
+    const handleError = () => {
+      if (active) {
+        setUnavailable(true);
+      }
+    };
+
+    script.addEventListener("load", handleLoad);
+    script.addEventListener("error", handleError);
+
+    return () => {
+      active = false;
+      releaseCredentialHandler?.();
+      script.removeEventListener("load", handleLoad);
+      script.removeEventListener("error", handleError);
+    };
+  }, [clientId]);
+
+  return (
+    <div className="mt-4">
+      <div
+        aria-busy={disabled ? "true" : "false"}
+        className={`flex justify-center transition ${disabled ? "pointer-events-none opacity-60" : ""}`}
+        data-testid="google-sign-in"
+        ref={containerRef}
+      />
+      {unavailable ? (
+        <p className="m-0 mt-2 text-center text-xs text-slate-400" role="status">
+          Google sign-in could not be loaded. You can still sign in with your password.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function LoginCard({
   captchaAnswer,
   captchaChallenge,
@@ -518,6 +665,7 @@ function LoginCard({
   captchaVerdict,
   errors,
   form,
+  googleClientId,
   loading,
   lockout,
   rememberMe,
@@ -525,6 +673,7 @@ function LoginCard({
   onCaptchaRefresh,
   onFieldChange,
   onForgotPassword,
+  onGoogleCredential,
   onRememberMeChange,
   onSubmit,
   serverError,
@@ -600,6 +749,8 @@ function LoginCard({
           name="email"
           onChange={onFieldChange("email")}
           placeholder="Enter your email"
+          required
+          requiredMarker
           type="email"
           value={form.email}
         />
@@ -612,6 +763,8 @@ function LoginCard({
           name="password"
           onChange={onFieldChange("password")}
           placeholder="Enter your password"
+          required
+          requiredMarker
           rightElement={
             <button
               aria-label={showPassword ? "Hide password" : "Show password"}
@@ -646,17 +799,28 @@ function LoginCard({
           </div>
         )}
 
-        <label htmlFor="rememberMe" className="inline-flex w-fit cursor-pointer items-center gap-2 text-sm text-slate-600">
-          <input
-            checked={rememberMe}
-            className="h-4 w-4 rounded border-slate-300 accent-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/20"
-            id="rememberMe"
-            name="rememberMe"
-            onChange={onRememberMeChange}
-            type="checkbox"
-          />
-          <span>Remember me</span>
-        </label>
+        {/* Remember me on the left, Forgot Password on the right: one row, the way most sign-in forms read. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <label htmlFor="rememberMe" className="inline-flex w-fit cursor-pointer items-center gap-2 text-sm text-slate-600">
+            <input
+              checked={rememberMe}
+              className="h-4 w-4 rounded border-slate-300 accent-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/20"
+              id="rememberMe"
+              name="rememberMe"
+              onChange={onRememberMeChange}
+              type="checkbox"
+            />
+            <span>Remember me</span>
+          </label>
+
+          <button
+            className="rounded text-sm font-medium text-[#D61E1E] transition hover:text-[#B41818] hover:underline focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/20"
+            onClick={onForgotPassword}
+            type="button"
+          >
+            Forgot Password?
+          </button>
+        </div>
 
         <button
           className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-md bg-[#D61E1E] px-5 text-sm font-semibold text-white transition hover:bg-[#B41818] focus:outline-none focus:ring-4 focus:ring-[#D61E1E]/25 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-75 motion-reduce:active:scale-100"
@@ -679,15 +843,28 @@ function LoginCard({
             <span>Login</span>
           )}
         </button>
-
-        <button
-          className="mx-auto w-fit rounded text-sm font-medium text-[#D61E1E] transition hover:text-[#B41818] hover:underline focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/20"
-          onClick={onForgotPassword}
-          type="button"
-        >
-          Forgot Password?
-        </button>
       </form>
+
+      {/*
+        * Only when the server has a client id to give: settings.php sends an empty one whenever
+        * google-config.php is absent, and a button that opens a popup Google will refuse is worse
+        * than no button. Outside the form for the same reason as the links below -- Google's button
+        * is an iframe, but the note that replaces it when the library fails is not.
+        */}
+      {googleClientId ? (
+        <>
+          <div aria-hidden="true" className="mt-5 flex items-center gap-3">
+            <span className="h-px flex-1 bg-slate-200" />
+            <span className="text-xs font-medium uppercase tracking-wide text-slate-400">or</span>
+            <span className="h-px flex-1 bg-slate-200" />
+          </div>
+          <GoogleSignInButton
+            clientId={googleClientId}
+            disabled={loading}
+            onCredential={onGoogleCredential}
+          />
+        </>
+      ) : null}
 
       {/*
         * Outside the form: the two links open dialogs, and a button inside a <form> that stops short
@@ -871,7 +1048,7 @@ function ForcePasswordChangeCard({
             Change Your Password
           </h1>
           <p className="m-0 mt-3 text-sm font-semibold leading-6 text-slate-500">
-            Welcome, {displayName}. Create a new password before opening your dashboard.
+            Welcome, {displayName}. Create a new password, then sign in with it to open your dashboard.
           </p>
         </div>
 
@@ -970,7 +1147,11 @@ function ForcePasswordChangeCard({
   );
 }
 
-export default function Login({ onLogin }) {
+export default function Login({
+  initialForcePasswordUser = null,
+  onForcePasswordSessionEnd,
+  onLogin,
+}) {
   const rememberedEmail = readRememberedEmail();
   const [form, setForm] = useState({ email: rememberedEmail, password: "" });
   const [captchaChallenge, setCaptchaChallenge] = useState(null);
@@ -980,6 +1161,7 @@ export default function Login({ onLogin }) {
   const [captchaUnavailable, setCaptchaUnavailable] = useState(false);
   const [captchaEnabled, setCaptchaEnabled] = useState(true);
   const [captchaResetSeconds, setCaptchaResetSeconds] = useState(0);
+  const [captchaSessionReady, setCaptchaSessionReady] = useState(false);
   /*
    * "correct", "wrong", or nothing at all — set only by login.php's reply, never by anything typed
    * here. It is what makes the answer box glow, and it is the reason the glow can be trusted: the
@@ -997,9 +1179,21 @@ export default function Login({ onLogin }) {
   const [forgotMode, setForgotMode] = useState(false);
   const [securitySettings, setSecuritySettings] = useState({});
   const [branding, setBranding] = useState(DEFAULT_BRANDING);
+  // Empty until public settings say otherwise, and empty is what draws no Google button.
+  const [googleClientId, setGoogleClientId] = useState("");
   const [twoFactorChallenge, setTwoFactorChallenge] = useState(null);
-  const [forcePasswordUser, setForcePasswordUser] = useState(null);
+  const [forcePasswordUser, setForcePasswordUser] = useState(() => (
+    initialForcePasswordUser?.must_change_password ? initialForcePasswordUser : null
+  ));
   const [forcePasswordLoading, setForcePasswordLoading] = useState(false);
+
+  // Session restoration supplies the required-change user after a reload. Preserve that server
+  // decision in this screen instead of falling back to the ordinary sign-in form or dashboard.
+  useEffect(() => {
+    if (initialForcePasswordUser?.must_change_password) {
+      setForcePasswordUser(initialForcePasswordUser);
+    }
+  }, [initialForcePasswordUser]);
 
   /*
    * One request at a time. Two things ask for a challenge — the effect below, and every path that has
@@ -1008,6 +1202,15 @@ export default function Login({ onLogin }) {
    * user looking at a problem the server has already forgotten.
    */
   const captchaRequestRef = useRef(false);
+
+  /*
+   * Public settings and the first captcha both run before sign-in, when this browser may not have a
+   * PHP session cookie yet. Starting them together can give each request a different new session;
+   * whichever Set-Cookie response arrives last then wins, even when the captcha shown on screen was
+   * stored in the other session. Keep the settings bootstrap single-flight (including React strict
+   * mode's effect replay) and do not deal the first captcha until that session is established.
+   */
+  const publicSettingsRequestRef = useRef(null);
 
   // Invalidates a live-check response when the answer or challenge changes while it is in flight.
   const captchaCheckSequenceRef = useRef(0);
@@ -1077,10 +1280,14 @@ export default function Login({ onLogin }) {
       setCaptchaChallenge(challenge);
       setCaptchaResetSeconds(challenge ? challenge.expiresIn : 0);
       setCaptchaUnavailable(!challenge);
-    } catch {
+    } catch (requestError) {
       setCaptchaChallenge(null);
       setCaptchaResetSeconds(0);
       setCaptchaUnavailable(true);
+      setErrors((current) => ({
+        ...current,
+        captcha: requestError?.response?.data?.message || "The security check could not be loaded. Try again.",
+      }));
     } finally {
       setCaptchaLoading(false);
       captchaRequestRef.current = false;
@@ -1091,8 +1298,15 @@ export default function Login({ onLogin }) {
     let active = true;
 
     const loadPublicSettings = async () => {
+      let request = publicSettingsRequestRef.current;
+
+      if (!request) {
+        request = getPublicSettings();
+        publicSettingsRequestRef.current = request;
+      }
+
       try {
-        const result = await getPublicSettings();
+        const result = await request;
 
         if (!active) {
           return;
@@ -1122,6 +1336,8 @@ export default function Login({ onLogin }) {
             ? current
             : { companyName, companyAddress };
         });
+        // A string, so React's own equality check already skips the re-render when it has not moved.
+        setGoogleClientId(String(result.googleClientId || "").trim());
 
         // Whatever was typed into a captcha that has just been switched off is no longer an answer
         // to anything, and the error under it would otherwise outlive the field itself. The challenge
@@ -1142,6 +1358,15 @@ export default function Login({ onLogin }) {
          * first successful read still puts a captcha up — but once one has succeeded, a dropped poll
          * is no reason to plant a captcha in front of someone the administrator turned it off for.
          */
+      } finally {
+        if (publicSettingsRequestRef.current === request) {
+          publicSettingsRequestRef.current = null;
+        }
+
+        if (active) {
+          // Even a failed bootstrap is finished; the captcha request can now establish the session.
+          setCaptchaSessionReady(true);
+        }
       }
     };
 
@@ -1243,6 +1468,28 @@ export default function Login({ onLogin }) {
     setErrors((current) => ({ ...current, captcha: "" }));
   };
 
+  /* While the floating Forgot Password card is open, Escape closes it and the page behind stays put. */
+  useEffect(() => {
+    if (!forgotMode) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setForgotMode(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [forgotMode]);
+
   /*
    * Keeps a challenge in front of whoever is looking at the sign-in form, and only then. The screens
    * that cover it — Forgot Password, the two-factor step, the forced password change — have no captcha
@@ -1250,7 +1497,7 @@ export default function Login({ onLogin }) {
    * of them deals a fresh one.
    */
   useEffect(() => {
-    if (!captchaEnabled || forgotMode || forcePasswordUser || twoFactorChallenge) {
+    if (!captchaSessionReady || !captchaEnabled || forgotMode || forcePasswordUser || twoFactorChallenge) {
       return;
     }
 
@@ -1261,6 +1508,7 @@ export default function Login({ onLogin }) {
     captchaChallenge,
     captchaEnabled,
     captchaLoading,
+    captchaSessionReady,
     captchaUnavailable,
     forcePasswordUser,
     forgotMode,
@@ -1448,8 +1696,12 @@ export default function Login({ onLogin }) {
    * and a dialog over the top of it only adds a click between the user and something they can plainly
    * see. Ordinary failures keep the corner toast, and in both cases the reason is written into the
    * form itself.
+   *
+   * `captchaSpent` is false for a refused Google sign-in. google_login.php never looks at the captcha,
+   * so its 401 says nothing about the sum in the box and the challenge on screen is still the live
+   * one: neither the green ring nor the swap for a fresh problem applies, and both are skipped.
    */
-  const handleLoginFailure = (message, response, attemptedEmail) => {
+  const handleLoginFailure = (message, response, attemptedEmail, { captchaSpent = true } = {}) => {
     const responseLockout = readLockoutFromResponse(response);
     /*
      * login.php sets this when the attempt died at the captcha, before the account was ever looked up.
@@ -1466,11 +1718,12 @@ export default function Login({ onLogin }) {
      * A 401 or a 423 is a verdict on the credentials or on the account, and login.php cannot reach
      * either until the captcha has been verified and spent — so either status is the server saying, on
      * its way to refusing the sign-in for some other reason, that the sum was right. Nothing else
-     * qualifies: the rate limiter's 429 and a rejected CSRF token are both returned *before* the
-     * captcha is looked at, and a request that never arrived proves nothing either way. Being wrong in
-     * that direction only costs a plain box, which is what the field would have shown anyway.
+     * qualifies: the rate limiter's 429 is returned *before* the captcha is looked at, and a request
+     * that never arrived proves nothing either way. Being wrong in that direction only costs a plain
+     * box, which is what the field would have shown anyway.
      */
-    const captchaAccepted = captchaEnabled
+    const captchaAccepted = captchaSpent
+      && captchaEnabled
       && Boolean(captchaChallenge)
       && captchaAnswer.trim() !== ""
       && !captchaFailed
@@ -1501,6 +1754,11 @@ export default function Login({ onLogin }) {
         title: "Login Failed",
         text: message,
       });
+    }
+
+    // The one attempt that leaves the challenge untouched: nothing was spent, so nothing is replaced.
+    if (!captchaSpent) {
+      return;
     }
 
     /*
@@ -1653,6 +1911,67 @@ export default function Login({ onLogin }) {
     }
   };
 
+  /**
+   * What happens once Google's popup has closed with a credential in hand. The credential is posted
+   * to google_login.php, and what comes back is read the same way handleSubmit reads login.php's
+   * reply: a two-factor challenge, a forced password change, or a signed-in user, in that order.
+   *
+   * Nothing here belongs to the password form -- no validation, no captcha, no remembered e-mail --
+   * because none of it was used. The lock notice is keyed by the Google account's address, read off
+   * the credential's payload for that purpose only: it is unverified there, and the server verifies
+   * it properly, but it is the address the lock belongs to and the form uses it for nothing else.
+   */
+  const handleGoogleCredential = async (credential) => {
+    if (!credential || loading) {
+      return;
+    }
+
+    const attemptedEmail = readGoogleCredentialEmail(credential);
+    setLoading(true);
+    setServerError("");
+    setSuccessMessage("");
+
+    try {
+      const result = await googleLogin(credential);
+
+      if (!result || result.success === false || (!result.requiresTwoFactor && !result.user)) {
+        const message = result?.message || "Google sign-in failed. Please try again.";
+        handleLoginFailure(message, { data: result }, attemptedEmail, { captchaSpent: false });
+        return;
+      }
+
+      // The screens that follow have no captcha; see clearCaptchaChallenge() for why it goes now.
+      setLoading(false);
+      clearCaptchaChallenge();
+
+      if (result.requiresTwoFactor) {
+        setTwoFactorChallenge(result.twoFactor || {});
+        setForcePasswordUser(null);
+        return;
+      }
+
+      if (result.user?.must_change_password) {
+        setForcePasswordUser(result.user);
+        return;
+      }
+
+      await showLoginToast({
+        icon: "success",
+        title: `Welcome, ${getWelcomeName(result.user)}`,
+        text: "Login successful. Redirecting to your dashboard!",
+      });
+      onLogin?.(result.user);
+    } catch (error) {
+      const message = !error.response
+        ? "Unable to connect to the server. Please check if the server is running and the database is properly configured."
+        : error.response?.data?.message || "Google sign-in failed. Please try again.";
+
+      handleLoginFailure(message, error.response, attemptedEmail, { captchaSpent: false });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleResetSuccess = ({ identifier, message }) => {
     setForm((current) => ({
       ...current,
@@ -1699,19 +2018,35 @@ export default function Login({ onLogin }) {
 
     try {
       const result = await forceChangePassword(payload);
+      /*
+       * Back to the sign-in form, not the dashboard: the server has ended the session, and signing in
+       * with the new password is how the user confirms it is what they meant to type. Same landing as
+       * handleResetSuccess -- email kept, password cleared, banner explaining what to do next.
+       */
       setForcePasswordUser(null);
+      setForm((current) => ({
+        ...current,
+        password: "",
+      }));
+      setErrors({});
+      setServerError("");
+      setShowPassword(false);
+      setSuccessMessage(result?.message || "Password changed successfully. Sign in with your new password to continue.");
+      resetCaptchaChallenge();
+      // force_change_password.php has destroyed the temporary-password session. Clear the matching
+      // client identity immediately as well, before the success toast's timer finishes.
+      onForcePasswordSessionEnd?.();
       await showLoginToast({
         icon: "success",
         title: "Password Changed",
-        text: "Your password has been updated. Redirecting to your dashboard!",
+        text: "Sign in with your new password to continue.",
       });
-      onLogin?.(result.user);
     } finally {
       setForcePasswordLoading(false);
     }
   };
 
-  const handleForcePasswordCancel = () => {
+  const handleForcePasswordCancel = async () => {
     setForcePasswordUser(null);
     setForm((current) => ({
       ...current,
@@ -1719,7 +2054,14 @@ export default function Login({ onLogin }) {
     }));
     setShowPassword(false);
     refreshCaptcha();
-    logout().catch(() => {});
+
+    try {
+      await logout();
+    } catch {
+      // Client authentication is still cleared below if the sign-out request cannot be completed.
+    } finally {
+      onForcePasswordSessionEnd?.();
+    }
   };
 
   return (
@@ -1782,32 +2124,24 @@ export default function Login({ onLogin }) {
               onBack={handleTwoFactorBack}
               onVerified={handleTwoFactorVerified}
             />
-          ) : forgotMode ? (
-            <motion.div
-              className="w-full max-w-[420px]"
-              initial="hidden"
-              animate="visible"
-              variants={fadeIn}
-              transition={{ duration: 0.45, ease: "easeOut" }}
-            >
-              <ForgotPassword
-                onBack={() => setForgotMode(false)}
-                onResetSuccess={handleResetSuccess}
-                securitySettings={securitySettings}
-              />
-            </motion.div>
           ) : (
+            /*
+             * The sign-in card stays on the page while Forgot Password floats above it. `inert` keeps
+             * keyboard focus and clicks out of the covered form until the floating card closes.
+             */
+            <div className="flex w-full justify-center" data-testid="sign-in-card-frame" inert={forgotMode ? true : undefined}>
             <LoginCard
               captchaAnswer={captchaAnswer}
               captchaChallenge={captchaChallenge}
               captchaChecking={captchaChecking}
               captchaEnabled={captchaEnabled}
-              captchaLoading={captchaLoading}
+              captchaLoading={captchaLoading || !captchaSessionReady}
               captchaResetSeconds={captchaResetSeconds}
               captchaUnavailable={captchaUnavailable}
               captchaVerdict={captchaVerdict}
               errors={errors}
               form={form}
+              googleClientId={googleClientId}
               loading={loading}
               lockout={visibleLockout}
               rememberMe={rememberMe}
@@ -1818,6 +2152,7 @@ export default function Login({ onLogin }) {
                 setSuccessMessage("");
                 setForgotMode(true);
               }}
+              onGoogleCredential={handleGoogleCredential}
               onRememberMeChange={(event) => setRememberMe(event.target.checked)}
               onSubmit={handleSubmit}
               serverError={serverError}
@@ -1825,6 +2160,7 @@ export default function Login({ onLogin }) {
               setShowPassword={setShowPassword}
               showPassword={showPassword}
             />
+            </div>
           )}
         </section>
 
@@ -1834,6 +2170,41 @@ export default function Login({ onLogin }) {
           </p>
         </footer>
       </div>
+
+      {/*
+        Forgot Password as a floating card over the sign-in page. The flow inside is unchanged --
+        the same ForgotPassword steps, the same Back button and the same reset-success hand-off.
+        A click on the backdrop does not close it, so a code already sent is not lost to a stray tap.
+      */}
+      {forgotMode && !forcePasswordUser && !twoFactorChallenge ? (
+        <div
+          aria-label="Reset your password"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto px-4 py-10 sm:items-center"
+          role="dialog"
+        >
+          <motion.div
+            animate={{ opacity: 1 }}
+            aria-hidden="true"
+            className="fixed inset-0 bg-slate-950/55 backdrop-blur-sm"
+            initial={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+          />
+          <motion.div
+            animate="visible"
+            className="relative w-full max-w-[420px]"
+            initial="hidden"
+            transition={{ duration: 0.3, ease: "easeOut" }}
+            variants={fadeIn}
+          >
+            <ForgotPassword
+              onBack={() => setForgotMode(false)}
+              onResetSuccess={handleResetSuccess}
+              securitySettings={securitySettings}
+            />
+          </motion.div>
+        </div>
+      ) : null}
     </main>
   );
 }

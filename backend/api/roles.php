@@ -64,7 +64,7 @@ function roles_list(PDO $pdo): array
             'id' => $roleIds[$key] ?? null,
             'label' => $definition['label'],
             'description' => $definition['description'],
-            'baseRole' => $key,
+            'baseRole' => $definition['baseRole'] ?? $key,
             'isCustom' => false,
             'userCount' => $counts[$key] ?? 0,
             'moduleCount' => roles_enabled_module_count($templates[$key] ?? null),

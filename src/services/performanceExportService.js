@@ -4,8 +4,7 @@ import { downloadExportFile, exportApiBaseUrl } from "./exportDownload";
  * Excel exports of the OPCR and IPCR forms.
  *
  * Both endpoints take the record the export was launched from and answer with the whole form it
- * belongs to -- every accountable row of an OPCR template, every output an employee committed to
- * for an IPCR period -- laid out as the form, so the workbook prints like the on-screen preview.
+ * belongs to: every KPI for the accountable unit/employee and rating period, matching the preview.
  */
 
 function fileSlug(value, fallback) {
@@ -29,10 +28,10 @@ export async function exportOpcrForm(record) {
 
   const url = new URL("opcr.php", exportApiBaseUrl());
   url.searchParams.set("action", "export_form");
-  if (templateId > 0) {
-    url.searchParams.set("template_id", String(templateId));
-  } else {
+  if (assignmentId > 0) {
     url.searchParams.set("assignment_id", String(assignmentId));
+  } else {
+    url.searchParams.set("template_id", String(templateId));
   }
 
   const label = fileSlug(`${record?.period || ""} ${record?.semester || ""}`, "form");

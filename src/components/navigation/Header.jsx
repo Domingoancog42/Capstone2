@@ -1,21 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { CheckCircle2, ChevronDown, Eye, EyeOff, KeyRound, LogOut, Menu, Settings, User, Clock, AlertCircle } from "lucide-react";
+import { ChevronDown, LogOut, Menu, Settings, User, Clock, AlertCircle } from "lucide-react";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
-import { logout, checkPasswordExpiry, forceChangePassword } from "../../services/api";
-import Modal from "../UI/modal";
-import Button from "../UI/button";
+import { logout, checkPasswordExpiry } from "../../services/api";
 import { getRoleLabel } from "../../utils/roleRoutes";
+import { scalePollInterval } from "../auto/autorefreshconfig";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 import NotificationBell from "../notification/NotificationBell";
 import ChatBubbleButton from "../bubble_chat/ChatBubbleButton";
 import { ThemeToggleButton, isDarkThemeEnabled } from "../darkmode/darkmodetoggle";
-import {
-  evaluatePasswordPolicy,
-  getPasswordPolicyItems,
-  PASSWORD_POLICY_DEFAULT_MAX_LENGTH,
-} from "../../utils/passwordPolicy";
+import FaqAssistant from "../help/FaqAssistant";
 
 function AccountMenuAction({
   icon: Icon,
@@ -108,50 +103,6 @@ function formatExpiryDate(dateStr) {
   }
 }
 
-function PasswordResetField({
-  id,
-  label,
-  value,
-  onChange,
-  error,
-  autoComplete,
-  visible,
-  onToggleVisible,
-}) {
-  return (
-    <div className="space-y-2">
-      <label htmlFor={id} className="text-sm font-semibold text-slate-700">
-        {label}
-      </label>
-      <div className="relative">
-        <input
-          id={id}
-          type={visible ? "text" : "password"}
-          value={value}
-          onChange={onChange}
-          autoComplete={autoComplete}
-          className="min-h-[44px] w-full rounded-lg border border-slate-200 bg-white px-3.5 pr-11 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/10"
-        />
-        <button
-          type="button"
-          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
-          onClick={onToggleVisible}
-          className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-[#D61E1E]"
-        >
-          {visible ? <EyeOff size={16} /> : <Eye size={16} />}
-        </button>
-      </div>
-      {error ? <p className="m-0 text-xs font-semibold text-rose-600">{error}</p> : null}
-    </div>
-  );
-}
-
-const initialPasswordResetForm = {
-  currentPassword: "",
-  password: "",
-  confirmPassword: "",
-};
-
 export default function Header({
   user,
   onOpenProfile,
@@ -162,21 +113,14 @@ export default function Header({
   onToggleSidebar,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
+  // Held in state rather than a ref so the messenger re-renders once the slot exists to portal into.
+  const [chatHeaderSlot, setChatHeaderSlot] = useState(null);
   const [passwordExpiry, setPasswordExpiry] = useState(null);
-  const [passwordExpiryLoading, setPasswordExpiryLoading] = useState(true);
-  const [passwordResetOpen, setPasswordResetOpen] = useState(false);
-  const [passwordResetForm, setPasswordResetForm] = useState(initialPasswordResetForm);
-  const [passwordResetErrors, setPasswordResetErrors] = useState({});
-  const [passwordResetServerError, setPasswordResetServerError] = useState("");
-  const [passwordResetSaving, setPasswordResetSaving] = useState(false);
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const headerActionsRef = useRef(null);
   const userName = user?.full_name || user?.username || "Admin";
   const userRole = getRoleLabel(user?.role || "Administrator");
-  const designation = user?.designation || "Not assigned";
-  const usingTemporaryAccount = Boolean(user?.accountUse?.active);
+  const position = user?.position || "Not assigned";
+  const designation = String(user?.designation || "").trim();
   const profileImageUrl = resolveBackendAssetUrl(user?.profile_image || user?.profileImage);
   const initials = userName
     .split(" ")
@@ -196,8 +140,6 @@ export default function Header({
     } catch (error) {
       console.error("Failed to fetch password expiry:", error);
       setPasswordExpiry(null);
-    } finally {
-      setPasswordExpiryLoading(false);
     }
   }, []);
 
@@ -205,99 +147,16 @@ export default function Header({
     fetchPasswordExpiry();
 
     // Optional: Auto-refresh password expiry every 60 seconds
-    const intervalId = setInterval(fetchPasswordExpiry, 60000);
+    const intervalId = setInterval(fetchPasswordExpiry, scalePollInterval(60000));
     
     return () => {
       clearInterval(intervalId);
     };
   }, [fetchPasswordExpiry]);
 
-  const maximumPasswordLength = PASSWORD_POLICY_DEFAULT_MAX_LENGTH;
-  const passwordPolicyOptions = { maximumPasswordLength };
-  const passwordPolicy = evaluatePasswordPolicy(passwordResetForm.password, passwordPolicyOptions);
-  const passwordPolicyItems = getPasswordPolicyItems(passwordResetForm.password, passwordPolicyOptions);
-
-  const openPasswordReset = () => {
+  const openProfileSecurity = () => {
     setProfileOpen(false);
-    setPasswordResetOpen(true);
-    setPasswordResetServerError("");
-    setPasswordResetErrors({});
-  };
-
-  const closePasswordReset = () => {
-    if (passwordResetSaving) {
-      return;
-    }
-
-    setPasswordResetOpen(false);
-    setPasswordResetForm(initialPasswordResetForm);
-    setPasswordResetErrors({});
-    setPasswordResetServerError("");
-    setShowCurrentPassword(false);
-    setShowNewPassword(false);
-    setShowConfirmPassword(false);
-  };
-
-  const updatePasswordResetField = (field) => (event) => {
-    setPasswordResetForm((current) => ({ ...current, [field]: event.target.value }));
-    setPasswordResetErrors((current) => ({ ...current, [field]: "" }));
-    setPasswordResetServerError("");
-  };
-
-  const handlePasswordResetSubmit = async (event) => {
-    event?.preventDefault();
-
-    const nextErrors = {};
-
-    if (!passwordResetForm.currentPassword) {
-      nextErrors.currentPassword = "Current password is required.";
-    }
-
-    if (!passwordResetForm.password) {
-      nextErrors.password = "New password is required.";
-    } else if (!passwordPolicy.isValid) {
-      nextErrors.password = `Use ${passwordPolicy.minimumPasswordLength} to ${maximumPasswordLength} characters with letters, numbers, and symbols.`;
-    }
-
-    if (!passwordResetForm.confirmPassword) {
-      nextErrors.confirmPassword = "Confirm your new password.";
-    } else if (passwordResetForm.password !== passwordResetForm.confirmPassword) {
-      nextErrors.confirmPassword = "Passwords do not match.";
-    }
-
-    if (
-      passwordResetForm.currentPassword
-      && passwordResetForm.password
-      && passwordResetForm.currentPassword === passwordResetForm.password
-    ) {
-      nextErrors.password = "Choose a password different from your current password.";
-    }
-
-    setPasswordResetErrors(nextErrors);
-
-    if (Object.keys(nextErrors).length > 0) {
-      return;
-    }
-
-    setPasswordResetSaving(true);
-    setPasswordResetServerError("");
-
-    try {
-      await forceChangePassword(passwordResetForm);
-      await fetchPasswordExpiry();
-      closePasswordReset();
-
-      await Swal.fire({
-        title: "Password reset successful",
-        text: "Your password expiration period has restarted for the next 60 days.",
-        icon: "success",
-        confirmButtonColor: "#16a34a",
-      });
-    } catch (error) {
-      setPasswordResetServerError(error.response?.data?.message || "Unable to reset password.");
-    } finally {
-      setPasswordResetSaving(false);
-    }
+    onOpenProfile?.("security");
   };
 
   useEffect(() => {
@@ -333,10 +192,6 @@ export default function Header({
   }, [profileOpen]);
 
   const handleLogout = async () => {
-    if (usingTemporaryAccount) {
-      return;
-    }
-
     const darkMode = isDarkThemeEnabled();
     const confirmation = await Swal.fire({
       title: "Are you sure you want to log out?",
@@ -395,26 +250,37 @@ export default function Header({
           wrapped second line would be clipped rather than shown. */}
       <header className="app-topbar app-topbar-themed fixed inset-x-0 top-0 z-40 h-14 border-b border-slate-200 bg-white transition-colors duration-300">
         <div ref={headerActionsRef} className="flex h-full items-center justify-between gap-2 px-3 sm:gap-3 sm:px-5">
-          <div className={`flex min-w-0 flex-1 items-center transition-all duration-300 ${sidebarCollapsed ? "lg:ml-[6rem]" : "lg:ml-[17.5rem]"}`}>
+          <div className={`flex min-w-0 flex-1 items-center gap-2 transition-all duration-300 sm:gap-3 ${sidebarCollapsed ? "lg:ml-[7rem]" : "lg:ml-[21rem]"}`}>
             {onToggleSidebar ? (
               <button
                 type="button"
                 aria-label="Open navigation menu"
                 onClick={onToggleSidebar}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:border-slate-300 hover:bg-white lg:hidden"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:border-slate-300 hover:bg-white lg:hidden"
               >
                 <Menu size={16} />
               </button>
             ) : null}
+            <div className="app-header-brand min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-3">
+                <p
+                  title="Department of Environment and Natural Resources Mines and Geosciences Bureau – Regional Office No. X"
+                  className="m-0 min-w-0 truncate text-[11px] leading-tight tracking-tight text-[#0c2c6e] sm:text-[13px] dark:text-blue-100"
+                >
+                  <span className="font-bold">Department of Environment and Natural Resources</span>{" "}
+                  <strong className="font-bold">Mines and Geosciences Bureau – Regional Office No. X</strong>
+                </p>
+                <p className="app-header-tagline m-0 hidden shrink-0 border-l border-blue-300 pl-3 text-xs text-[#315a9d] dark:border-blue-700 dark:text-blue-300">
+                  People · Resources · Sustainable Future
+                </p>
+              </div>
+            </div>
           </div>
           <div className="flex shrink-0 items-center justify-end gap-2">
             <ThemeToggleButton />
-            <ChatBubbleButton
-              user={user}
-              onOpen={() => {
-                setProfileOpen(false);
-              }}
-            />
+            <FaqAssistant key={user?.id} userId={user?.id} onOpen={() => setProfileOpen(false)} />
+            {/* The messenger portals its trigger in here from `lg` up; see ChatBubbleButton. */}
+            <span ref={setChatHeaderSlot} className="contents" />
             <NotificationBell
               user={user}
               onNavigate={onNavigate}
@@ -441,8 +307,8 @@ export default function Header({
                   )}
                 </span>
                 <span className="hidden min-w-0 sm:block">
-                  <strong className="block max-w-28 truncate text-xs font-semibold text-slate-900">
-                    {user?.username || "Admin"}
+                  <strong title={userName} className="block max-w-48 truncate text-xs font-semibold text-slate-900">
+                    {userName}
                   </strong>
                   <span className="block max-w-28 truncate text-[10.5px] text-slate-500">{userRole}</span>
                 </span>
@@ -475,7 +341,8 @@ export default function Header({
                         <p className="mt-3 max-w-[220px] text-sm font-semibold leading-6 text-slate-900">
                           Welcome {userName}
                         </p>
-                        <p className="mt-1.5 text-xs text-slate-500">Designation: {designation}</p>
+                        <p className="mt-1.5 text-xs text-slate-500">Position: {position}</p>
+                        {designation ? <p className="mt-0.5 text-xs text-slate-500">Designation: {designation}</p> : null}
                         {user?.must_change_password ? (
                           <span className="mt-3 inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
                             Password update required
@@ -484,7 +351,7 @@ export default function Header({
                       </div>
 
                       {/* Password Expiration Section */}
-                      {!usingTemporaryAccount && passwordExpiry && passwordExpiry.daysUntilExpiry != null ? (
+                      {passwordExpiry && passwordExpiry.daysUntilExpiry != null ? (
                         <div className="mt-4 border-t border-slate-200 pt-3">
                           {(() => {
                             const daysUntilExpiry = Math.max(0, passwordExpiry.daysUntilExpiry);
@@ -495,8 +362,9 @@ export default function Header({
                               <div className={`rounded-xl border p-3 ${tone.bg} ${tone.border}`}>
                                 <button
                                   type="button"
-                                  onClick={openPasswordReset}
-                                  className="flex w-full items-start gap-2.5 text-left"
+                                  onClick={openProfileSecurity}
+                                  className="flex w-full items-start gap-2.5 rounded-lg text-left transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D61E1E]/30"
+                                  aria-label="Open profile Security tab to change password"
                                 >
                                   <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${tone.icon}`}>
                                     {hasExpired || daysUntilExpiry <= 3 ? <AlertCircle size={16} /> : <Clock size={16} />}
@@ -514,13 +382,6 @@ export default function Header({
                                         : "Valid for 60 days after your last password change."}
                                     </p>
                                   </div>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={openPasswordReset}
-                                  className="mt-2.5 w-full rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:shadow"
-                                >
-                                  Reset Password
                                 </button>
                               </div>
                             );
@@ -540,7 +401,7 @@ export default function Header({
                           />
                         ) : null}
 
-                        {!usingTemporaryAccount && onOpenSettings ? (
+                        {onOpenSettings ? (
                           <AccountMenuAction
                             icon={Settings}
                             label="Settings"
@@ -553,19 +414,17 @@ export default function Header({
 
                       </div>
 
-                      {!usingTemporaryAccount ? (
-                        <div className="mt-3 border-t border-slate-200 pt-3">
-                          <AccountMenuAction
-                            icon={LogOut}
-                            label="Log Out"
-                            tone="danger"
-                            onClick={() => {
-                              setProfileOpen(false);
-                              void handleLogout();
-                            }}
-                          />
-                        </div>
-                      ) : null}
+                      <div className="mt-3 border-t border-slate-200 pt-3">
+                        <AccountMenuAction
+                          icon={LogOut}
+                          label="Log Out"
+                          tone="danger"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            void handleLogout();
+                          }}
+                        />
+                      </div>
                     </div>
                   </motion.div>
                 ) : null}
@@ -574,105 +433,16 @@ export default function Header({
           </div>
         </div>
       </header>
-
-      <Modal
-        open={passwordResetOpen}
-        title="Reset Password"
-        maxWidth="max-w-[520px]"
-        onClose={closePasswordReset}
-        footer={(
-          <>
-            <Button variant="ghost" onClick={closePasswordReset} disabled={passwordResetSaving}>
-              Cancel
-            </Button>
-            <Button onClick={handlePasswordResetSubmit} loading={passwordResetSaving}>
-              Reset Password
-            </Button>
-          </>
-        )}
-      >
-        <form className="space-y-5" onSubmit={handlePasswordResetSubmit} noValidate>
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-            <div className="flex items-start gap-3">
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-100 text-emerald-700">
-                <KeyRound size={18} />
-              </span>
-              <div>
-                <p className="m-0 text-sm font-semibold text-emerald-950">60-day password validity</p>
-                <p className="m-0 mt-1 text-sm leading-6 text-emerald-700">
-                  Enter your current password and choose a new password to restart your expiration period.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {passwordResetServerError ? (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
-              {passwordResetServerError}
-            </div>
-          ) : null}
-
-          <PasswordResetField
-            id="profileCurrentPassword"
-            label="Current Password"
-            value={passwordResetForm.currentPassword}
-            onChange={updatePasswordResetField("currentPassword")}
-            error={passwordResetErrors.currentPassword}
-            autoComplete="current-password"
-            visible={showCurrentPassword}
-            onToggleVisible={() => setShowCurrentPassword((visible) => !visible)}
-          />
-
-          <PasswordResetField
-            id="profileNewPassword"
-            label="New Password"
-            value={passwordResetForm.password}
-            onChange={updatePasswordResetField("password")}
-            error={passwordResetErrors.password}
-            autoComplete="new-password"
-            visible={showNewPassword}
-            onToggleVisible={() => setShowNewPassword((visible) => !visible)}
-          />
-
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="m-0 text-sm font-semibold text-slate-800">{passwordPolicy.strengthLabel}</p>
-              <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
-                passwordPolicy.strength === "strong"
-                  ? "bg-emerald-100 text-emerald-700"
-                  : passwordPolicy.strength === "idle"
-                    ? "bg-slate-100 text-slate-500"
-                    : "bg-amber-100 text-amber-700"
-              }`}>
-                {passwordPolicy.satisfiedCount}/{passwordPolicyItems.length}
-              </span>
-            </div>
-            <p className="m-0 mt-1 text-xs text-slate-500">{passwordPolicy.strengthMessage}</p>
-            <div className="mt-3 grid gap-2">
-              {passwordPolicyItems.map((item) => (
-                <div key={item.key} className="flex items-center gap-2 text-xs font-semibold text-slate-600">
-                  <CheckCircle2
-                    size={14}
-                    className={item.satisfied ? "text-emerald-600" : "text-slate-300"}
-                  />
-                  <span>{item.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <PasswordResetField
-            id="profileConfirmPassword"
-            label="Confirm New Password"
-            value={passwordResetForm.confirmPassword}
-            onChange={updatePasswordResetField("confirmPassword")}
-            error={passwordResetErrors.confirmPassword}
-            autoComplete="new-password"
-            visible={showConfirmPassword}
-            onToggleVisible={() => setShowConfirmPassword((visible) => !visible)}
-          />
-        </form>
-      </Modal>
+      {/*
+        * Rendered beside the header rather than inside it: the dark theme's `backdrop-filter` on
+        * the bar would otherwise pin the mobile bubble inside the 56px strip.
+        */}
+      <ChatBubbleButton
+        key={user?.id}
+        user={user}
+        onOpen={() => setProfileOpen(false)}
+        headerSlot={chatHeaderSlot}
+      />
     </>
   );
 }

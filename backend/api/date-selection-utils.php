@@ -112,3 +112,15 @@ function selected_dates_total(array $dates): float
 
     return $total;
 }
+
+/** True when any normalized selected day is earlier than the minimum allowed filing date. */
+function selected_dates_contain_before(array $dates, string $minimumDate): bool
+{
+    foreach (normalize_selected_dates($dates) as $day) {
+        if (($day['date'] ?? '') < $minimumDate) {
+            return true;
+        }
+    }
+
+    return false;
+}

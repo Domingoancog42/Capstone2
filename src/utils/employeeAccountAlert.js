@@ -1,7 +1,7 @@
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 
-import { getRoleLabel } from "./roleRoutes";
+import { getRoleLabel, normalizeRole } from "./roleRoutes";
 
 /*
  * The temporary password a new employee account is created with is generated on the server, hashed
@@ -80,8 +80,9 @@ export async function showEmployeeCredentialsAlert({
     return false;
   }
 
+  const isAdmin = normalizeRole(linkedUser?.role) === "admin";
   const employeeName = String(
-    employee?.fullName || linkedUser?.full_name || "the employee"
+    employee?.fullName || linkedUser?.full_name || linkedUser?.username || "the employee"
   ).trim();
   const employeeCode = String(employee?.employeeId || linkedUser?.employee_id || "").trim();
   const email = String(linkedUser?.email || employee?.email || "").trim();
@@ -101,7 +102,7 @@ export async function showEmployeeCredentialsAlert({
       : null;
 
   const copyPayload = [
-    employeeName ? `Employee: ${employeeName}` : "",
+    employeeName ? `${isAdmin ? "Admin" : "Employee"}: ${employeeName}` : "",
     employeeCode ? `Employee ID: ${employeeCode}` : "",
     username ? `Username: ${username}` : "",
     email ? `Email: ${email}` : "",
@@ -109,7 +110,7 @@ export async function showEmployeeCredentialsAlert({
   ].filter(Boolean).join("\n");
 
   await Swal.fire({
-    title: "Employee created",
+    title: isAdmin ? "Admin created" : "Employee created",
     icon: "success",
     width: 520,
     confirmButtonText: "Done",

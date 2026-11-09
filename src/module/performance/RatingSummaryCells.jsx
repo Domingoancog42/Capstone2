@@ -65,7 +65,7 @@ export function RatingScore({ value, emphasis = false }) {
 
     return (
       <span
-        className={`inline-flex items-center rounded-lg border px-2.5 py-1 text-sm font-extrabold tabular-nums ${band.scoreClassName}`}
+        className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-sm font-bold tabular-nums ${band.scoreClassName}`}
         title={band.label}
       >
         {score.toFixed(2)}
@@ -80,7 +80,8 @@ export function PerformanceBandBadge({ value }) {
   const band = performanceBand(value);
 
   return (
-    <span className={`inline-flex whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${band.className}`}>
+    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold ${band.className}`}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden="true" />
       {band.label}
     </span>
   );

@@ -147,7 +147,13 @@ function OnLeaveEmployeeCard({ employee, index, roleKey = "" }) {
         </div>
       </dl>
 
-      <LeaveStatusBadge status={employee.status} roleKey={roleKey} className="mt-3" />
+      <LeaveStatusBadge
+        status={employee.status}
+        startDate={employee.startDate}
+        endDate={employee.endDate}
+        roleKey={roleKey}
+        className="mt-3"
+      />
     </article>
   );
 }
@@ -205,19 +211,35 @@ export default function LeaveCards({
     },
     {
       key: "pending",
-      title: "Pending Requests",
+      title: "Balance Verification",
       value: summary.pending,
-      helper: String(roleKey || "").trim().toLowerCase() === "hrhead" ? "Awaiting approval" : "Awaiting review",
+      helper: "Waiting for HR Staff to verify the leave balance",
       icon: Clock3,
       gradient: "bg-gradient-to-br from-amber-500 to-orange-500",
     },
     {
+      key: "endorsed",
+      title: "Pending HR Head Approval",
+      value: summary.endorsed || 0,
+      helper: "Leave balance verified",
+      icon: LoaderCircle,
+      gradient: "bg-gradient-to-br from-indigo-500 to-blue-500",
+    },
+    {
       key: "reviewed",
-      title: String(roleKey || "").trim().toLowerCase() === "hrhead" ? "Approved by HR" : "Reviewed Requests",
+      title: "Pending Division Chief Review",
       value: summary.reviewed || 0,
-      helper: "Waiting for Regional Director",
+      helper: "HR Head approved",
       icon: LoaderCircle,
       gradient: "bg-gradient-to-br from-sky-500 to-cyan-500",
+    },
+    {
+      key: "chiefReviewed",
+      title: "Pending Regional Director Approval",
+      value: summary.chiefReviewed || 0,
+      helper: "Division Chief reviewed",
+      icon: LoaderCircle,
+      gradient: "bg-gradient-to-br from-violet-500 to-indigo-500",
     },
     {
       key: "approved",
@@ -247,9 +269,9 @@ export default function LeaveCards({
 
   return (
     <div className="space-y-5">
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
         {loading
-          ? Array.from({ length: 6 }).map((_, index) => <SummaryCardSkeleton key={index} />)
+          ? Array.from({ length: 8 }).map((_, index) => <SummaryCardSkeleton key={index} />)
           : summaryCards.map((card) => <SummaryCard key={card.key} {...card} />)}
       </section>
 

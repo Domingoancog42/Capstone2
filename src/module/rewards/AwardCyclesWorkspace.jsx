@@ -1,55 +1,62 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Archive, Award, Filter, Plus, Search, Trophy } from "lucide-react";
+import { CalendarDays, CircleCheck, ClipboardList, Clock3 } from "lucide-react";
 import Swal from "sweetalert2";
 import { toast } from "react-hot-toast";
-import {
-  faBoxArchive,
-  faClockRotateLeft,
-  faDownload,
-  faEye,
-  faLock,
-  faLockOpen,
-  faPen,
-} from "@fortawesome/free-solid-svg-icons";
-import ActionIconButton from "../../components/UI/ActionIconButton";
 import Button from "../../components/UI/button";
+import InputField from "../../components/UI/InputField";
 import Modal from "../../components/UI/modal";
 import Pagination from "../../components/UI/Pagination";
-import Table from "../../components/UI/table";
 import ProfileFloatingCard from "../../components/profile/ProfileFloatingCard";
+import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
 import { SettingsSelect } from "../../components/settings";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   archiveAwardCycle,
-  castAwardNomination,
   createAwardCycle,
   fetchAwardCycles,
   fetchCertificateTemplate,
-  fetchMyAwardCertificates,
   getEmployees,
   restoreAwardCycle,
+  reviewAwardNomination,
   setAwardCycleStatus,
+  submitAwardNomination,
   updateAwardCycle,
-  withdrawAwardNomination,
 } from "../../services/api";
-import AwardCertificateModal, {
-  AwardCertificatePaper,
-  certificateFileName,
-  exportCertificatePdf,
-} from "./AwardCertificate";
+import AwardCertificateModal, { certificateFileName, exportCertificatePdf } from "./AwardCertificate";
 import { createCertificateTemplate, normalizeCertificateTemplate } from "./certificateTemplate";
-import AwardCycleDetail from "./AwardCycleDetail";
-import { StatusPill } from "./AwardCyclePrimitives";
-import AwardVotersTable from "./AwardVotersTable";
+import MyRewardsWorkspace from "./MyRewardsWorkspace";
+import useDeadlineRefresh from "./useDeadlineRefresh";
+import {
+  CardSkeleton,
+  CycleCard,
+  CycleStatusBadge,
+  NominationCard,
+  PersonAvatar,
+  PortalButton,
+  PortalEmptyState,
+  PortalTabs,
+  StatCard,
+  WinnersTally,
+} from "./NominationPortalUI";
 import {
   AWARD_CATEGORIES,
+  CYCLE_PHASES,
+  NOMINATION_REASON_MAX,
+  NOMINATION_REASON_MIN,
+  PHASE_LABELS,
+  REVIEWER_NOTE_MAX,
+  buildEmployeeLookup,
+  buildStandings,
+  countNominations,
+  formatCycleMonth,
   formatDate,
   formatMoment,
   formatPeriod,
   leadingTie,
+  nomineeOptionsFrom,
   normalizeCycle,
   parseMoment,
-  tallyNominations,
+  sameDivision,
   timeRemainingLabel,
   voteLabel,
 } from "./awardCycleUtils";
@@ -57,21 +64,20 @@ import {
 /**
  * Award Cycles — the Nomination screen under Rewards & Recognition.
  *
- * A cycle is one round of an award: it names the award, fixes the window nominations are accepted
- * in, and carries the tally. The list is the entry point; picking an award opens the detail screen
- * where people vote.
+ * A cycle is one monthly round of an award. The HR Head opens it, the division Chiefs nominate
+ * colleagues from their own division into it with a reason, and the HR Head approves or rejects each
+ * nomination. An approval puts the nominee straight into the Winners Tally and onto the employees'
+ * ballot (their Award Voting page, `EmployeeVotingWorkspace`); the employees vote until the nomination
+ * period ends — nominations and voting share it — the tally ranks the nominees by those votes, and
+ * closing the cycle issues the certificate to whoever leads it.
  *
- * Everything lives in `reward_cycles` / `reward_cycle_votes` behind `rewards.php`, so a cycle HR
- * opens is the same cycle every employee votes in. Each mutation refetches rather than patching
- * local state — the tally is the sum of everyone's votes, so the server's copy is the only one worth
- * trusting.
+ * Everything lives behind `rewards.php`, so the cycle the HR Head opens is the same cycle every Chief
+ * nominates into and every employee votes in. Each mutation refetches rather than patching local
+ * state — the server's copy is the only one worth trusting.
  *
- * The list/detail split is local state rather than a route, so neither `AdminDashboard`'s path map
- * nor `RoleWorkspacePage`'s nav matching needs a second Rewards entry to know about.
- *
- * `canManage` is the difference between the HR screen and the one every employee gets: without it
- * the cycle stops being editable and all that is left is voting and watching the tally. The server
- * enforces the same split — hiding the buttons is a courtesy, not the control.
+ * Three ways in, all decided by the server: the HR Head runs cycles and reviews (`canManage`), the
+ * division Chiefs nominate (`canVote`), and anyone else who reaches the screen follows along. Hiding
+ * the buttons is a courtesy — `rewards.php` enforces the same split.
  */
 
 const defaultForm = {
@@ -80,9 +86,6 @@ const defaultForm = {
   opensOn: "",
   closesOn: "",
 };
-
-/** Past this the cell is truncated and the full text moves into the floating card. */
-const DESCRIPTION_PREVIEW_LIMIT = 60;
 
 /**
  * The award announcements are SweetAlert `html` so a deadline can sit on its own line in bold, and
@@ -100,202 +103,96 @@ function escapeHtml(value) {
 const dateFieldClass =
   "min-h-[46px] flex-1 rounded-lg border bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition focus:border-[#D61E1E] focus:ring-2 focus:ring-[#D61E1E]/15";
 
+/** The portal's own form controls, in the reference's quieter style. */
+const textareaClass =
+  "w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100";
+
 /**
  * The nomination period is one field with two ends, so it carries one error rather than two — a
- * cycle with only an opening time has no point at which the tally is final.
+ * cycle with only an opening time has no point at which the tally is final. Voting shares the
+ * period, so its closing time is when the vote ends too. `rewards.php` holds all of these as well.
  *
  * Both ends are "YYYY-MM-DDTHH:MM", which sorts correctly as text, so the comparison needs no
  * parsing. Equal ends are rejected too: a period that opens and closes on the same minute is one
- * nobody could vote in.
+ * nobody could nominate in.
  */
-function validate(form) {
+function validate(form, { cycles = [], editingId = null } = {}) {
   const errors = {};
+
+  if (!String(form.category || "").trim()) {
+    errors.category = "Enter or select an award type.";
+  }
 
   if (!form.opensOn || !form.closesOn) {
     errors.period = "Set when nominations open and close before saving.";
   } else if (form.closesOn <= form.opensOn) {
     errors.period = "Nominations must close after they open.";
+  } else {
+    /*
+     * An award is given once a month, so the same award cannot open twice in one calendar month.
+     * The server enforces this too; checking here puts the message on the field instead of a toast.
+     * Archived cycles are not in `cycles`, so a withdrawn one leaves its month free.
+     */
+    const month = form.opensOn.slice(0, 7);
+    const category = String(form.category || "").trim().toLowerCase();
+    const clash = cycles.find((cycle) =>
+      cycle.id !== editingId
+      && String(cycle.category || "").trim().toLowerCase() === category
+      && String(cycle.opensOn || "").slice(0, 7) === month);
+
+    if (clash) {
+      errors.period = `A ${form.category} nomination for ${formatMonth(form.opensOn)} already exists. Only one can be opened per month.`;
+    }
   }
 
   return errors;
 }
 
-const AWARD_CYCLE_STATUS_OPTIONS = ["Ongoing", "Closed"];
-const DEFAULT_AWARD_CYCLE_ROWS_PER_PAGE = 10;
-
-const MEDALS = ["🥇", "🥈", "🥉"];
-
-/** One line of the Result cell: the rank marker and the name. The Votes column already has the count. */
-function ResultRow({ marker, name, className = "" }) {
-  return (
-    <li className={`flex items-center gap-1.5 whitespace-nowrap leading-6 ${className}`.trim()}>
-      {/* A fixed floor rather than a fixed width: the medals are one glyph, "#1" is two. */}
-      <span className="min-w-[1.25rem] shrink-0 text-center text-xs" aria-hidden="true">{marker}</span>
-      <span className="truncate">{name}</span>
-    </li>
-  );
+function formatMonth(value) {
+  const date = new Date(`${String(value).slice(0, 7)}-01T00:00:00`);
+  return Number.isNaN(date.getTime()) ? "that month" : date.toLocaleDateString("en-US", { month: "long", year: "numeric" });
 }
 
-/**
- * The top three once voting is closed, who is ahead while it is open, and an em dash before any vote.
- *
- * The full standings live behind the eye; this is the glance the list gives without opening anything,
- * so it stops at the podium — a cycle with a dozen nominees would otherwise turn every row into a
- * scrolling list.
- */
-function ResultCell({ cycle }) {
-  const leaderboard = tallyNominations(cycle.nominations);
-  const leader = leaderboard[0];
-
-  if (!leader) {
-    return <span className="text-slate-400">—</span>;
-  }
-
-  const podium = leaderboard.slice(0, 3);
-
-  if (cycle.status === "closed") {
-    return (
-      <ol className="m-0 list-none space-y-0.5 p-0 text-sm">
-        {podium.map((entry) => (
-          <ResultRow
-            key={entry.key}
-            marker={MEDALS[entry.rank - 1]}
-            name={entry.name}
-            className={entry.rank === 1 ? "font-semibold text-[#D61E1E]" : "text-slate-500"}
-          />
-        ))}
-      </ol>
-    );
-  }
-
-  // Naming one of several tied nominees as the leader would read as a result the cycle has not
-  // reached, so a tie drops the ranks and lists the names level with each other instead.
-  const tied = leadingTie(cycle.nominations);
-
-  if (tied.length > 0) {
-    return (
-      <div className="text-sm">
-        <p className="m-0 font-semibold text-amber-700">Tied at {voteLabel(tied[0].votes)}</p>
-        <ol className="m-0 mt-0.5 list-none space-y-0.5 p-0">
-          {podium.map((entry) => (
-            <ResultRow
-              key={entry.key}
-              marker="•"
-              name={entry.name}
-              className="text-slate-500"
-            />
-          ))}
-        </ol>
-      </div>
-    );
-  }
-
-  return (
-    <ol className="m-0 list-none space-y-0.5 p-0 text-sm">
-      {podium.map((entry) => (
-        <ResultRow
-          key={entry.key}
-          marker={`#${entry.rank}`}
-          name={entry.name}
-          className={entry.rank === 1 ? "font-semibold text-slate-900" : "text-slate-500"}
-        />
-      ))}
-    </ol>
-  );
+function nominationLabel(count) {
+  return count === 1 ? "1 nomination" : `${count} nominations`;
 }
 
-/**
- * The final standings of a closed cycle as a plain ranked list — rank, a medal for the top three,
- * the name, the count.
- *
- * Deliberately undecorated: the podium on the detail screen is the showpiece, this is the glance you
- * get from the list without leaving it.
- */
-function AwardResultsList({ cycle }) {
-  const leaderboard = tallyNominations(cycle?.nominations);
+const CYCLE_PHASE_OPTIONS = CYCLE_PHASES.map((phase) => ({ value: phase, label: PHASE_LABELS[phase] }));
+const CYCLES_PER_PAGE = 10;
 
-  if (leaderboard.length === 0) {
+/**
+ * The standings of one cycle — rank, name, and the employees' votes. Every approved nominee is
+ * listed, since that is the ballot; an unreviewed or rejected one never places. `voterCount` turns
+ * the vote total into turnout.
+ */
+function CycleStandings({ cycle, voterCount = 0 }) {
+  const standings = useMemo(() => buildStandings(cycle ? [cycle] : []), [cycle]);
+
+  if (standings.length === 0) {
     return (
       <p className="m-0 text-center text-sm text-slate-500">
-        Voting closed without a single nomination.
+        No nominee has been approved for the ballot yet.
       </p>
     );
   }
 
   return (
-    <ol className="m-0 list-none divide-y divide-slate-100 p-0">
-      {leaderboard.map((entry) => (
-        <li key={entry.key} className="flex items-center gap-3 py-2.5 text-sm">
-          <span className="w-4 shrink-0 text-right font-semibold text-slate-400">{entry.rank}</span>
-          <span className="w-5 shrink-0 text-center leading-none" aria-hidden="true">
-            {MEDALS[entry.rank - 1] || ""}
-          </span>
-          <span className="min-w-0 flex-1 truncate font-medium text-slate-900">{entry.name}</span>
-          <span className="shrink-0 text-slate-500">{voteLabel(entry.votes)}</span>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function MyAwardsEmptyState({ linked = true }) {
-  return (
-    <div className="py-5">
-      <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
-        <Award size={20} aria-hidden="true" />
-      </div>
-      <p className="m-0 mt-3 text-sm font-semibold text-slate-700">
-        {linked ? "No awards yet" : "We cannot tell which employee you are"}
-      </p>
-      <p className="m-0 mt-1 text-sm text-slate-500">
-        {linked
-          ? "Certificates for awards you receive will appear here after voting closes."
-          : "Your account is not linked to an employee record, so awards cannot be matched to you. Ask HR to check it."}
-      </p>
-    </div>
-  );
-}
-
-function EmptyState({ canManage, hasFilters, onCreate, archiveView }) {
-  if (archiveView) {
-    return (
-      <div className="py-5">
-        <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
-          <Archive size={20} aria-hidden="true" />
-        </div>
-        <p className="m-0 mt-3 text-sm font-semibold text-slate-700">
-          {hasFilters ? "No archived nominations match your filters" : "No archived nominations yet"}
+    <>
+      <ol className="m-0 list-none divide-y divide-slate-100 p-0">
+        {standings.map((entry, index) => (
+          <li key={entry.key} className="flex items-center gap-3 py-2.5 text-sm">
+            <span className="w-4 shrink-0 text-right font-semibold text-slate-400">{index + 1}</span>
+            <span className="min-w-0 flex-1 truncate font-medium text-slate-900">{entry.name}</span>
+            <span className="shrink-0 text-slate-500">{voteLabel(entry.votes)}</span>
+          </li>
+        ))}
+      </ol>
+      {voterCount > 0 ? (
+        <p className="m-0 mt-2 text-xs text-slate-500">
+          {cycle.totalVotes ?? 0} of {voterCount} employees have voted.
         </p>
-        <p className="m-0 mt-1 text-sm text-slate-500">
-          {hasFilters
-            ? "Try a different search term or status."
-            : "Archived nominations remain available with their voting records and can be restored at any time."}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="py-5">
-      <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
-        <Filter size={20} aria-hidden="true" />
-      </div>
-      <p className="m-0 mt-3 text-sm font-semibold text-slate-700">
-        {hasFilters ? "No nominations match your filters" : "No nominations yet"}
-      </p>
-      <p className="m-0 mt-1 text-sm text-slate-500">
-        {hasFilters
-          ? "Try a different search term or status."
-          : canManage
-            ? "Create your first nomination—for example, “Employee of the Month”—and invite employees to participate."
-            : "Open nominations will appear here as soon as HR publishes them."}
-      </p>
-      {!hasFilters && canManage ? (
-        <Button className="mt-5" icon={Plus} onClick={onCreate}>
-          Create first nomination
-        </Button>
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -340,18 +237,18 @@ function useNomineeDirectory(provided) {
 
 /*
  * How close to the deadline the alert fires, tightest first. Two rungs rather than one: a day's
- * notice is what lets somebody plan to vote, and the final hour is what catches whoever meant to and
- * has not. `find` walks these in order, so the alert always names the tightest window that applies.
+ * notice is what lets somebody plan to nominate, and the final hour is what catches whoever meant to
+ * and has not. `find` walks these in order, so the alert always names the tightest window that applies.
  */
 const CLOSING_ALERT_THRESHOLDS_MINUTES = [60, 24 * 60];
 
 /**
  * One alert per cycle per rung, remembered for the tab.
  *
- * `sessionStorage` rather than component state: the list refetches on every vote cast anywhere in the
- * office, and state would let a refetch re-fire an alert the reader already dismissed. Wrapped
- * because a browser with storage blocked throws on access — there the alert simply repeats, which is
- * a better failure than the screen not rendering.
+ * `sessionStorage` rather than component state: the list refetches on every nomination filed
+ * anywhere in the office, and state would let a refetch re-fire an alert the reader already
+ * dismissed. Wrapped because a browser with storage blocked throws on access — there the alert
+ * simply repeats, which is a better failure than the screen not rendering.
  */
 function claimClosingAlert(cycleId, threshold) {
   const key = `hris.award-closing-alert.${cycleId}.${threshold}`;
@@ -370,44 +267,7 @@ function claimClosingAlert(cycleId, threshold) {
 }
 
 /**
- * Refetches at the moment a nomination period runs out.
- *
- * `rewards.php` closes an expired cycle on the next request that lists them, so without this the
- * reader watching the clock run out would sit on a ballot the server has already stopped accepting
- * until something else happened to refetch. A timer aimed at the deadline rather than a poll: one
- * wake-up, at the only moment it matters, and the refetch is what runs the close server-side.
- */
-function useDeadlineRefresh(cycles, onDeadlinePassed) {
-  useEffect(() => {
-    const now = Date.now();
-
-    const nextDeadline = cycles
-      .filter((cycle) => cycle.status !== "closed" && !cycle.isArchived)
-      .map((cycle) => parseMoment(cycle.closesOn)?.getTime() ?? 0)
-      .filter((moment) => moment > now)
-      .sort((left, right) => left - right)[0];
-
-    if (!nextDeadline) {
-      return undefined;
-    }
-
-    // A couple of seconds past it, so the server's clock has certainly crossed the line too.
-    const delay = nextDeadline - now + 2000;
-
-    // setTimeout overflows past ~24.8 days and fires immediately; a deadline that distant will be
-    // re-armed by a later render long before it arrives.
-    if (delay > 2_147_483_647) {
-      return undefined;
-    }
-
-    const timer = window.setTimeout(onDeadlinePassed, delay);
-
-    return () => window.clearTimeout(timer);
-  }, [cycles, onDeadlinePassed]);
-}
-
-/**
- * The "voting closes soon" interruption for somebody already on the screen.
+ * The "nominations close soon" interruption for somebody already on the screen.
  *
  * The bell notice `rewards.php` sends is the durable half of this and reaches everyone once; this is
  * the half that gets noticed while the deadline is actually passing. Only the most urgent cycle is
@@ -441,13 +301,13 @@ function useClosingSoonAlert(cycles, enabled) {
         }
 
         void Swal.fire({
-          title: "Voting closes soon",
+          title: "Nominations close soon",
           html: `Nominations for <strong>${escapeHtml(cycle.category)}</strong> close `
             + `<strong>${escapeHtml(timeRemainingLabel(cycle.closesOn, now))}</strong>`
             + ` — ${escapeHtml(formatMoment(cycle.closesOn))}.<br /><br />`
-            + "Cast or change your votes before then.",
+            + "Submit or review nominations before then.",
           icon: "warning",
-          confirmButtonText: "Go to voting",
+          confirmButtonText: "Go to nominations",
           confirmButtonColor: "#D61E1E",
         });
 
@@ -462,28 +322,65 @@ function useClosingSoonAlert(cycles, enabled) {
   }, [cycles, enabled]);
 }
 
-export default function AwardCyclesWorkspace({ employees, canManage = true }) {
+/** Newest first, by whichever moment the list is about. */
+function byNewest(field) {
+  return (left, right) => String(right.nomination[field] ?? "").localeCompare(String(left.nomination[field] ?? ""));
+}
+
+function cycleLabelOf(cycle) {
+  const month = formatCycleMonth(cycle.opensOn);
+  return month ? `${cycle.category} · ${month}` : cycle.category;
+}
+
+/**
+ * `nomineeDivision` narrows the nominee list to one division's members (a Chief's own); `null`
+ * offers the whole directory. It only shapes who can be picked, never who is shown.
+ */
+export default function AwardCyclesWorkspace({
+  employees,
+  canManage: canManageProp = true,
+  nomineeDivision = null,
+}) {
   const directory = useNomineeDirectory(employees);
+  const employeeLookup = useMemo(() => buildEmployeeLookup(directory), [directory]);
   const [cycles, setCycles] = useState([]);
   const [viewerKey, setViewerKey] = useState("");
   const [viewerEmployeeRecordId, setViewerEmployeeRecordId] = useState("");
+  /*
+   * Who may run a cycle and who may nominate are the server's answers (HR Head and the Chiefs), so
+   * the screen asks rather than assumes from the route it was mounted on. Both start false: no
+   * button shows until the list confirms it belongs there.
+   */
+  const [serverCanManage, setServerCanManage] = useState(false);
+  const [canVote, setCanVote] = useState(false);
+  // How many employees the ballot is open to — the denominator of the turnout line.
+  const [voterCount, setVoterCount] = useState(0);
+  const canManage = canManageProp && serverCanManage;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [selectedCycleId, setSelectedCycleId] = useState(null);
+  const [activeTab, setActiveTab] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(defaultForm);
   const [formErrors, setFormErrors] = useState({});
+  const [customAwardOpen, setCustomAwardOpen] = useState(false);
   /*
-   * Two pieces of state rather than one: closing only flips `descriptionOpen`, so the card still has
-   * its text to render while it animates out instead of blanking the moment it is dismissed.
+   * Each floating card keeps two pieces of state rather than one: closing only flips the `...Open`
+   * flag, so the card still has its content to render while it animates out instead of blanking the
+   * moment it is dismissed.
    */
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionCycle, setDescriptionCycle] = useState(null);
-  /* Same split for the results card. A closed tally cannot move, so the snapshot cannot go stale. */
-  const [resultsOpen, setResultsOpen] = useState(false);
-  const [resultsCycle, setResultsCycle] = useState(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsCycleId, setDetailsCycleId] = useState(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState(null);
+  const [reviewNote, setReviewNote] = useState("");
+  const [nominateOpen, setNominateOpen] = useState(false);
+  const [nominateCycleId, setNominateCycleId] = useState(null);
+  const [nominee, setNominee] = useState(null);
+  const [nominationReason, setNominationReason] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
@@ -494,23 +391,16 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
   const [archiveView, setArchiveView] = useState(false);
   const [archivedCount, setArchivedCount] = useState(0);
   /*
-   * "My Awards" is a third view over the same screen: the certificates the signed-in user has won.
-   * The list is fetched only once the view is opened — most visits to Award Cycles never ask for it.
+   * "My Rewards" is a third view over the same screen: the awards the signed-in user has won. It is
+   * the same page the Employee sidebar opens, and it fetches its list only once the view is opened.
    */
   const [awardsView, setAwardsView] = useState(false);
-  const [certificates, setCertificates] = useState([]);
-  const [certificatesLoading, setCertificatesLoading] = useState(false);
-  const [certificatesLinked, setCertificatesLinked] = useState(true);
+  /* The certificate the tally's podium opens — the issued one, or a preview before it is issued. */
   const [certificateTemplate, setCertificateTemplate] = useState(() => createCertificateTemplate());
+  const templateRequested = useRef(false);
   const [certificateOpen, setCertificateOpen] = useState(false);
   const [certificateRecord, setCertificateRecord] = useState(null);
   const [downloadingId, setDownloadingId] = useState("");
-  /*
-   * A row's Download has no certificate on screen to capture, so the paper is mounted off-screen for
-   * the length of the export. The preview hands over its own node and skips this entirely.
-   */
-  const [downloadTarget, setDownloadTarget] = useState(null);
-  const hiddenPaperRef = useRef(null);
 
   const loadCycles = useCallback(async () => {
     try {
@@ -519,6 +409,9 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
       setCycles(Array.isArray(result?.cycles) ? result.cycles.map(normalizeCycle) : []);
       setViewerKey(String(result?.viewerKey ?? ""));
       setViewerEmployeeRecordId(String(result?.viewerEmployeeRecordId ?? ""));
+      setServerCanManage(Boolean(result?.canManage));
+      setCanVote(Boolean(result?.canVote));
+      setVoterCount(Number(result?.voterCount ?? 0));
       setArchivedCount(Number(result?.archivedCount ?? 0));
       setError("");
     } catch (requestError) {
@@ -533,89 +426,170 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
     void loadCycles();
   }, [loadCycles]);
 
-  // The archive holds retired cycles, so nothing there has a deadline worth warning about.
-  useClosingSoonAlert(cycles, !archiveView);
+  // The archive holds retired cycles, so nothing there has a deadline worth warning about. Only the
+  // people who act on a cycle — the Chiefs nominating and the HR Head reviewing — are interrupted.
+  useClosingSoonAlert(cycles, !archiveView && (canVote || canManage));
   useDeadlineRefresh(cycles, loadCycles);
 
-  const loadCertificates = useCallback(async () => {
-    try {
-      const [result, templateResult] = await Promise.all([
-        fetchMyAwardCertificates(),
-        fetchCertificateTemplate().catch(() => null),
-      ]);
-
-      setCertificates(Array.isArray(result?.certificates) ? result.certificates : []);
-      setCertificatesLinked(result?.linked !== false);
-      if (templateResult?.template) {
-        setCertificateTemplate(normalizeCertificateTemplate(templateResult.template));
-      }
-    } catch {
-      setCertificates([]);
-    } finally {
-      setCertificatesLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!awardsView) {
-      return;
-    }
-
-    setCertificatesLoading(true);
-    void loadCertificates();
-  }, [awardsView, loadCertificates]);
-
   /*
-   * Votes cast elsewhere in this browser move the tally, so the list follows the rewards topic. The
-   * same signal covers My Awards: closing a cycle mints the certificate, so a win that lands while
-   * the view is open appears without a reload. `refreshOnMount` is off because the effects above
-   * already made the first calls.
+   * Nominations filed and reviewed elsewhere move the tally, so the list follows the rewards topic.
+   * My Rewards subscribes to the same topic on its own. `refreshOnMount` is off because the effect
+   * above already made the first call. Between this and the deadline timer the screen keeps itself
+   * current, which is why it has no Refresh button.
    */
-  useAutoRefreshOnChange(
-    useCallback(async () => {
-      await loadCycles();
+  useAutoRefreshOnChange(loadCycles, { topic: "rewards", refreshOnMount: false });
 
-      if (awardsView) {
-        await loadCertificates();
-      }
-    }, [awardsView, loadCertificates, loadCycles]),
-    { topic: "rewards", refreshOnMount: false },
-  );
-
-  // The server already orders newest first; this keeps that true after an optimistic refetch.
+  // The server already orders newest first; this keeps that true after a refetch.
   const orderedCycles = useMemo(
     () => [...cycles].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
     [cycles],
   );
 
-  const selectedCycle = useMemo(
-    () => cycles.find((cycle) => cycle.id === selectedCycleId) || null,
-    [cycles, selectedCycleId],
+  /* ---------------------------------------------------------------------------------------- */
+  /* Who is looking, and what they see                                                         */
+  /* ---------------------------------------------------------------------------------------- */
+
+  const portalRole = canManage ? "hr" : canVote ? "chief" : "observer";
+
+  const allNominations = useMemo(
+    () => orderedCycles.flatMap((cycle) => cycle.nominations.map((nomination) => ({ nomination, cycle }))),
+    [orderedCycles],
   );
+  const pendingItems = useMemo(
+    () => allNominations.filter(({ nomination }) => nomination.status === "submitted").sort(byNewest("createdAt")),
+    [allNominations],
+  );
+  const recognizedItems = useMemo(
+    () => allNominations.filter(({ nomination }) => nomination.status === "approved").sort(byNewest("reviewedAt")),
+    [allNominations],
+  );
+  const myItems = useMemo(
+    () => (viewerKey
+      ? allNominations.filter(({ nomination }) => nomination.voterKey === viewerKey).sort(byNewest("createdAt"))
+      : []),
+    [allNominations, viewerKey],
+  );
+  const openCycles = useMemo(() => orderedCycles.filter((cycle) => cycle.status !== "closed"), [orderedCycles]);
+
+  const tabs = useMemo(() => {
+    if (portalRole === "hr") {
+      return [
+        { value: "cycles", label: "Nominations" },
+        { value: "pending", label: "Pending", badge: pendingItems.length || null },
+        { value: "recognized", label: "Recognized" },
+        { value: "tally", label: "Tally" },
+      ];
+    }
+
+    if (portalRole === "chief") {
+      return [
+        { value: "open", label: "Open Nominations" },
+        { value: "mine", label: "My Nominations" },
+        { value: "tally", label: "Tally" },
+      ];
+    }
+
+    return [
+      { value: "cycles", label: "Nominations" },
+      { value: "recognized", label: "Recognized" },
+      { value: "tally", label: "Tally" },
+    ];
+  }, [pendingItems.length, portalRole]);
+  const currentTab = tabs.some((tab) => tab.value === activeTab) ? activeTab : tabs[0].value;
+
+  const stats = useMemo(() => {
+    const openCount = openCycles.length;
+
+    if (portalRole === "chief") {
+      const mine = countNominations(myItems.map(({ nomination }) => nomination));
+
+      return [
+        { label: "Open nominations", value: openCount, icon: CalendarDays, accent: "sky" },
+        { label: "My nominations", value: mine.total, icon: ClipboardList, accent: "muted" },
+        { label: "Pending review", value: mine.pending, icon: Clock3, accent: "amber" },
+        { label: "Approved", value: mine.approved, icon: CircleCheck, accent: "emerald" },
+      ];
+    }
+
+    return [
+      { label: "Open nominations", value: openCount, hint: `${cycles.length} total`, icon: CalendarDays, accent: "sky" },
+      { label: "Pending review", value: pendingItems.length, icon: Clock3, accent: "amber" },
+      { label: "Approved", value: recognizedItems.length, icon: CircleCheck, accent: "emerald" },
+      { label: "Total nominations", value: allNominations.length, icon: ClipboardList, accent: "muted" },
+    ];
+  }, [allNominations.length, cycles.length, myItems, openCycles.length, pendingItems.length, portalRole, recognizedItems.length]);
+
+  const banner = {
+    hr: {
+      heading: "Rewards & Recognition Overview",
+      intro: "Open monthly nominations and review the Division Chiefs' submissions. Every nominee you approve goes straight into the Winners Tally for the employees to vote on.",
+    },
+    chief: {
+      heading: "Division Nomination Workspace",
+      intro: nomineeDivision
+        ? `Recognize excellence within the ${nomineeDivision}.`
+        : nomineeDivision === ""
+          ? "You are not currently assigned to a division."
+          : "Recognize excellence within your division.",
+    },
+    observer: {
+      heading: "Rewards & Recognition",
+      intro: "Follow each award nomination, the recognized employees, and the winners tally.",
+    },
+  }[portalRole];
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Cycles list: search, status, pages                                                        */
+  /* ---------------------------------------------------------------------------------------- */
+
+  /*
+   * Keep the standard choices, then add custom award names already used in the current list. That
+   * makes a typed award reusable on the next nomination without turning this back into a fixed list.
+   */
+  const awardCategoryOptions = useMemo(() => {
+    const seen = new Set();
+
+    return [...AWARD_CATEGORIES, ...cycles.map((cycle) => cycle.category)]
+      .map((category) => String(category || "").trim())
+      .filter((category) => {
+        const key = category.toLowerCase();
+
+        if (!key || seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      });
+  }, [cycles]);
 
   const filteredCycles = useMemo(() => {
     const search = query.trim().toLowerCase();
 
     return orderedCycles.filter((cycle) => {
-      const matchesSearch = !search || [cycle.category, cycle.description, cycle.createdByName]
+      const matchesSearch = !search || [cycle.category, cycle.description, cycle.createdByName, formatCycleMonth(cycle.opensOn)]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(search));
-      const matchesStatus = !statusFilter || cycle.status === statusFilter.toLowerCase();
+      const matchesStatus = !statusFilter || cycle.phase === statusFilter;
 
       return matchesSearch && matchesStatus;
     });
   }, [orderedCycles, query, statusFilter]);
   const hasActiveFilters = Boolean(query.trim()) || Boolean(statusFilter);
-  const totalPages = Math.max(1, Math.ceil(filteredCycles.length / DEFAULT_AWARD_CYCLE_ROWS_PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(filteredCycles.length / CYCLES_PER_PAGE));
   const safePage = Math.min(currentPage, totalPages);
   const paginatedCycles = useMemo(() => {
-    const startIndex = (safePage - 1) * DEFAULT_AWARD_CYCLE_ROWS_PER_PAGE;
-    return filteredCycles.slice(startIndex, startIndex + DEFAULT_AWARD_CYCLE_ROWS_PER_PAGE);
+    const startIndex = (safePage - 1) * CYCLES_PER_PAGE;
+    return filteredCycles.slice(startIndex, startIndex + CYCLES_PER_PAGE);
   }, [filteredCycles, safePage]);
 
   useEffect(() => {
     setCurrentPage(1);
   }, [query, statusFilter]);
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Mutations                                                                                 */
+  /* ---------------------------------------------------------------------------------------- */
 
   /** Every mutation ends the same way: tell the user, then take the server's word for the new state. */
   const runMutation = async (action, fallbackMessage) => {
@@ -638,6 +612,7 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
     setEditingId(null);
     setForm(defaultForm);
     setFormErrors({});
+    setCustomAwardOpen(false);
     setModalOpen(true);
   };
 
@@ -650,18 +625,36 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
       closesOn: cycle.closesOn,
     });
     setFormErrors({});
+    setCustomAwardOpen(false);
     setModalOpen(true);
   };
 
   const updateField = (field) => (event) => {
     const { value } = event.target;
     setForm((current) => ({ ...current, [field]: value }));
+    setFormErrors((current) => (current[field] ? { ...current, [field]: undefined } : current));
+  };
+
+  const selectAward = (event) => {
+    setCustomAwardOpen(false);
+    updateField("category")(event);
+  };
+
+  const openCustomAward = () => {
+    if (customAwardOpen) {
+      return;
+    }
+
+    setCustomAwardOpen(true);
+    setForm((current) => ({ ...current, category: "" }));
+    setFormErrors((current) => (current.category ? { ...current, category: undefined } : current));
   };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
 
-    const errors = validate(form);
+    const submission = { ...form, category: String(form.category || "").trim() };
+    const errors = validate(submission, { cycles, editingId });
     setFormErrors(errors);
 
     if (Object.keys(errors).length > 0) {
@@ -671,7 +664,7 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
     const creating = !editingId;
 
     const saved = await runMutation(
-      () => (editingId ? updateAwardCycle({ cycleId: editingId, ...form }) : createAwardCycle(form)),
+      () => (editingId ? updateAwardCycle({ cycleId: editingId, ...submission }) : createAwardCycle(submission)),
       editingId ? "Unable to update the nomination." : "Unable to create the nomination.",
     );
 
@@ -686,9 +679,10 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
       // manager who opened the cycle, who would otherwise only see a toast.
       await Swal.fire({
         title: "Nominations are open",
-        html: `Nominations for <strong>${escapeHtml(form.category)}</strong> are now open.<br />`
-          + `The nomination period closes ${escapeHtml(formatMoment(form.closesOn))}.<br /><br />`
-          + "Everyone has been notified.",
+        html: `Nominations for <strong>${escapeHtml(submission.category)}</strong> are now open.<br />`
+          + `Nominations and voting close ${escapeHtml(formatMoment(submission.closesOn))}.<br />`
+          + "Each nominee you approve goes into the Winners Tally, and the employees can vote for them right away.<br /><br />"
+          + "The division Chiefs have been notified, and the employees will be when you approve the first nominee.",
         icon: "success",
         confirmButtonText: "Got it",
         confirmButtonColor: "#D61E1E",
@@ -701,18 +695,18 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
 
     void runMutation(
       () => setAwardCycleStatus({ cycleId: cycle.id, status }),
-      "Unable to change the voting status.",
+      "Unable to change the nomination status.",
     );
   };
 
   /**
-   * Archiving replaces deleting here. The votes are the record of who the office picked, so a cycle
-   * is retired from the list rather than erased — everything stays recoverable from the archive.
+   * Archiving replaces deleting here. The nominations are the record of who the office recognized,
+   * so a cycle is retired from the list rather than erased — everything stays recoverable.
    */
   const handleArchive = async (cycle) => {
     const confirmation = await Swal.fire({
       title: "Archive this nomination?",
-      text: `“${cycle.category}” will move to the archive. Its ${voteLabel(cycle.nominations.length)} will remain on record, and the nomination can be restored later.`,
+      text: `“${cycle.category}” will move to the archive. Its ${nominationLabel(cycle.nominations.length)} will remain on record, and the nomination can be restored later.`,
       icon: "question",
       showCancelButton: true,
       confirmButtonText: "Archive",
@@ -726,9 +720,8 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
 
     const archived = await runMutation(() => archiveAwardCycle(cycle.id), "Unable to archive the nomination.");
 
-    // Archiving from the detail screen leaves nothing to show, so fall back to the list.
-    if (archived && selectedCycleId === cycle.id) {
-      setSelectedCycleId(null);
+    if (archived && detailsCycleId === cycle.id) {
+      setDetailsOpen(false);
     }
   };
 
@@ -740,7 +733,7 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
   const toggleArchiveView = () => {
     setArchiveView((current) => !current);
     setAwardsView(false);
-    setSelectedCycleId(null);
+    setDetailsOpen(false);
     setQuery("");
     setStatusFilter("");
     setCurrentPage(1);
@@ -750,9 +743,105 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
   const toggleAwardsView = () => {
     setAwardsView((current) => !current);
     setArchiveView(false);
-    setSelectedCycleId(null);
+    setDetailsOpen(false);
   };
 
+  /* Cycle details — the floating card listing a cycle's nominations. */
+  const detailsCycle = useMemo(
+    () => cycles.find((cycle) => cycle.id === detailsCycleId) || null,
+    [cycles, detailsCycleId],
+  );
+
+  const openDetails = (cycle) => {
+    setDetailsCycleId(cycle.id);
+    setDetailsOpen(true);
+  };
+
+  /* Review — approve or reject one nomination, with an optional note back to the Chief. */
+  const openReview = (nomination, action) => {
+    setReviewTarget({ nomination, action });
+    setReviewNote("");
+    setReviewOpen(true);
+  };
+
+  const submitReview = async (event) => {
+    event.preventDefault();
+
+    if (!reviewTarget) {
+      return;
+    }
+
+    const reviewed = await runMutation(
+      () => reviewAwardNomination({
+        nominationId: reviewTarget.nomination.id,
+        status: reviewTarget.action,
+        reviewerNote: reviewNote.trim(),
+      }),
+      "Unable to review the nomination.",
+    );
+
+    if (reviewed) {
+      setReviewOpen(false);
+    }
+  };
+
+  /* Nominate — a Chief puts one colleague from their division forward. */
+  const nominateCycle = useMemo(
+    () => cycles.find((cycle) => cycle.id === nominateCycleId) || null,
+    [cycles, nominateCycleId],
+  );
+  const scopedToDivision = nomineeDivision !== null && nomineeDivision !== undefined;
+  const divisionNominees = useMemo(() => {
+    const options = nomineeOptionsFrom(directory).filter(
+      (option) => !viewerEmployeeRecordId || String(option.employeeRecordId) !== viewerEmployeeRecordId,
+    );
+
+    return scopedToDivision ? options.filter((option) => sameDivision(option.division, nomineeDivision)) : options;
+  }, [directory, nomineeDivision, scopedToDivision, viewerEmployeeRecordId]);
+  const alreadyNominated = useMemo(
+    () => new Set(
+      (nominateCycle?.nominations || [])
+        .filter((nomination) => viewerKey && nomination.voterKey === viewerKey)
+        .map((nomination) => nomination.nomineeKey),
+    ),
+    [nominateCycle, viewerKey],
+  );
+  const eligibleNominees = useMemo(
+    () => divisionNominees.filter((option) => !alreadyNominated.has(String(option.employeeRecordId))),
+    [alreadyNominated, divisionNominees],
+  );
+  const reasonLength = nominationReason.trim().length;
+  const canSubmitNomination = Boolean(nominee) && reasonLength >= NOMINATION_REASON_MIN && !saving;
+
+  const openNominate = (cycle) => {
+    setNominateCycleId(cycle.id);
+    setNominee(null);
+    setNominationReason("");
+    setNominateOpen(true);
+  };
+
+  const submitNomination = async (event) => {
+    event.preventDefault();
+
+    if (!nominateCycle || !canSubmitNomination) {
+      return;
+    }
+
+    const submitted = await runMutation(
+      () => submitAwardNomination({
+        cycleId: nominateCycle.id,
+        nomineeKey: nominee.employeeRecordId,
+        reason: nominationReason.trim(),
+      }),
+      "Unable to submit your nomination.",
+    );
+
+    if (submitted) {
+      setNominateOpen(false);
+    }
+  };
+
+  /* Certificates — the tally's first place opens the certificate from the podium. */
   const runCertificateDownload = useCallback(async (node, certificate) => {
     setDownloadingId(String(certificate?.id ?? ""));
 
@@ -767,406 +856,351 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
   }, []);
 
   /*
-   * Waits one frame so the off-screen paper is laid out before it is captured; the export itself
-   * waits on the letterhead images, so nothing else here needs to.
+   * An issued certificate carries a snapshot of the design it was printed on. A preview has none,
+   * so the current template is fetched the first time one is opened.
    */
-  useEffect(() => {
-    if (!downloadTarget) {
-      return undefined;
-    }
-
-    let cancelled = false;
-    const frame = window.requestAnimationFrame(() => {
-      void runCertificateDownload(hiddenPaperRef.current, downloadTarget).finally(() => {
-        if (!cancelled) {
-          setDownloadTarget(null);
-        }
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(frame);
-    };
-  }, [downloadTarget, runCertificateDownload]);
-
   const openCertificate = (certificate) => {
     setCertificateRecord(certificate);
     setCertificateOpen(true);
+
+    if (certificate?.template || templateRequested.current) {
+      return;
+    }
+
+    templateRequested.current = true;
+
+    const loadTemplate = async () => {
+      try {
+        const result = await fetchCertificateTemplate();
+
+        if (result?.template) {
+          setCertificateTemplate(normalizeCertificateTemplate(result.template));
+        }
+      } catch {
+        // Keep the built-in design, and try again the next time a preview is opened.
+        templateRequested.current = false;
+      }
+    };
+
+    void loadTemplate();
   };
 
-  /**
-   * A ballot is the voter's whole selection, so the server replaces what they filed before rather
-   * than stacking onto it — reopening the form and unticking a name is how a nomination is dropped.
-   * The unique key on `reward_cycle_votes` still stops the same nominee being backed twice.
-   */
-  const handleVote = (cycle, { nomineeKeys, reason }) => {
-    void runMutation(
-      () => castAwardNomination({ cycleId: cycle.id, nomineeKeys, reason }),
-      "Unable to record your vote.",
+  /* ---------------------------------------------------------------------------------------- */
+  /* Tab bodies                                                                                */
+  /* ---------------------------------------------------------------------------------------- */
+
+  const cycleSkeletons = (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <CardSkeleton className="h-44 w-full" />
+      <CardSkeleton className="h-44 w-full" />
+    </div>
+  );
+
+  const listSkeletons = (
+    <div className="space-y-3">
+      <CardSkeleton className="h-32 w-full" />
+      <CardSkeleton className="h-32 w-full" />
+      <CardSkeleton className="h-32 w-full" />
+    </div>
+  );
+
+  const renderNominationList = (items, { showNominator = true, withCycle = true, review = false } = {}) => (
+    <div className="space-y-3">
+      {items.map(({ nomination, cycle }) => (
+        <NominationCard
+          key={nomination.id}
+          nomination={nomination}
+          nominee={employeeLookup.get(nomination.nomineeKey)}
+          nominator={nomination.voterEmployeeKey ? employeeLookup.get(nomination.voterEmployeeKey) : null}
+          showNominator={showNominator}
+          cycleLabel={withCycle ? cycleLabelOf(cycle) : ""}
+          canReview={review && !cycle.isArchived}
+          onApprove={(target) => openReview(target, "approved")}
+          onReject={(target) => openReview(target, "rejected")}
+        />
+      ))}
+    </div>
+  );
+
+  /** The HR Head's close button explains itself on a tie instead of letting the server refuse it. */
+  const toggleProps = (cycle) => {
+    const tied = cycle.status !== "closed" && leadingTie(cycle).length > 0;
+
+    return {
+      onToggleStatus: () => handleToggleStatus(cycle),
+      toggleDisabled: tied || saving,
+      toggleTitle: tied ? "The tally is tied — one nominee must be ahead before the nomination can close" : "",
+    };
+  };
+
+  const renderCycleCard = (cycle) => {
+    const readDescription = () => {
+      setDescriptionCycle(cycle);
+      setDescriptionOpen(true);
+    };
+
+    if (portalRole === "hr") {
+      return (
+        <CycleCard
+          key={cycle.id}
+          cycle={cycle}
+          counts={countNominations(cycle.nominations)}
+          primaryAction={{ label: "View nominations", onClick: () => openDetails(cycle) }}
+          onReadDescription={readDescription}
+          {...(archiveView ? {} : toggleProps(cycle))}
+          extraActions={archiveView ? (
+            <PortalButton size="sm" variant="outline" onClick={() => handleRestore(cycle)} disabled={saving} aria-label={`Restore ${cycle.category}`}>
+              Restore
+            </PortalButton>
+          ) : (
+            <>
+              <PortalButton size="sm" variant="outline" onClick={() => openEdit(cycle)} disabled={saving} aria-label={`Edit ${cycle.category}`}>
+                Edit
+              </PortalButton>
+              <PortalButton size="sm" variant="ghost" onClick={() => handleArchive(cycle)} disabled={saving} aria-label={`Archive ${cycle.category}`}>
+                Archive
+              </PortalButton>
+            </>
+          )}
+        />
+      );
+    }
+
+    if (portalRole === "chief") {
+      const mine = cycle.nominations.filter((nomination) => viewerKey && nomination.voterKey === viewerKey);
+
+      return (
+        <CycleCard
+          key={cycle.id}
+          cycle={cycle}
+          counts={countNominations(mine)}
+          // Once nominations close the cycle carries on into voting, but there is nothing left to nominate into.
+          primaryAction={cycle.phase === "nomination"
+            ? { label: "Nominate employee", onClick: () => openNominate(cycle), disabled: saving }
+            : null}
+          onOpenDetails={() => openDetails(cycle)}
+          onReadDescription={readDescription}
+        />
+      );
+    }
+
+    return (
+      <CycleCard
+        key={cycle.id}
+        cycle={cycle}
+        counts={countNominations(cycle.nominations)}
+        onOpenDetails={() => openDetails(cycle)}
+        onReadDescription={readDescription}
+      />
     );
   };
 
-  const handleWithdraw = (cycle) => {
-    void runMutation(() => withdrawAwardNomination(cycle.id), "Unable to withdraw your nomination.");
-  };
-
-  /* `cardRole` / `cardFull` lay these columns out as cards below `lg` — see `components/UI/table.jsx`. */
-  const columns = [
-    {
-      key: "award",
-      header: "Award",
-      cardRole: "title",
-      render: (cycle) => (
-        <button
-          type="button"
-          onClick={() => setSelectedCycleId(cycle.id)}
-          className="m-0 border-0 bg-transparent p-0 text-left font-semibold text-slate-900 transition hover:text-[#D61E1E] hover:underline"
-        >
-          {cycle.category}
-        </button>
-      ),
-    },
-    {
-      key: "description",
-      header: "Description",
-      cardFull: true,
-      render: (cycle) => {
-        if (!cycle.description) {
-          return <span className="text-slate-400">—</span>;
-        }
-
-        // Short enough to read in place — a click target here would promise more than it delivers.
-        if (cycle.description.length <= DESCRIPTION_PREVIEW_LIMIT) {
-          return <span className="text-slate-600">{cycle.description}</span>;
-        }
-
-        return (
-          <button
-            type="button"
-            title="Read the full description"
-            onClick={() => {
-              setDescriptionCycle(cycle);
-              setDescriptionOpen(true);
-            }}
-            className="m-0 border-0 bg-transparent p-0 text-left text-slate-600 underline decoration-slate-300 decoration-dotted underline-offset-4 transition hover:text-[#D61E1E] hover:decoration-[#D61E1E]"
+  const cyclesTab = (
+    <div className="space-y-4">
+      {/* Every archived card reads "Archived", so a status filter there would act on a value the card no longer shows. */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <label className="block w-full sm:max-w-xs">
+          <span className="sr-only">Search nominations</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search award, month, description"
+            className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+          />
+        </label>
+        {archiveView ? null : (
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            aria-label="Status"
+            className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-700 shadow-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100 sm:w-44"
           >
-            {`${cycle.description.slice(0, DESCRIPTION_PREVIEW_LIMIT).trimEnd()}…`}
-          </button>
-        );
-      },
-    },
-    {
-      key: "period",
-      header: "Period",
-      cardRole: "subtitle",
-      render: (cycle) => {
-        const period = formatPeriod(cycle);
-        return period ? <span className="text-slate-600">{period}</span> : <span className="text-slate-400">—</span>;
-      },
-    },
-    {
-      key: "status",
-      header: "Status",
-      cardRole: "badge",
-      render: (cycle) => <StatusPill status={cycle.status} archived={cycle.isArchived} />,
-    },
-    {
-      key: "votes",
-      header: "Votes",
-      render: (cycle) => <span className="font-semibold text-slate-900">{cycle.nominations.length}</span>,
-    },
-    {
-      key: "result",
-      header: "Result",
-      render: (cycle) => <ResultCell cycle={cycle} />,
-    },
-    {
-      key: "createdAt",
-      header: "Created",
-      render: (cycle) => <span className="text-slate-400">{formatDate(cycle.createdAt) || "—"}</span>,
-    },
-    {
-      key: "actions",
-      header: "Actions",
-      cardRole: "actions",
-      render: (cycle) => {
-        const closed = cycle.status === "closed";
-        // Same rule the detail screen enforces and the server backs: a tie has no winner to crown.
-        const tied = !closed && leadingTie(cycle.nominations).length > 0;
+            <option value="">All statuses</option>
+            {CYCLE_PHASE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        )}
+      </div>
 
-        return (
-          <div className="flex items-center gap-2">
-            <ActionIconButton
-              label={closed ? `See the results of ${cycle.category}` : `Open ${cycle.category}`}
-              icon={faEye}
-              tone="view"
-              // Once voting is closed the standings are the whole story, so the eye shows them here
-              // instead of sending the reader to a ballot nobody can cast on.
-              onClick={() => {
-                if (closed) {
-                  setResultsCycle(cycle);
-                  setResultsOpen(true);
-                  return;
-                }
-
-                setSelectedCycleId(cycle.id);
-              }}
-            />
-            {canManage && archiveView ? (
-              <ActionIconButton
-                label={`Restore ${cycle.category}`}
-                icon={faClockRotateLeft}
-                tone="approve"
-                text="Restore"
-                disabled={saving}
-                onClick={() => handleRestore(cycle)}
-              />
-            ) : null}
-            {canManage && !archiveView ? (
-              <>
-                <ActionIconButton
-                  label={`Edit ${cycle.category}`}
-                  icon={faPen}
-                  tone="edit"
-                  disabled={saving}
-                  onClick={() => openEdit(cycle)}
-                />
-                <ActionIconButton
-                  label={
-                    closed
-                      ? `Reopen nominations for ${cycle.category}`
-                      : tied
-                        ? "Voting is tied — one nominee must be ahead before it can close"
-                        : `Close nominations for ${cycle.category}`
-                  }
-                  icon={closed ? faLockOpen : faLock}
-                  tone={closed ? "approve" : "cancel"}
-                  // The tone is only the colour here — "Approve" would name an action this button
-                  // does not do, so both states spell out what the click actually does.
-                  text={closed ? "Reopen" : "Close"}
-                  disabled={tied || saving}
-                  onClick={() => handleToggleStatus(cycle)}
-                />
-                <ActionIconButton
-                  label={`Archive ${cycle.category}`}
-                  icon={faBoxArchive}
-                  tone="archive"
-                  disabled={saving}
-                  onClick={() => handleArchive(cycle)}
-                />
-              </>
-            ) : null}
-          </div>
-        );
-      },
-    },
-  ];
-
-  const certificateColumns = [
-    {
-      key: "awardTitle",
-      header: "Award",
-      render: (certificate) => <span className="font-semibold text-slate-900">{certificate.awardTitle}</span>,
-    },
-    {
-      key: "certificateNumber",
-      header: "Certificate No.",
-      render: (certificate) => <span className="text-slate-600">{certificate.certificateNumber || "—"}</span>,
-    },
-    {
-      key: "period",
-      header: "Period",
-      render: (certificate) => {
-        const period = formatPeriod(certificate);
-        return period ? <span className="text-slate-600">{period}</span> : <span className="text-slate-400">—</span>;
-      },
-    },
-    {
-      key: "awardedOn",
-      header: "Awarded",
-      render: (certificate) => <span className="text-slate-600">{formatDate(certificate.awardedOn) || "—"}</span>,
-    },
-    {
-      key: "votes",
-      header: "Votes",
-      render: (certificate) => <span className="font-semibold text-slate-900">{certificate.votes}</span>,
-    },
-    {
-      key: "actions",
-      header: "Actions",
-      render: (certificate) => (
-        <div className="flex items-center gap-2">
-          <ActionIconButton
-            label={`View the certificate for ${certificate.awardTitle}`}
-            icon={faEye}
-            tone="view"
-            onClick={() => openCertificate(certificate)}
+      {loading ? cycleSkeletons : filteredCycles.length === 0 ? (
+        hasActiveFilters ? (
+          <PortalEmptyState
+            title={archiveView ? "No archived nominations match your filters" : "No nominations match your filters"}
+            description="Try a different search term or status."
           />
-          <ActionIconButton
-            label={`Download the certificate for ${certificate.awardTitle}`}
-            icon={faDownload}
-            tone="print"
-            text={downloadingId === String(certificate.id) ? "Saving..." : "Download"}
-            disabled={downloadingId !== ""}
-            onClick={() => setDownloadTarget(certificate)}
+        ) : archiveView ? (
+          <PortalEmptyState
+            title="No archived nominations yet"
+            description="Archived nominations remain available with their records and can be restored at any time."
           />
-        </div>
-      ),
-    },
-  ];
-
-  return (
-    <div className="w-full">
-      {selectedCycle ? (
-        <AwardCycleDetail
-          cycle={selectedCycle}
-          viewerKey={viewerKey}
-          viewerEmployeeRecordId={viewerEmployeeRecordId}
-          employees={directory}
-          canManage={canManage}
-          saving={saving}
-          onBack={() => setSelectedCycleId(null)}
-          onEdit={openEdit}
-          onToggleStatus={handleToggleStatus}
-          onArchive={handleArchive}
-          onRestore={handleRestore}
-          onVote={(vote) => handleVote(selectedCycle, vote)}
-          onWithdraw={handleWithdraw}
-        />
+        ) : (
+          <PortalEmptyState
+            title="No nominations yet"
+            description={canManage
+              ? "Create your first monthly nomination to start collecting submissions from division chiefs."
+              : "Nominations will appear here as soon as the HR Head opens them."}
+            action={canManage ? (
+              <PortalButton onClick={openCreate}>
+                Create nomination
+              </PortalButton>
+            ) : null}
+          />
+        )
       ) : (
-        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h3 className="m-0 text-base font-semibold text-slate-950">
-                {awardsView ? "My Awards" : archiveView ? "Archived Nominations" : "Award Nominations"}
-              </h3>
-              <p className="m-0 mt-1 text-sm text-slate-500">
-                {awardsView
-                  ? "Every award you have won. Certificates are issued automatically when voting closes."
-                  : archiveView
-                    ? "Archived nominations and their voting records. Restore a nomination to return it to the active list."
-                    : canManage
-                      ? "Create and manage award nominations, review results, and recognize outstanding employees."
-                      : "Nominate deserving colleagues and follow the results for each open award."}
-              </p>
-            </div>
-            {/* My Awards belongs to everybody — the rest of these buttons are the manager's. */}
-            <div className="flex flex-wrap items-center gap-2">
-              {canManage && !archiveView && !awardsView ? (
-                <button
-                  type="button"
-                  onClick={openCreate}
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
-                >
-                  <Plus size={16} />
-                  New nomination
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={toggleAwardsView}
-                aria-pressed={awardsView}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
-              >
-                {awardsView ? <ArrowLeft size={16} /> : <Award size={16} />}
-                {awardsView ? "Back to nominations" : "My Awards"}
-              </button>
-              {canManage && !awardsView ? (
-                <button
-                  type="button"
-                  onClick={toggleArchiveView}
-                  aria-pressed={archiveView}
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
-                >
-                  {archiveView ? <ArrowLeft size={16} /> : <Archive size={16} />}
-                  {archiveView ? "Back to nominations" : "Archived"}
-                  {!archiveView && archivedCount > 0 ? (
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-600">
-                      {archivedCount}
-                    </span>
-                  ) : null}
-                </button>
-              ) : null}
-            </div>
+        <>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {paginatedCycles.map(renderCycleCard)}
           </div>
-
-          {awardsView ? (
-            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
-              <Table
-                columns={certificateColumns}
-                data={certificates}
-                rowKey="id"
-                loading={certificatesLoading}
-                emptyState={<MyAwardsEmptyState linked={certificatesLinked} />}
-                tableClassName="[&_tbody_tr:last-child>td]:border-b-0"
-              />
-            </div>
-          ) : (
-          <div>
-            {error ? (
-              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-                {error}
-              </div>
-            ) : null}
-
-            {/* Every archived row reads "Archived", so a status filter there would act on a value the table no longer shows. */}
-            <div className={`mt-4 grid gap-3 ${archiveView ? "lg:grid-cols-[minmax(0,220px)]" : "lg:grid-cols-[minmax(0,220px)_160px]"}`}>
-              <label className="relative">
-                <span className="sr-only">Search nominations</span>
-                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search award, description"
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-                />
-              </label>
-              {archiveView ? null : (
-                <select
-                  value={statusFilter}
-                  onChange={(event) => setStatusFilter(event.target.value)}
-                  className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-                >
-                  <option value="">All statuses</option>
-                  {AWARD_CYCLE_STATUS_OPTIONS.map((item) => (
-                    <option key={item} value={item}>{item}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            {/* Plain container for the card grid below `lg`, framed box for the table from `lg` up. */}
-            <div className="mt-4 lg:overflow-hidden lg:rounded-2xl lg:border lg:border-slate-200">
-              <Table
-                columns={columns}
-                data={paginatedCycles}
-                rowKey="id"
-                loading={loading}
-                emptyState={(
-                  <EmptyState
-                    canManage={canManage}
-                    hasFilters={hasActiveFilters}
-                    onCreate={openCreate}
-                    archiveView={archiveView}
-                  />
-                )}
-                tableClassName="[&_tbody_tr:last-child>td]:border-b-0"
-                cardsClassName="lg:hidden"
-                tableWrapperClassName="hidden lg:block"
-              />
-            </div>
-
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {totalPages > 1 ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="m-0 text-sm text-slate-500">
-                Showing {filteredCycles.length === 0 ? 0 : (safePage - 1) * DEFAULT_AWARD_CYCLE_ROWS_PER_PAGE + 1}
-                {" "}to {Math.min(safePage * DEFAULT_AWARD_CYCLE_ROWS_PER_PAGE, filteredCycles.length)} of {filteredCycles.length} nominations
+                Showing {(safePage - 1) * CYCLES_PER_PAGE + 1}
+                {" "}to {Math.min(safePage * CYCLES_PER_PAGE, filteredCycles.length)} of {filteredCycles.length} nominations
               </p>
               <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setCurrentPage} />
             </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+
+  const tabBody = {
+    cycles: cyclesTab,
+    open: loading ? cycleSkeletons : openCycles.length === 0 ? (
+      <PortalEmptyState
+        title="No open nominations"
+        description="The HR Head hasn't opened any nominations yet. Check back soon or reach out to HR."
+      />
+    ) : (
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{openCycles.map(renderCycleCard)}</div>
+    ),
+    pending: loading ? listSkeletons : pendingItems.length === 0 ? (
+      <PortalEmptyState
+        title="Nothing pending"
+        description="You're all caught up. Nominations awaiting review will appear here."
+      />
+    ) : renderNominationList(pendingItems, { review: true }),
+    recognized: loading ? listSkeletons : recognizedItems.length === 0 ? (
+      <PortalEmptyState
+        title="No recognized employees yet"
+        description="Approved nominees will be celebrated here."
+      />
+    ) : renderNominationList(recognizedItems),
+    mine: loading ? listSkeletons : myItems.length === 0 ? (
+      <PortalEmptyState
+        title="You haven't nominated anyone yet"
+        description="When you submit a nomination, it will appear here with its current review status."
+      />
+    ) : renderNominationList(myItems, { showNominator: false }),
+    tally: (
+      <WinnersTally
+        cycles={orderedCycles}
+        employeeLookup={employeeLookup}
+        loading={loading}
+        onViewCertificate={openCertificate}
+      />
+    ),
+  };
+
+  /* A Chief sees their own nominations inside a cycle, as on their My Nominations tab. */
+  const detailsNominations = useMemo(() => {
+    if (!detailsCycle) {
+      return [];
+    }
+
+    const nominations = portalRole === "chief"
+      ? detailsCycle.nominations.filter((nomination) => viewerKey && nomination.voterKey === viewerKey)
+      : detailsCycle.nominations;
+
+    return [...nominations].sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  }, [detailsCycle, portalRole, viewerKey]);
+
+  const reviewNomination = reviewTarget?.nomination;
+  const approving = reviewTarget?.action === "approved";
+  const reviewNominee = reviewNomination ? employeeLookup.get(reviewNomination.nomineeKey) : null;
+  const reviewCycle = reviewNomination
+    ? cycles.find((cycle) => cycle.nominations.some((nomination) => nomination.id === reviewNomination.id))
+    : null;
+
+  return (
+    <div className="w-full space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="m-0 text-lg font-semibold tracking-tight text-slate-950">
+            {awardsView ? "My Rewards" : archiveView ? "Archived Nominations" : banner.heading}
+          </h2>
+          <p className="m-0 text-sm text-slate-500">
+            {awardsView
+              ? "Awards you have won. A certificate is issued automatically when nominations close and you have won."
+              : archiveView
+                ? "Archived nominations and their records. Restore a nomination to return it to the active list."
+                : banner.intro}
+          </p>
+        </div>
+        {/* My Rewards belongs to everybody — the rest of these buttons are the manager's. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={toggleAwardsView}
+            aria-pressed={awardsView}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+          >
+            {awardsView ? "Back to nominations" : "My Rewards"}
+          </button>
+          {canManage && !awardsView ? (
+            <button
+              type="button"
+              onClick={toggleArchiveView}
+              aria-pressed={archiveView}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              {archiveView ? "Back to nominations" : "Archived"}
+              {!archiveView && archivedCount > 0 ? (
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-600">
+                  {archivedCount}
+                </span>
+              ) : null}
+            </button>
+          ) : null}
+          {canManage && !archiveView && !awardsView ? (
+            <button
+              type="button"
+              onClick={openCreate}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+            >
+              New nomination
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {error ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+          {error}
+        </div>
+      ) : null}
+
+      {awardsView ? (
+        <MyRewardsWorkspace embedded />
+      ) : archiveView ? (
+        cyclesTab
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {stats.map((stat) => (
+              <StatCard key={stat.label} {...stat} tinted />
+            ))}
           </div>
-          )}
-        </section>
+
+          <div className="w-full">
+            <PortalTabs tabs={tabs} value={currentTab} onChange={setActiveTab} />
+            <div className="mt-4" role="tabpanel">
+              {tabBody[currentTab]}
+            </div>
+          </div>
+        </>
       )}
 
       <ProfileFloatingCard
@@ -1174,7 +1208,6 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
         onClose={() => setDescriptionOpen(false)}
         title={descriptionCycle?.category || "Award nomination"}
         subtitle={formatPeriod(descriptionCycle || {}) || undefined}
-        icon={Trophy}
         maxWidth="max-w-[520px]"
       >
         <p className="m-0 whitespace-pre-wrap text-sm leading-7 text-slate-600">
@@ -1182,36 +1215,207 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
         </p>
       </ProfileFloatingCard>
 
+      {/*
+        A review opens on top of this card, so Escape and the backdrop only close it once the review
+        is out of the way — otherwise one keypress would dismiss both.
+      */}
       <ProfileFloatingCard
-        open={resultsOpen}
-        onClose={() => setResultsOpen(false)}
-        title={resultsCycle?.category || "Final results"}
-        subtitle={formatPeriod(resultsCycle || {}) || undefined}
-        // The standings alone fit a narrow card; the ballot underneath needs room for its columns.
-        maxWidth={canManage ? "max-w-[720px]" : "max-w-[460px]"}
+        open={detailsOpen && Boolean(detailsCycle)}
+        onClose={() => {
+          if (!reviewOpen) {
+            setDetailsOpen(false);
+          }
+        }}
+        title={detailsCycle?.category || "Nomination"}
+        subtitle={detailsCycle
+          ? [formatCycleMonth(detailsCycle.opensOn), `Created ${formatDate(detailsCycle.createdAt) || "—"}`].filter(Boolean).join(" · ")
+          : undefined}
+        maxWidth="max-w-[720px]"
       >
-        <div className="space-y-5">
-          <section>
-            <h3 className="m-0 mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-400">
-              Final standings
-            </h3>
-            <AwardResultsList cycle={resultsCycle} />
-          </section>
+        {detailsCycle ? (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-slate-500">
+              <CycleStatusBadge phase={detailsCycle.phase} archived={detailsCycle.isArchived} />
+              {formatPeriod(detailsCycle) ? <span>Nominations &amp; voting: {formatPeriod(detailsCycle)}</span> : null}
+            </div>
+            {detailsCycle.description ? (
+              <p className="m-0 whitespace-pre-wrap text-center text-sm text-slate-600">{detailsCycle.description}</p>
+            ) : null}
 
-          {/*
-            Same rule the detail screen follows: the per-voter ballot belongs to the people running
-            the award. Everyone else gets the standings and their own vote.
-          */}
-          {canManage ? (
-            <section className="border-t border-slate-100 pt-4">
-              <h3 className="m-0 mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-400">
-                Voters
+            {/* Live from the first approval, since that is when the employees can start voting. */}
+            <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+              <h3 className="m-0 mb-1 text-xs font-bold uppercase tracking-[0.14em] text-slate-400">
+                {detailsCycle.phase === "closed" ? "Final standings" : "Live results"}
               </h3>
-              <AwardVotersTable nominations={resultsCycle?.nominations} employees={directory} />
+              <CycleStandings cycle={detailsCycle} voterCount={voterCount} />
             </section>
-          ) : null}
-        </div>
+
+            <div className="text-xs uppercase tracking-wide text-slate-500">
+              {nominationLabel(detailsNominations.length)}
+              {portalRole === "chief" ? " from you" : ""}
+            </div>
+
+            {detailsNominations.length === 0 ? (
+              <PortalEmptyState
+                title="No nominations yet"
+                description={portalRole === "chief"
+                  ? "You haven't submitted any nominees for this award yet."
+                  : "Division Chiefs haven't submitted any nominees for this award."}
+                className="py-12"
+              />
+            ) : (
+              renderNominationList(
+                detailsNominations.map((nomination) => ({ nomination, cycle: detailsCycle })),
+                { showNominator: portalRole !== "chief", withCycle: false, review: portalRole === "hr" },
+              )
+            )}
+          </div>
+        ) : null}
       </ProfileFloatingCard>
+
+      <ProfileFloatingCard
+        open={reviewOpen}
+        onClose={() => {
+          if (!saving) {
+            setReviewOpen(false);
+          }
+        }}
+        title={approving ? "Approve nomination" : "Reject nomination"}
+        subtitle={approving
+          ? reviewCycle?.phase === "closed"
+            ? "This nomination has closed, so the approval is recorded but the employees can no longer vote for them."
+            : "Approving puts this employee in the Winners Tally right away, and the employees can start voting for them."
+          : "Rejecting will remove this nominee from the running for this award."}
+        maxWidth="max-w-[520px]"
+      >
+        {reviewNomination ? (
+          <form className="space-y-4" onSubmit={submitReview}>
+            <div className="rounded-lg border border-slate-200/70 bg-slate-50/70 p-4">
+              <div className="flex items-center gap-3">
+                <PersonAvatar name={reviewNomination.nomineeName} photo={reviewNominee?.profileImage} size="md" />
+                <div className="min-w-0 flex-1">
+                  <h4 className="m-0 text-sm font-semibold text-slate-950">{reviewNomination.nomineeName}</h4>
+                  <p className="m-0 text-xs text-slate-500">
+                    {[reviewNomination.nomineePosition, reviewNomination.nomineeDivision].filter(Boolean).join(" · ") || "—"}
+                  </p>
+                </div>
+              </div>
+              {reviewNomination.voterName ? (
+                <div className="mt-3 text-xs text-slate-500">
+                  Nominated by <span className="font-medium text-slate-700">{reviewNomination.voterName}</span>
+                  {" · Division Chief · "}
+                  {formatDate(reviewNomination.createdAt) || "—"}
+                </div>
+              ) : null}
+              <p className="m-0 mt-2 whitespace-pre-wrap text-sm italic text-slate-700">“{reviewNomination.reason}”</p>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="award-review-note" className="block text-sm font-semibold text-slate-700">
+                Reviewer note{" "}
+                <span className="text-xs font-normal text-slate-500">(optional, shown to the nominator)</span>
+              </label>
+              <textarea
+                id="award-review-note"
+                rows={3}
+                value={reviewNote}
+                onChange={(event) => setReviewNote(event.target.value)}
+                maxLength={REVIEWER_NOTE_MAX}
+                placeholder={approving
+                  ? "Add a note of recognition or context for the approval..."
+                  : "Provide feedback on why this nomination was rejected..."}
+                className={textareaClass}
+              />
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <PortalButton variant="ghost" onClick={() => setReviewOpen(false)} disabled={saving}>
+                Cancel
+              </PortalButton>
+              <PortalButton type="submit" variant={approving ? "success" : "danger"} disabled={saving}>
+                {saving ? "Submitting..." : approving ? "Confirm approval" : "Confirm rejection"}
+              </PortalButton>
+            </div>
+          </form>
+        ) : null}
+      </ProfileFloatingCard>
+
+      {canVote ? (
+        <ProfileFloatingCard
+          open={nominateOpen && Boolean(nominateCycle)}
+          onClose={() => {
+            if (!saving) {
+              setNominateOpen(false);
+            }
+          }}
+          title="Nominate an employee"
+          subtitle={nominateCycle
+            ? `Submit a nomination for ${cycleLabelOf(nominateCycle)}.`
+            : undefined}
+          maxWidth="max-w-[560px]"
+        >
+          {nominateCycle ? (
+            <form className="space-y-4" onSubmit={submitNomination} noValidate>
+              <div className="space-y-2">
+                <span className="block text-sm font-semibold text-slate-700">
+                  Select employee from your team <span className="text-rose-600">*</span>
+                </span>
+                <EmployeeSearchSelect
+                  employeeOptions={eligibleNominees}
+                  selectedEmployee={nominee}
+                  onSelect={setNominee}
+                  disabled={eligibleNominees.length === 0 || saving}
+                  placeholder={eligibleNominees.length === 0 ? "No eligible employees left" : "Choose an employee"}
+                  ariaLabel="Employee"
+                  showSelectedDetails
+                  inlineMenu
+                />
+                {divisionNominees.length === 0 ? (
+                  <p className="m-0 text-xs text-slate-500">
+                    There are no other employees in your division to nominate yet.
+                  </p>
+                ) : eligibleNominees.length === 0 ? (
+                  <p className="m-0 text-xs text-slate-500">
+                    All employees in your team have already been nominated for this period.
+                  </p>
+                ) : alreadyNominated.size > 0 ? (
+                  <p className="m-0 text-xs text-slate-500">
+                    {alreadyNominated.size} employee{alreadyNominated.size === 1 ? "" : "s"} already nominated for this award.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="award-nomination-reason" className="block text-sm font-semibold text-slate-700">
+                  Reason for nomination <span className="text-rose-600">*</span>
+                </label>
+                <textarea
+                  id="award-nomination-reason"
+                  rows={5}
+                  value={nominationReason}
+                  onChange={(event) => setNominationReason(event.target.value)}
+                  maxLength={NOMINATION_REASON_MAX}
+                  placeholder="Describe the specific achievements, behaviors, or contributions that make this employee deserve the recognition..."
+                  className={textareaClass}
+                />
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>Minimum {NOMINATION_REASON_MIN} characters.</span>
+                  <span>{nominationReason.length}/{NOMINATION_REASON_MAX}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <PortalButton variant="ghost" onClick={() => setNominateOpen(false)} disabled={saving}>
+                  Cancel
+                </PortalButton>
+                <PortalButton type="submit" disabled={!canSubmitNomination || eligibleNominees.length === 0}>
+                  {saving ? "Submitting..." : "Submit nomination"}
+                </PortalButton>
+              </div>
+            </form>
+          ) : null}
+        </ProfileFloatingCard>
+      ) : null}
 
       <AwardCertificateModal
         open={certificateOpen}
@@ -1222,23 +1426,6 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
         onClose={() => setCertificateOpen(false)}
       />
 
-      {/*
-        Off-screen rather than hidden: html2canvas paints what the browser laid out, and a
-        `display: none` paper has no layout to paint.
-      */}
-      {downloadTarget ? (
-        <div
-          aria-hidden="true"
-          style={{ position: "fixed", top: 0, left: "-10000px", width: "960px", pointerEvents: "none" }}
-        >
-          <AwardCertificatePaper
-            ref={hiddenPaperRef}
-            certificate={downloadTarget}
-            template={normalizeCertificateTemplate(downloadTarget?.template || certificateTemplate)}
-          />
-        </div>
-      ) : null}
-
       {canManage ? (
         <Modal
           open={modalOpen}
@@ -1246,9 +1433,6 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
           onClose={() => setModalOpen(false)}
           footer={
             <>
-              <Button variant="secondary" onClick={() => setModalOpen(false)}>
-                Cancel
-              </Button>
               <Button type="submit" form="award-cycle-form" loading={saving}>
                 {editingId ? "Save changes" : "Create nomination"}
               </Button>
@@ -1256,13 +1440,49 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
           }
         >
           <form id="award-cycle-form" className="space-y-4" onSubmit={handleSubmit} noValidate>
-            <SettingsSelect
-              name="category"
-              label="Award"
-              value={form.category}
-              onChange={updateField("category")}
-              options={AWARD_CATEGORIES}
-            />
+            <div className="space-y-3">
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <SettingsSelect
+                  id="award-cycle-category"
+                  name="category"
+                  label="Award *"
+                  value={customAwardOpen ? "" : form.category}
+                  onChange={selectAward}
+                  options={awardCategoryOptions}
+                  placeholder="Select an award"
+                  error={!customAwardOpen ? formErrors.category : undefined}
+                />
+                <Button
+                  variant={customAwardOpen ? "primary" : "secondary"}
+                  className="min-h-[42px] sm:mb-0"
+                  aria-pressed={customAwardOpen}
+                  onClick={openCustomAward}
+                >
+                  Custom
+                </Button>
+              </div>
+
+              {customAwardOpen ? (
+                <InputField
+                  id="award-cycle-custom-category"
+                  name="category"
+                  label="Custom award type *"
+                  value={form.category}
+                  onChange={updateField("category")}
+                  error={formErrors.category}
+                  maxLength={120}
+                  placeholder="Enter a custom award type"
+                  autoComplete="off"
+                  autoFocus
+                />
+              ) : null}
+
+              {!formErrors.category && !customAwardOpen ? (
+                <p className="m-0 mt-1.5 text-xs text-slate-500">
+                  Select an existing award type, or choose Custom to enter a new one.
+                </p>
+              ) : null}
+            </div>
 
             <div className="w-full">
               <label htmlFor="award-cycle-description" className="mb-1.5 block text-sm font-semibold text-slate-700">
@@ -1303,7 +1523,7 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
                   // Stops the picker offering a closing time the validation would only reject.
                   min={form.opensOn || undefined}
                   onChange={updateField("closesOn")}
-                  aria-label="Nominations close"
+                  aria-label="Nominations and voting close"
                   aria-invalid={Boolean(formErrors.period)}
                   className={`${dateFieldClass} ${formErrors.period ? "border-rose-600" : "border-slate-200"}`}
                 />
@@ -1312,8 +1532,10 @@ export default function AwardCyclesWorkspace({ employees, canManage = true }) {
                 <p className="m-0 mt-1.5 text-sm text-rose-700">{formErrors.period}</p>
               ) : (
                 <p className="m-0 mt-1.5 text-xs text-slate-500">
-                  Nominations close automatically at the time you set here. Everyone is notified when they open,
-                  and again a day before they close.
+                  One nomination per award each month. Nominations and voting both close automatically at
+                  the time you set here: the employees can vote for a nominee as soon as you approve them,
+                  and the nominee with the most votes wins. The division Chiefs are notified when
+                  nominations open, and again a day before they close.
                 </p>
               )}
             </div>

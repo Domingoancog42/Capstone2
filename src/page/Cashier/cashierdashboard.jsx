@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
-  CalendarDays,
+  CalendarRange,
   FileText,
   LayoutDashboard,
   MessageCircle,
@@ -8,7 +8,11 @@ import {
 } from "lucide-react";
 import RoleWorkspacePage from "../../components/layout/RoleWorkspacePage";
 import { SELF_SERVICE_MODULES, buildSelfServiceNavItems } from "../../components/layout/selfServiceModules";
-import RoleAnalyticsOverview from "../../components/dashboard/RoleAnalyticsOverview";
+import CashierDashboardOverview from "../../components/dashboard/CashierDashboardOverview";
+import LeaveDashboard from "../../module/leave/LeaveDashboard";
+import TravelOrderWorkspace from "../../module/travel/TravelOrderWorkspace";
+import PassSlipWorkspace from "../../module/passslip/PassSlipWorkspace";
+import CompensatoryWorkspace from "../../module/compensatory/CompensatoryWorkspace";
 import PayrollManagementWorkspace from "../../module/payroll/PayrollManagementWorkspace";
 import PayslipWorkspace from "../../module/payroll/PayslipWorkspace";
 import FileLoan from "../../module/Loan/fileloan";
@@ -20,8 +24,8 @@ import { getEmployees } from "../../services/api";
 /*
  * The cashier is the payout desk, and only that.
  *
- * A payroll batch climbs three approval rungs before it reaches this workspace -- HR Head, Chief,
- * then the Regional Director -- and none of them are the cashier's. What lands here is a batch
+ * A payroll batch climbs three approval rungs before it reaches this workspace -- HR Head, Chief
+ * Admin, then the Regional Director -- and none of them are the cashier's. What lands here is a batch
  * already marked Approved, waiting for the money to actually move; marking it Paid is the one
  * transition this role owns (PAYROLL_PAYOUT_ROLES in payroll.php, and the matching
  * PAYOUT_DESK_ROLE_KEYS in PayrollManagementWorkspace). That is also why the register already
@@ -72,7 +76,9 @@ function CashierPayrollWorkspace({ view = "generate", user, onNavigate }) {
       ) : null}
 
       {view === "payslip" ? (
-        <PayslipWorkspace employees={employees} />
+        <PayslipWorkspace />
+      ) : view === "archived" ? (
+        <PayrollManagementWorkspace employees={employees} view="archived" user={user} onNavigate={onNavigate} />
       ) : (
         <PayrollManagementWorkspace employees={employees} view="generate" user={user} onNavigate={onNavigate} />
       )}
@@ -84,10 +90,21 @@ const navigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/cashier/dashboard" },
   { key: "profile", label: "My Profile", icon: UserRound, path: "/cashier/profile" },
-  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/cashier/calendar" },
-  { type: "section", label: "Communication" },
   { key: "messages", label: "Messages", icon: MessageCircle, path: "/cashier/messages" },
   { key: "notifications", label: "Notifications", path: "/cashier/notifications", hidden: true },
+  { type: "section", label: "Requests" },
+  {
+    key: "leave",
+    label: "File Request",
+    icon: CalendarRange,
+    path: "/cashier/leave",
+    children: [
+      { key: "leave", label: "Leave Request", path: "/cashier/leave", exact: true },
+      { key: "travel", label: "Travel Order Request", path: "/cashier/leave/travel-order" },
+      { key: "passSlip", label: "Pass Slips", path: "/cashier/leave/pass-slips" },
+      { key: "cto", label: "Compensatory Time Off", path: "/cashier/leave/compensatory-time-off" },
+    ],
+  },
   { type: "section", label: "Disbursement" },
   {
     key: "payroll",
@@ -100,6 +117,8 @@ const navigationItems = [
       { key: "payrollLoan", label: "Loan", path: "/cashier/payroll/loan" },
     ],
   },
+  /* Reached from the Archive toggle on the registry, not from the sidebar. */
+  { key: "archivedPayroll", label: "Archived Payroll", path: "/cashier/payroll/archived", hidden: true },
   ...buildSelfServiceNavItems("/cashier"),
 ];
 
@@ -108,7 +127,61 @@ const modules = {
     title: "Cashier Dashboard",
     description: "Track approved payroll waiting for release and monitor disbursement activity.",
     hidePageIntro: true,
-    render: ({ user }) => <RoleAnalyticsOverview user={user} />,
+    render: ({ user, onNavigate }) => <CashierDashboardOverview user={user} onNavigate={onNavigate} />,
+  },
+  leave: {
+    title: "Leave Request",
+    description: "File and monitor your personal leave requests.",
+    hidePageIntro: true,
+    render: ({ user }) => (
+      <LeaveDashboard
+        user={user}
+        leaveRequestLayout="management"
+        activeView="leave"
+        showRequestTabs={false}
+        showOnlyOwnLeaveRequests
+      />
+    ),
+  },
+  travel: {
+    title: "Travel Order Request",
+    description: "File and monitor travel orders under your employee account.",
+    hidePageIntro: true,
+    render: ({ user }) => (
+      <TravelOrderWorkspace
+        user={user}
+        title="Travel Order Request"
+        description="File and monitor travel orders under your employee account."
+        allowCreate
+      />
+    ),
+  },
+  passSlip: {
+    title: "Pass Slips",
+    description: "File and review pass slips under your employee account.",
+    hidePageIntro: true,
+    render: ({ user }) => (
+      <PassSlipWorkspace
+        user={user}
+        title="My Pass Slips"
+        description="File and review pass slips under your employee account."
+        submitLabel="Create Pass Slip"
+        showDivisionFilter={false}
+      />
+    ),
+  },
+  cto: {
+    title: "Compensatory Time Off",
+    description: "File and monitor your compensatory time off requests.",
+    hidePageIntro: true,
+    render: ({ user }) => (
+      <CompensatoryWorkspace
+        user={user}
+        title="My Compensatory Time Off Requests"
+        description="File and monitor compensatory time off requests under your employee account."
+        submitLabel="File CTO"
+      />
+    ),
   },
   payrollGenerate: {
     title: "Payroll",
@@ -121,6 +194,12 @@ const modules = {
     description: "Review generated payslip entries for released payroll.",
     hidePageIntro: true,
     render: ({ user }) => <CashierPayrollWorkspace view="payslip" user={user} />,
+  },
+  archivedPayroll: {
+    title: "Archived Payroll",
+    description: "View archived payroll records kept for audit review.",
+    hidePageIntro: true,
+    render: ({ user, onNavigate }) => <CashierPayrollWorkspace view="archived" user={user} onNavigate={onNavigate} />,
   },
   payrollLoan: {
     title: "Loan Management",

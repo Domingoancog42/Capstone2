@@ -1,8 +1,11 @@
 import React from "react";
 import { faPenToSquare, faTrashCan } from "@fortawesome/free-solid-svg-icons";
+import { FileSpreadsheet } from "lucide-react";
 import ActionIconButton from "../../components/UI/ActionIconButton";
+import ActionsMenu from "../../components/UI/ActionsMenu";
 import RecordCards from "../../components/UI/RecordCards";
 import {
+  compareServiceRecordsNewestFirst,
   formatLwop,
   formatServiceDate,
   formatServiceSalary,
@@ -29,7 +32,13 @@ function MigratedTag() {
  * order is what makes the table worth keeping on a wide screen; on a phone it only adds up to a
  * 1180px sideways drag, and each row is self-contained enough to stand on its own as a card.
  */
-export default function ServiceRecordTable({ records = [], canManage = false, onEdit, onArchive, loading = false }) {
+export default function ServiceRecordTable({
+  records = [],
+  canManage = false,
+  onEdit,
+  onArchive,
+  loading = false,
+}) {
   if (loading) {
     return (
       <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 px-4 py-12 text-center">
@@ -40,18 +49,24 @@ export default function ServiceRecordTable({ records = [], canManage = false, on
 
   if (!records.length) {
     return (
-      <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 px-4 py-12 text-center">
+      <div className="grid min-h-72 place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/40 px-4 py-12 text-center">
         <div className="max-w-md">
-          <p className="m-0 text-sm font-semibold text-slate-700">No service record entries yet</p>
-          <p className="m-0 mt-1.5 text-sm text-slate-500">
+          <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-blue-50 text-blue-600 ring-1 ring-blue-100">
+            <FileSpreadsheet size={21} aria-hidden="true" />
+          </div>
+          <p className="m-0 mt-4 text-sm font-semibold text-slate-900">No service record entries yet</p>
+          <p className="m-0 mt-1.5 text-sm leading-6 text-slate-500">
             {canManage
-              ? "Add the first appointment to start this employee's record."
+              ? "Use Add Entry in the employee table to create the first appointment."
               : "Your service record has not been encoded yet. Contact the HR office."}
           </p>
         </div>
       </div>
     );
   }
+
+  // Newest first with the current appointment on top, the same order the printed form uses.
+  const orderedRecords = [...records].sort(compareServiceRecordsNewestFirst);
 
   const renderActions = (record) => (
     <>
@@ -75,18 +90,19 @@ export default function ServiceRecordTable({ records = [], canManage = false, on
     <>
       <RecordCards
         className="lg:hidden"
-        items={records}
+        items={orderedRecords}
         renderCard={(record) => ({
           eyebrow: `${formatServiceDate(record.serviceFrom)} - ${record.isCurrent ? "Present" : formatServiceTo(record)}`,
           title: record.designationTitle || "—",
-          subtitle: record.employmentStatus || "—",
+          subtitle: [record.employmentStatus, record.stClassification].filter(Boolean).join(" · ") || "—",
           badge: record.isCurrent ? (
             <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">
               Present
             </span>
           ) : null,
           fields: [
-            { label: "Salary", value: formatServiceSalary(record.monthlySalary) },
+            { label: "Monthly salary", value: formatServiceSalary(record.monthlySalary) },
+            { label: "Salary / annum", value: formatServiceSalary(Number(record.monthlySalary) * 12) },
             { label: "LWOP", value: formatLwop(record.lwopDays) },
             { label: "Station", value: record.station || "—" },
             { label: "Branch", value: record.branch || "—" },
@@ -108,7 +124,7 @@ export default function ServiceRecordTable({ records = [], canManage = false, on
               ),
             },
           ],
-          actions: canManage ? renderActions(record) : null,
+          actions: canManage ? <ActionsMenu>{renderActions(record)}</ActionsMenu> : null,
         })}
       />
 
@@ -144,7 +160,7 @@ export default function ServiceRecordTable({ records = [], canManage = false, on
             ) : null}
           </tr>
           <tr>
-            {["From", "To", "Designation", "Status", "Salary", "Date", "Cause"].map((header) => (
+            {["From", "To", "Position", "Status", "Salary", "Date", "Cause"].map((header) => (
               <th
                 key={header}
                 className="border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-left text-xs font-semibold uppercase text-slate-500"
@@ -155,7 +171,7 @@ export default function ServiceRecordTable({ records = [], canManage = false, on
           </tr>
         </thead>
         <tbody>
-          {records.map((record) => (
+          {orderedRecords.map((record) => (
             <tr key={record.id} className="border-b border-slate-100 transition hover:bg-slate-50">
               <td className="whitespace-nowrap px-3 py-3 text-sm text-slate-700">
                 {formatServiceDate(record.serviceFrom)}
@@ -170,9 +186,19 @@ export default function ServiceRecordTable({ records = [], canManage = false, on
                 )}
               </td>
               <td className="px-3 py-3 text-sm font-semibold text-slate-900">{record.designationTitle || "—"}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-sm text-slate-700">{record.employmentStatus || "—"}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-sm text-slate-700">
+                {record.employmentStatus || "—"}
+                {record.stClassification ? (
+                  <span className="block text-xs text-slate-500">{record.stClassification}</span>
+                ) : null}
+              </td>
               <td className="whitespace-nowrap px-3 py-2.5 text-right text-sm tabular-nums text-slate-700">
                 {formatServiceSalary(record.monthlySalary)}
+                {Number(record.monthlySalary) > 0 ? (
+                  <span className="block text-xs text-slate-500">
+                    {formatServiceSalary(Number(record.monthlySalary) * 12)} / annum
+                  </span>
+                ) : null}
               </td>
               <td className="px-3 py-3 text-sm text-slate-700">{record.station || "—"}</td>
               <td className="px-3 py-3 text-sm text-slate-700">{record.branch || "—"}</td>
@@ -189,7 +215,7 @@ export default function ServiceRecordTable({ records = [], canManage = false, on
               </td>
               {canManage ? (
                 <td className="whitespace-nowrap px-3 py-3 text-right">
-                  <div className="inline-flex flex-wrap gap-2">{renderActions(record)}</div>
+                  <ActionsMenu>{renderActions(record)}</ActionsMenu>
                 </td>
               ) : null}
             </tr>

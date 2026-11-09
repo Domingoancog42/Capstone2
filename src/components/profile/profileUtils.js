@@ -10,18 +10,22 @@ export const profileSectionItems = [
   { id: "personal", label: "Personal Details" },
   { id: "family", label: "Family Background" },
   { id: "education", label: "Educational Background" },
+  { id: "eligibility", label: "Civil Service Eligibility" },
+  { id: "training", label: "Learning & Development" },
   { id: "address", label: "Address" },
   { id: "government", label: "Government IDs" },
   { id: "employment", label: "Employment Status" },
   { id: "emergency", label: "Emergency Contact" },
-  { id: "documents", label: "Documents" },
   { id: "signature", label: "E-Signature" },
   { id: "security", label: "Security" },
 ];
 
-/** Panels that open in a floating card instead of claiming a tab of their own. */
+/**
+ * Panels that open in a floating card instead of claiming a tab of their own. The service record
+ * itself is no longer one of them: every role reaches it from the sidebar's "My Service Record".
+ */
 export const profileDialogItems = [
-  { id: "serviceRecord", label: "Service Record" },
+  { id: "salaryGradeHistory", label: "Salary Grade History" },
 ];
 
 /** Every addressable profile target — a deep link may point at either kind. */
@@ -324,6 +328,7 @@ const profileDefaults = {
   designationId: "",
   department: "",
   position: "",
+  designation: "",
   supervisor: "",
   status: "Active",
   basicSalary: "",
@@ -333,12 +338,17 @@ const profileDefaults = {
   emergencyPhone: "",
   emergencyAddress: "",
   profileImage: "",
+  includeProfileImageInPds: true,
   signatureDataUrl: "",
   signatureUploadName: "",
 };
 
 export function normalizeProfileText(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+export function isRegularEmploymentStatus(value) {
+  return normalizeProfileText(value) === "regular";
 }
 
 function normalizeProfileName(value) {
@@ -483,6 +493,8 @@ export function mergeEmployeeWithExtras(employee, extras = {}) {
     designationId: String(employee.designationId || extras.designationId || ""),
     department: employee.department || extras.department || "",
     position: employee.position || extras.position || "",
+    // A blank designation on the record is real (none), so only a record without the field falls back.
+    designation: "designation" in employee ? employee.designation || "" : extras.designation || "",
     supervisor: extras.supervisor || "",
     status: employee.status || "Active",
     basicSalary: employee.basicSalary || "",
@@ -492,6 +504,7 @@ export function mergeEmployeeWithExtras(employee, extras = {}) {
     emergencyPhone: extras.emergencyPhone || "",
     emergencyAddress: extras.emergencyAddress || "",
     profileImage: employee.profileImage || extras.profileImage || "",
+    includeProfileImageInPds: Number(employee.includeProfileImageInPds ?? 1) === 1,
     signatureDataUrl: employee.signatureDataUrl || extras.signatureDataUrl || "",
     signatureUploadName: extras.signatureUploadName || "",
     middleInitial,
@@ -515,6 +528,7 @@ export function extractProfileExtras(profile) {
     designationId: profile.designationId || "",
     department: profile.department || "",
     position: profile.position || "",
+    designation: profile.designation || "",
     supervisor: profile.supervisor || "",
     emergencyContactName: profile.emergencyContactName || "",
     emergencyRelationship: profile.emergencyRelationship || "",
@@ -554,7 +568,7 @@ export function buildEmployeePayload(profile) {
     height: "",
     weight: "",
     bloodType: "",
-    gsisIdNo: profile.gsisIdNo.trim(),
+    gsisIdNo: isRegularEmploymentStatus(profile.employmentStatus) ? profile.gsisIdNo.trim() : "",
     pagibigIdNo: profile.pagibigIdNo.trim(),
     philhealthIdNo: profile.philhealthIdNo.trim(),
     tinNo: profile.tinNo.trim(),
@@ -568,7 +582,9 @@ export function buildUpdatedSessionUser(user, employee) {
     employee_id: employee?.employeeId || user?.employee_id || "",
     full_name: employee?.fullName || [employee?.firstName, employee?.middleName, employee?.lastName].filter(Boolean).join(" ") || user?.full_name || "",
     division: employee?.department || user?.division || "",
-    designation: employee?.position || user?.designation || "",
+    position: employee?.position || user?.position || "",
+    // Blank is a real value here (no designation), so the fresh record wins whenever there is one.
+    designation: employee ? employee.designation || "" : user?.designation || "",
     profile_image: employee?.profileImage || user?.profile_image || "",
   });
 
@@ -587,7 +603,8 @@ export function buildUpdatedSessionUserFromProfile(user, profile) {
     employee_id: profile?.employeeId || user?.employee_id || "",
     full_name: fullName || user?.full_name || "",
     division: profile?.department || user?.division || "",
-    designation: profile?.position || user?.designation || "",
+    position: profile?.position || user?.position || "",
+    designation: profile ? profile.designation || "" : user?.designation || "",
     profile_image: profile?.profileImage || user?.profile_image || "",
   });
 

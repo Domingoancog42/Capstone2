@@ -132,6 +132,15 @@ export default function TwoFactorVerification({
     } catch (error) {
       const data = error.response?.data || {};
       updateFromResponse(data);
+
+      const retryAfter = Math.max(0, Number(data.retryAfter) || 0);
+      if (data.reason === "rate_limited" && retryAfter > 0) {
+        setChallenge((current) => ({
+          ...current,
+          resendAvailableInSeconds: Math.max(current.resendAvailableInSeconds, retryAfter),
+        }));
+      }
+
       setTone("error");
       setMessage(data.message || "Unable to resend the code.");
     } finally {

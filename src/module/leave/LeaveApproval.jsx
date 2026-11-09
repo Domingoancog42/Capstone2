@@ -24,7 +24,7 @@ export default function LeaveApproval({ pendingRequests = [] }) {
                 <p className="m-0 text-sm font-semibold text-slate-900">{request.employeeName}</p>
                 <p className="m-0 text-xs text-slate-500">{request.leaveType} • {request.division}</p>
               </div>
-              <LeaveStatusBadge status={request.status} />
+              <LeaveStatusBadge status={request.status} rejectedByRole={request.rejectedByRole} />
             </div>
           ))
         )}

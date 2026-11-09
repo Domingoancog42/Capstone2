@@ -14,10 +14,9 @@ import {
   Printer,
   Search,
   SlidersHorizontal,
-  FolderUp,
   UploadCloud,
 } from "lucide-react";
-import { faBoxArchive, faCheck, faClockRotateLeft, faEye, faFilePen, faPen, faPrint, faRotateLeft, faXmark } from "@fortawesome/free-solid-svg-icons";
+import { faBoxArchive, faClockRotateLeft, faEye, faPen, faPrint, faRotateLeft } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import ActionIconButton from "../../components/UI/ActionIconButton";
 import Button from "../../components/UI/button";
@@ -34,11 +33,11 @@ import Table from "../../components/UI/table";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   fetchAttendanceDtr,
+  fetchAttendanceImportHistory,
   fetchAttendanceLogs,
   fetchAttendanceRecords,
+  exportAttendanceDtrExcel,
   importAttendanceCsv,
-  requestAttendanceAdjustment,
-  updateAttendanceAdjustmentStatus,
   updateAttendanceRecord,
 } from "../../services/attendanceService";
 import { getEmployeeSignature } from "../../services/api";
@@ -48,6 +47,17 @@ import {
   confirmArchiveRecord,
   confirmRestoreRecord,
 } from "../../utils/archiveActions";
+import {
+  ATTENDANCE_CUTOFF_OPTIONS,
+  ATTENDANCE_DAT_BYTE_LIMIT,
+  ATTENDANCE_DAT_MB_LIMIT,
+  buildAttendanceCutoffCsv,
+  convertDatTextToAttendanceCsv,
+  formatAttendanceCutoffLabel,
+  formatAttendanceFileSize,
+  getAttendanceCutoffRange,
+  readAttendanceDatFile,
+} from "../../utils/attendanceDat";
 import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
 import DailyTimeRecord, {
   buildDailyTimeRecordRows,
@@ -74,16 +84,13 @@ async function loadDtrSignature(dtr) {
   }
 }
 
-const STATUS_OPTIONS = ["Present", "Late", "Undertime", "Late / Undertime", "Incomplete", "Leave with Pay", "Leave Without Pay"];
+const STATUS_OPTIONS = ["Present", "Late", "Incomplete", "Absent", "Leave with Pay", "Leave Without Pay"];
 const DEFAULT_ROWS_PER_PAGE = 10;
+const IMPORT_HISTORY_PAGE_SIZE = 10;
 const ATTENDANCE_FILTER_STORAGE_PREFIX = "hris-attendance-filters";
 const ATTENDANCE_FILTER_KEYS = ["search", "dateFrom", "dateTo", "department", "status"];
 /* Long enough to cover the gap between keystrokes, short enough not to feel like a stall. */
 const ATTENDANCE_SEARCH_DEBOUNCE_MS = 350;
-const ATTENDANCE_DAT_MB_LIMIT = 10;
-const ATTENDANCE_IMPORT_HEADERS = ["Employee ID", "Date & Time", "State C", "State D", "State E", "State F"];
-const DAT_DATE_TIME_PATTERN =
-  /(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})[T\s]+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)/i;
 const ATTENDANCE_PROGRESS_STRIPE_KEYFRAMES = `
 @keyframes attendance-progress-stripes {
   0% {
@@ -95,22 +102,29 @@ const ATTENDANCE_PROGRESS_STRIPE_KEYFRAMES = `
 }
 `;
 
-function defaultAttendanceFilters() {
+function defaultAttendanceFilters(roleKey) {
+  const isPersonalView = roleKey === "employee";
+
   return {
     search: "",
-    dateFrom: startOfCurrentMonth(),
-    dateTo: toLocalDateInput(),
+    // Personal attendance must not silently hide an older biometric import. Management still opens
+    // on the current month because its cross-employee result set can be much larger.
+    dateFrom: isPersonalView ? "" : startOfCurrentMonth(),
+    dateTo: isPersonalView ? "" : toLocalDateInput(),
     department: "",
     status: "",
   };
 }
 
 function attendanceFilterStorageKey(roleKey) {
-  return `${ATTENDANCE_FILTER_STORAGE_PREFIX}:${roleKey || "default"}`;
+  // v2 gives existing personal screens a one-time reset from the old current-month defaults, which
+  // otherwise keep hiding attendance imported for a previous month even after this fix ships.
+  const version = roleKey === "employee" ? ":v2" : "";
+  return `${ATTENDANCE_FILTER_STORAGE_PREFIX}:${roleKey || "default"}${version}`;
 }
 
 function readStoredAttendanceFilters(roleKey) {
-  const defaults = defaultAttendanceFilters();
+  const defaults = defaultAttendanceFilters(roleKey);
 
   if (typeof window === "undefined") {
     return defaults;
@@ -128,7 +142,8 @@ function readStoredAttendanceFilters(roleKey) {
       dateFrom: String(parsed.dateFrom || defaults.dateFrom),
       dateTo: String(parsed.dateTo || defaults.dateTo),
       department: String(parsed.department || ""),
-      status: String(parsed.status || ""),
+      // A remembered status that no longer exists (the retired "Undertime") would match nothing.
+      status: STATUS_OPTIONS.includes(parsed.status) ? parsed.status : "",
     };
   } catch {
     return defaults;
@@ -145,6 +160,15 @@ function toLocalDateInput(date = new Date()) {
 function startOfCurrentMonth() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
+/* Opens on the cut-off HR is most likely closing right now: this month, the half today falls in. */
+function defaultImportCutoff() {
+  const today = new Date();
+  return {
+    month: startOfCurrentMonth().slice(0, 7),
+    period: today.getDate() <= 15 ? "1st Half" : "2nd Half",
+  };
 }
 
 /**
@@ -190,20 +214,6 @@ function formatDate(value) {
   });
 }
 
-function formatFileSize(bytes = 0) {
-  const value = Number(bytes) || 0;
-
-  if (value <= 0) {
-    return "0 KB";
-  }
-
-  if (value >= 1024 * 1024) {
-    return `${(value / (1024 * 1024)).toFixed(2)} MB`;
-  }
-
-  return `${Math.max(1, Math.round(value / 1024))} KB`;
-}
-
 function formatTime(value) {
   const date = parseDate(value);
   if (!date) {
@@ -225,6 +235,49 @@ function formatDateTime(value) {
 
   return `${formatDate(value)} ${formatTime(value)}`;
 }
+
+/* Muted zeros keep the eye on the counts that matter in a row of mostly-zero tallies. */
+function ImportCount({ value, tone = "text-slate-900" }) {
+  const count = Number(value) || 0;
+  return <span className={`tabular-nums ${count === 0 ? "text-slate-400" : `font-semibold ${tone}`}`}>{count}</span>;
+}
+
+const importHistoryColumns = [
+  {
+    key: "importedAt",
+    header: "Imported",
+    render: (row) => (
+      <div>
+        <p className="m-0 font-semibold text-slate-900">{formatDateTime(row.importedAt)}</p>
+        <p className="m-0 mt-0.5 text-xs text-slate-500">by {row.importedBy || "Unknown user"}</p>
+      </div>
+    ),
+  },
+  {
+    key: "cutoff",
+    header: "Cut-off",
+    render: (row) => (
+      <div>
+        <p className="m-0 font-semibold text-slate-900">{row.cutoffLabel || "Whole file"}</p>
+        {row.dateFrom && row.dateTo ? (
+          <p className="m-0 mt-0.5 text-xs text-slate-500">{formatDate(row.dateFrom)} – {formatDate(row.dateTo)}</p>
+        ) : null}
+      </div>
+    ),
+  },
+  {
+    key: "fileName",
+    header: "File",
+    render: (row) => <span className="break-all text-slate-700">{row.fileName}</span>,
+  },
+  { key: "totalImported", header: "New punches", render: (row) => <ImportCount value={row.totalImported} tone="text-emerald-700" /> },
+  { key: "duplicatesSkipped", header: "Duplicates", render: (row) => <ImportCount value={row.duplicatesSkipped} /> },
+  { key: "invalidRows", header: "Invalid", render: (row) => <ImportCount value={row.invalidRows} tone="text-rose-700" /> },
+  { key: "outsideCutoffRows", header: "Outside cut-off", render: (row) => <ImportCount value={row.outsideCutoffRows} tone="text-amber-700" /> },
+  { key: "successfulRecords", header: "Daily records", render: (row) => <ImportCount value={row.successfulRecords} /> },
+  { key: "absentRecordsCreated", header: "Absent", render: (row) => <ImportCount value={row.absentRecordsCreated} /> },
+  { key: "leaveRecordsCreated", header: "Leave", render: (row) => <ImportCount value={row.leaveRecordsCreated} /> },
+];
 
 function toDateTimeInput(value, fallbackDate = "") {
   const date = parseDate(value);
@@ -253,12 +306,12 @@ function statusClasses(status) {
     return "border-amber-200 bg-amber-50 text-amber-700";
   }
 
-  if (value.includes("undertime")) {
-    return "border-orange-200 bg-orange-50 text-orange-700";
-  }
-
   if (value === "incomplete") {
     return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+
+  if (value === "absent") {
+    return "border-red-200 bg-red-50 text-red-700";
   }
 
   if (value === "leave with pay") {
@@ -270,180 +323,6 @@ function statusClasses(status) {
   }
 
   return "border-slate-200 bg-slate-50 text-slate-700";
-}
-
-function adjustmentStatusClasses(status) {
-  const value = String(status || "").toLowerCase();
-
-  if (value === "approved") {
-    return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  }
-
-  if (value === "rejected") {
-    return "border-rose-200 bg-rose-50 text-rose-700";
-  }
-
-  return "border-amber-200 bg-amber-50 text-amber-700";
-}
-
-function csvCell(value) {
-  const text = String(value ?? "");
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
-
-function cleanDatToken(value) {
-  return String(value ?? "")
-    .trim()
-    .replace(/^\uFEFF/, "")
-    .replace(/^["']|["']$/g, "");
-}
-
-function splitDatFields(value) {
-  const text = cleanDatToken(value);
-
-  if (text.includes("\t")) {
-    return text.split("\t").map(cleanDatToken).filter(Boolean);
-  }
-
-  if (text.includes(",")) {
-    return text.split(",").map(cleanDatToken).filter(Boolean);
-  }
-
-  if (text.includes(";")) {
-    return text.split(";").map(cleanDatToken).filter(Boolean);
-  }
-
-  return text.split(/\s+/).map(cleanDatToken).filter(Boolean);
-}
-
-function normalizeDatDateTime(datePart, timePart) {
-  const dateText = cleanDatToken(datePart);
-  const timeText = cleanDatToken(timePart).toUpperCase().replace(/\s+/g, " ");
-  const isoMatch = dateText.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-
-  if (isoMatch) {
-    return `${isoMatch[1]}-${isoMatch[2].padStart(2, "0")}-${isoMatch[3].padStart(2, "0")} ${timeText}`;
-  }
-
-  return `${dateText} ${timeText}`;
-}
-
-function stateFromPunchType(type) {
-  return type === "time_out" ? ["1", "1", "1", "0"] : ["1", "0", "1", "0"];
-}
-
-function extractPunchState(tokens, sourceText) {
-  const compactState = tokens.map(cleanDatToken).find((token) => /^[01]{4}$/.test(token));
-
-  if (compactState) {
-    return compactState.split("");
-  }
-
-  const binaryTokens = tokens.map(cleanDatToken).filter((token) => token === "0" || token === "1");
-
-  if (binaryTokens.length >= 4) {
-    return binaryTokens.slice(0, 4);
-  }
-
-  const normalizedTokens = tokens.map((token) => cleanDatToken(token).toLowerCase().replace(/[^a-z0-9]/g, ""));
-  const normalizedSource = String(sourceText || "").toLowerCase();
-
-  if (
-    normalizedTokens.some((token) => ["timein", "checkin", "clockin", "punchin", "signin", "in", "i"].includes(token)) ||
-    /\b(time\s*in|check\s*in|clock\s*in|punch\s*in|sign\s*in)\b/i.test(normalizedSource)
-  ) {
-    return stateFromPunchType("time_in");
-  }
-
-  if (
-    normalizedTokens.some((token) => ["timeout", "checkout", "clockout", "punchout", "signout", "out", "o"].includes(token)) ||
-    /\b(time\s*out|check\s*out|clock\s*out|punch\s*out|sign\s*out)\b/i.test(normalizedSource)
-  ) {
-    return stateFromPunchType("time_out");
-  }
-
-  if (binaryTokens.length === 1 && tokens.length <= 2) {
-    return stateFromPunchType(binaryTokens[0] === "1" ? "time_out" : "time_in");
-  }
-
-  return null;
-}
-
-function parseDatAttendanceLine(line) {
-  const text = cleanDatToken(line);
-  const dateTimeMatch = text.match(DAT_DATE_TIME_PATTERN);
-
-  if (!dateTimeMatch) {
-    return null;
-  }
-
-  const beforeDateTime = text.slice(0, dateTimeMatch.index).trim();
-  const afterDateTime = text.slice((dateTimeMatch.index || 0) + dateTimeMatch[0].length).trim();
-  const employeeTokens = splitDatFields(beforeDateTime).filter((token) => !/^(no|number|id|user|employee|emp|code)$/i.test(token));
-  const afterTokens = splitDatFields(afterDateTime);
-  let stateTokens = afterTokens;
-  let employeeCode =
-    [...employeeTokens].reverse().find((token) => /^[a-z0-9][a-z0-9_-]*\d[a-z0-9_-]*$/i.test(token)) ||
-    employeeTokens[employeeTokens.length - 1] ||
-    "";
-
-  if (!employeeCode) {
-    const employeeTokenIndex = afterTokens.findIndex(
-      (token) => /^[a-z0-9][a-z0-9_-]*\d[a-z0-9_-]*$/i.test(token) && !/^[01]{1,4}$/.test(token)
-    );
-
-    if (employeeTokenIndex >= 0) {
-      employeeCode = afterTokens[employeeTokenIndex];
-      stateTokens = afterTokens.filter((_, index) => index !== employeeTokenIndex);
-    }
-  }
-
-  const state = extractPunchState(stateTokens, afterDateTime);
-
-  if (!employeeCode || !state) {
-    return null;
-  }
-
-  return [employeeCode, normalizeDatDateTime(dateTimeMatch[1], dateTimeMatch[2]), ...state];
-}
-
-function isLikelyDatHeader(line) {
-  const text = String(line || "").toLowerCase();
-  return /employee|emp|user|date|time|state|punch|check/.test(text) && !DAT_DATE_TIME_PATTERN.test(text);
-}
-
-function convertDatTextToAttendanceCsv(text) {
-  const rows = [ATTENDANCE_IMPORT_HEADERS];
-  let skippedRows = 0;
-
-  String(text || "")
-    .split(/\r?\n/)
-    .forEach((line) => {
-      if (!line.trim()) {
-        return;
-      }
-
-      const row = parseDatAttendanceLine(line);
-      if (row) {
-        rows.push(row);
-        return;
-      }
-
-      if (!isLikelyDatHeader(line)) {
-        skippedRows++;
-      }
-    });
-
-  if (rows.length === 1) {
-    throw new Error("No attendance rows could be converted from this DAT file.");
-  }
-
-  return {
-    csv: rows.map((row) => row.map(csvCell).join(",")).join("\n"),
-    rowCount: rows.length - 1,
-    skippedRows,
-  };
 }
 
 function escapeHtml(value) {
@@ -484,17 +363,52 @@ function printDtr(dtr, signatureDataUrl = "") {
     )
     .join("");
 
+  const printTimestamp = new Date().toLocaleString();
+  const sheetHtml = (copyLabel) => `
+    <main class="dtr">
+      <div style="font-size:10px;margin-bottom:5px;">${printTimestamp}</div>
+      <div class="top"><span>Civil Service Form No. 48</span><span>&gt;&gt;&gt; ${escapeHtml(copyLabel)}</span></div>
+      <div class="header">
+        <img class="logo" src="/mgb.png" alt="MGB Logo" />
+        <h1>Mines and Geosciences Bureau - 10</h1>
+        <h2>DAILY TIME RECORD</h2>
+        <span class="name">${escapeHtml(employeeName)}</span>
+      </div>
+      <div style="font-size:11px;margin-top:15px;">
+        For the month of <span class="line-value">${escapeHtml(monthLabel)}</span>
+        <div class="official">
+          <span>Official hours for arrival and departure</span>
+          <span style="text-align:right;">Regular days <span class="line-value" style="min-width:35px;">8.00</span><br />Saturdays <span class="line-value" style="min-width:35px;">0.00</span></span>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr><th rowspan="2">Day</th><th colspan="2">A M</th><th colspan="2">P M</th><th colspan="2">REMARKS<br />IN MINUTES</th></tr>
+          <tr><th>Arrival</th><th>Departure</th><th>Arrival</th><th>Departure</th><th>T</th><th>U</th></tr>
+        </thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+      <div class="cert">I certify on my honor that the above is a true and correct report of the<br />hours work performed, record of which was daily at the time of arrival<br />and departure from office.</div>
+      <div class="sig-ink">${signatureDataUrl ? `<img src="${escapeHtml(signatureDataUrl)}" alt="Signature of ${escapeHtml(employeeName)}" />` : ""}</div>
+      <div class="sig"></div><div class="caption">Signature</div>
+      <div class="dots">---------------------------------------------------------</div><div class="caption">VERIFIED as to the prescribed office hours</div>
+      <div class="sig" style="margin-top:35px;"></div><div class="caption"><strong>In Charge</strong></div>
+    </main>
+  `;
+
   printWindow.document.write(`
     <!doctype html>
     <html>
       <head>
         <title>Daily Time Record - ${escapeHtml(employeeName)}</title>
         <style>
+          @page { size: A4 portrait; margin: 8mm; }
           body { background: #f8fafc; margin: 0; padding: 24px; }
+          .dtr-pair { display: flex; gap: 20px; margin: 0 auto; width: max-content; }
           .dtr { background: #fff; color: #000; font-family: "Times New Roman", Times, serif; margin: 0 auto; padding: 30px; width: 450px; }
           .top { display: flex; font-size: 10px; font-style: italic; justify-content: space-between; margin-bottom: 10px; }
-          .header { position: relative; text-align: center; }
-          .logo { border: 1px solid #ddd; border-radius: 50%; height: 50px; left: 5px; object-fit: contain; position: absolute; top: 0; width: 50px; }
+          .header { min-height: 80px; position: relative; text-align: center; }
+          .logo { height: 80px; left: 5px; object-fit: fill; position: absolute; top: -8px; width: 50px; }
           h1 { font-size: 14px; margin: 0; text-transform: uppercase; }
           h2 { font-size: 12px; margin: 0; }
           .name { border-bottom: 1px solid #000; display: inline-block; font-size: 14px; font-weight: 700; margin-top: 15px; text-align: center; text-transform: uppercase; width: 85%; }
@@ -511,42 +425,18 @@ function printDtr(dtr, signatureDataUrl = "") {
           .sig-ink img { display: block; max-height: 42px; max-width: 170px; object-fit: contain; }
           @media print {
             body { background: #fff; padding: 0; }
-            .dtr { box-shadow: none; }
+            .dtr-pair { align-items: flex-start; display: flex; gap: 4mm; width: 100%; }
+            .dtr { box-shadow: none; box-sizing: border-box; flex: 1 1 0; margin: 0; min-width: 0; padding: 3mm; width: 0; }
             /* Without this the signature is dropped by the browser's "no background graphics" default. */
             .sig-ink img { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           }
         </style>
       </head>
       <body>
-        <main class="dtr">
-          <div style="font-size:10px;margin-bottom:5px;">${new Date().toLocaleString()}</div>
-          <div class="top"><span>Civil Service Form No. 48</span><span>&gt;&gt;&gt; ORIGINAL COPY</span></div>
-          <div class="header">
-            <img class="logo" src="/mgb.png" alt="MGB Logo" />
-            <h1>Mines and Geosciences Bureau - 10</h1>
-            <h2>DAILY TIME RECORD</h2>
-            <span class="name">${escapeHtml(employeeName)}</span>
-          </div>
-          <div style="font-size:11px;margin-top:15px;">
-            For the month of <span class="line-value">${escapeHtml(monthLabel)}</span>
-            <div class="official">
-              <span>Official hours for arrival and departure</span>
-              <span style="text-align:right;">Regular days <span class="line-value" style="min-width:35px;">8.00</span><br />Saturdays <span class="line-value" style="min-width:35px;">0.00</span></span>
-            </div>
-          </div>
-          <table>
-            <thead>
-              <tr><th rowspan="2">Day</th><th colspan="2">A M</th><th colspan="2">P M</th><th colspan="2">REMARKS<br />IN MINUTES</th></tr>
-              <tr><th>Arrival</th><th>Departure</th><th>Arrival</th><th>Departure</th><th>T</th><th>U</th></tr>
-            </thead>
-            <tbody>${bodyRows}</tbody>
-          </table>
-          <div class="cert">I certify on my honor that the above is a true and correct report of the<br />hours work performed, record of which was daily at the time of arrival<br />and departure from office.</div>
-          <div class="sig-ink">${signatureDataUrl ? `<img src="${escapeHtml(signatureDataUrl)}" alt="Signature of ${escapeHtml(employeeName)}" />` : ""}</div>
-          <div class="sig"></div><div class="caption">Signature</div>
-          <div class="dots">---------------------------------------------------------</div><div class="caption">VERIFIED as to the prescribed office hours</div>
-          <div class="sig" style="margin-top:35px;"></div><div class="caption"><strong>In Charge</strong></div>
-        </main>
+        <div class="dtr-pair">
+          ${sheetHtml("ORIGINAL COPY")}
+          ${sheetHtml("DUPLICATE COPY")}
+        </div>
         <script>window.onload = () => { window.print(); };</script>
       </body>
     </html>
@@ -584,7 +474,7 @@ function LoadingSkeleton({ showMetricCards = true }) {
   );
 }
 
-function buildCalendarDays(records, month) {
+function buildCalendarDays(records, month, throughDate = toLocalDateInput()) {
   const base = parseDate(`${month}-01T00:00:00`);
   if (!base) {
     return [];
@@ -602,9 +492,9 @@ function buildCalendarDays(records, month) {
       day,
       record: recordsByDate.get(dateKey),
     };
-  });
+  }).filter((day) => day.id <= throughDate);
 
-  return [...leading, ...days];
+  return days.length > 0 ? [...leading, ...days] : [];
 }
 
 export default function AttendanceManagementWorkspace({ user, mode }) {
@@ -613,6 +503,13 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
   const roleKey = mode ? normalizeRole(mode) : resolveUserRoleKey(user);
   const isAdminView = roleKey === "admin";
   const isEmployeeView = roleKey === "employee";
+  const showDivisionFilter = !isEmployeeView;
+  /*
+   * Admin and HR Staff work the records table directly, so they get the compact layout: filters sit
+   * inline under "Attendance Records" with no metric cards or separate filter card above it. The
+   * other management roles keep the overview cards.
+   */
+  const showOverviewCards = !isAdminView && !isEmployeeView && roleKey !== "hrstaff";
   const [filters, setFilters] = useState(() => readStoredAttendanceFilters(roleKey));
   /*
    * What the request actually uses. It trails `filters` so the controls can update on every
@@ -629,7 +526,6 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
   const [summary, setSummary] = useState(null);
   const [departments, setDepartments] = useState([]);
   const [employees, setEmployees] = useState([]);
-  const [adjustments, setAdjustments] = useState([]);
   const [permissions, setPermissions] = useState({});
   const [loading, setLoading] = useState(true);
   // Declared with the rest of the state rather than beside `canArchive` below, because
@@ -639,13 +535,22 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const [sortConfig, setSortConfig] = useState({ key: "date", direction: "desc" });
   const [importOpen, setImportOpen] = useState(false);
-  const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
+  const [importSourceMode, setImportSourceMode] = useState("dat");
   const [sourceDatFile, setSourceDatFile] = useState(null);
+  const [sourceExcelFile, setSourceExcelFile] = useState(null);
   const [convertingDat, setConvertingDat] = useState(false);
   const [datDragActive, setDatDragActive] = useState(false);
   const [datUploadProgress, setDatUploadProgress] = useState(0);
-  const [conversionDetails, setConversionDetails] = useState(null);
+  /*
+   * The whole converted file is kept, not just the CSV, so changing the cut-off below re-cuts it
+   * in place instead of asking for the DAT file again. `{ error }` when the conversion failed.
+   */
+  const [datConversion, setDatConversion] = useState(null);
+  const [importCutoff, setImportCutoff] = useState(defaultImportCutoff);
+  const [importHistoryOpen, setImportHistoryOpen] = useState(false);
+  const [importHistoryLoading, setImportHistoryLoading] = useState(false);
+  const [importHistory, setImportHistory] = useState({ imports: [], total: 0, page: 1, pageSize: IMPORT_HISTORY_PAGE_SIZE });
   const [importSummary, setImportSummary] = useState(null);
   const [invalidSamples, setInvalidSamples] = useState([]);
   const [dtrOpen, setDtrOpen] = useState(false);
@@ -653,17 +558,21 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
   const [dtrData, setDtrData] = useState(null);
   const [dtrSignature, setDtrSignature] = useState("");
   const [dtrPdfSaving, setDtrPdfSaving] = useState(false);
+  const [dtrExcelSaving, setDtrExcelSaving] = useState(false);
   const dtrSheetRef = useRef(null);
-  const [dtrMonth, setDtrMonth] = useState(() => startOfCurrentMonth().slice(0, 7));
+  const [dtrMonth, setDtrMonth] = useState(() => {
+    const selectedDate = filters.dateTo || filters.dateFrom;
+    return /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)
+      ? selectedDate.slice(0, 7)
+      : startOfCurrentMonth().slice(0, 7);
+  });
+  const personalMonthInitializedRef = useRef(false);
   const [logsOpen, setLogsOpen] = useState(false);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsPayload, setLogsPayload] = useState(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
   const [editForm, setEditForm] = useState({ timeIn: "", timeOut: "", status: "", reason: "" });
-  const [adjustmentOpen, setAdjustmentOpen] = useState(false);
-  const [adjustmentRecord, setAdjustmentRecord] = useState(null);
-  const [adjustmentForm, setAdjustmentForm] = useState({ timeIn: "", timeOut: "", reason: "" });
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -703,15 +612,35 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
 
     try {
       const result = await fetchAttendanceRecords(
-        archiveView ? { ...queryFilters, archived: 1 } : queryFilters
+        {
+          ...queryFilters,
+          ...(archiveView ? { archived: 1 } : {}),
+          ...(isEmployeeView ? { scope: "personal" } : {}),
+        }
       );
 
       setRecords(result.records || []);
       setSummary(result.summary || null);
       setDepartments(result.departments || []);
       setEmployees(result.employees || []);
-      setAdjustments(result.adjustments || []);
       setPermissions(result.permissions || {});
+
+      if (isEmployeeView && !personalMonthInitializedRef.current) {
+        const importedDates = (result.records || [])
+          .map((record) => String(record?.date || ""))
+          .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+          .sort();
+        const latestImportedMonth = importedDates.at(-1)?.slice(0, 7);
+        const currentMonth = startOfCurrentMonth().slice(0, 7);
+        const currentMonthHasRecords = importedDates.some((date) => date.startsWith(`${currentMonth}-`));
+        const selectedFilterDate = queryFilters.dateTo || queryFilters.dateFrom;
+        const hasSelectedFilterDate = /^\d{4}-\d{2}-\d{2}$/.test(selectedFilterDate);
+
+        if (!hasSelectedFilterDate && latestImportedMonth && !currentMonthHasRecords) {
+          setDtrMonth(latestImportedMonth);
+        }
+        personalMonthInitializedRef.current = true;
+      }
     } catch (error) {
       // A failed background poll keeps the records on screen rather than emptying the table.
       if (!background) {
@@ -724,7 +653,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [archiveView, queryFilters]);
+  }, [archiveView, isEmployeeView, queryFilters]);
 
   useEffect(() => {
     void loadAttendance();
@@ -763,7 +692,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     sorted.sort((left, right) => {
       const leftValue = left[key] ?? "";
       const rightValue = right[key] ?? "";
-      const numericKeys = new Set(["totalMinutes", "lateMinutes", "undertimeMinutes"]);
+      const numericKeys = new Set(["totalMinutes", "lateMinutes"]);
       let result;
 
       if (numericKeys.has(key)) {
@@ -788,19 +717,21 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     return sortedRecords.slice(startIndex, startIndex + rowsPerPage);
   }, [rowsPerPage, safePage, sortedRecords]);
 
-  const pendingAdjustments = adjustments.filter((adjustment) => adjustment.status === "pending");
   const incompleteRecords = sortedRecords.filter((record) => String(record.status).toLowerCase() === "incomplete");
-  const calendarDays = useMemo(() => buildCalendarDays(records, dtrMonth), [dtrMonth, records]);
+  const calendarToday = toLocalDateInput();
+  const calendarDays = useMemo(
+    () => buildCalendarDays(records, dtrMonth, calendarToday),
+    [calendarToday, dtrMonth, records]
+  );
   const canImport = Boolean(permissions.canImport);
+  const canViewImportHistory = Boolean(permissions.canViewImportHistory);
   const canEdit = Boolean(permissions.canEdit);
-  const canApproveAdjustments = Boolean(permissions.canApproveAdjustments);
   /*
    * `roleKey` above folds in `mode`, so it reads "employee" when a manager opens their own
    * attendance through the My Records screen. Archiving is about the signed-in person's authority
    * over the record, not which screen they are on, so it asks the user rather than the mode.
    */
   const canArchive = canArchiveModule(resolveUserRoleKey(user), "attendance");
-  const canRequestAdjustment = Boolean(permissions.canRequestAdjustment);
 
   const metricCards = [
     {
@@ -838,6 +769,16 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       ...current,
       [key]: value,
     }));
+
+    // The personal DTR is monthly. Keep it on the month the employee just selected in the
+    // attendance range so View DTR fetches the same period instead of a stale calendar month.
+    if (
+      isEmployeeView
+      && (key === "dateFrom" || key === "dateTo")
+      && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ) {
+      setDtrMonth(value.slice(0, 7));
+    }
   };
 
   const handleSort = (key) => {
@@ -845,6 +786,17 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       key,
       direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
     }));
+  };
+
+  const openAttendanceImport = (mode) => {
+    setImportSourceMode(mode);
+    setSourceDatFile(null);
+    setSourceExcelFile(null);
+    setDatConversion(null);
+    setDatUploadProgress(0);
+    setImportSummary(null);
+    setInvalidSamples([]);
+    setImportOpen(true);
   };
 
   const processDatFile = async (file) => {
@@ -858,10 +810,10 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     }
 
     setSourceDatFile(file);
-    setImportFile(null);
+    setSourceExcelFile(null);
     setImportSummary(null);
     setInvalidSamples([]);
-    setConversionDetails(null);
+    setDatConversion(null);
     setConvertingDat(true);
     setDatUploadProgress(0);
 
@@ -876,23 +828,22 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     }, 120);
 
     try {
-      const text = await file.text();
+      const text = await readAttendanceDatFile(file);
       const converted = convertDatTextToAttendanceCsv(text);
-      const csvFilename = file.name.replace(/\.dat$/i, "") || "attendance";
-      const csvFile = new File([converted.csv], `${csvFilename}.csv`, { type: "text/csv;charset=utf-8;" });
 
-      setImportFile(csvFile);
-      setConversionDetails({
-        csvName: csvFile.name,
-        rowCount: converted.rowCount,
-        skippedRows: converted.skippedRows,
-      });
+      setDatConversion(converted);
+      /*
+       * A device export is usually pulled for one cut-off, so follow the file's own dates. A file
+       * spanning months gives no single answer and leaves the current selection alone.
+       */
+      if (converted.month && converted.payPeriod) {
+        setImportCutoff({ month: converted.month, period: converted.payPeriod });
+      }
       setDatUploadProgress(100);
       toast.success("DAT file converted to CSV.");
     } catch (error) {
       setSourceDatFile(null);
-      setImportFile(null);
-      setConversionDetails({
+      setDatConversion({
         error: error?.message || "Unable to convert the DAT file.",
       });
       setDatUploadProgress(0);
@@ -903,10 +854,43 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     }
   };
 
-  const handleDatUpload = (event) => {
+  const processExcelFile = (file) => {
+    if (!file) {
+      return;
+    }
+
+    if (!String(file.name || "").toLowerCase().endsWith(".xlsx")) {
+      toast.error("Choose an Excel .xlsx attendance file.");
+      return;
+    }
+
+    if (file.size > ATTENDANCE_DAT_BYTE_LIMIT) {
+      toast.error(`The Excel workbook exceeds the ${ATTENDANCE_DAT_MB_LIMIT} MB import limit.`);
+      return;
+    }
+
+    setSourceExcelFile(file);
+    setSourceDatFile(null);
+    setDatConversion(null);
+    setDatUploadProgress(100);
+    setImportSummary(null);
+    setInvalidSamples([]);
+    toast.success("Excel attendance file ready to import.");
+  };
+
+  const processAttendanceImportFile = (file) => {
+    if (importSourceMode === "excel") {
+      processExcelFile(file);
+      return;
+    }
+
+    void processDatFile(file);
+  };
+
+  const handleAttendanceUpload = (event) => {
     const file = event.target.files?.[0] || null;
     event.target.value = "";
-    void processDatFile(file);
+    processAttendanceImportFile(file);
   };
 
   const handleDatDragOver = (event) => {
@@ -929,12 +913,75 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       return;
     }
 
-    void processDatFile(event.dataTransfer.files?.[0] || null);
+    processAttendanceImportFile(event.dataTransfer.files?.[0] || null);
+  };
+
+  const importCutoffRange = useMemo(
+    () => getAttendanceCutoffRange(importCutoff.period, importCutoff.month),
+    [importCutoff.month, importCutoff.period]
+  );
+  const importCutoffLabel = formatAttendanceCutoffLabel(importCutoff.period, importCutoff.month);
+  /* Re-cut whenever the file or the cut-off changes; only the rows inside the cut-off are sent. */
+  const cutoffCsv = useMemo(
+    () => (datConversion && !datConversion.error && importCutoffRange
+      ? buildAttendanceCutoffCsv(datConversion, importCutoffRange)
+      : null),
+    [datConversion, importCutoffRange]
+  );
+  const importFile = useMemo(() => {
+    if (sourceExcelFile) {
+      return sourceExcelFile;
+    }
+
+    if (!cutoffCsv || cutoffCsv.rowCount === 0 || !sourceDatFile) {
+      return null;
+    }
+
+    const csvFilename = sourceDatFile.name.replace(/\.dat$/i, "") || "attendance";
+    return new File([cutoffCsv.csv], `${csvFilename}.csv`, { type: "text/csv;charset=utf-8;" });
+  }, [cutoffCsv, sourceDatFile, sourceExcelFile]);
+
+  const loadImportHistory = useCallback(async (page = 1) => {
+    setImportHistoryLoading(true);
+
+    try {
+      const result = await fetchAttendanceImportHistory({ page, pageSize: IMPORT_HISTORY_PAGE_SIZE });
+      setImportHistory({
+        imports: Array.isArray(result.imports) ? result.imports : [],
+        total: Number(result.total) || 0,
+        page: Number(result.page) || page,
+        pageSize: Number(result.pageSize) || IMPORT_HISTORY_PAGE_SIZE,
+      });
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Unable to load the import history.");
+    } finally {
+      setImportHistoryLoading(false);
+    }
+  }, []);
+
+  const openImportHistory = () => {
+    setImportHistoryOpen(true);
+    void loadImportHistory(1);
+  };
+
+  const setImportCutoffField = (key, value) => {
+    setImportCutoff((current) => ({ ...current, [key]: value }));
+    setImportSummary(null);
+    setInvalidSamples([]);
   };
 
   const handleImport = async () => {
+    if (!importCutoffRange) {
+      toast.error("Choose the month and cut-off to import.");
+      return;
+    }
+
     if (!importFile) {
-      toast.error("Upload and convert a DAT file before importing.");
+      toast.error(importSourceMode === "excel"
+        ? "Choose an Excel .xlsx attendance file before importing."
+        : cutoffCsv && cutoffCsv.rowCount === 0
+          ? "No attendance rows fall within the selected cut-off."
+          : "Upload and convert a DAT file before importing.");
       return;
     }
 
@@ -944,10 +991,14 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     }
 
     setImporting(true);
-    const toastId = toast.loading("Importing converted attendance...");
+    const toastId = toast.loading(`Importing ${importCutoffLabel} attendance...`);
 
     try {
-      const result = await importAttendanceCsv(importFile);
+      const result = await importAttendanceCsv(importFile, {
+        payPeriod: importCutoff.period,
+        dateFrom: importCutoffRange.dateFrom,
+        dateTo: importCutoffRange.dateTo,
+      });
       const nextImportSummary = result.summary || null;
       setImportSummary(nextImportSummary);
       setInvalidSamples(result.invalidSamples || []);
@@ -958,9 +1009,9 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
           dateTo: nextImportSummary.dateTo,
         }));
       }
-      setImportFile(null);
       setSourceDatFile(null);
-      setConversionDetails(null);
+      setSourceExcelFile(null);
+      setDatConversion(null);
       setDatUploadProgress(0);
       toast.success(result.message || "Attendance import completed.", { id: toastId });
     } catch (error) {
@@ -979,10 +1030,11 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
 
     try {
       const params = record
-        ? { recordId: record.id }
+        ? { recordId: record.id, ...(isEmployeeView ? { scope: "personal" } : {}) }
         : {
             employeeRecordId: employees[0]?.employeeRecordId,
             month: dtrMonth,
+            ...(isEmployeeView ? { scope: "personal" } : {}),
           };
       const result = await fetchAttendanceDtr(params);
       setDtrData(result);
@@ -997,7 +1049,13 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
 
   const printRecordDtr = async (record) => {
     try {
-      const result = await fetchAttendanceDtr(record ? { recordId: record.id } : { employeeRecordId: employees[0]?.employeeRecordId, month: dtrMonth });
+      const result = await fetchAttendanceDtr(record
+        ? { recordId: record.id, ...(isEmployeeView ? { scope: "personal" } : {}) }
+        : {
+            employeeRecordId: employees[0]?.employeeRecordId,
+            month: dtrMonth,
+            ...(isEmployeeView ? { scope: "personal" } : {}),
+          });
       printDtr(result, await loadDtrSignature(result));
     } catch (error) {
       toast.error(error?.response?.data?.message || "Unable to print DTR.");
@@ -1010,7 +1068,10 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     setLogsPayload(null);
 
     try {
-      const result = await fetchAttendanceLogs(record.id);
+      const result = await fetchAttendanceLogs(
+        record.id,
+        isEmployeeView ? { scope: "personal" } : {}
+      );
       setLogsPayload(result);
     } catch (error) {
       toast.error(error?.response?.data?.message || "Unable to load attendance logs.");
@@ -1046,49 +1107,10 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     }
   };
 
-  const openAdjustmentRequest = (record) => {
-    setAdjustmentRecord(record);
-    setAdjustmentForm({
-      timeIn: toDateTimeInput(record.timeIn, record.date),
-      timeOut: toDateTimeInput(record.timeOut, record.date),
-      reason: "",
-    });
-    setAdjustmentOpen(true);
-  };
-
-  const submitAdjustmentRequest = async () => {
-    if (!adjustmentRecord) {
-      return;
-    }
-
-    if (!adjustmentForm.reason.trim()) {
-      toast.error("Reason for adjustment is required.");
-      return;
-    }
-
-    try {
-      await requestAttendanceAdjustment(adjustmentRecord.id, adjustmentForm);
-      toast.success("Attendance adjustment request submitted.");
-      setAdjustmentOpen(false);
-      setAdjustmentRecord(null);
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Unable to request adjustment.");
-    }
-  };
-
-  const handleAdjustmentDecision = async (adjustment, status) => {
-    try {
-      await updateAttendanceAdjustmentStatus(adjustment.id, status);
-      toast.success(status === "approved" ? "Adjustment approved." : "Adjustment rejected.");
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Unable to update adjustment.");
-    }
-  };
-
   /*
-   * Painted from the sheet that is on screen, so the file is the form the user is looking at --
-   * signature, seal and all. `dtrSheetRef` is on the DailyTimeRecord node itself rather than its
-   * scroller, or the capture would inherit the scroller's grey padding and its clipping.
+   * Painted from both sheets on screen, so the file contains the original and duplicate together --
+   * signature, seal and all. `dtrSheetRef` stays inside the scroller so the capture excludes the
+   * grey preview gutter and is not clipped to the visible scroll position.
    */
   const downloadCurrentDtr = async () => {
     if (!dtrData || dtrPdfSaving) {
@@ -1104,6 +1126,32 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       toast.error(error?.message || "Unable to save the Daily Time Record as PDF.");
     } finally {
       setDtrPdfSaving(false);
+    }
+  };
+
+  const exportCurrentDtrExcel = async () => {
+    if (!dtrData || dtrExcelSaving) {
+      return;
+    }
+
+    setDtrExcelSaving(true);
+
+    try {
+      /*
+       * A personal DTR is pinned to the signed-in employee on the server. A desk viewing someone else's
+       * names that employee; attendance.php still confines a Chief to their own division.
+       */
+      await exportAttendanceDtrExcel(
+        isEmployeeView
+          ? { month: dtrData.month || dtrMonth, scope: "personal" }
+          : { month: dtrData.month || dtrMonth, employeeRecordId: dtrData.employee?.employeeRecordId },
+        dailyTimeRecordFileName(dtrData).replace(/\.pdf$/i, ".xlsx")
+      );
+      toast.success("Daily Time Record Excel file downloaded.");
+    } catch (error) {
+      toast.error(error?.message || "Unable to export the Daily Time Record to Excel.");
+    } finally {
+      setDtrExcelSaving(false);
     }
   };
 
@@ -1127,18 +1175,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
             <span className="font-semibold text-slate-700">{row.employeeId || "N/A"}</span>
           ),
         }
-      : {
-          key: "index",
-          header: "No.",
-          headerClassName: "w-[76px]",
-          cellClassName: "w-[76px]",
-          cardRole: "eyebrow",
-          render: (_row, index) => (
-            <span className="font-semibold text-slate-700">
-              {(safePage - 1) * rowsPerPage + index + 1}
-            </span>
-          ),
-        },
+      : null,
     {
       key: "employeeName",
       header: <SortableHeader label="Employee Name" columnKey="employeeName" sortConfig={sortConfig} onSort={handleSort} />,
@@ -1199,23 +1236,15 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       render: (row) => `${row.lateMinutes || 0} min`,
     },
     {
-      key: "undertimeMinutes",
-      header: <SortableHeader label="Undertime" columnKey="undertimeMinutes" sortConfig={sortConfig} onSort={handleSort} />,
-      cardLabel: "Undertime",
-      render: (row) => `${row.undertimeMinutes || 0} min`,
+      key: "status",
+      header: <SortableHeader label="Status" columnKey="status" sortConfig={sortConfig} onSort={handleSort} />,
+      cardRole: "badge",
+      render: (row) => (
+        <span className={`inline-flex min-h-7 items-center rounded-full border px-2.5 text-xs font-semibold ${statusClasses(row.status)}`}>
+          {row.status}
+        </span>
+      ),
     },
-    isEmployeeView
-      ? null
-      : {
-          key: "status",
-          header: <SortableHeader label="Status" columnKey="status" sortConfig={sortConfig} onSort={handleSort} />,
-          cardRole: "badge",
-          render: (row) => (
-            <span className={`inline-flex min-h-7 items-center rounded-full border px-2.5 text-xs font-semibold ${statusClasses(row.status)}`}>
-              {row.status}
-            </span>
-          ),
-        },
     isEmployeeView
       ? null
       : {
@@ -1266,15 +1295,6 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                   onClick={() => openEdit(row)}
                 />
               ) : null}
-              {canRequestAdjustment ? (
-                <ActionIconButton
-                  label="Request attendance adjustment"
-                  icon={faFilePen}
-                  tone="edit"
-                  text="Request"
-                  onClick={() => openAdjustmentRequest(row)}
-                />
-              ) : null}
               {canArchive ? (
                 <ActionIconButton
                   label="Archive attendance record"
@@ -1303,55 +1323,6 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
     { key: "source", header: "Source", render: (row) => row.source || "CSV" },
   ];
 
-  const adjustmentColumns = [
-    {
-      key: "employeeName",
-      header: "Employee",
-      render: (row) => (
-        <div>
-          <p className="m-0 font-semibold text-slate-900">{row.employeeName}</p>
-          <p className="m-0 mt-1 text-xs text-slate-500">{row.employeeId}</p>
-        </div>
-      ),
-    },
-    { key: "date", header: "Date", render: (row) => formatDate(row.date) },
-    { key: "requestedTimeIn", header: "Requested In", render: (row) => formatTime(row.requestedTimeIn) },
-    { key: "requestedTimeOut", header: "Requested Out", render: (row) => formatTime(row.requestedTimeOut) },
-    { key: "reason", header: "Reason", render: (row) => row.reason || "N/A" },
-    {
-      key: "status",
-      header: "Status",
-      render: (row) => (
-        <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${adjustmentStatusClasses(row.status)}`}>
-          {row.status}
-        </span>
-      ),
-    },
-    {
-      key: "actions",
-      header: "Actions",
-      render: (row) =>
-        canApproveAdjustments && row.status === "pending" ? (
-          <div className="flex items-center gap-2">
-            <ActionIconButton
-              label="Approve attendance adjustment"
-              icon={faCheck}
-              tone="approve"
-              onClick={() => handleAdjustmentDecision(row, "approved")}
-            />
-            <ActionIconButton
-              label="Reject attendance adjustment"
-              icon={faXmark}
-              tone="reject"
-              onClick={() => handleAdjustmentDecision(row, "rejected")}
-            />
-          </div>
-        ) : (
-          <span className="text-sm text-slate-500">Reviewed</span>
-        ),
-    },
-  ];
-
   /**
    * One filter bar in the shared record-table format: h-9 pill controls on a single grid row, the
    * same shape the leave, travel order, and pass slip screens use.
@@ -1361,7 +1332,9 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       className={
         isEmployeeView
           ? "mt-4 grid gap-3 lg:grid-cols-[160px_160px_160px_120px]"
-          : "mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_150px_150px_160px_160px_120px]"
+          : showDivisionFilter
+            ? "mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_150px_150px_160px_160px_120px]"
+            : "mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_150px_150px_160px_120px]"
       }
       /* The controls stay live and keep their focus while a filtered fetch is in flight; the table
          below dims instead. Only the pointer is held off, so a half-finished result set cannot be
@@ -1369,65 +1342,77 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       aria-busy={refreshing}
     >
       {!isEmployeeView ? (
-        <label className="relative">
-          <span className="sr-only">Search employee</span>
-          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input
-            value={filters.search}
-            onChange={(event) => setFilter("search", event.target.value)}
-            placeholder="Search name or employee ID"
-            className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          />
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-semibold text-slate-700">Search Employees</span>
+          <span className="relative block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input
+              value={filters.search}
+              onChange={(event) => setFilter("search", event.target.value)}
+              placeholder="Search name or employee ID"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            />
+          </span>
         </label>
       ) : null}
-      <input
-        type="date"
-        aria-label="Filter from date"
-        value={filters.dateFrom}
-        onChange={(event) => setFilter("dateFrom", event.target.value)}
-        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-      />
-      <input
-        type="date"
-        aria-label="Filter to date"
-        value={filters.dateTo}
-        onChange={(event) => setFilter("dateTo", event.target.value)}
-        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-      />
-      {!isEmployeeView ? (
+      <label className="block">
+        <span className="mb-1.5 block text-sm font-semibold text-slate-700">From Date</span>
+        <input
+          type="date"
+          value={filters.dateFrom}
+          onChange={(event) => setFilter("dateFrom", event.target.value)}
+          className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+        />
+      </label>
+      <label className="block">
+        <span className="mb-1.5 block text-sm font-semibold text-slate-700">To Date</span>
+        <input
+          type="date"
+          value={filters.dateTo}
+          onChange={(event) => setFilter("dateTo", event.target.value)}
+          className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+        />
+      </label>
+      {showDivisionFilter ? (
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-semibold text-slate-700">Division</span>
+          <select
+            value={filters.department}
+            onChange={(event) => setFilter("department", event.target.value)}
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+          >
+            <option value="">All divisions</option>
+            {departments.map((department) => (
+              <option key={department} value={department}>{department}</option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <label className="block">
+        <span className="mb-1.5 block text-sm font-semibold text-slate-700">Status</span>
         <select
-          aria-label="Filter by division"
-          value={filters.department}
-          onChange={(event) => setFilter("department", event.target.value)}
-          className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+          value={filters.status}
+          onChange={(event) => setFilter("status", event.target.value)}
+          className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
         >
-          <option value="">All divisions</option>
-          {departments.map((department) => (
-            <option key={department} value={department}>{department}</option>
+          <option value="">All statuses</option>
+          {statusOptions.map((status) => (
+            <option key={status} value={status}>{status}</option>
           ))}
         </select>
-      ) : null}
-      <select
-        aria-label="Filter by status"
-        value={filters.status}
-        onChange={(event) => setFilter("status", event.target.value)}
-        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-      >
-        <option value="">All statuses</option>
-        {statusOptions.map((status) => (
-          <option key={status} value={status}>{status}</option>
-        ))}
-      </select>
-      <select
-        aria-label="Rows per page"
-        value={rowsPerPage}
-        onChange={(event) => setRowsPerPage(Number(event.target.value) || DEFAULT_ROWS_PER_PAGE)}
-        className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-      >
-        {[5, 10, 15, 25, 50].map((value) => (
-          <option key={value} value={value}>{value} rows</option>
-        ))}
-      </select>
+      </label>
+      <label className="block">
+        <span className="mb-1.5 block text-sm font-semibold text-slate-700">Rows Per Page</span>
+        <select
+          value={rowsPerPage}
+          onChange={(event) => setRowsPerPage(Number(event.target.value) || DEFAULT_ROWS_PER_PAGE)}
+          className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+        >
+          {[10, 20, 50, 100, 200].map((value) => (
+            <option key={value} value={value}>{value} rows</option>
+          ))}
+        </select>
+      </label>
       {/* The only thing a filtered refetch changes on screen. The controls keep their values and
           their focus, and the table below keeps showing the previous result until the new one
           lands -- the point being that nothing is torn down and rebuilt. */}
@@ -1454,8 +1439,8 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
             </h3>
             <p className="m-0 mt-1 max-w-3xl text-sm text-slate-500">
               {isEmployeeView
-                ? "View personal attendance logs, DTR records, calendar history, and adjustment requests."
-                : "Import DAT logs, monitor daily attendance, generate DTR forms, and manage attendance adjustments."}
+                ? "View personal attendance logs, DTR records, and calendar history."
+                : "Import DAT logs, monitor daily attendance, and generate DTR forms."}
             </p>
           </div>
           {isEmployeeView ? (
@@ -1468,24 +1453,16 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                 <Eye size={16} />
                 View DTR
               </button>
-              <button
-                type="button"
-                onClick={() => printRecordDtr(null)}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
-              >
-                <Printer size={16} />
-                Print DTR
-              </button>
             </div>
           ) : null}
         </section>
       ) : null}
 
       {loading ? (
-        <LoadingSkeleton showMetricCards={!isAdminView && !isEmployeeView} />
+        <LoadingSkeleton showMetricCards={showOverviewCards} />
       ) : (
         <>
-          {!isAdminView && !isEmployeeView ? (
+          {showOverviewCards ? (
             <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               {metricCards.map((metric) => {
                 const Icon = metric.icon;
@@ -1508,7 +1485,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
             </section>
           ) : null}
 
-          {!isAdminView && !isEmployeeView ? (
+          {showOverviewCards ? (
             <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div>
                 <h3 className="m-0 flex items-center gap-2 text-base font-semibold text-slate-950">
@@ -1532,7 +1509,7 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                 <p className="m-0 mt-1 text-sm text-slate-500">
                   {archiveView
                     ? "Attendance records moved to archive. Restore one to put it back in the list."
-                    : "Imported logs grouped by employee and date with computed hours, late minutes, undertime, and status."}
+                    : "Imported logs grouped by employee and date with computed hours, late minutes, and absences."}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
@@ -1546,20 +1523,42 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                     label="attendance"
                   />
                 ) : null}
-                {canImport && !archiveView && !isEmployeeView ? (
+                {canViewImportHistory && !archiveView && !isEmployeeView ? (
                   <button
                     type="button"
-                    onClick={() => setImportOpen(true)}
-                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+                    onClick={openImportHistory}
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
                   >
-                    <UploadCloud size={16} />
-                    Import Attendance
+                    <History size={16} />
+                    Import History
                   </button>
+                ) : null}
+                {canImport && !archiveView && !isEmployeeView ? (
+                  <>
+                    {roleKey !== "hrstaff" ? (
+                      <button
+                        type="button"
+                        onClick={() => openAttendanceImport("excel")}
+                        className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:bg-emerald-100"
+                      >
+                        <FileSpreadsheet size={16} />
+                        Import Excel File
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => openAttendanceImport("dat")}
+                      className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+                    >
+                      <UploadCloud size={16} />
+                      Import Attendance
+                    </button>
+                  </>
                 ) : null}
               </div>
             </div>
 
-            {isAdminView || isEmployeeView ? renderAttendanceFilters() : null}
+            {!showOverviewCards ? renderAttendanceFilters() : null}
 
             {/*
               * Below `lg` this holds the card grid and needs no chrome of its own — the cards carry
@@ -1587,13 +1586,13 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
             </div>
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-2">
+          <section className="grid gap-4">
             {isEmployeeView ? (
               <Card className="shadow-sm">
                 <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <CardTitle>Attendance Calendar</CardTitle>
-                    <CardDescription>Monthly view of your personal attendance status.</CardDescription>
+                    <CardDescription>Personal attendance status for dates up to today.</CardDescription>
                   </div>
                   {/*
                     * Stepping one month at a time is what this filter is actually used for, and the
@@ -1638,6 +1637,9 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                     ))}
                   </div>
                   <div className="mt-3 grid grid-cols-7 gap-2">
+                    {calendarDays.length === 0 ? (
+                      <p className="col-span-7 m-0 py-6 text-center text-sm text-slate-500">No elapsed dates in this month.</p>
+                    ) : null}
                     {calendarDays.map((day) => (
                       <div
                         key={day.id}
@@ -1689,116 +1691,134 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
                 </CardContent>
               </Card>
             )}
-
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-              <div>
-                <h3 className="m-0 text-base font-semibold text-slate-950">
-                  {canApproveAdjustments ? "Attendance Adjustment Queue" : "Attendance Adjustment History"}
-                </h3>
-                <p className="m-0 mt-1 text-sm text-slate-500">
-                  {canApproveAdjustments
-                    ? "Review employee requests for corrected time in and time out values."
-                    : "Track submitted attendance adjustment requests and review decisions."}
-                </p>
-              </div>
-
-              {adjustments.length > 0 ? (
-                <>
-                  {canApproveAdjustments ? (
-                    <p className="m-0 mt-4 text-sm font-semibold text-amber-700">
-                      {pendingAdjustments.length} pending adjustment{pendingAdjustments.length === 1 ? "" : "s"}
-                    </p>
-                  ) : null}
-                  <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
-                    <Table
-                      columns={adjustmentColumns}
-                      data={adjustments.slice(0, 8)}
-                      rowKey="id"
-                      emptyMessage="No attendance adjustments found."
-                      tableClassName="min-w-[920px]"
-                    />
-                  </div>
-                </>
-              ) : (
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-600">
-                  No adjustment requests found.
-                </div>
-              )}
-            </section>
           </section>
         </>
       )}
 
       <Modal
         open={importOpen}
-        title="Import Attendance"
+        title={importSourceMode === "excel" ? "Import Excel Attendance" : "Import Attendance"}
         onClose={() => setImportOpen(false)}
-        maxWidth="max-w-[760px]"
+        maxWidth="max-w-[520px]"
+        panelClassName="!rounded-2xl"
+        headerClassName="!border-b-0 !px-5 !pt-5 !pb-0 sm:!px-6 sm:!pt-6"
+        contentClassName="!p-5 sm:!p-6"
+        footerClassName="!px-5 sm:!px-6"
         footer={
-          <>
-            <Button variant="secondary" onClick={() => setImportOpen(false)}>Close</Button>
-            {importFile ? (
-              <Button icon={FileSpreadsheet} loading={importing} onClick={handleImport}>
-                Import This Attendance
-              </Button>
-            ) : null}
-          </>
+          importFile ? (
+            <Button loading={importing} onClick={handleImport}>
+              Import Attendance
+            </Button>
+          ) : null
         }
       >
         <div className="space-y-4">
           <style>{ATTENDANCE_PROGRESS_STRIPE_KEYFRAMES}</style>
 
-          <div className="flex justify-center">
+          <p className="!mt-0 text-sm text-slate-500 dark:text-slate-400">
+            {importSourceMode === "excel"
+              ? "Choose the cut-off, then upload an Excel workbook. Only punches dated within the cut-off are imported."
+              : "Choose the cut-off, then upload the biometric DAT file. Only punches dated within the cut-off are imported."}
+          </p>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Month</span>
+              <input
+                type="month"
+                value={importCutoff.month}
+                disabled={convertingDat || importing}
+                onChange={(event) => setImportCutoffField("month", event.target.value)}
+                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Cut-off</span>
+              <select
+                value={importCutoff.period}
+                disabled={convertingDat || importing}
+                onChange={(event) => setImportCutoffField("period", event.target.value)}
+                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+              >
+                {ATTENDANCE_CUTOFF_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {importCutoffRange ? (
+            <p className="!mt-2 text-xs text-slate-500 dark:text-slate-400">
+              Importing <span className="font-semibold text-slate-700 dark:text-slate-200">{importCutoffLabel}</span>
+              {" · "}{importCutoffRange.dateFrom} to {importCutoffRange.dateTo}
+            </p>
+          ) : (
+            <p className="!mt-2 text-xs text-rose-700">Choose a month to set the cut-off range.</p>
+          )}
+
+          <div>
             <label
-              htmlFor="attendanceDatFile"
+              htmlFor="attendanceImportFile"
               onDragOver={handleDatDragOver}
               onDragLeave={handleDatDragLeave}
               onDrop={handleDatDrop}
               className={[
-                "group flex w-full max-w-[330px] flex-col items-center rounded-[28px] border-2 border-dashed border-slate-300 bg-white px-4 py-5 text-center shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition duration-200",
+                "group flex w-full cursor-pointer flex-col items-center rounded-xl border border-dashed px-5 py-8 text-center transition-colors duration-200 focus-within:ring-2 focus-within:ring-slate-400 focus-within:ring-offset-2 dark:focus-within:ring-offset-slate-900",
                 datDragActive
-                  ? "border-slate-900 bg-slate-50 shadow-lg shadow-slate-200/60"
-                  : "hover:border-slate-400 hover:bg-slate-50",
+                  ? "border-slate-600 bg-slate-100 dark:border-slate-400 dark:bg-slate-800"
+                  : "border-slate-300 bg-slate-50/70 hover:border-slate-400 hover:bg-slate-100/70 dark:border-slate-600 dark:bg-slate-800/40 dark:hover:bg-slate-800",
                 convertingDat || importing ? "pointer-events-none opacity-90" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
             >
               <input
-                id="attendanceDatFile"
+                id="attendanceImportFile"
                 type="file"
-                accept=".dat,application/octet-stream,text/plain"
+                accept={importSourceMode === "excel"
+                  ? ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  : ".dat,application/octet-stream,text/plain"}
                 className="sr-only"
+                aria-label={importSourceMode === "excel" ? "Choose attendance Excel file" : "Choose attendance DAT file"}
+                aria-describedby="attendanceImportFileHint"
                 disabled={convertingDat || importing}
-                onChange={handleDatUpload}
+                onChange={handleAttendanceUpload}
               />
 
-              <div className="grid h-16 w-16 place-items-center rounded-2xl border border-slate-200 bg-amber-100 text-amber-600 shadow-sm transition group-hover:scale-[1.02]">
-                {convertingDat ? (
-                  <Loader2 className="animate-spin" size={30} aria-hidden="true" />
-                ) : (
-                  <FolderUp size={34} aria-hidden="true" />
-                )}
+              <div className="w-full space-y-2">
+                <p className="m-0 text-base font-semibold text-slate-900 dark:text-slate-100">
+                  {convertingDat
+                    ? "Preparing attendance file..."
+                    : datDragActive
+                      ? "Drop your file here"
+                      : importSourceMode === "excel"
+                        ? "Drag and drop your Excel file here"
+                        : "Drag and drop your DAT file here"}
+                </p>
+                <p id="attendanceImportFileHint" className="m-0 text-xs text-slate-500 dark:text-slate-400">
+                  {importSourceMode === "excel"
+                    ? `XLSX format · First worksheet · Maximum ${ATTENDANCE_DAT_MB_LIMIT} MB`
+                    : `DAT format only · Maximum ${ATTENDANCE_DAT_MB_LIMIT} MB`}
+                </p>
+                {importSourceMode === "excel" ? (
+                  <p className="m-0 text-xs text-slate-500 dark:text-slate-400">
+                    Columns: Employee ID, Date &amp; Time, State C, State D, State E, State F
+                  </p>
+                ) : null}
               </div>
 
-              <div className="mt-5 space-y-1">
-                <p className="m-0 text-lg font-semibold text-slate-950">Drop files here</p>
-                <p className="m-0 text-sm text-slate-500">or click to browse</p>
-                {sourceDatFile ? (
-                  <p className="m-0 text-xs font-medium text-slate-500">{sourceDatFile.name} - {formatFileSize(sourceDatFile.size)}</p>
-                ) : (
-                  <p className="m-0 text-xs text-slate-400">DAT format only. Max {ATTENDANCE_DAT_MB_LIMIT} MB.</p>
-                )}
-              </div>
-
-              <span className="mt-5 inline-flex min-w-[118px] items-center justify-center rounded-[10px] bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition group-hover:bg-slate-800 group-hover:shadow-md">
-                Choose Files
+              <span className="mt-5 inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors group-hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:group-hover:bg-white">
+                {sourceDatFile || sourceExcelFile ? "Choose another file" : "Choose file"}
               </span>
+              {sourceDatFile || sourceExcelFile ? (
+                <p className="m-0 mt-4 max-w-full break-all text-xs text-slate-500 dark:text-slate-400">
+                  {(sourceExcelFile || sourceDatFile).name} · {formatAttendanceFileSize((sourceExcelFile || sourceDatFile).size)}
+                </p>
+              ) : null}
             </label>
           </div>
 
           {(convertingDat || datUploadProgress > 0) ? (
-            <div className="mx-auto w-full max-w-[330px] rounded-[22px] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+            <div className="w-full" role="status" aria-live="polite">
               <div className="mb-2 flex items-center justify-between gap-4 text-sm font-semibold text-slate-700">
                 <span>Upload Progress</span>
                 <span className="tabular-nums">{datUploadProgress}%</span>
@@ -1819,32 +1839,56 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
             </div>
           ) : null}
 
-          {!convertingDat && conversionDetails?.csvName ? (
-            <div className="flex items-start gap-3 rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
-              <CheckCircle2 className="mt-0.5 text-emerald-700" size={22} />
-              <div>
-                <p className="m-0 font-semibold">{conversionDetails.csvName}</p>
+          {!convertingDat && cutoffCsv && importFile ? (
+            <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900" role="status">
+              <div className="break-words">
+                <p className="m-0 font-semibold">{importFile.name}</p>
                 <p className="m-0 mt-1">
-                  {conversionDetails.rowCount} attendance rows ready
-                  {conversionDetails.skippedRows ? `, ${conversionDetails.skippedRows} rows skipped` : ""}.
+                  {cutoffCsv.rowCount} attendance rows ready for {importCutoffLabel}
+                  {cutoffCsv.excludedRows ? `, ${cutoffCsv.excludedRows} rows outside the cut-off left out` : ""}
+                  {datConversion.skippedRows ? `, ${datConversion.skippedRows} rows skipped` : ""}.
                 </p>
               </div>
             </div>
           ) : null}
 
-          {!convertingDat && conversionDetails?.error ? (
+          {!convertingDat && sourceExcelFile && importFile ? (
+            <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900" role="status">
+              <p className="m-0 font-semibold">{sourceExcelFile.name}</p>
+              <p className="m-0 mt-1">Excel attendance rows are ready for {importCutoffLabel}.</p>
+            </div>
+          ) : null}
+
+          {!convertingDat && cutoffCsv && cutoffCsv.rowCount === 0 ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+              None of the {datConversion.rowCount} rows in this file fall within {importCutoffLabel}.
+              {datConversion.dateFrom ? ` The file covers ${datConversion.dateFrom} to ${datConversion.dateTo}.` : ""}
+              {" "}Change the month or cut-off, or upload the matching file.
+            </div>
+          ) : null}
+
+          {!convertingDat && datConversion?.error ? (
             <div className="rounded-lg border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-              {conversionDetails.error}
+              {datConversion.error}
             </div>
           ) : null}
 
           {importSummary ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {importSummary.cutoff?.dateFrom ? (
+                <p className="m-0 text-sm text-slate-600 sm:col-span-2">
+                  Imported <span className="font-semibold text-slate-900">{importSummary.cutoff.payPeriod || "cut-off"}</span>
+                  {" · "}{importSummary.cutoff.dateFrom} to {importSummary.cutoff.dateTo}
+                </p>
+              ) : null}
               {[
                 ["Total imported", importSummary.totalImported],
                 ["Duplicates skipped", importSummary.duplicatesSkipped],
                 ["Invalid rows", importSummary.invalidRows],
+                ["Outside cut-off", importSummary.outsideCutoffRows],
                 ["Successful records", importSummary.successfulRecords],
+                ["Absent records created", importSummary.absentRecordsCreated],
+                ["Leave records created", importSummary.leaveRecordsCreated],
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
                   <p className="m-0 text-xs font-semibold uppercase text-slate-500">{label}</p>
@@ -1870,12 +1914,64 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
       </Modal>
 
       <Modal
+        open={importHistoryOpen}
+        title="Import History"
+        onClose={() => setImportHistoryOpen(false)}
+        maxWidth="max-w-[1100px]"
+      >
+        <div className="space-y-4">
+          <p className="!mt-0 text-sm text-slate-500">
+            Every attendance import run, newest first: who imported, which cut-off, and what the file produced.
+          </p>
+
+          <div className="overflow-hidden rounded-2xl border border-slate-200">
+            <Table
+              columns={importHistoryColumns}
+              data={importHistory.imports}
+              rowKey="id"
+              loading={importHistoryLoading}
+              loadingRows={4}
+              emptyMessage="No attendance imports have been recorded yet."
+              stickyHeader
+              className="max-h-[520px] overflow-y-auto"
+              tableClassName="min-w-[960px]"
+            />
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="m-0 text-sm text-slate-500">
+              Showing {importHistory.total === 0 ? 0 : (importHistory.page - 1) * importHistory.pageSize + 1} to{" "}
+              {Math.min(importHistory.page * importHistory.pageSize, importHistory.total)} of {importHistory.total} imports
+            </p>
+            <Pagination
+              currentPage={importHistory.page}
+              totalPages={Math.max(1, Math.ceil(importHistory.total / importHistory.pageSize))}
+              onPageChange={(nextPage) => void loadImportHistory(nextPage)}
+              disabled={importHistoryLoading}
+            />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         open={dtrOpen}
         title="Daily Time Record"
         onClose={() => setDtrOpen(false)}
-        maxWidth="max-w-[1040px]"
+        maxWidth="max-w-[1500px]"
         footer={
           <>
+            {/* Excel export is available in attendance management for non-admin roles. */}
+            {!isAdminView && !isEmployeeView ? (
+              <Button
+                variant="secondary"
+                icon={FileSpreadsheet}
+                onClick={exportCurrentDtrExcel}
+                disabled={!dtrData || dtrExcelSaving}
+                loading={dtrExcelSaving}
+              >
+                Export Excel File
+              </Button>
+            ) : null}
             <Button
               variant="secondary"
               icon={Download}
@@ -1893,36 +1989,44 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
         {dtrLoading ? (
           <div className="h-[520px] animate-pulse rounded-lg bg-slate-100" />
         ) : dtrData ? (
-          /*
-           * The form column has to be `1fr`, not a fixed cap: `DailyTimeRecord` renders the printed
-           * CS Form No. 48 at a fixed 510px (450px sheet + 30px padding a side), so any column
-           * narrower than that clips the sheet through the middle of the AM/PM columns. `minmax(0,…)`
-           * lets the column still shrink below that on small screens and hand the overflow to the
-           * scroller instead of pushing the modal wide.
-           */
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_260px]">
+          /* Two fixed-width CS Form No. 48 copies sit together. The summary moves beside them only
+             on very wide screens; below that it becomes a row underneath so both sheets receive
+             the modal's full width, with horizontal scrolling retained for narrow viewports. */
+          <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_260px]">
             <div className="overflow-x-auto rounded-lg bg-slate-100 px-4 py-5">
-              {/* The wrapper is what the PDF export paints; it sits inside the scroller so the
-                  capture is the white sheet alone, without the grey gutter around it. */}
-              <div ref={dtrSheetRef} className="w-fit">
-                <DailyTimeRecord dtr={dtrData} signatureDataUrl={dtrSignature} />
+              <div ref={dtrSheetRef} className="flex w-max gap-5 bg-white">
+                {/* Both copies belong to this capture node so Download PDF fits them on one page. */}
+                <div className="w-fit">
+                  <DailyTimeRecord
+                    dtr={dtrData}
+                    signatureDataUrl={dtrSignature}
+                    copyLabel="ORIGINAL COPY"
+                  />
+                </div>
+                <DailyTimeRecord
+                  dtr={dtrData}
+                  signatureDataUrl={dtrSignature}
+                  copyLabel="DUPLICATE COPY"
+                />
               </div>
             </div>
-            <div className="space-y-3">
-              <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                <p className="m-0 text-xs font-semibold uppercase text-slate-500">Employee</p>
-                <strong className="mt-1 block text-slate-900">{dtrData.employee?.employeeName}</strong>
-                <span className="text-sm text-slate-500">{dtrData.employee?.employeeId}</span>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                <p className="m-0 text-xs font-semibold uppercase text-slate-500">Rendered</p>
-                <strong className="mt-1 block text-xl text-slate-900">{minutesToDuration(dtrData.totals?.renderedMinutes)}</strong>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                <p className="m-0 text-xs font-semibold uppercase text-slate-500">Late / Undertime</p>
-                <strong className="mt-1 block text-xl text-slate-900">
-                  {(dtrData.totals?.lateMinutes || 0)} min / {(dtrData.totals?.undertimeMinutes || 0)} min
-                </strong>
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              <div className="grid sm:grid-cols-3 2xl:grid-cols-1">
+                <div className="px-4 py-3">
+                  <p className="m-0 text-xs font-semibold uppercase text-slate-500">Employee</p>
+                  <strong className="mt-1 block text-slate-900">{dtrData.employee?.employeeName}</strong>
+                  <span className="text-sm text-slate-500">{dtrData.employee?.employeeId}</span>
+                </div>
+                <div className="border-t border-slate-200 px-4 py-3 sm:border-l sm:border-t-0 2xl:border-l-0 2xl:border-t">
+                  <p className="m-0 text-xs font-semibold uppercase text-slate-500">Rendered</p>
+                  <strong className="mt-1 block text-xl text-slate-900">{minutesToDuration(dtrData.totals?.renderedMinutes)}</strong>
+                </div>
+                <div className="border-t border-slate-200 px-4 py-3 sm:border-l sm:border-t-0 2xl:border-l-0 2xl:border-t">
+                  <p className="m-0 text-xs font-semibold uppercase text-slate-500">Late</p>
+                  <strong className="mt-1 block text-xl text-slate-900">
+                    {(dtrData.totals?.lateMinutes || 0)} min
+                  </strong>
+                </div>
               </div>
             </div>
           </div>
@@ -1956,7 +2060,6 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
         onClose={() => setEditOpen(false)}
         footer={
           <>
-            <Button variant="secondary" onClick={() => setEditOpen(false)}>Cancel</Button>
             <Button icon={CheckCircle2} onClick={submitEdit}>Save Changes</Button>
           </>
         }
@@ -1992,39 +2095,6 @@ export default function AttendanceManagementWorkspace({ user, mode }) {
               value={editForm.reason}
               onChange={(event) => setEditForm((current) => ({ ...current, reason: event.target.value }))}
               className="min-h-[96px] w-full rounded-lg border border-slate-200 px-3.5 py-3 text-slate-900 outline-none"
-            />
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        open={adjustmentOpen}
-        title="Request Attendance Adjustment"
-        onClose={() => setAdjustmentOpen(false)}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setAdjustmentOpen(false)}>Cancel</Button>
-            <Button icon={CheckCircle2} onClick={submitAdjustmentRequest}>Submit Request</Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="m-0 font-semibold text-slate-900">{adjustmentRecord?.employeeName}</p>
-            <p className="m-0 mt-1 text-sm text-slate-500">{formatDate(adjustmentRecord?.date)}</p>
-          </div>
-          <InputField label="Requested Time In" name="adjustTimeIn" type="datetime-local" value={adjustmentForm.timeIn} onChange={(event) => setAdjustmentForm((current) => ({ ...current, timeIn: event.target.value }))} />
-          <InputField label="Requested Time Out" name="adjustTimeOut" type="datetime-local" value={adjustmentForm.timeOut} onChange={(event) => setAdjustmentForm((current) => ({ ...current, timeOut: event.target.value }))} />
-          <div>
-            <label htmlFor="adjustmentReason" className="mb-1.5 block text-sm font-semibold text-slate-700">
-              Reason
-            </label>
-            <textarea
-              id="adjustmentReason"
-              value={adjustmentForm.reason}
-              onChange={(event) => setAdjustmentForm((current) => ({ ...current, reason: event.target.value }))}
-              placeholder="Explain why this attendance entry needs adjustment."
-              className="min-h-[110px] w-full rounded-lg border border-slate-200 px-3.5 py-3 text-slate-900 outline-none"
             />
           </div>
         </div>

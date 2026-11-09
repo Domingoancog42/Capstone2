@@ -13,7 +13,7 @@ function leave_credit_can_view_all(array $user): bool
 
 function leave_credit_can_manage(array $user): bool
 {
-    return in_array(user_role_key($user), ['admin', 'hrhead'], true);
+    return in_array(user_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
 }
 
 function leave_credit_text(mixed $value): string
@@ -221,7 +221,6 @@ function show_leave_credit_history(PDO $pdo): void
     $leaveTypeCode = leave_credit_text($_GET['leaveTypeCode'] ?? '');
 
     require_leave_credit_employee_summary($pdo, $employeeId);
-
     json_response([
         'success' => true,
         'employeeId' => $employeeId,
@@ -257,7 +256,6 @@ function update_leave_credit_balance(PDO $pdo, array $body, array $sessionUser):
     $remarks = leave_credit_text($body['remarks'] ?? '');
 
     $employee = require_leave_credit_employee_summary($pdo, $employeeId);
-
     if ($action === 'reset') {
         $pdo->beginTransaction();
 
@@ -402,7 +400,6 @@ function adjust_leave_credit_balances(PDO $pdo, array $body, array $sessionUser)
     $remarks = leave_credit_text($body['remarks'] ?? '');
 
     $employee = require_leave_credit_employee_summary($pdo, $employeeId);
-
     $rawAdjustments = $body['adjustments'] ?? [];
     if (!is_array($rawAdjustments) || $rawAdjustments === []) {
         json_response([

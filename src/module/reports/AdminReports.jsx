@@ -22,7 +22,10 @@ import {
 import ReportsCharts from "./ReportsCharts";
 import ReportsDataTable from "./ReportsDataTable";
 import ReportPreviewDrawer from "./ReportPreviewDrawer";
+import LeaveReportsWorkspace from "./LeaveReportsWorkspace";
+import RequestReportsWorkspace, { CTO_REPORTS_CONFIG, TRAVEL_REPORTS_CONFIG } from "./RequestReportsWorkspace";
 import { REPORT_CATEGORIES } from "./reportCategories";
+import { isDivisionScopedReportDesk, scopedReportDescription, scopedReportDivision } from "./reportScope";
 import { DATE_RANGE_OPTIONS, downloadBlob, localDateString } from "./reportsTheme";
 
 const EMPTY_ARRAY = [];
@@ -30,7 +33,7 @@ const EMPTY_ARRAY = [];
 /** Filter controls, keyed by the backend filter name they map onto. */
 const FILTER_CONTROLS = [
   { key: "divisionId", label: "Division", optionsKey: "divisions", placeholder: "All Divisions" },
-  { key: "designationId", label: "Designation", optionsKey: "designations", placeholder: "All Designations" },
+  { key: "designationId", label: "Position", optionsKey: "designations", placeholder: "All Positions" },
   { key: "employmentStatus", label: "Employment Status", optionsKey: "employmentStatuses", placeholder: "All Statuses" },
   { key: "gender", label: "Gender", optionsKey: "genders", placeholder: "All Genders" },
   { key: "status", label: "Record Status", optionsKey: "statuses", placeholder: "All" },
@@ -181,8 +184,10 @@ function ToolbarButton({ icon: Icon, children, onClick, disabled, busy, variant 
   );
 }
 
-export default function AdminReports({ showSummary = true, user, category = "" }) {
+function StandardAdminReports({ showSummary = true, user, category = "" }) {
   const today = useMemo(() => localDateString(), []);
+  const isDivisionScoped = isDivisionScopedReportDesk(user, category);
+  const scopedDivision = isDivisionScoped ? scopedReportDivision(user) : "";
 
   const [filters, setFilters] = useState({
     dateRange: "last30",
@@ -294,6 +299,12 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     }
   }, [activeCategory, reportTypeInCategory]);
 
+  useEffect(() => {
+    if (filters.reportType === "payroll-deductions") {
+      setFilters((current) => ({ ...current, dateRange: "thismonth" }));
+    }
+  }, [filters.reportType]);
+
   /** Nothing is fetched until a category is picked and its report is the one selected. */
   const canLoadReport = Boolean(category) && reportTypeInCategory;
 
@@ -327,8 +338,10 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     let active = true;
     setDashboardLoading(true);
 
+    // `category` lets reports.php narrow a scoped desk's charts to the division its tables list.
     getReportsDashboard({
       ...dateParams,
+      category,
       ...(filters.divisionId ? { divisionId: filters.divisionId } : {}),
     })
       .then((payload) => {
@@ -530,7 +543,9 @@ export default function AdminReports({ showSummary = true, user, category = "" }
     };
   }, [printMode]);
 
-  const visibleFilterControls = FILTER_CONTROLS.filter((control) => supportedFilters.includes(control.key));
+  const visibleFilterControls = FILTER_CONTROLS.filter(
+    (control) => supportedFilters.includes(control.key) && !(isDivisionScoped && control.key === "divisionId")
+  );
   const rows = report?.rows || EMPTY_ARRAY;
   const columns = report?.columns || EMPTY_ARRAY;
   const refreshingReport = reportLoading && hasLoadedReport;
@@ -563,7 +578,9 @@ export default function AdminReports({ showSummary = true, user, category = "" }
         <div>
           <h1 className="m-0 text-lg font-semibold text-slate-900">{categoryTitle}</h1>
           <p className="m-0 mt-1.5 max-w-2xl text-sm text-slate-500">
-            Analytics and searchable, exportable record-level reports for this category.
+            {isDivisionScoped
+              ? scopedReportDescription(scopedDivision, "Analytics and searchable, exportable record-level reports")
+              : "Analytics and searchable, exportable record-level reports for this category."}
           </p>
         </div>
 
@@ -726,6 +743,8 @@ export default function AdminReports({ showSummary = true, user, category = "" }
             </div>
           ) : (
             <ReportsDataTable
+              alwaysTable={report?.key === "payroll-deductions"}
+              minWidth={report?.key === "payroll-deductions" ? (report.columns?.length || 42) * 160 : 900}
               columns={columns}
               rows={rows}
               loading={reportLoading && !hasLoadedReport}
@@ -754,4 +773,24 @@ export default function AdminReports({ showSummary = true, user, category = "" }
       />
     </div>
   );
+}
+
+/**
+ * Leave has its own consolidated four-report workspace, and Travel Order and CTO share one with
+ * insight cards and charts; every other category uses the catalog UI.
+ */
+export default function AdminReports(props) {
+  if (props.category === "leave") {
+    return <LeaveReportsWorkspace user={props.user} />;
+  }
+
+  if (props.category === "travel") {
+    return <RequestReportsWorkspace key="travel" user={props.user} config={TRAVEL_REPORTS_CONFIG} />;
+  }
+
+  if (props.category === "cto") {
+    return <RequestReportsWorkspace key="cto" user={props.user} config={CTO_REPORTS_CONFIG} />;
+  }
+
+  return <StandardAdminReports {...props} />;
 }

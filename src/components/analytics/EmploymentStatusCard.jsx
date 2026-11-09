@@ -20,7 +20,6 @@ import { AnalyticsCard, RankedBarChart, useAnalyticsTheme } from './analyticsCha
  */
 const EmploymentStatusCard = ({ data = [], loading = false }) => {
   const theme = useAnalyticsTheme();
-  const totalEmployees = data.reduce((sum, item) => sum + parseInt(item.count || 0, 10), 0);
 
   const chartData = [...data]
     .map((status) => ({
@@ -35,7 +34,6 @@ const EmploymentStatusCard = ({ data = [], loading = false }) => {
       icon={Briefcase}
       accent={theme.series[0]}
       title="Employment Status"
-      subtitle={`${formatNumber(totalEmployees)} total employees`}
       loading={loading}
       isEmpty={chartData.length === 0}
       emptyMessage="No employment status data available"

@@ -87,14 +87,20 @@ export default function RoleWorkspacePage({
   modules,
   contentClassName,
 }) {
-  // With the base role left out, a custom role resolved to "/" and never matched its own
-  // profile route -- the page fell through to the placeholder card instead of the real profile.
-  const profilePath = getProfilePathForRole(user?.roleKey || user?.role, user?.baseRoleKey);
+  /*
+   * The workspace's own "profile" entry comes first because it shares the address space of
+   * `currentPath`: Chief Admin renders the Chief workspace with its URLs translated to /chief, so
+   * the role's /chiefadmin/profile never matched and the header's profile link showed the
+   * dashboard. With the base role left out, a custom role resolved to "/" and never matched its own
+   * profile route -- the page fell through to the placeholder card instead of the real profile.
+   */
+  const profilePath = navigationItems.find((item) => item?.key === "profile")?.path
+    || getProfilePathForRole(user?.roleKey || user?.role, user?.baseRoleKey);
   const isProfileView = currentPath === profilePath;
   /*
-   * Only used to pick somewhere safe to land — the fallback route and the Access Denied "Go Back"
-   * target. The sidebar itself gets the unfiltered list, so a revoked module stays visible and
-   * answers with Access Denied rather than disappearing.
+   * Used to pick somewhere safe to land — the fallback route and the Access Denied "Go Back"
+   * target. The sidebar receives the full list and applies the same filter itself, so a module
+   * unchecked in RBAC Management drops out of the navigation for this role.
    */
   const permittedNavigationItems = useMemo(
     () => filterNavigationItemsByPermissions(navigationItems, user),
@@ -140,6 +146,7 @@ export default function RoleWorkspacePage({
     ? matchedNavigationItem
     : (matchedNavigationItem || actionableNavigationItems[0]);
   const isNotificationsView = !isProfileView && !permissionDenied && activeItem?.key === "notifications";
+  const isMessagesView = !isProfileView && !permissionDenied && activeItem?.key === "messages";
 
   useEffect(() => {
     if (!isProfileView && currentPath && !matchedNavigationItem && dashboardPath) {
@@ -221,7 +228,9 @@ export default function RoleWorkspacePage({
       hidePageIntro={isProfileView || Boolean(content.hidePageIntro)}
       breadcrumbs={breadcrumbs}
       contentClassName={contentClassName}
-      fitViewport={!isProfileView && !permissionDenied && Boolean(content.fitViewport)}
+      // Messages must always use the viewport-managed shell so every role gets Admin's layout:
+      // the contacts and thread scroll independently while the composer remains visible.
+      fitViewport={isMessagesView || (!isProfileView && !permissionDenied && Boolean(content.fitViewport))}
     >
       {isProfileView && !permissionDenied ? (
         <ProfilePage user={user} onUserChange={onUserChange} />

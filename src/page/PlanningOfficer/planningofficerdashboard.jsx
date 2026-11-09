@@ -1,12 +1,10 @@
 import React, { useEffect, useState } from "react";
 import {
-  CalendarDays,
   CalendarRange,
   ClipboardCheck,
   LayoutDashboard,
   MessageCircle,
   UserRound,
-  Users,
 } from "lucide-react";
 import RoleWorkspacePage from "../../components/layout/RoleWorkspacePage";
 import { SELF_SERVICE_MODULES, buildSelfServiceNavItems } from "../../components/layout/selfServiceModules";
@@ -18,14 +16,15 @@ import LeaveTravelCalendarWorkspace from "../../module/calendar/LeaveTravelCalen
 
 import BubbleChat from "../../components/bubble_chat/bubble_chat";
 import { getEmployees } from "../../services/api";
-import TeamOverview from "../Chief/teamoverview";
+import { isLeaveDivisionDesk } from "../../utils/leaveHelpers";
 
 /*
- * A planning officer works the same division desk a chief does: the same analytics, the same leave
- * and attendance review screens, the same team visibility. The one deliberate difference is payroll
- * -- the approval chain runs HR Head -> Chief -> Regional Director and a planning officer is not one
- * of its desks, so the Payroll Management section the chief sidebar carries is absent here. Nothing
- * else about the two workspaces is meant to drift apart.
+ * A planning officer works much the same desk a chief does: the same analytics, the same leave and
+ * attendance review screens. Two things are deliberately absent from this sidebar. Payroll -- the
+ * approval chain runs HR Head -> FAD Division Chief -> Regional Director and a planning officer is not one
+ * of its desks. And the Team/Division Employee roster -- the planning officer is an organization-wide
+ * desk rather than one division's, so the dashboard's employee list (every division) covers it.
+ * Nothing else about the two workspaces is meant to drift apart.
  */
 
 function usePlanningOfficerEmployees(errorMessage) {
@@ -91,8 +90,8 @@ function PlanningOfficerOvertimeWorkspace({ user }) {
   );
 }
 
-// The travel order form lets a planning officer pick the employees travelling, so this view needs
-// the employee directory that the other LeaveDashboard views do not load.
+// The Planning Officer is the organization-wide dispatch desk, so this view loads every travel
+// order regardless of the traveller's division.
 function PlanningOfficerTravelWorkspace({ user }) {
   const { employees, error } = usePlanningOfficerEmployees("Unable to load employee options for travel orders.");
 
@@ -114,35 +113,23 @@ const navigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/planningofficer/dashboard" },
   { key: "profile", label: "My Profile", icon: UserRound, path: "/planningofficer/profile" },
-  { key: "employees", label: "Team/Division Employee", icon: Users, path: "/planningofficer/employees" },
-  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/planningofficer/calendar" },
-  { type: "section", label: "Communication" },
   { key: "messages", label: "Messages", icon: MessageCircle, path: "/planningofficer/messages" },
   { key: "notifications", label: "Notifications", path: "/planningofficer/notifications", hidden: true },
   { type: "section", label: "HR Operations" },
   {
-    key: "attendance",
-    label: "Time & Attendance",
-    icon: ClipboardCheck,
-    path: "/planningofficer/attendance/overtime",
-    children: [
-      { key: "overtime", label: "Overtime", path: "/planningofficer/attendance/overtime" },
-    ],
-  },
-  {
     key: "leave",
-    label: "Leave Management",
+    label: "File Request",
     icon: CalendarRange,
     path: "/planningofficer/leave",
     children: [
-      { key: "leave", label: "Leave", path: "/planningofficer/leave", exact: true },
+      { key: "leave", label: "Leave Request", path: "/planningofficer/leave", exact: true },
       { key: "travel", label: "Travel Order", path: "/planningofficer/leave/travel-order" },
       { key: "cto", label: "Compensatory Time Off", path: "/planningofficer/leave/compensatory-time-off" },
       { key: "passSlip", label: "Pass Slips", path: "/planningofficer/leave/pass-slips" },
+      { key: "overtime", label: "Overtime Request", path: "/planningofficer/attendance/overtime" },
     ],
   },
 
-  { key: "team", label: "Team Overview", icon: Users, path: "/planningofficer/team", hidden: true },
   { key: "legacyAttendance", label: "Time & Attendance", icon: ClipboardCheck, path: "/planningofficer/attendance", hidden: true },
   ...buildSelfServiceNavItems("/planningofficer"),
 ];
@@ -156,8 +143,8 @@ const modules = {
       <DivisionDashboardOverview
         user={user}
         onNavigate={onNavigate}
-        directoryPath="/planningofficer/employees"
         leavePath="/planningofficer/leave"
+        organizationWide
       />
     ),
   },
@@ -165,18 +152,24 @@ const modules = {
     title: "Leave",
     description: "Review leave requests, travel orders, pass slips, and compensatory time off records from the planning workspace.",
     hidePageIntro: true,
+    /*
+     * A self-service filing page by default. Once an administrator grants Leave Management
+     * approve or reject under Settings > Roles, the Planning Officer works their division's
+     * requests at the Chief's stage and this becomes that register (own filings under My Leave).
+     */
     render: ({ user }) => (
       <LeaveDashboard
         user={user}
         leaveRequestLayout="management"
         activeView="leave"
         showRequestTabs={false}
+        showOnlyOwnLeaveRequests={!isLeaveDivisionDesk(user)}
       />
     ),
   },
   travel: {
     title: "Travel Order",
-    description: "File travel orders for division employees and review submitted requests.",
+    description: "Review travel orders from every division and authorize them for dispatch.",
     hidePageIntro: true,
     render: ({ user }) => <PlanningOfficerTravelWorkspace user={user} />,
   },
@@ -224,12 +217,6 @@ const modules = {
     hidePageIntro: true,
     render: ({ user }) => <PlanningOfficerOvertimeWorkspace user={user} />,
   },
-  employees: {
-    title: "Team/Division Employee",
-    description: "Monitor workload and visibility across direct reports.",
-    hidePageIntro: true,
-    render: ({ user }) => <TeamOverview user={user} />,
-  },
   calendar: {
     title: "Calendar",
     description: "View approved employee leave and travel order schedules.",
@@ -242,13 +229,6 @@ const modules = {
     hidePageIntro: true,
     render: ({ user }) => <BubbleChat user={user} />,
   },
-  team: {
-    title: "Team Overview",
-    description: "Monitor workload and visibility across direct reports.",
-    hidePageIntro: true,
-    render: ({ user }) => <TeamOverview user={user} />,
-  },
-
   ...SELF_SERVICE_MODULES,
 };
 

@@ -89,6 +89,30 @@ export async function fileLeaveRequest(payload) {
   return response.data;
 }
 
+export async function uploadLeaveMedicalCertificate(requestId, file) {
+  const formData = new FormData();
+  formData.append("action", "upload_medical_certificate");
+  formData.append("id", String(requestId));
+  formData.append("attachment", file);
+  const response = await api.post("/leave_request.php", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  notifyLeaveRequestsChanged();
+  notifyNotificationsChanged();
+  return response.data;
+}
+
+export async function removeLeaveMedicalCertificate(requestId, attachmentPath) {
+  const response = await api.post("/leave_request.php", {
+    action: "remove_medical_certificate",
+    id: requestId,
+    attachmentPath,
+  });
+  notifyLeaveRequestsChanged();
+  notifyNotificationsChanged();
+  return response.data;
+}
+
 /**
  * Marking a leave request reviewed or approved carries a solved captcha, because leave_request.php
  * refuses those two transitions without one -- see require_approval_captcha() there. `captcha` is

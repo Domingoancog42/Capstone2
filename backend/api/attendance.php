@@ -2,6 +2,8 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
+require_once __DIR__ . '/xlsx-reader.php';
+require_once __DIR__ . '/payroll-export.php';
 
 date_default_timezone_set('Asia/Manila');
 
@@ -14,7 +16,7 @@ function attendance_text(mixed $value): string
 
 function attendance_allowed_daily_statuses(): array
 {
-    return ['Present', 'Late', 'Undertime', 'Late / Undertime', 'Incomplete', 'Leave with Pay', 'Leave Without Pay'];
+    return ['Present', 'Late', 'Incomplete', 'Absent', 'Leave with Pay', 'Leave Without Pay'];
 }
 
 function attendance_normalize_daily_status(mixed $value): ?string
@@ -34,9 +36,114 @@ function attendance_role_key(array $user): string
     return user_role_key($user);
 }
 
+/*
+ * The desks whose attendance records and DTRs are confined to their own division. The
+ * Chief and Planning Officer read theirs, while HR desks work organization-wide. Mirrors
+ * DIVISION_SCOPED_ATTENDANCE_ROLE_KEYS in AttendanceManagementWorkspace.jsx. Importing the DAT
+ * file is not scoped: the biometric log covers the whole office.
+ */
+const ATTENDANCE_DIVISION_SCOPED_ROLES = ['chief', 'planningofficer'];
+
+/** Importing the biometric DAT file is HR Staff's job; the other HR roles review what it produced. */
 function attendance_can_import(array $user): bool
 {
+    return attendance_role_key($user) === 'hrstaff';
+}
+
+/** The import trail is a management record, so every role that manages attendance may read it. */
+function attendance_can_view_import_history(array $user): bool
+{
     return in_array(attendance_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
+}
+
+/**
+ * One row per import run, written in the same transaction as the punches it describes. The
+ * importer's name is snapshotted because the user row can be deleted (the FK nulls out) and the
+ * trail must still say who ran the import. Created lazily like payroll's tracking tables; note
+ * MySQL commits implicitly on DDL, so this must run before any transaction is opened.
+ */
+function attendance_ensure_import_history_schema(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS attendance_imports (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            file_name VARCHAR(255) NOT NULL,
+            pay_period VARCHAR(20) NULL,
+            date_from DATE NULL,
+            date_to DATE NULL,
+            total_rows INT UNSIGNED NOT NULL DEFAULT 0,
+            total_imported INT UNSIGNED NOT NULL DEFAULT 0,
+            duplicates_skipped INT UNSIGNED NOT NULL DEFAULT 0,
+            invalid_rows INT UNSIGNED NOT NULL DEFAULT 0,
+            outside_cutoff_rows INT UNSIGNED NOT NULL DEFAULT 0,
+            successful_records INT UNSIGNED NOT NULL DEFAULT 0,
+            absent_records_created INT UNSIGNED NOT NULL DEFAULT 0,
+            leave_records_created INT UNSIGNED NOT NULL DEFAULT 0,
+            imported_by_user_id INT UNSIGNED NULL,
+            imported_by_name VARCHAR(180) NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_attendance_imports_created_at (created_at),
+            KEY idx_attendance_imports_period (date_from, date_to),
+            CONSTRAINT fk_attendance_imports_user FOREIGN KEY (imported_by_user_id) REFERENCES users(id)
+                ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+
+    $ensured = true;
+}
+
+/**
+ * The cut-off an import is fenced to, from the multipart fields the importer sends alongside the
+ * file. Null when none was sent; a 422 when one was sent but does not describe a usable range.
+ *
+ * @return array{payPeriod: string, dateFrom: string, dateTo: string}|null
+ */
+function attendance_import_cutoff_from_request(): ?array
+{
+    $dateFromText = attendance_text($_POST['dateFrom'] ?? '');
+    $dateToText = attendance_text($_POST['dateTo'] ?? '');
+
+    if ($dateFromText === '' && $dateToText === '') {
+        return null;
+    }
+
+    $dateFrom = attendance_date_or_null($dateFromText);
+    $dateTo = attendance_date_or_null($dateToText);
+
+    if ($dateFrom === null || $dateTo === null || $dateFrom > $dateTo) {
+        json_response([
+            'success' => false,
+            'message' => 'Choose a valid cut-off range to import.',
+        ], 422);
+    }
+
+    $payPeriod = attendance_text($_POST['payPeriod'] ?? '');
+
+    return [
+        'payPeriod' => in_array($payPeriod, ['1st Half', '2nd Half', 'Monthly'], true) ? $payPeriod : '',
+        'dateFrom' => $dateFrom,
+        'dateTo' => $dateTo,
+    ];
+}
+
+/** "September 2026 · 1st Half" for a cut-off inside one month, else the bare date range. */
+function attendance_import_cutoff_label(array $cutoff): string
+{
+    $start = DateTimeImmutable::createFromFormat('Y-m-d', $cutoff['dateFrom']);
+    $sameMonth = $start !== false && substr($cutoff['dateFrom'], 0, 7) === substr($cutoff['dateTo'], 0, 7);
+
+    if ($sameMonth && $cutoff['payPeriod'] !== '') {
+        return $start->format('F Y') . ' · ' . $cutoff['payPeriod'];
+    }
+
+    return $cutoff['dateFrom'] . ' to ' . $cutoff['dateTo'];
 }
 
 function attendance_can_edit(array $user): bool
@@ -44,14 +151,14 @@ function attendance_can_edit(array $user): bool
     return in_array(attendance_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
 }
 
-function attendance_can_approve_adjustments(array $user): bool
+/**
+ * The shared attendance workspace is also used by every role's "My Attendance" screen.
+ * The visual mode is a client-side concern, so that screen sends an explicit personal scope and
+ * the API resolves the employee from the authenticated session instead of trusting an employee ID.
+ */
+function attendance_personal_scope_requested(): bool
 {
-    return in_array(attendance_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
-}
-
-function attendance_can_request_adjustment(array $user): bool
-{
-    return attendance_role_key($user) === 'employee';
+    return strtolower(attendance_text($_GET['scope'] ?? '')) === 'personal';
 }
 
 function attendance_date_or_null(mixed $value): ?string
@@ -96,6 +203,20 @@ function attendance_parse_datetime(mixed $value): ?DateTimeImmutable
     }
 
     $timezone = new DateTimeZone('Asia/Manila');
+
+    /* XLSX stores real date/time cells as days since 1899-12-30. The lightweight workbook reader
+       returns that raw number, so translate it before trying the usual text formats. */
+    if (preg_match('/^\d{1,7}(?:\.\d+)?$/', $text) === 1) {
+        $serial = (float)$text;
+        if ($serial >= 1 && $serial <= 2_958_465) {
+            $wholeDays = (int)floor($serial);
+            $seconds = (int)round(($serial - $wholeDays) * 86_400);
+            return (new DateTimeImmutable('1899-12-30 00:00:00', $timezone))
+                ->modify('+' . $wholeDays . ' days')
+                ->modify('+' . $seconds . ' seconds');
+        }
+    }
+
     $formats = [
         'Y-m-d H:i:s',
         'Y-m-d H:i',
@@ -286,14 +407,11 @@ function attendance_calculate_daily_metrics(string $date, ?string $timeIn, ?stri
     $pmTimeInDate = attendance_parse_datetime($dailyPunches['pmTimeIn'] ?? null);
     $pmTimeOutDate = attendance_parse_datetime($dailyPunches['pmTimeOut'] ?? $timeOut);
     $officialStart = new DateTimeImmutable($date . ' 08:00:00', $timezone);
-    $officialLunchStart = new DateTimeImmutable($date . ' 12:00:00', $timezone);
     $officialLunchEnd = new DateTimeImmutable($date . ' 13:00:00', $timezone);
-    $officialEnd = new DateTimeImmutable($date . ' 17:00:00', $timezone);
     $hasMiddlePunches = (bool)($dailyPunches['hasMiddlePunches'] ?? false);
 
     $totalMinutes = 0;
     $lateMinutes = 0;
-    $undertimeMinutes = 0;
 
     if ($hasMiddlePunches) {
         $totalMinutes += attendance_session_minutes($amTimeInDate, $amTimeOutDate);
@@ -313,14 +431,6 @@ function attendance_calculate_daily_metrics(string $date, ?string $timeIn, ?stri
         $lateMinutes += attendance_minutes_between($officialLunchEnd, $pmTimeInDate);
     }
 
-    if ($hasMiddlePunches && $amTimeOutDate instanceof DateTimeImmutable && $amTimeOutDate < $officialLunchStart) {
-        $undertimeMinutes += attendance_minutes_between($amTimeOutDate, $officialLunchStart);
-    }
-
-    if ($pmTimeOutDate instanceof DateTimeImmutable && $pmTimeOutDate < $officialEnd) {
-        $undertimeMinutes += attendance_minutes_between($pmTimeOutDate, $officialEnd);
-    }
-
     $isIncomplete = !$timeInDate || !$timeOutDate;
     if ($hasMiddlePunches) {
         $isIncomplete = !$amTimeInDate || !$amTimeOutDate || !$pmTimeInDate || !$pmTimeOutDate;
@@ -328,12 +438,8 @@ function attendance_calculate_daily_metrics(string $date, ?string $timeIn, ?stri
 
     if ($isIncomplete) {
         $status = 'Incomplete';
-    } elseif ($lateMinutes > 0 && $undertimeMinutes > 0) {
-        $status = 'Late / Undertime';
     } elseif ($lateMinutes > 0) {
         $status = 'Late';
-    } elseif ($undertimeMinutes > 0) {
-        $status = 'Undertime';
     } else {
         $status = 'Present';
     }
@@ -343,7 +449,9 @@ function attendance_calculate_daily_metrics(string $date, ?string $timeIn, ?stri
         'timeOut' => $timeOutDate ? $timeOutDate->format('Y-m-d H:i:s') : null,
         'totalMinutes' => $totalMinutes,
         'lateMinutes' => $lateMinutes,
-        'undertimeMinutes' => $undertimeMinutes,
+        // Undertime is not tracked: only late arrivals and absences count against attendance. The
+        // column stays at 0 so payroll's undertime deduction does too.
+        'undertimeMinutes' => 0,
         'status' => $status,
     ];
 }
@@ -387,9 +495,52 @@ function attendance_non_working_holiday_dates(PDO $pdo, string $startDate, strin
     return $holidays;
 }
 
+/** Read the saved work week for both DTR totals and missing-record generation during imports. */
+function attendance_system_workday_numbers(PDO $pdo): array
+{
+    $configuration = json_decode(get_application_setting($pdo, 'system_configuration', '{}'), true);
+    $workWeek = is_array($configuration) && is_array($configuration['workWeek'] ?? null)
+        ? $configuration['workWeek']
+        : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    $dayMap = [
+        'mon' => 1,
+        'monday' => 1,
+        'tue' => 2,
+        'tuesday' => 2,
+        'wed' => 3,
+        'wednesday' => 3,
+        'thu' => 4,
+        'thursday' => 4,
+        'fri' => 5,
+        'friday' => 5,
+        'sat' => 6,
+        'saturday' => 6,
+        'sun' => 7,
+        'sunday' => 7,
+    ];
+    $days = [];
+
+    foreach ($workWeek as $day) {
+        $key = strtolower(trim((string)$day));
+        if (isset($dayMap[$key])) {
+            $days[$dayMap[$key]] = true;
+        }
+    }
+
+    if ($days === []) {
+        return [1, 2, 3, 4, 5];
+    }
+
+    $numbers = array_keys($days);
+    sort($numbers);
+
+    return $numbers;
+}
+
 function attendance_workday_dates(PDO $pdo, string $startDate, string $endDate): array
 {
     $holidays = attendance_non_working_holiday_dates($pdo, $startDate, $endDate);
+    $workdayNumbers = array_flip(attendance_system_workday_numbers($pdo));
     $workdays = [];
     $current = new DateTimeImmutable($startDate);
     $end = new DateTimeImmutable($endDate);
@@ -398,7 +549,7 @@ function attendance_workday_dates(PDO $pdo, string $startDate, string $endDate):
         $dateKey = $current->format('Y-m-d');
         $dayOfWeek = (int)$current->format('N');
 
-        if ($dayOfWeek <= 5 && !isset($holidays[$dateKey])) {
+        if (isset($workdayNumbers[$dayOfWeek]) && !isset($holidays[$dateKey])) {
             $workdays[$dateKey] = true;
         }
 
@@ -516,10 +667,9 @@ function attendance_permissions(array $user): array
 {
     return [
         'canImport' => attendance_can_import($user),
+        'canViewImportHistory' => attendance_can_view_import_history($user),
         'canEdit' => attendance_can_edit($user),
-        'canApproveAdjustments' => attendance_can_approve_adjustments($user),
-        'canRequestAdjustment' => attendance_can_request_adjustment($user),
-        'isPersonal' => attendance_role_key($user) === 'employee',
+        'isPersonal' => attendance_role_key($user) === 'employee' || attendance_personal_scope_requested(),
     ];
 }
 
@@ -529,7 +679,7 @@ function attendance_scope_sql(PDO $pdo, array $user, string $employeeAlias = 'e'
     $conditions = ["{$employeeAlias}.is_archived = 0"];
     $params = [];
 
-    if ($role === 'employee') {
+    if ($role === 'employee' || attendance_personal_scope_requested()) {
         $employeeId = session_employee_record_id($pdo, $user);
         if ($employeeId === null) {
             $conditions[] = '1 = 0';
@@ -537,7 +687,7 @@ function attendance_scope_sql(PDO $pdo, array $user, string $employeeAlias = 'e'
             $conditions[] = "{$employeeAlias}.id = :scope_employee_id";
             $params[':scope_employee_id'] = $employeeId;
         }
-    } elseif (in_array($role, ['chief', 'planningofficer'], true)) {
+    } elseif (in_array($role, ATTENDANCE_DIVISION_SCOPED_ROLES, true)) {
         $division = attendance_text($user['division'] ?? '');
         if ($division !== '') {
             $conditions[] = 'd.name = :scope_division';
@@ -561,6 +711,28 @@ function attendance_scope_sql(PDO $pdo, array $user, string $employeeAlias = 'e'
  */
 function attendance_filter_departments(PDO $pdo, array $user): array
 {
+    $role = attendance_role_key($user);
+    $isScoped = $role === 'employee'
+        || attendance_personal_scope_requested()
+        || in_array($role, ATTENDANCE_DIVISION_SCOPED_ROLES, true);
+
+    /*
+     * An organization-wide desk filters by the division table itself -- every active division, the
+     * same list every other module's filter offers -- rather than only the divisions with staff.
+     */
+    if (!$isScoped) {
+        return array_values(array_filter(array_map(
+            static fn (array $row): string => attendance_text($row['name'] ?? ''),
+            $pdo->query(
+                'SELECT name
+                 FROM divisions
+                 WHERE is_archived = 0
+                   AND TRIM(COALESCE(name, "")) <> ""
+                 ORDER BY name ASC'
+            )->fetchAll()
+        )));
+    }
+
     [$conditions, $params] = attendance_scope_sql($pdo, $user, 'e');
 
     $statement = $pdo->prepare(
@@ -773,12 +945,10 @@ function attendance_list_records(PDO $pdo, array $user): void
         'totalRecords' => count($records),
         'present' => 0,
         'late' => 0,
-        'undertime' => 0,
         'incomplete' => 0,
         'missingTimeLogs' => 0,
         'totalRenderedMinutes' => 0,
         'totalLateMinutes' => 0,
-        'totalUndertimeMinutes' => 0,
     ];
 
     foreach ($records as $record) {
@@ -789,9 +959,6 @@ function attendance_list_records(PDO $pdo, array $user): void
         if (str_contains($recordStatus, 'late')) {
             $summary['late']++;
         }
-        if (str_contains($recordStatus, 'undertime')) {
-            $summary['undertime']++;
-        }
         if ($recordStatus === 'incomplete') {
             $summary['incomplete']++;
             $summary['missingTimeLogs']++;
@@ -799,7 +966,6 @@ function attendance_list_records(PDO $pdo, array $user): void
 
         $summary['totalRenderedMinutes'] += (int)$record['totalMinutes'];
         $summary['totalLateMinutes'] += (int)$record['lateMinutes'];
-        $summary['totalUndertimeMinutes'] += (int)$record['undertimeMinutes'];
     }
 
     json_response([
@@ -809,7 +975,6 @@ function attendance_list_records(PDO $pdo, array $user): void
         // Independent of the filters above -- see attendance_filter_departments().
         'departments' => attendance_filter_departments($pdo, $user),
         'employees' => attendance_fetch_employees($pdo, $user),
-        'adjustments' => attendance_fetch_adjustments($pdo, $user, false),
         'permissions' => attendance_permissions($user),
     ]);
 }
@@ -994,10 +1159,10 @@ function attendance_employee_map(PDO $pdo): array
 
         $map[$normalizedCode] = $employeeId;
 
-        if (preg_match('/^emp2026-(\d{4})$/i', $employeeCode, $matches) === 1) {
+        if (preg_match('/^emp\d{4}-(\d+)$/i', $employeeCode, $matches) === 1) {
             $numericCode = (string)((int)$matches[1]);
             $map[$numericCode] = $map[$numericCode] ?? $employeeId;
-            $map[$matches[1]] = $map[$matches[1]] ?? $employeeId;
+            $map[str_pad($numericCode, 4, '0', STR_PAD_LEFT)] = $map[str_pad($numericCode, 4, '0', STR_PAD_LEFT)] ?? $employeeId;
         }
     }
 
@@ -1018,6 +1183,10 @@ function attendance_employee_lookup_keys(string $employeeCode): array
         $keys[] = $numericCode;
         $keys[] = str_pad($numericCode, 4, '0', STR_PAD_LEFT);
         $keys[] = 'emp2026-' . str_pad($numericCode, 4, '0', STR_PAD_LEFT);
+    } elseif (preg_match('/^emp\d{4}-(\d+)$/', $normalizedCode, $matches) === 1) {
+        $numericCode = (string)((int)$matches[1]);
+        $keys[] = $numericCode;
+        $keys[] = str_pad($numericCode, 4, '0', STR_PAD_LEFT);
     }
 
     return array_values(array_unique($keys));
@@ -1034,6 +1203,82 @@ function attendance_find_employee_id(array $employeeMap, string $employeeCode): 
     return 0;
 }
 
+/**
+ * Give every active employee a daily record for each workday represented by an import.
+ *
+ * A biometric file naturally contains punches only for people who used the device. Previously that
+ * meant everybody without a punch had no row at all, even though attendance reports already treat
+ * `Absent` as a real daily status. Existing punch rollups and manual/adjusted records win because
+ * this insert only fills a missing employee/date pair.
+ */
+function attendance_fill_missing_import_records(PDO $pdo, array $importDates, ?int $updatedByUserId): array
+{
+    $dates = array_values(array_unique(array_filter(
+        array_map(static fn ($date): ?string => attendance_date_or_null($date), $importDates)
+    )));
+
+    if ($dates === []) {
+        return ['absentRecordsCreated' => 0, 'leaveRecordsCreated' => 0];
+    }
+
+    sort($dates);
+    $startDate = $dates[0];
+    $endDate = $dates[count($dates) - 1];
+    $workdayDates = attendance_workday_dates($pdo, $startDate, $endDate);
+    $importWorkdays = array_values(array_filter(
+        $dates,
+        static fn (string $date): bool => isset($workdayDates[$date])
+    ));
+
+    if ($importWorkdays === []) {
+        return ['absentRecordsCreated' => 0, 'leaveRecordsCreated' => 0];
+    }
+
+    $employees = $pdo->query(
+        'SELECT id
+         FROM employees
+         WHERE is_archived = 0
+           AND LOWER(status) = "active"'
+    )->fetchAll();
+    $insertStatement = $pdo->prepare(
+        'INSERT IGNORE INTO attendance_daily_records
+            (employee_id, attendance_date, time_in, time_out, total_minutes, late_minutes, undertime_minutes, status, source, updated_by_user_id)
+         VALUES
+            (:employee_id, :attendance_date, NULL, NULL, 0, 0, 0, :status, "import", :updated_by_user_id)'
+    );
+    $counts = ['absentRecordsCreated' => 0, 'leaveRecordsCreated' => 0];
+
+    foreach ($employees as $employee) {
+        $employeeId = (int)($employee['id'] ?? 0);
+        if ($employeeId <= 0) {
+            continue;
+        }
+
+        $leaveDates = attendance_approved_leave_dates($pdo, $employeeId, $startDate, $endDate, $workdayDates);
+
+        foreach ($importWorkdays as $date) {
+            $leaveCode = $leaveDates[$date] ?? '';
+            $status = $leaveCode === 'LWOP'
+                ? 'Leave Without Pay'
+                : ($leaveCode === 'LWP' ? 'Leave with Pay' : 'Absent');
+
+            $insertStatement->execute([
+                ':employee_id' => $employeeId,
+                ':attendance_date' => $date,
+                ':status' => $status,
+                ':updated_by_user_id' => $updatedByUserId,
+            ]);
+
+            if ($insertStatement->rowCount() > 0) {
+                $countKey = $leaveCode === '' ? 'absentRecordsCreated' : 'leaveRecordsCreated';
+                $counts[$countKey]++;
+            }
+        }
+    }
+
+    return $counts;
+}
+
 function attendance_import_csv(PDO $pdo, array $user): void
 {
     if (!attendance_can_import($user)) {
@@ -1046,7 +1291,7 @@ function attendance_import_csv(PDO $pdo, array $user): void
     if (!isset($_FILES['attendanceFile']) || !is_array($_FILES['attendanceFile'])) {
         json_response([
             'success' => false,
-            'message' => 'Choose a CSV file to import.',
+            'message' => 'Choose a CSV or XLSX attendance file to import.',
         ], 422);
     }
 
@@ -1054,18 +1299,63 @@ function attendance_import_csv(PDO $pdo, array $user): void
     if ((int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
         json_response([
             'success' => false,
-            'message' => 'Unable to upload the CSV file.',
+            'message' => 'Unable to upload the attendance file.',
         ], 422);
     }
 
     $path = (string)($file['tmp_name'] ?? '');
-    $handle = fopen($path, 'rb');
+    $fileName = attendance_text($file['name'] ?? '');
+    $fileType = strtolower(attendance_text($file['type'] ?? ''));
+    $isXlsxFile = preg_match('/\.xlsx$/i', $fileName) === 1
+        || $fileType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    $isCsvFile = preg_match('/\.csv$/i', $fileName) === 1
+        || in_array($fileType, ['text/csv', 'application/csv', 'application/vnd.ms-excel', 'text/plain'], true);
+
+    if (!$isCsvFile && !$isXlsxFile) {
+        json_response([
+            'success' => false,
+            'message' => 'Choose a valid CSV or XLSX attendance file.',
+        ], 422);
+    }
+
+    if ($isXlsxFile) {
+        try {
+            $workbookRows = employee_xlsx_read_rows($path);
+        } catch (Throwable $exception) {
+            json_response([
+                'success' => false,
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        $handle = fopen('php://temp/maxmemory:5242880', 'w+b');
+        if ($handle !== false) {
+            foreach ($workbookRows as $workbookRow) {
+                fputcsv($handle, $workbookRow);
+            }
+            rewind($handle);
+        }
+    } else {
+        $handle = fopen($path, 'rb');
+    }
+
     if ($handle === false) {
         json_response([
             'success' => false,
-            'message' => 'Unable to read the CSV file.',
+            'message' => 'Unable to read the attendance file.',
         ], 422);
     }
+
+    /*
+     * An import covers one payroll cut-off (1st half, 2nd half, or the month). The client already
+     * trims the file to it, but the range is enforced here too so a stray punch outside the period
+     * can never land in the wrong cut-off. Older callers that send no range still import as-is.
+     */
+    $cutoff = attendance_import_cutoff_from_request();
+    /* DDL commits implicitly, so the history table must exist before the transaction below opens. */
+    attendance_ensure_import_history_schema($pdo);
+    $importFileName = mb_substr(basename(str_replace('\\', '/', $fileName)), 0, 255);
+    $importSource = $isXlsxFile ? 'xlsx' : 'csv';
 
     $employeeMap = attendance_employee_map($pdo);
     $summary = [
@@ -1073,7 +1363,11 @@ function attendance_import_csv(PDO $pdo, array $user): void
         'totalImported' => 0,
         'duplicatesSkipped' => 0,
         'invalidRows' => 0,
+        'outsideCutoffRows' => 0,
         'successfulRecords' => 0,
+        'absentRecordsCreated' => 0,
+        'leaveRecordsCreated' => 0,
+        'cutoff' => $cutoff,
     ];
     $invalidSamples = [];
     $affectedDates = [];
@@ -1092,7 +1386,7 @@ function attendance_import_csv(PDO $pdo, array $user): void
         'INSERT INTO attendance_logs
             (employee_id, punch_at, punch_type, raw_state, source, created_by_user_id)
          VALUES
-            (:employee_id, :punch_at, :punch_type, :raw_state, "csv", :created_by_user_id)'
+            (:employee_id, :punch_at, :punch_type, :raw_state, :source, :created_by_user_id)'
     );
 
     $pdo->beginTransaction();
@@ -1136,7 +1430,20 @@ function attendance_import_csv(PDO $pdo, array $user): void
             }
 
             $punchAt = $dateTime->format('Y-m-d H:i:s');
-            $importDates[$dateTime->format('Y-m-d')] = true;
+            $attendanceDate = $dateTime->format('Y-m-d');
+
+            if ($cutoff !== null && ($attendanceDate < $cutoff['dateFrom'] || $attendanceDate > $cutoff['dateTo'])) {
+                $summary['outsideCutoffRows']++;
+                continue;
+            }
+
+            $importDates[$attendanceDate] = true;
+            // Include duplicate punches too. Re-importing a file must be able to rebuild a missing
+            // daily rollup without inserting the same raw log again.
+            $affectedDates[$employeeId . '|' . $attendanceDate] = [
+                'employeeId' => $employeeId,
+                'date' => $attendanceDate,
+            ];
             $duplicateStatement->execute([
                 ':employee_id' => $employeeId,
                 ':punch_at' => $punchAt,
@@ -1153,13 +1460,10 @@ function attendance_import_csv(PDO $pdo, array $user): void
                 ':punch_at' => $punchAt,
                 ':punch_type' => $punchType,
                 ':raw_state' => $state,
+                ':source' => $importSource,
                 ':created_by_user_id' => $createdBy,
             ]);
             $summary['totalImported']++;
-            $affectedDates[$employeeId . '|' . $dateTime->format('Y-m-d')] = [
-                'employeeId' => $employeeId,
-                'date' => $dateTime->format('Y-m-d'),
-            ];
         }
 
         fclose($handle);
@@ -1169,12 +1473,48 @@ function attendance_import_csv(PDO $pdo, array $user): void
             $summary['successfulRecords']++;
         }
 
-        if ($importDates !== []) {
+        $coverageCounts = attendance_fill_missing_import_records($pdo, array_keys($importDates), $createdBy);
+        $summary = array_merge($summary, $coverageCounts);
+
+        // The range the list should open on afterwards: the whole cut-off when one was chosen, so a
+        // half with no punches on its last days still shows as that half; otherwise the file's span.
+        if ($cutoff !== null) {
+            $summary['dateFrom'] = $cutoff['dateFrom'];
+            $summary['dateTo'] = $cutoff['dateTo'];
+        } elseif ($importDates !== []) {
             $sortedImportDates = array_keys($importDates);
             sort($sortedImportDates);
             $summary['dateFrom'] = $sortedImportDates[0];
             $summary['dateTo'] = $sortedImportDates[count($sortedImportDates) - 1];
         }
+
+        $historyStatement = $pdo->prepare(
+            'INSERT INTO attendance_imports
+                (file_name, pay_period, date_from, date_to, total_rows, total_imported, duplicates_skipped,
+                 invalid_rows, outside_cutoff_rows, successful_records, absent_records_created,
+                 leave_records_created, imported_by_user_id, imported_by_name)
+             VALUES
+                (:file_name, :pay_period, :date_from, :date_to, :total_rows, :total_imported, :duplicates_skipped,
+                 :invalid_rows, :outside_cutoff_rows, :successful_records, :absent_records_created,
+                 :leave_records_created, :imported_by_user_id, :imported_by_name)'
+        );
+        $historyStatement->execute([
+            ':file_name' => $importFileName !== '' ? $importFileName : 'attendance.csv',
+            ':pay_period' => $cutoff !== null && $cutoff['payPeriod'] !== '' ? $cutoff['payPeriod'] : null,
+            ':date_from' => $summary['dateFrom'] ?? null,
+            ':date_to' => $summary['dateTo'] ?? null,
+            ':total_rows' => (int)$summary['totalRows'],
+            ':total_imported' => (int)$summary['totalImported'],
+            ':duplicates_skipped' => (int)$summary['duplicatesSkipped'],
+            ':invalid_rows' => (int)$summary['invalidRows'],
+            ':outside_cutoff_rows' => (int)$summary['outsideCutoffRows'],
+            ':successful_records' => (int)$summary['successfulRecords'],
+            ':absent_records_created' => (int)($summary['absentRecordsCreated'] ?? 0),
+            ':leave_records_created' => (int)($summary['leaveRecordsCreated'] ?? 0),
+            ':imported_by_user_id' => $createdBy,
+            ':imported_by_name' => mb_substr(attendance_text($user['full_name'] ?? '') ?: attendance_text($user['username'] ?? ''), 0, 180) ?: null,
+        ]);
+        $summary['importId'] = (int)$pdo->lastInsertId();
 
         $pdo->commit();
     } catch (Throwable $exception) {
@@ -1194,7 +1534,8 @@ function attendance_import_csv(PDO $pdo, array $user): void
             $notificationCount = (int)($summary['totalImported'] ?? 0);
             $notificationTitle = 'Attendance Import Completed';
             $notificationMessage = sprintf(
-                'Attendance import completed with %d new record%s.',
+                'Attendance import%s completed with %d new record%s.',
+                $cutoff !== null ? ' for ' . attendance_import_cutoff_label($cutoff) : '',
                 $notificationCount,
                 $notificationCount === 1 ? '' : 's'
             );
@@ -1221,6 +1562,79 @@ function attendance_import_csv(PDO $pdo, array $user): void
         'summary' => $summary,
         'invalidSamples' => $invalidSamples,
     ], 201);
+}
+
+/** Newest import first, one page at a time. The username is a fallback for rows imported before the name snapshot existed. */
+function attendance_list_import_history(PDO $pdo, array $user): void
+{
+    if (!attendance_can_view_import_history($user)) {
+        json_response([
+            'success' => false,
+            'message' => 'You are not allowed to view the attendance import history.',
+        ], 403);
+    }
+
+    attendance_ensure_import_history_schema($pdo);
+
+    $page = max(1, (int)($_GET['page'] ?? 1));
+    $pageSize = min(100, max(1, (int)($_GET['pageSize'] ?? 20)));
+    $total = (int)$pdo->query('SELECT COUNT(*) FROM attendance_imports')->fetchColumn();
+
+    $statement = $pdo->prepare(
+        'SELECT
+            ai.id,
+            ai.file_name AS fileName,
+            ai.pay_period AS payPeriod,
+            ai.date_from AS dateFrom,
+            ai.date_to AS dateTo,
+            ai.total_rows AS totalRows,
+            ai.total_imported AS totalImported,
+            ai.duplicates_skipped AS duplicatesSkipped,
+            ai.invalid_rows AS invalidRows,
+            ai.outside_cutoff_rows AS outsideCutoffRows,
+            ai.successful_records AS successfulRecords,
+            ai.absent_records_created AS absentRecordsCreated,
+            ai.leave_records_created AS leaveRecordsCreated,
+            COALESCE(NULLIF(ai.imported_by_name, ""), u.username) AS importedBy,
+            ai.created_at AS importedAt
+         FROM attendance_imports ai
+         LEFT JOIN users u ON u.id = ai.imported_by_user_id
+         ORDER BY ai.created_at DESC, ai.id DESC
+         LIMIT :limit OFFSET :offset'
+    );
+    $statement->bindValue(':limit', $pageSize, PDO::PARAM_INT);
+    $statement->bindValue(':offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
+    $statement->execute();
+
+    $imports = array_map(static function (array $row): array {
+        $counts = [
+            'totalRows', 'totalImported', 'duplicatesSkipped', 'invalidRows', 'outsideCutoffRows',
+            'successfulRecords', 'absentRecordsCreated', 'leaveRecordsCreated',
+        ];
+        foreach ($counts as $key) {
+            $row[$key] = (int)$row[$key];
+        }
+
+        $row['id'] = (int)$row['id'];
+        $row['payPeriod'] = (string)($row['payPeriod'] ?? '');
+        $row['cutoffLabel'] = $row['dateFrom'] !== null && $row['dateTo'] !== null
+            ? attendance_import_cutoff_label([
+                'payPeriod' => $row['payPeriod'],
+                'dateFrom' => (string)$row['dateFrom'],
+                'dateTo' => (string)$row['dateTo'],
+            ])
+            : '';
+
+        return $row;
+    }, $statement->fetchAll());
+
+    json_response([
+        'success' => true,
+        'imports' => $imports,
+        'total' => $total,
+        'page' => $page,
+        'pageSize' => $pageSize,
+    ]);
 }
 
 function attendance_archive_record(PDO $pdo, array $body, array $user, bool $archived): void
@@ -1316,24 +1730,6 @@ function attendance_update_record(PDO $pdo, array $body, array $user): void
             ]);
         }
 
-        $adjustmentStatement = $pdo->prepare(
-            'INSERT INTO attendance_adjustments
-                (attendance_daily_record_id, employee_id, attendance_date, requested_time_in, requested_time_out, reason, status, requested_by_user_id, reviewed_by_user_id, reviewed_at, remarks)
-             VALUES
-                (:attendance_daily_record_id, :employee_id, :attendance_date, :requested_time_in, :requested_time_out, :reason, "approved", :requested_by_user_id, :reviewed_by_user_id, NOW(), :remarks)'
-        );
-        $adjustmentStatement->execute([
-            ':attendance_daily_record_id' => (int)$result['id'],
-            ':employee_id' => (int)$record['employeeRecordId'],
-            ':attendance_date' => $record['date'],
-            ':requested_time_in' => $timeIn,
-            ':requested_time_out' => $timeOut,
-            ':reason' => attendance_text($body['reason'] ?? 'Manual attendance update'),
-            ':requested_by_user_id' => $updatedBy,
-            ':reviewed_by_user_id' => $updatedBy,
-            ':remarks' => 'Direct edit by authorized user.',
-        ]);
-
         $pdo->commit();
     } catch (Throwable $exception) {
         if ($pdo->inTransaction()) {
@@ -1342,6 +1738,21 @@ function attendance_update_record(PDO $pdo, array $body, array $user): void
 
         throw $exception;
     }
+
+    // The audit trail is the record of a manual edit: who changed which day, from what, and why.
+    write_auth_audit($pdo, $user, 'attendance.record_updated', 'An attendance record was edited.', [
+        'module' => 'attendance',
+        'recordId' => $recordId,
+        'employeeRecordId' => (int)$record['employeeRecordId'],
+        'date' => $record['date'],
+        'previousTimeIn' => $record['timeIn'] ?? null,
+        'previousTimeOut' => $record['timeOut'] ?? null,
+        'previousStatus' => $record['status'] ?? null,
+        'timeIn' => $timeIn,
+        'timeOut' => $timeOut,
+        'status' => $status ?? ($record['status'] ?? null),
+        'reason' => attendance_text($body['reason'] ?? '') ?: 'Manual attendance update',
+    ]);
 
     try {
         $employeeName = trim((string)($record['employeeName'] ?? '')) !== ''
@@ -1377,242 +1788,7 @@ function attendance_update_record(PDO $pdo, array $body, array $user): void
     ]);
 }
 
-function attendance_request_adjustment(PDO $pdo, array $body, array $user): void
-{
-    if (!attendance_can_request_adjustment($user)) {
-        json_response([
-            'success' => false,
-            'message' => 'Only employee accounts can request attendance adjustments.',
-        ], 403);
-    }
-
-    $recordId = (int)($body['recordId'] ?? $body['id'] ?? 0);
-    $record = attendance_fetch_record($pdo, $recordId, $user);
-    if ($record === null) {
-        json_response([
-            'success' => false,
-            'message' => 'Attendance record was not found.',
-        ], 404);
-    }
-
-    $reason = attendance_text($body['reason'] ?? '');
-    if ($reason === '') {
-        json_response([
-            'success' => false,
-            'message' => 'Reason for adjustment is required.',
-        ], 422);
-    }
-
-    $timeIn = attendance_datetime_for_date($body['timeIn'] ?? null, $record['date']);
-    $timeOut = attendance_datetime_for_date($body['timeOut'] ?? null, $record['date']);
-
-    $statement = $pdo->prepare(
-        'INSERT INTO attendance_adjustments
-            (attendance_daily_record_id, employee_id, attendance_date, requested_time_in, requested_time_out, reason, status, requested_by_user_id)
-         VALUES
-            (:attendance_daily_record_id, :employee_id, :attendance_date, :requested_time_in, :requested_time_out, :reason, "pending", :requested_by_user_id)'
-    );
-    $statement->execute([
-        ':attendance_daily_record_id' => $recordId,
-        ':employee_id' => (int)$record['employeeRecordId'],
-        ':attendance_date' => $record['date'],
-        ':requested_time_in' => $timeIn,
-        ':requested_time_out' => $timeOut,
-        ':reason' => $reason,
-        ':requested_by_user_id' => (int)($user['id'] ?? 0) ?: null,
-    ]);
-
-    $adjustmentId = (int)$pdo->lastInsertId();
-
-    try {
-        $employeeName = trim((string)($record['employeeName'] ?? '')) !== ''
-            ? trim((string)($record['employeeName'] ?? ''))
-            : 'an employee';
-        $recordDateLabel = (new DateTimeImmutable((string)$record['date']))->format('M j, Y');
-
-        notify_roles(
-            $pdo,
-            ['admin', 'hrhead', 'hrstaff'],
-            'Attendance Adjustment Requested',
-            sprintf('%s requested an attendance adjustment for %s.', $employeeName, $recordDateLabel),
-            'attendance_updated',
-            $adjustmentId > 0 ? (string)$adjustmentId : (string)$recordId
-        );
-    } catch (Throwable $notificationException) {
-        error_log('Attendance adjustment request notification error: ' . $notificationException->getMessage());
-    }
-
-    json_response([
-        'success' => true,
-        'message' => 'Attendance adjustment request submitted.',
-    ], 201);
-}
-
-function attendance_fetch_adjustments(PDO $pdo, array $user, bool $sendResponse): array
-{
-    [$conditions, $params] = attendance_scope_sql($pdo, $user, 'e');
-
-    if (!attendance_can_approve_adjustments($user) && attendance_role_key($user) !== 'employee') {
-        $conditions[] = '1 = 0';
-    }
-
-    $statement = $pdo->prepare(
-        'SELECT
-            aa.id,
-            aa.attendance_daily_record_id AS recordId,
-            aa.employee_id AS employeeRecordId,
-            e.employee_id AS employeeId,
-            TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
-            d.name AS department,
-            aa.attendance_date AS date,
-            aa.requested_time_in AS requestedTimeIn,
-            aa.requested_time_out AS requestedTimeOut,
-            aa.reason,
-            aa.status,
-            aa.remarks,
-            aa.created_at AS requestedAt,
-            aa.reviewed_at AS reviewedAt,
-            requester.username AS requestedBy,
-            reviewer.username AS reviewedBy
-         FROM attendance_adjustments aa
-         INNER JOIN employees e ON e.id = aa.employee_id
-         LEFT JOIN divisions d ON d.id = e.division_id
-         LEFT JOIN users requester ON requester.id = aa.requested_by_user_id
-         LEFT JOIN users reviewer ON reviewer.id = aa.reviewed_by_user_id
-         WHERE ' . implode(' AND ', $conditions) . '
-         ORDER BY FIELD(aa.status, "pending", "approved", "rejected"), aa.created_at DESC
-         LIMIT 200'
-    );
-    $statement->execute($params);
-
-    $adjustments = array_map(static function (array $adjustment): array {
-        return array_merge($adjustment, [
-            'id' => (int)$adjustment['id'],
-            'recordId' => $adjustment['recordId'] !== null ? (int)$adjustment['recordId'] : null,
-            'employeeRecordId' => (int)$adjustment['employeeRecordId'],
-        ]);
-    }, $statement->fetchAll());
-
-    if ($sendResponse) {
-        json_response([
-            'success' => true,
-            'adjustments' => $adjustments,
-            'permissions' => attendance_permissions($user),
-        ]);
-    }
-
-    return $adjustments;
-}
-
-function attendance_update_adjustment_status(PDO $pdo, array $body, array $user): void
-{
-    if (!attendance_can_approve_adjustments($user)) {
-        json_response([
-            'success' => false,
-            'message' => 'You are not allowed to approve attendance adjustments.',
-        ], 403);
-    }
-
-    $adjustmentId = (int)($body['adjustmentId'] ?? $body['id'] ?? 0);
-    $status = strtolower(attendance_text($body['status'] ?? ''));
-    if (!in_array($status, ['approved', 'rejected'], true)) {
-        json_response([
-            'success' => false,
-            'message' => 'Adjustment status must be approved or rejected.',
-        ], 422);
-    }
-
-    $statement = $pdo->prepare(
-        'SELECT
-            aa.*,
-            e.is_archived,
-            d.name AS department
-         FROM attendance_adjustments aa
-         INNER JOIN employees e ON e.id = aa.employee_id
-         LEFT JOIN divisions d ON d.id = e.division_id
-         WHERE aa.id = :id
-         LIMIT 1'
-    );
-    $statement->execute([':id' => $adjustmentId]);
-    $adjustment = $statement->fetch();
-
-    if (!$adjustment || (int)($adjustment['is_archived'] ?? 1) === 1) {
-        json_response([
-            'success' => false,
-            'message' => 'Attendance adjustment was not found.',
-        ], 404);
-    }
-
-    $reviewedBy = (int)($user['id'] ?? 0) ?: null;
-
-    $pdo->beginTransaction();
-    try {
-        $updateStatement = $pdo->prepare(
-            'UPDATE attendance_adjustments
-             SET status = :status,
-                 reviewed_by_user_id = :reviewed_by_user_id,
-                 reviewed_at = NOW(),
-                 remarks = :remarks
-             WHERE id = :id'
-        );
-        $updateStatement->execute([
-            ':status' => $status,
-            ':reviewed_by_user_id' => $reviewedBy,
-            ':remarks' => attendance_text($body['remarks'] ?? ''),
-            ':id' => $adjustmentId,
-        ]);
-
-        if ($status === 'approved') {
-            attendance_upsert_daily_record(
-                $pdo,
-                (int)$adjustment['employee_id'],
-                (string)$adjustment['attendance_date'],
-                $adjustment['requested_time_in'] !== null ? (string)$adjustment['requested_time_in'] : null,
-                $adjustment['requested_time_out'] !== null ? (string)$adjustment['requested_time_out'] : null,
-                'adjusted',
-                $reviewedBy
-            );
-        }
-
-        $pdo->commit();
-    } catch (Throwable $exception) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-
-        throw $exception;
-    }
-
-    try {
-        $recordDateLabel = (new DateTimeImmutable((string)$adjustment['attendance_date']))->format('M j, Y');
-        $notificationTitle = $status === 'approved'
-            ? 'Attendance Adjustment Approved'
-            : 'Attendance Adjustment Rejected';
-        $notificationMessage = sprintf(
-            'Your attendance adjustment for %s was %s.',
-            $recordDateLabel,
-            $status
-        );
-
-        notify_employee(
-            $pdo,
-            (int)$adjustment['employee_id'],
-            $notificationTitle,
-            $notificationMessage,
-            'attendance_updated',
-            (string)$adjustmentId
-        );
-    } catch (Throwable $notificationException) {
-        error_log('Attendance adjustment status notification error: ' . $notificationException->getMessage());
-    }
-
-    json_response([
-        'success' => true,
-        'message' => $status === 'approved' ? 'Attendance adjustment approved.' : 'Attendance adjustment rejected.',
-    ]);
-}
-
-function attendance_get_dtr(PDO $pdo, array $user): void
+function attendance_build_dtr(PDO $pdo, array $user): array
 {
     $recordId = (int)($_GET['recordId'] ?? 0);
     $employeeRecordId = (int)($_GET['employeeRecordId'] ?? 0);
@@ -1628,7 +1804,7 @@ function attendance_get_dtr(PDO $pdo, array $user): void
         }
         $employeeRecordId = (int)$record['employeeRecordId'];
         $month = substr((string)$record['date'], 0, 7);
-    } elseif (attendance_role_key($user) === 'employee') {
+    } elseif (attendance_role_key($user) === 'employee' || attendance_personal_scope_requested()) {
         $employeeRecordId = (int)(session_employee_record_id($pdo, $user) ?? 0);
     }
 
@@ -1743,9 +1919,7 @@ function attendance_get_dtr(PDO $pdo, array $user): void
 
     $absentDays = 0;
     foreach ($workdayDates as $date => $_) {
-        $dayOfWeek = (int)(new DateTimeImmutable($date))->format('N');
-
-        if ($dayOfWeek <= 4 && !isset($dtrDatesWithEntries[$date]) && !isset($leaveDates[$date])) {
+        if (!isset($dtrDatesWithEntries[$date]) && !isset($leaveDates[$date])) {
             $absentDays++;
         }
     }
@@ -1756,7 +1930,7 @@ function attendance_get_dtr(PDO $pdo, array $user): void
     $totals['leaveDays'] = count($leaveDates);
     $totals['expectedWorkdays'] = count($workdayDates);
 
-    json_response([
+    return [
         'success' => true,
         'employee' => array_merge($employee, [
             'employeeRecordId' => (int)$employee['employeeRecordId'],
@@ -1768,7 +1942,316 @@ function attendance_get_dtr(PDO $pdo, array $user): void
         'leaveDates' => $leaveDates,
         'totals' => $totals,
         'permissions' => attendance_permissions($user),
-    ]);
+    ];
+}
+
+function attendance_get_dtr(PDO $pdo, array $user): void
+{
+    json_response(attendance_build_dtr($pdo, $user));
+}
+
+function attendance_dtr_excel_time(mixed $value): string
+{
+    $text = attendance_text($value);
+    if ($text === '') {
+        return '--';
+    }
+
+    try {
+        return (new DateTimeImmutable($text))->format('g:i a');
+    } catch (Throwable) {
+        return '--';
+    }
+}
+
+const ATTENDANCE_DTR_XLSX_STYLE_DEFAULT = 0;
+const ATTENDANCE_DTR_XLSX_STYLE_FORM_NOTE = 1;
+const ATTENDANCE_DTR_XLSX_STYLE_COPY = 2;
+const ATTENDANCE_DTR_XLSX_STYLE_OFFICE = 3;
+const ATTENDANCE_DTR_XLSX_STYLE_TITLE = 4;
+const ATTENDANCE_DTR_XLSX_STYLE_NAME = 5;
+const ATTENDANCE_DTR_XLSX_STYLE_LABEL = 6;
+const ATTENDANCE_DTR_XLSX_STYLE_VALUE_LINE = 7;
+const ATTENDANCE_DTR_XLSX_STYLE_OFFICIAL = 8;
+const ATTENDANCE_DTR_XLSX_STYLE_OFFICIAL_RIGHT = 9;
+const ATTENDANCE_DTR_XLSX_STYLE_HEADER = 10;
+const ATTENDANCE_DTR_XLSX_STYLE_CELL = 11;
+const ATTENDANCE_DTR_XLSX_STYLE_DAY = 12;
+const ATTENDANCE_DTR_XLSX_STYLE_CERTIFICATION = 13;
+const ATTENDANCE_DTR_XLSX_STYLE_SIGNATURE_LINE = 14;
+const ATTENDANCE_DTR_XLSX_STYLE_CAPTION = 15;
+const ATTENDANCE_DTR_XLSX_STYLE_VERIFIED = 16;
+const ATTENDANCE_DTR_XLSX_STYLE_IN_CHARGE = 17;
+const ATTENDANCE_DTR_XLSX_STYLE_TIMESTAMP = 18;
+const ATTENDANCE_DTR_XLSX_STYLE_DOTS = 19;
+
+function attendance_dtr_xlsx_styles_xml(): string
+{
+    $fonts = [
+        '<font><sz val="9"/><name val="Times New Roman"/></font>',
+        '<font><i/><sz val="8"/><name val="Times New Roman"/></font>',
+        '<font><b/><sz val="10"/><name val="Times New Roman"/></font>',
+        '<font><b/><sz val="12"/><name val="Times New Roman"/></font>',
+        '<font><b/><sz val="9"/><name val="Times New Roman"/></font>',
+        '<font><i/><sz val="9"/><name val="Times New Roman"/></font>',
+        '<font><sz val="8"/><name val="Times New Roman"/></font>',
+    ];
+    $allSides = '<left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right>'
+        . '<top style="thin"><color rgb="FF000000"/></top><bottom style="thin"><color rgb="FF000000"/></bottom>';
+    $borders = [
+        '<border><left/><right/><top/><bottom/><diagonal/></border>',
+        '<border>' . $allSides . '<diagonal/></border>',
+        '<border><left/><right/><top/><bottom style="thin"><color rgb="FF000000"/></bottom><diagonal/></border>',
+    ];
+    $center = '<alignment horizontal="center" vertical="center" wrapText="1"/>';
+    $left = '<alignment horizontal="left" vertical="center" wrapText="1"/>';
+    $right = '<alignment horizontal="right" vertical="center" wrapText="1"/>';
+    $xfs = [
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
+        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $left . '</xf>',
+        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $right . '</xf>',
+        '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="4" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $left . '</xf>',
+        '<xf numFmtId="0" fontId="4" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $left . '</xf>',
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $right . '</xf>',
+        '<xf numFmtId="0" fontId="4" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="4" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">' . $left . '</xf>',
+        '<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $center . '</xf>',
+        '<xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $left . '</xf>',
+        '<xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">' . $center . '</xf>',
+    ];
+
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        . '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<fonts count="' . count($fonts) . '">' . implode('', $fonts) . '</fonts>'
+        . '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+        . '<borders count="' . count($borders) . '">' . implode('', $borders) . '</borders>'
+        . '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        . '<cellXfs count="' . count($xfs) . '">' . implode('', $xfs) . '</cellXfs>'
+        . '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        . '</styleSheet>';
+}
+
+function attendance_dtr_xlsx_put(array &$rows, int $row, int $column, array $cell): void
+{
+    $rows[$row] ??= [];
+    $rows[$row][$column] = $cell;
+}
+
+function attendance_dtr_xlsx_image(string $path, int $fromColumn, int $fromRow, int $toColumn, int $toRow, string $name): ?array
+{
+    $bytes = is_file($path) ? file_get_contents($path) : false;
+    if ($bytes === false || $bytes === '') {
+        return null;
+    }
+
+    return [
+        'bytes' => $bytes,
+        'extension' => 'png',
+        'contentType' => 'image/png',
+        'name' => $name,
+        'fromCol' => $fromColumn,
+        'fromRow' => $fromRow,
+        'toCol' => $toColumn,
+        'toRow' => $toRow,
+        'fromColOff' => 30000,
+        'fromRowOff' => 20000,
+        'toColOff' => 30000,
+        'toRowOff' => 0,
+        'lockAspect' => false,
+    ];
+}
+
+/** Stream an Excel rendering of the same two CS Form No. 48 copies displayed in View DTR. */
+function attendance_export_dtr_xlsx(PDO $pdo, array $user): void
+{
+    $dtr = attendance_build_dtr($pdo, $user);
+    $recordsByDate = [];
+
+    foreach (($dtr['records'] ?? []) as $record) {
+        $date = attendance_text($record['date'] ?? '');
+        if ($date !== '') {
+            $recordsByDate[$date] = $record;
+        }
+    }
+
+    $leaveDates = is_array($dtr['leaveDates'] ?? null) ? $dtr['leaveDates'] : [];
+    $employee = is_array($dtr['employee'] ?? null) ? $dtr['employee'] : [];
+    $month = attendance_text($dtr['month'] ?? '');
+    $monthStart = DateTimeImmutable::createFromFormat('!Y-m-d', $month . '-01');
+
+    if (!$monthStart) {
+        json_response(['success' => false, 'message' => 'The DTR month is invalid.'], 422);
+    }
+
+    $dtrRows = [];
+    $daysInMonth = (int)$monthStart->format('t');
+    for ($day = 1; $day <= $daysInMonth; $day++) {
+        $date = $monthStart->setDate((int)$monthStart->format('Y'), (int)$monthStart->format('m'), $day);
+        $dateKey = $date->format('Y-m-d');
+        $record = $recordsByDate[$dateKey] ?? [];
+        $leaveCode = strtoupper(attendance_text($leaveDates[$dateKey] ?? ''));
+        $status = strtolower(attendance_text($record['status'] ?? ''));
+        if ($leaveCode === '' && $status === 'leave with pay') {
+            $leaveCode = 'LWP';
+        } elseif ($leaveCode === '' && $status === 'leave without pay') {
+            $leaveCode = 'LWOP';
+        }
+
+        $dtrRows[] = $leaveCode !== ''
+            ? [$day . ' ' . $date->format('D'), $leaveCode, $leaveCode, $leaveCode, $leaveCode, '--', '--']
+            : [
+                $day . ' ' . $date->format('D'),
+                attendance_dtr_excel_time($record['amTimeIn'] ?? $record['timeIn'] ?? null),
+                attendance_dtr_excel_time($record['amTimeOut'] ?? null),
+                attendance_dtr_excel_time($record['pmTimeIn'] ?? null),
+                attendance_dtr_excel_time($record['pmTimeOut'] ?? $record['timeOut'] ?? null),
+                array_key_exists('lateMinutes', $record) ? (string)(int)$record['lateMinutes'] : '--',
+                array_key_exists('undertimeMinutes', $record) ? (string)(int)$record['undertimeMinutes'] : '--',
+            ];
+    }
+
+    $rows = [];
+    $rowHeights = [0 => 11, 1 => 12, 2 => 17, 3 => 18, 4 => 19, 5 => 5, 6 => 17, 7 => 14, 8 => 14, 9 => 27, 10 => 18];
+    $images = [];
+    $tableBodyStart = 11;
+    foreach ($dtrRows as $index => $_) {
+        $rowHeights[$tableBodyStart + $index] = 13;
+    }
+    $certificationRow = $tableBodyStart + count($dtrRows) + 1;
+    $rowHeights[$certificationRow] = 42;
+    $rowHeights[$certificationRow + 1] = 17;
+    $rowHeights[$certificationRow + 2] = 17;
+    $rowHeights[$certificationRow + 7] = 17;
+    $rowHeights[$certificationRow + 8] = 17;
+    $timestamp = date('n/j/y, h:i A');
+    $certification = "I certify on my honor that the above is a true and correct report of the\nhours work performed, record of which was daily at the time of arrival\nand departure from office.";
+
+    $signatureStatement = $pdo->prepare('SELECT e_signature FROM employees WHERE id = :employee_id LIMIT 1');
+    $signatureStatement->execute([':employee_id' => (int)($employee['employeeRecordId'] ?? 0)]);
+    $signatureImage = payroll_xlsx_image_from_data_url($signatureStatement->fetchColumn());
+    $logoPath = dirname(__DIR__, 2) . '/public/mgb.png';
+
+    foreach ([0 => 'ORIGINAL COPY', 8 => 'DUPLICATE COPY'] as $offset => $copyLabel) {
+        attendance_dtr_xlsx_put($rows, 0, $offset, payroll_xlsx_text($timestamp, ATTENDANCE_DTR_XLSX_STYLE_TIMESTAMP, 6));
+        attendance_dtr_xlsx_put($rows, 1, $offset, payroll_xlsx_text('Civil Service Form No. 48', ATTENDANCE_DTR_XLSX_STYLE_FORM_NOTE, 3));
+        attendance_dtr_xlsx_put($rows, 1, $offset + 4, payroll_xlsx_text('>>> ' . $copyLabel, ATTENDANCE_DTR_XLSX_STYLE_COPY, 2));
+        attendance_dtr_xlsx_put($rows, 2, $offset + 1, payroll_xlsx_text('Mines and Geosciences Bureau - 10', ATTENDANCE_DTR_XLSX_STYLE_OFFICE, 5));
+        attendance_dtr_xlsx_put($rows, 3, $offset + 1, payroll_xlsx_text('DAILY TIME RECORD', ATTENDANCE_DTR_XLSX_STYLE_TITLE, 5));
+        attendance_dtr_xlsx_put($rows, 4, $offset + 1, payroll_xlsx_text(strtoupper(attendance_text($employee['employeeName'] ?? 'Employee')), ATTENDANCE_DTR_XLSX_STYLE_NAME, 5));
+        attendance_dtr_xlsx_put($rows, 6, $offset, payroll_xlsx_text('For the month of', ATTENDANCE_DTR_XLSX_STYLE_LABEL, 1));
+        attendance_dtr_xlsx_put($rows, 6, $offset + 2, payroll_xlsx_text($monthStart->format('F Y'), ATTENDANCE_DTR_XLSX_STYLE_VALUE_LINE, 4));
+        attendance_dtr_xlsx_put($rows, 7, $offset, payroll_xlsx_text('Official hours for arrival and departure', ATTENDANCE_DTR_XLSX_STYLE_OFFICIAL, 3));
+        attendance_dtr_xlsx_put($rows, 7, $offset + 4, payroll_xlsx_text('Regular days     8.00', ATTENDANCE_DTR_XLSX_STYLE_OFFICIAL_RIGHT, 2));
+        attendance_dtr_xlsx_put($rows, 8, $offset + 4, payroll_xlsx_text('Saturdays          0.00', ATTENDANCE_DTR_XLSX_STYLE_OFFICIAL_RIGHT, 2));
+
+        attendance_dtr_xlsx_put($rows, 9, $offset, payroll_xlsx_text('Day', ATTENDANCE_DTR_XLSX_STYLE_HEADER, 0, 1));
+        attendance_dtr_xlsx_put($rows, 9, $offset + 1, payroll_xlsx_text('A M', ATTENDANCE_DTR_XLSX_STYLE_HEADER, 1));
+        attendance_dtr_xlsx_put($rows, 9, $offset + 3, payroll_xlsx_text('P M', ATTENDANCE_DTR_XLSX_STYLE_HEADER, 1));
+        attendance_dtr_xlsx_put($rows, 9, $offset + 5, payroll_xlsx_text("REMARKS\nIN MINUTES", ATTENDANCE_DTR_XLSX_STYLE_HEADER, 1));
+        foreach (['Arrival', 'Departure', 'Arrival', 'Departure', 'T', 'U'] as $index => $heading) {
+            attendance_dtr_xlsx_put($rows, 10, $offset + 1 + $index, payroll_xlsx_text($heading, ATTENDANCE_DTR_XLSX_STYLE_HEADER));
+        }
+
+        foreach ($dtrRows as $rowIndex => $values) {
+            $sheetRow = $tableBodyStart + $rowIndex;
+            foreach ($values as $column => $value) {
+                attendance_dtr_xlsx_put(
+                    $rows,
+                    $sheetRow,
+                    $offset + $column,
+                    payroll_xlsx_text($value, $column === 0 ? ATTENDANCE_DTR_XLSX_STYLE_DAY : ATTENDANCE_DTR_XLSX_STYLE_CELL)
+                );
+            }
+        }
+
+        attendance_dtr_xlsx_put($rows, $certificationRow, $offset, payroll_xlsx_text($certification, ATTENDANCE_DTR_XLSX_STYLE_CERTIFICATION, 6));
+        attendance_dtr_xlsx_put($rows, $certificationRow + 3, $offset + 1, payroll_xlsx_text('', ATTENDANCE_DTR_XLSX_STYLE_SIGNATURE_LINE, 4));
+        attendance_dtr_xlsx_put($rows, $certificationRow + 4, $offset + 1, payroll_xlsx_text('Signature', ATTENDANCE_DTR_XLSX_STYLE_CAPTION, 4));
+        attendance_dtr_xlsx_put($rows, $certificationRow + 5, $offset, payroll_xlsx_text('---------------------------------------------------------', ATTENDANCE_DTR_XLSX_STYLE_DOTS, 6));
+        attendance_dtr_xlsx_put($rows, $certificationRow + 6, $offset, payroll_xlsx_text('VERIFIED as to the prescribed office hours', ATTENDANCE_DTR_XLSX_STYLE_VERIFIED, 6));
+        attendance_dtr_xlsx_put($rows, $certificationRow + 9, $offset + 1, payroll_xlsx_text('', ATTENDANCE_DTR_XLSX_STYLE_SIGNATURE_LINE, 4));
+        attendance_dtr_xlsx_put($rows, $certificationRow + 10, $offset + 1, payroll_xlsx_text('In Charge', ATTENDANCE_DTR_XLSX_STYLE_IN_CHARGE, 4));
+
+        $logo = attendance_dtr_xlsx_image($logoPath, $offset, 2, $offset + 1, 6, 'MGB Logo - ' . $copyLabel);
+        if ($logo !== null) {
+            $images[] = $logo;
+        }
+
+        if ($signatureImage !== null) {
+            $images[] = array_merge($signatureImage, [
+                'name' => 'Employee Signature - ' . $copyLabel,
+                'fromCol' => $offset + 2,
+                'fromRow' => $certificationRow + 1,
+                'toCol' => $offset + 5,
+                'toRow' => $certificationRow + 3,
+                'fromColOff' => 100000,
+                'fromRowOff' => 20000,
+                'toColOff' => 100000,
+                'toRowOff' => 0,
+                'lockAspect' => true,
+            ]);
+        }
+    }
+
+    foreach ($rows as &$row) {
+        ksort($row);
+    }
+    unset($row);
+    ksort($rows);
+
+    $sheet = [
+        'rows' => $rows,
+        'cols' => [9, 9.5, 9.5, 9.5, 9.5, 6, 6, 2.5, 9, 9.5, 9.5, 9.5, 9.5, 6, 6],
+        'freeze' => 0,
+        'images' => $images,
+        'rowHeights' => $rowHeights,
+        'stylesXml' => attendance_dtr_xlsx_styles_xml(),
+        'showGridLines' => false,
+        'zoomScale' => 65,
+        'page' => [
+            'paperSize' => 9,
+            'orientation' => 'portrait',
+            'fitToWidth' => 1,
+            'fitToHeight' => 1,
+            'left' => 0.2,
+            'right' => 0.2,
+            'top' => 0.2,
+            'bottom' => 0.2,
+            'header' => 0.1,
+            'footer' => 0.1,
+        ],
+    ];
+    $employeeCode = preg_replace('/[^A-Za-z0-9-]+/', '-', attendance_text($employee['employeeId'] ?? 'employee')) ?: 'employee';
+    $filename = 'DTR-CS-Form-48-' . $employeeCode . '-' . $month . '.xlsx';
+    $workbook = payroll_xlsx_package($sheet, 'Daily Time Record', 'Daily Time Record - ' . $employeeCode . ' - ' . $month);
+
+    if ($workbook === null) {
+        json_response(['success' => false, 'message' => 'Unable to generate the DTR Excel file.'], 503);
+    }
+
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+
+    header_remove('Content-Type');
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Content-Length: ' . strlen($workbook));
+    echo $workbook;
+    exit;
 }
 
 try {
@@ -1778,6 +2261,10 @@ try {
     $action = attendance_text($_GET['action'] ?? $_POST['action'] ?? '');
 
     if ($method === 'GET') {
+        if ($action === 'export_dtr_xlsx') {
+            attendance_export_dtr_xlsx($pdo, $sessionUser);
+        }
+
         if ($action === 'logs') {
             attendance_get_logs($pdo, $sessionUser);
         }
@@ -1786,8 +2273,8 @@ try {
             attendance_get_dtr($pdo, $sessionUser);
         }
 
-        if ($action === 'adjustments') {
-            attendance_fetch_adjustments($pdo, $sessionUser, true);
+        if ($action === 'imports') {
+            attendance_list_import_history($pdo, $sessionUser);
         }
 
         attendance_list_records($pdo, $sessionUser);
@@ -1797,19 +2284,11 @@ try {
         if ($action === 'import') {
             attendance_import_csv($pdo, $sessionUser);
         }
-
-        if ($action === 'requestAdjustment') {
-            attendance_request_adjustment($pdo, read_json_body(), $sessionUser);
-        }
     }
 
     if ($method === 'PUT') {
         $body = read_json_body();
         $bodyAction = strtolower(attendance_text($body['action'] ?? ''));
-
-        if ($bodyAction === 'adjustmentstatus') {
-            attendance_update_adjustment_status($pdo, $body, $sessionUser);
-        }
 
         if ($bodyAction === 'archive' || $bodyAction === 'restore') {
             attendance_archive_record($pdo, $body, $sessionUser, $bodyAction === 'archive');

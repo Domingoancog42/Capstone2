@@ -56,6 +56,7 @@ declare(strict_types=1);
  */
 
 const CAPTCHA_SESSION_KEY = 'captcha_challenges';
+const CAPTCHA_APPROVAL_BATCH_SESSION_KEY = 'captcha_approval_batches';
 
 const CAPTCHA_PURPOSE_LOGIN = 'login';
 const CAPTCHA_PURPOSE_PAYROLL_WORKFLOW = 'payroll_workflow';
@@ -632,9 +633,122 @@ function captcha_require(string $purpose, array $body): void
  * update handler, so the four cannot drift apart on what a valid check is. See the approval_workflow
  * entry in the purposes note above for which transitions are gated and which are deliberately not.
  */
-function require_approval_captcha(array $body): void
+function approval_captcha_batch_targets(array $body): array
 {
-    captcha_require(CAPTCHA_PURPOSE_APPROVAL_WORKFLOW, $body);
+    if (!array_key_exists('captchaBatchTargets', $body)) {
+        return [];
+    }
+
+    $rawTargets = $body['captchaBatchTargets'];
+
+    if (!is_array($rawTargets) || count($rawTargets) < 2 || count($rawTargets) > 50) {
+        json_response([
+            'success' => false,
+            'message' => 'The bulk approval selection is invalid. Select the requests again and retry.',
+            'captchaFailed' => true,
+        ], 422);
+    }
+
+    $targets = [];
+
+    foreach ($rawTargets as $rawTarget) {
+        $target = is_scalar($rawTarget) ? strtolower(trim((string)$rawTarget)) : '';
+
+        if ($target === '' || preg_match('/^[a-z_]+:[1-9][0-9]*$/', $target) !== 1) {
+            json_response([
+                'success' => false,
+                'message' => 'The bulk approval selection is invalid. Select the requests again and retry.',
+                'captchaFailed' => true,
+            ], 422);
+        }
+
+        $targets[$target] = true;
+    }
+
+    return array_keys($targets);
+}
+
+function approval_captcha_failure(string $message): void
+{
+    json_response([
+        'success' => false,
+        'message' => $message,
+        'captchaFailed' => true,
+    ], 422);
+}
+
+/**
+ * The approval gate also understands an explicit, short-lived list of bulk targets.
+ *
+ * The first selected request spends the solved challenge and stores only the remaining target keys
+ * in this authenticated session. Every later request must present the same challenge id and match
+ * one of those exact keys; a key is removed before its update runs and cannot be replayed. This lets
+ * one deliberate confirmation sign a selected batch without turning the captcha into a general
+ * approval token.
+ */
+function require_approval_captcha(array $body, string $resourceType = '', int $resourceId = 0): void
+{
+    $batchTargets = approval_captcha_batch_targets($body);
+
+    if ($batchTargets === []) {
+        captcha_require(CAPTCHA_PURPOSE_APPROVAL_WORKFLOW, $body);
+        return;
+    }
+
+    $resourceType = strtolower(trim($resourceType));
+    $currentTarget = $resourceType !== '' && $resourceId > 0
+        ? $resourceType . ':' . $resourceId
+        : '';
+    $captchaId = captcha_body_text($body, 'captchaId');
+
+    if ($currentTarget === '' || !in_array($currentTarget, $batchTargets, true) || $captchaId === '') {
+        approval_captcha_failure('The bulk approval selection no longer matches this request. Select the requests again and retry.');
+    }
+
+    captcha_session_reopen();
+    $storedBatch = $_SESSION[CAPTCHA_APPROVAL_BATCH_SESSION_KEY][$captchaId] ?? null;
+
+    if (is_array($storedBatch)) {
+        if (time() > (int)($storedBatch['expires_at'] ?? 0)) {
+            unset($_SESSION[CAPTCHA_APPROVAL_BATCH_SESSION_KEY][$captchaId]);
+            approval_captcha_failure('Your bulk approval security check has expired. Select the requests and try again.');
+        }
+
+        $remainingTargets = is_array($storedBatch['targets'] ?? null) ? $storedBatch['targets'] : [];
+
+        if (!isset($remainingTargets[$currentTarget])) {
+            approval_captcha_failure('This request was not included in the confirmed bulk approval selection.');
+        }
+
+        // Consume before the endpoint writes, just like captcha_verify() consumes a single approval.
+        unset($_SESSION[CAPTCHA_APPROVAL_BATCH_SESSION_KEY][$captchaId]['targets'][$currentTarget]);
+
+        if ($_SESSION[CAPTCHA_APPROVAL_BATCH_SESSION_KEY][$captchaId]['targets'] === []) {
+            unset($_SESSION[CAPTCHA_APPROVAL_BATCH_SESSION_KEY][$captchaId]);
+        }
+
+        return;
+    }
+
+    $result = captcha_verify(
+        CAPTCHA_PURPOSE_APPROVAL_WORKFLOW,
+        $captchaId,
+        captcha_body_text($body, 'captchaAnswer')
+    );
+
+    if (!$result['ok']) {
+        approval_captcha_failure($result['message']);
+    }
+
+    $remainingTargets = array_fill_keys($batchTargets, true);
+    unset($remainingTargets[$currentTarget]);
+
+    if ($remainingTargets !== []) {
+        $_SESSION[CAPTCHA_APPROVAL_BATCH_SESSION_KEY][$captchaId] = [
+            'targets' => $remainingTargets,
+            'expires_at' => time() + CAPTCHA_TTL_SECONDS,
+        ];
+    }
 }
 
 /**

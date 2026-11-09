@@ -28,8 +28,10 @@ const PASSWORD_CHANGE_LOCK_SECONDS = 15 * 60;
 function password_change_settings(PDO $pdo): array
 {
     $twoFactorSettings = two_factor_settings($pdo);
+    $securitySettings = security_settings($pdo);
 
     return [
+        'maximumPasswordLength' => max(6, min(256, (int)($securitySettings['maximumPasswordLength'] ?? 64))),
         'otpExpiryMinutes' => max(5, min(15, (int)($twoFactorSettings['otpExpiryMinutes'] ?? 5))),
         'maxAttempts' => 5,
         'resendDelaySeconds' => max(0, min(60, (int)($twoFactorSettings['resendDelaySeconds'] ?? 0))),
@@ -181,6 +183,7 @@ function password_change_status_payload(PDO $pdo, array $sessionUser): array
             'email' => $email,
             'maskedEmail' => password_change_mask_email($email),
             'passwordChangedAt' => $account['passwordChangedAt'] ?? null,
+            'maximumPasswordLength' => $settings['maximumPasswordLength'],
             'lockedForSeconds' => password_change_lock_remaining($userId),
             'otpExpiryMinutes' => $settings['otpExpiryMinutes'],
             'resendDelaySeconds' => $settings['resendDelaySeconds'],
@@ -232,7 +235,7 @@ function password_change_send_email(string $recipientEmail, string $displayName,
     $logoContentId = password_reset_embed_logo($mail);
     $mail->Body = password_change_html_body($displayName, $code, $expiresInMinutes, $logoContentId);
     $mail->AltBody = password_change_text_body($displayName, $code, $expiresInMinutes);
-    $mail->send();
+    send_configured_mail($mail);
 }
 
 /**
@@ -369,7 +372,7 @@ function password_change_apply(PDO $pdo, array $sessionUser, string $code, strin
 
     // The code is valid; from here on any failure is a password-policy problem, so keep the
     // pending request alive and let the user retry with a different password.
-    $maximumPasswordLength = (int)(security_settings($pdo)['maximumPasswordLength'] ?? 64);
+    $maximumPasswordLength = $settings['maximumPasswordLength'];
     $minimumPasswordLength = min(8, max(6, $maximumPasswordLength));
     $passwordLengthError = password_length_error($pdo, $newPassword, $minimumPasswordLength);
 

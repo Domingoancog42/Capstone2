@@ -1,8 +1,7 @@
+import ResponsiveContainer from "../../components/chart/ResponsiveChartContainer";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CalendarDays,
   CalendarRange,
-  Clock3,
   ClipboardCheck,
   ClipboardList,
   FileText,
@@ -13,16 +12,10 @@ import {
   Users,
 } from "lucide-react";
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
   Cell,
   Pie,
   PieChart,
-  ResponsiveContainer,
   Tooltip,
-  XAxis,
-  YAxis,
 } from "recharts";
 import Card, {
   CardContent,
@@ -58,7 +51,7 @@ import BubbleChat from "../../components/bubble_chat/bubble_chat";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import { getEmployees } from "../../services/api";
 import { fetchLeaveRequests } from "../../services/leaveService";
-import { normalizeLeaveStatus } from "../../utils/leaveHelpers";
+import { getRequestTableStatusLabel, normalizeLeaveStatus } from "../../utils/leaveHelpers";
 import { saveEmployeeProfileHandoff } from "../../utils/employeeProfileHandoff";
 import { numberFormatter } from "../../utils/format";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
@@ -70,9 +63,18 @@ const shortDateFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
 });
 
+/*
+ * Employee analytics now live beside the employee registry, while the audit trail remains an
+ * oversight function for the HR Head and Admin.
+ */
+const HR_STAFF_HIDDEN_REPORT_CATEGORIES = ["employee", "audit"];
+
 const leaveStatusColors = {
+  Submitted: "#f97316",
   Pending: "#f59e0b",
+  Endorsed: "#6366f1",
   Reviewed: "#0ea5e9",
+  "Chief Reviewed": "#8b5cf6",
   Approved: "#16a34a",
   Rejected: "#ef4444",
   Cancelled: "#64748b",
@@ -142,8 +144,11 @@ function HrStaffDashboardOverview({ user }) {
 
   const statusCounts = useMemo(() => {
     const counts = {
+      Submitted: 0,
       Pending: 0,
+      Endorsed: 0,
       Reviewed: 0,
+      "Chief Reviewed": 0,
       Approved: 0,
       Rejected: 0,
       Cancelled: 0,
@@ -159,23 +164,10 @@ function HrStaffDashboardOverview({ user }) {
     return counts;
   }, [leaveRequests]);
 
-  const divisionData = useMemo(() => {
-    const counts = new Map();
-    employees.forEach((employee) => {
-      const division = employee.department || employee.division || "Unassigned";
-      counts.set(division, (counts.get(division) || 0) + 1);
-    });
-
-    return Array.from(counts.entries())
-      .map(([division, total]) => ({ division, total }))
-      .sort((left, right) => right.total - left.total)
-      .slice(0, 8);
-  }, [employees]);
-
   const leavePieData = useMemo(
     () => Object.entries(statusCounts)
       .filter(([, value]) => value > 0)
-      .map(([name, value]) => ({ name, value })),
+      .map(([status, value]) => ({ name: getRequestTableStatusLabel(status), status, value })),
     [statusCounts]
   );
 
@@ -195,10 +187,12 @@ function HrStaffDashboardOverview({ user }) {
     <div className="mx-auto max-w-7xl space-y-4">
       <DashboardWelcomeBanner
         name={welcomeName}
-        position={user?.position || user?.designation || "Not assigned"}
+        position={user?.position || "Not assigned"}
         role={getRoleLabel(user?.role || user?.roleKey || "hrstaff")}
         division={user?.division || user?.department || "Not assigned"}
+        divisionHelper="Your assigned division"
         imageUrl={resolveBackendAssetUrl(user?.profile_image || user?.profileImage)}
+        showCalendar
       />
 
       {error ? (
@@ -244,28 +238,36 @@ function HrStaffDashboardOverview({ user }) {
 
         <Card className="overflow-hidden border-slate-200/80 bg-white shadow-sm">
           <CardHeader>
-            <CardTitle className="text-lg">Employees by Division</CardTitle>
-            <CardDescription>Headcount distribution across divisions.</CardDescription>
+            <CardTitle className="text-lg">Leave Request Analytics</CardTitle>
+            <CardDescription>Status breakdown of submitted leave requests.</CardDescription>
           </CardHeader>
-          <CardContent className="h-[360px]">
-            {divisionData.length ? (
+          <CardContent className="h-[330px]">
+            {leavePieData.length ? (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={divisionData} margin={{ top: 8, right: 16, left: 0, bottom: 36 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="division" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={62} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                <PieChart>
+                  <Pie
+                    data={leavePieData}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius={64}
+                    outerRadius={106}
+                    paddingAngle={4}
+                  >
+                    {leavePieData.map((entry) => (
+                      <Cell key={entry.name} fill={leaveStatusColors[entry.status] || "#64748b"} />
+                    ))}
+                  </Pie>
                   <Tooltip />
-                  <Bar dataKey="total" fill="#0f766e" radius={[8, 8, 0, 0]} />
-                </BarChart>
+                </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="grid h-full place-items-center text-sm text-slate-500">No division data available.</div>
+              <div className="grid h-full place-items-center text-sm text-slate-500">No leave request data available.</div>
             )}
           </CardContent>
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <section>
         <Card className="overflow-hidden border-slate-200/80 bg-white shadow-sm">
           <CardHeader>
             <CardTitle className="text-lg">Recent Activity</CardTitle>
@@ -288,7 +290,7 @@ function HrStaffDashboardOverview({ user }) {
                       color: leaveStatusColors[status] || "#64748b",
                     }}
                   >
-                    {status}
+                    {getRequestTableStatusLabel(status)}
                   </span>
                 </div>
               );
@@ -296,36 +298,6 @@ function HrStaffDashboardOverview({ user }) {
               <div className="rounded-xl border border-dashed border-slate-300 px-4 py-5 text-center text-sm text-slate-500">
                 No recent leave activity yet.
               </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="overflow-hidden border-slate-200/80 bg-white shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">Leave Request Analytics</CardTitle>
-            <CardDescription>Status breakdown of submitted leave requests.</CardDescription>
-          </CardHeader>
-          <CardContent className="h-[330px]">
-            {leavePieData.length ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={leavePieData}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={64}
-                    outerRadius={106}
-                    paddingAngle={4}
-                  >
-                    {leavePieData.map((entry) => (
-                      <Cell key={entry.name} fill={leaveStatusColors[entry.name] || "#64748b"} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="grid h-full place-items-center text-sm text-slate-500">No leave request data available.</div>
             )}
           </CardContent>
         </Card>
@@ -374,7 +346,7 @@ function HrStaffPayrollWorkspace({ view = "generate", user, onNavigate }) {
       ) : null}
 
       {view === "payslip" ? (
-        <PayslipWorkspace employees={employees} />
+        <PayslipWorkspace />
       ) : view === "archived" ? (
         <PayrollManagementWorkspace employees={employees} view="archived" user={user} onNavigate={onNavigate} />
       ) : (
@@ -438,13 +410,14 @@ const navigationItems = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/hrstaff/dashboard" },
   { key: "profile", label: "My Profile", icon: UserRound, path: "/hrstaff/profile" },
   { key: "employees", label: "Employee Directory", icon: Users, path: "/hrstaff/employees" },
-  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/hrstaff/calendar" },
-  { type: "section", label: "Communication" },
   { key: "messages", label: "Messages", icon: MessageCircle, path: "/hrstaff/messages" },
   { key: "notifications", label: "Notifications", path: "/hrstaff/notifications", hidden: true },
   { type: "section", label: "HR Operations" },
   /* HR Staff do not run OPCR/IPCR, so the Performance Reviews group is left out of their sidebar. */
-  ...buildPerformanceRewardsNavItems("/hrstaff", { includePerformanceReviews: false }),
+  ...buildPerformanceRewardsNavItems("/hrstaff", {
+    includePerformanceReviews: false,
+    includeNomination: false,
+  }),
   /* Leave credits and COC credits are two modes of one registry, so this is a single page. */
   {
     key: "leaveBalance",
@@ -457,19 +430,21 @@ const navigationItems = [
     key: "attendance",
     label: "Time & Attendance",
     icon: ClipboardCheck,
-    path: "/hrstaff/attendance/overtime",
+    path: "/hrstaff/attendance",
     children: [
+      /* HR Staff own the biometric import, so it is a first-class entry here rather than a hidden route. */
+      { key: "attendance", label: "Import Attendance", path: "/hrstaff/attendance", exact: true },
       { key: "overtime", label: "Overtime", path: "/hrstaff/attendance/overtime" },
     ],
   },
   {
     key: "leave",
-    label: "Leave Management",
+    label: "File Request",
     icon: CalendarRange,
     path: "/hrstaff/leave",
     children: [
-      { key: "leave", label: "Leave", path: "/hrstaff/leave", exact: true },
-      { key: "travel", label: "Travel Order", path: "/hrstaff/leave/travel-order" },
+      { key: "leave", label: "Leave Request", path: "/hrstaff/leave", exact: true },
+      { key: "travel", label: "Travel Order Request", path: "/hrstaff/leave/travel-order" },
       { key: "cto", label: "Compensatory Time Off", path: "/hrstaff/leave/compensatory-time-off" },
       { key: "passSlip", label: "Pass Slips", path: "/hrstaff/leave/pass-slips" },
     ],
@@ -485,6 +460,8 @@ const navigationItems = [
       { key: "payrollLoan", label: "Loan", path: "/hrstaff/payroll/loan" },
     ],
   },
+  /* Reached from the Archive toggle on the registry, not from the sidebar. */
+  { key: "archivedPayroll", label: "Archived Payroll", path: "/hrstaff/payroll/archived", hidden: true },
 
   { type: "section", label: "Reports & Analytics" },
   {
@@ -492,11 +469,10 @@ const navigationItems = [
     label: "Reports & Analytics",
     icon: FileText,
     path: "/hrstaff/reports",
-    children: buildReportNavChildren("/hrstaff/reports"),
+    children: buildReportNavChildren("/hrstaff/reports", { exclude: HR_STAFF_HIDDEN_REPORT_CATEGORIES }),
   },
   { key: "leaveBalance", label: "Set Leave Balance", icon: ClipboardList, path: "/hrstaff/leave-balance", hidden: true },
-  { key: "legacyAttendance", label: "Time & Attendance", icon: Clock3, path: "/hrstaff/attendance", hidden: true },
-  ...buildSelfServiceNavItems("/hrstaff", { includeNomination: false }),
+  ...buildSelfServiceNavItems("/hrstaff"),
 ];
 
 const modules = {
@@ -504,7 +480,12 @@ const modules = {
     title: "HR Staff Dashboard",
     description: "Handle day-to-day employee records, leave tracking, and recurring HR reports.",
     hidePageIntro: true,
-    render: ({ user }) => <RoleAnalyticsOverview user={user} />,
+    render: ({ user }) => (
+      <RoleAnalyticsOverview
+        user={user}
+        organizationWide
+      />
+    ),
   },
   employees: {
     title: "Employee Management",
@@ -545,8 +526,8 @@ const modules = {
     ),
   },
   travel: {
-    title: "Travel Order",
-    description: "Review submitted travel orders and update request outcomes from the HR staff workspace.",
+    title: "Travel Order Request",
+    description: "File and monitor travel orders under your employee account.",
     hidePageIntro: true,
     render: ({ user }) => (
       <LeaveDashboard
@@ -589,12 +570,6 @@ const modules = {
     hidePageIntro: true,
     render: ({ user }) => <AttendanceManagementWorkspace user={user} mode="hrstaff" />,
   },
-  legacyAttendance: {
-    title: "Attendance Management",
-    description: "Monitor employee attendance, review missing logs, and generate monthly DTR reports.",
-    hidePageIntro: true,
-    render: ({ user }) => <AttendanceManagementWorkspace user={user} mode="hrstaff" />,
-  },
   overtime: {
     title: "Overtime Management",
     description: "File, review, and monitor employee overtime requests.",
@@ -628,8 +603,9 @@ const modules = {
 
   leaveBalance: {
     title: "Leave & COC Balances",
-    description: "View employee leave credit and compensatory overtime credit balances from the HR staff workspace.",
-    render: ({ user }) => <LeaveBalanceManagementWorkspace user={user} allowActions={false} />,
+    description: "Manage employee leave credit and compensatory overtime credit balances from the HR staff workspace.",
+    hidePageIntro: true,
+    render: ({ user }) => <LeaveBalanceManagementWorkspace user={user} />,
   },
   reports: {
     title: "Reports",
@@ -637,9 +613,10 @@ const modules = {
     hidePageIntro: true,
     render: ({ user }) => <AdminReports user={user} />,
   },
-  ...buildReportCategoryModules((categoryKey, { user }) => (
-    <AdminReports user={user} category={categoryKey} />
-  )),
+  ...buildReportCategoryModules(
+    (categoryKey, { user }) => <AdminReports user={user} category={categoryKey} />,
+    { exclude: HR_STAFF_HIDDEN_REPORT_CATEGORIES }
+  ),
   ...PERFORMANCE_REWARDS_MODULES,
   ...SELF_SERVICE_MODULES,
 };

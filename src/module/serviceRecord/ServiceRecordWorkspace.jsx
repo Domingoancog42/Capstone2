@@ -1,11 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { FileText, Plus, Printer } from "lucide-react";
+import { faEye, faFileImport, faPlus } from "@fortawesome/free-solid-svg-icons";
+import {
+  Printer,
+  Download,
+  Search,
+  ScrollText,
+  UsersRound,
+} from "lucide-react";
 import Swal from "sweetalert2";
 import { toast } from "react-hot-toast";
+import ActionIconButton from "../../components/UI/ActionIconButton";
+import ProfileFloatingCard from "../../components/profile/ProfileFloatingCard";
 import Button from "../../components/UI/button";
 import InputField from "../../components/UI/InputField";
 import Modal from "../../components/UI/modal";
-import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
+import Pagination from "../../components/UI/Pagination";
+import Table from "../../components/UI/table";
 import { SettingsNotice, SettingsSelect } from "../../components/settings";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
@@ -15,89 +25,12 @@ import {
   getEmployees,
   updateServiceRecordEntry,
 } from "../../services/api";
-import {
-  fetchServiceRecordPrintStatus,
-  markServiceRecordPrinted,
-  requestServiceRecordPrint,
-} from "../../services/serviceRecordPrintService";
+import { resolveUserRoleKey } from "../../utils/roleRoutes";
 import ServiceRecordTable from "./ServiceRecordTable";
-import { printServiceRecord } from "./serviceRecordUtils";
-
-/* ── Salary Standardization Law schedule ─────────────────────────────────────────
- * Each row is [Step 1 … Step 8]. Grades 32–33 have fewer than 8 steps; missing
- * steps are null so the UI can hide those options.
- */
-const SALARY_SCHEDULE = {
-  1:  [14634, 14730, 14849, 14968, 15089, 15211, 15333, 15456],
-  2:  [15522, 15636, 15752, 15869, 15986, 16103, 16223, 16342],
-  3:  [16486, 16610, 16732, 16856, 16982, 17106, 17234, 17360],
-  4:  [17536, 17636, 17767, 17898, 18031, 18163, 18298, 18433],
-  5:  [18581, 18720, 18858, 18998, 19137, 19280, 19423, 19565],
-  6:  [19716, 19862, 20009, 20158, 20307, 20456, 20609, 20761],
-  7:  [20914, 21069, 21224, 21382, 21539, 21699, 21859, 22022],
-  8:  [22423, 22627, 22832, 23038, 23246, 23456, 23668, 23883],
-  9:  [24329, 24523, 24720, 24917, 25117, 25318, 25521, 25725],
-  10: [26917, 27131, 27347, 27565, 27786, 28007, 28230, 28456],
-  11: [31705, 31820, 32109, 32401, 32697, 32998, 33302, 33611],
-  12: [33947, 34069, 34357, 34648, 34943, 35242, 35544, 35850],
-  13: [36125, 36283, 36599, 36919, 37244, 37572, 37904, 38241],
-  14: [38764, 39141, 39523, 39910, 40300, 40696, 41097, 41503],
-  15: [42178, 42594, 43015, 43442, 43874, 44310, 44753, 45202],
-  16: [45694, 46152, 46615, 47084, 47559, 48040, 48528, 49020],
-  17: [49562, 50066, 50576, 51092, 51614, 52144, 52678, 53221],
-  18: [53818, 54371, 54933, 55499, 56075, 56657, 57246, 57842],
-  19: [59153, 59966, 60793, 61632, 62486, 63353, 64236, 65132],
-  20: [66052, 66970, 67904, 68853, 69818, 70772, 71727, 72671],
-  21: [73303, 74337, 75388, 76456, 77542, 78645, 79692, 80831],
-  22: [81796, 82963, 84151, 85356, 86582, 87746, 89011, 90295],
-  23: [91306, 92622, 93962, 95330, 96823, 98341, 99883, 101318],
-  24: [102603, 104209, 105841, 107500, 109185, 110898, 112533, 114301],
-  25: [116643, 118469, 120326, 122212, 124131, 126079, 128061, 130073],
-  26: [131807, 133870, 135968, 138100, 140268, 142469, 144707, 146983],
-  27: [148940, 151273, 153644, 155906, 158353, 160235, 162752, 165310],
-  28: [167129, 169752, 172418, 174797, 177545, 180339, 182660, 185537],
-  29: [187531, 190482, 193496, 196528, 199624, 202005, 205191, 208430],
-  30: [210718, 214038, 217207, 220425, 223691, 227224, 230595, 234123],
-  31: [300961, 306691, 312532, 318182, 323938, 329989, 336092, 342310],
-  32: [356237, 363257, 370418, 377359, 384805, 392400, 400150, 408055],
-  33: [449157, 462329, null, null, null, null, null, null],
-};
-
-/** Dropdown options for salary grade (1–33). */
-const SALARY_GRADE_OPTIONS = Array.from({ length: 33 }, (_, i) => ({
-  value: String(i + 1),
-  label: `SG-${i + 1}`,
-}));
-
-/** Return the step options available for the given salary grade. */
-function getStepOptions(salaryGrade) {
-  const grade = Number(salaryGrade);
-  const row = SALARY_SCHEDULE[grade];
-
-  if (!row) {
-    return Array.from({ length: 8 }, (_, i) => ({ value: String(i + 1), label: `Step ${i + 1}` }));
-  }
-
-  return row.reduce((opts, cell, i) => {
-    if (cell !== null) {
-      opts.push({ value: String(i + 1), label: `Step ${i + 1}` });
-    }
-    return opts;
-  }, []);
-}
-
-/** Look up the monthly salary for a given grade + step, or return null. */
-function lookupSalary(salaryGrade, step) {
-  const grade = Number(salaryGrade);
-  const idx = Number(step) - 1;
-  const row = SALARY_SCHEDULE[grade];
-
-  if (!row || idx < 0 || idx >= row.length) {
-    return null;
-  }
-
-  return row[idx] ?? null;
-}
+import ServiceRecordImportModal from "./ServiceRecordImportModal";
+import { formatServiceDate, printServiceRecord } from "./serviceRecordUtils";
+import { SALARY_GRADE_OPTIONS, SALARY_SCHEDULE, getStepOptions, lookupSalary } from "./salarySchedule";
+import { useOrganizationFilterOptions } from "../../hooks/useFilterOptions";
 
 const EMPTY_FORM = {
   id: null,
@@ -108,7 +41,10 @@ const EMPTY_FORM = {
   serviceToPresent: true,
   designationTitle: "",
   employmentStatus: "",
+  stClassification: "",
   monthlySalary: "",
+  // Shown beside the monthly rate and kept at twelve times it; only the monthly rate is saved.
+  annualSalary: "",
   salaryGrade: "",
   stepIncrement: "",
   station: "",
@@ -118,6 +54,27 @@ const EMPTY_FORM = {
   remarks: "",
 };
 
+/**
+ * Salary / annum is twelve times the monthly rate, the figure the printed form's salary column
+ * shows. The record stores only the monthly rate, so a typed annual amount is saved as its twelfth,
+ * to the centavo. Both return "" for a blank or unreadable amount.
+ */
+function annualFromMonthly(monthly) {
+  const amount = Number(monthly);
+
+  return String(monthly ?? "").trim() !== "" && Number.isFinite(amount)
+    ? String(Math.round(amount * 1200) / 100)
+    : "";
+}
+
+function monthlyFromAnnual(annual) {
+  const amount = Number(annual);
+
+  return String(annual ?? "").trim() !== "" && Number.isFinite(amount)
+    ? String(Math.round((amount * 100) / 12) / 100)
+    : "";
+}
+
 function formFromRecord(record) {
   return {
     id: record.id,
@@ -126,7 +83,9 @@ function formFromRecord(record) {
     serviceToPresent: !record.serviceTo,
     designationTitle: record.designationTitle || "",
     employmentStatus: record.employmentStatus || "",
+    stClassification: record.stClassification || "",
     monthlySalary: record.monthlySalary ?? "",
+    annualSalary: annualFromMonthly(record.monthlySalary),
     salaryGrade: record.salaryGrade || "",
     stepIncrement: record.stepIncrement || "",
     station: record.station || "",
@@ -137,6 +96,49 @@ function formFromRecord(record) {
   };
 }
 
+const EMPLOYEES_PER_PAGE = 10;
+
+/*
+ * Who sees only their own division's employees in the directory. HR Staff, Admin, and the HR Head
+ * work organization-wide. Mirrors
+ * SERVICE_RECORD_DIVISION_SCOPED_ROLES in service_record.php, which refuses reads and writes
+ * outside that division on the API.
+ */
+const DIVISION_SCOPED_SERVICE_RECORD_ROLE_KEYS = new Set(["chief", "planningofficer", "regionaldirector"]);
+
+function directoryOptionFromEmployee(row) {
+  return {
+    employeeRecordId: row.id,
+    employeeId: row.employeeId,
+    employeeName: row.fullName
+      || [row.firstName, row.middleName, row.lastName, row.suffix].filter(Boolean).join(" "),
+    division: row.department || row.division || "",
+    position: row.position || "",
+    employmentStatus: row.employmentStatus || "",
+    dateHired: row.dateHired || "",
+    status: row.status || "",
+  };
+}
+
+function employeeInitials(name) {
+  return String(name || "Employee")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+}
+
+function requiredFieldLabel(label) {
+  return (
+    <>
+      {label}
+      <span className="app-required-marker ml-0.5 font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+    </>
+  );
+}
+
 /**
  * Service Record (CSC Form No. 1).
  *
@@ -144,30 +146,36 @@ function formFromRecord(record) {
  * the employee picker and the add/edit controls. Same component either way so the two views cannot
  * present the record differently.
  *
- * Printing splits along the same line. HR issues the certified form from Employee Records and prints
- * straight away; everybody else asks for it — the button reads "Request Print" until an HR Head or
- * Admin approves, and the approval is spent on one copy.
+ * Printing is generated in the browser from the service-record response and does not persist a
+ * separate request or approval record.
  */
 export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
   const isManageMode = mode === "manage";
+  const isDivisionScoped = DIVISION_SCOPED_SERVICE_RECORD_ROLE_KEYS.has(resolveUserRoleKey(user));
+  const scopedDivision = isDivisionScoped ? String(user?.division || user?.department || "").trim() : "";
 
-  const [employeeOptions, setEmployeeOptions] = useState([]);
+  const [employeeDirectory, setEmployeeDirectory] = useState([]);
+  const [employeeQuery, setEmployeeQuery] = useState("");
+  const [employeeDivisionFilter, setEmployeeDivisionFilter] = useState("");
+  const [employeeCurrentPage, setEmployeeCurrentPage] = useState(1);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
   const [employee, setEmployee] = useState(null);
   const [records, setRecords] = useState([]);
   const [employmentStatuses, setEmploymentStatuses] = useState([]);
+  const [stClassifications, setStClassifications] = useState([]);
   const [canManage, setCanManage] = useState(false);
   const [certifier, setCertifier] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [employeeListLoading, setEmployeeListLoading] = useState(isManageMode);
+  const [loading, setLoading] = useState(!isManageMode);
   const [error, setError] = useState("");
+  const [recordViewerOpen, setRecordViewerOpen] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [importEmployee, setImportEmployee] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState({});
   const [saving, setSaving] = useState(false);
-
-  const [printRequest, setPrintRequest] = useState(null);
-  const [printRequestBusy, setPrintRequestBusy] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const loadRecord = useCallback(async (employeeRecordId, { background = false } = {}) => {
     setLoading(!background);
@@ -178,9 +186,11 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
       setEmployee(result?.employee || null);
       setRecords(Array.isArray(result?.records) ? result.records : []);
       setEmploymentStatuses(Array.isArray(result?.employmentStatuses) ? result.employmentStatuses : []);
+      setStClassifications(Array.isArray(result?.stClassifications) ? result.stClassifications : []);
       setCanManage(Boolean(result?.canManage));
       setCertifier(result?.certifier || null);
       setError("");
+      return result;
     } catch (requestError) {
       // A failed background poll keeps the record on screen instead of replacing it with an error.
       if (!background) {
@@ -188,98 +198,131 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
         setRecords([]);
         setError(requestError.response?.data?.message || "Unable to load the service record.");
       }
+      return null;
     } finally {
       setLoading(false);
     }
   }, []);
 
-  /**
-   * The print approval standing on the signed-in user's own record.
-   *
-   * Manage mode never needs it — those roles print directly — and a failed read leaves the button on
-   * "Request Print", which the backend then answers with the request that already exists.
-   */
-  const loadPrintRequest = useCallback(async () => {
-    if (isManageMode) {
-      return;
-    }
+  const loadEmployees = useCallback(async ({ background = false } = {}) => {
+    setEmployeeListLoading(!background);
 
     try {
-      const result = await fetchServiceRecordPrintStatus();
+      const result = await getEmployees();
+      const options = (Array.isArray(result?.employees) ? result.employees : [])
+        .map(directoryOptionFromEmployee);
 
-      setPrintRequest(result?.request || null);
-    } catch {
-      setPrintRequest(null);
-    }
-  }, [isManageMode]);
-
-  useEffect(() => {
-    void loadPrintRequest();
-  }, [loadPrintRequest]);
-
-  useEffect(() => {
-    if (!isManageMode) {
-      return undefined;
-    }
-
-    let active = true;
-
-    const loadEmployees = async () => {
-      try {
-        const result = await getEmployees();
-
-        if (!active) {
-          return;
-        }
-
-        const options = (Array.isArray(result?.employees) ? result.employees : []).map((row) => ({
-          employeeRecordId: row.id,
-          employeeId: row.employeeId,
-          employeeName: [row.firstName, row.middleName, row.lastName, row.suffix].filter(Boolean).join(" "),
-          division: row.department || row.division || "",
-        }));
-
-        setEmployeeOptions(options);
-      } catch {
-        if (active) {
-          setEmployeeOptions([]);
-        }
+      setEmployeeDirectory(options);
+      setError("");
+      return options;
+    } catch (requestError) {
+      if (!background) {
+        setEmployeeDirectory([]);
+        setError(requestError.response?.data?.message || "Unable to load employee records.");
       }
-    };
-
-    void loadEmployees();
-
-    return () => {
-      active = false;
-    };
-  }, [isManageMode]);
+      return [];
+    } finally {
+      setEmployeeListLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    void loadRecord(isManageMode ? selectedEmployeeId : null);
-  }, [isManageMode, loadRecord, selectedEmployeeId]);
+    if (isManageMode) {
+      void loadEmployees();
+    } else {
+      void loadRecord(null);
+    }
+  }, [isManageMode, loadEmployees, loadRecord]);
 
   /*
    * `refreshOnMount: false` because the effects above already own the first load and every reload
    * caused by switching employees. This only adds the reload nobody on this screen triggered — a
-   * service record edited by someone else, an employment status changed from Employee Management,
-   * or the print approval HR just granted from their own machine.
+   * service record edited by someone else or an employment status changed from Employee Management.
    */
   useAutoRefreshOnChange(
     useCallback(
       ({ background }) => {
-        void loadPrintRequest();
+        if (!isManageMode) {
+          return loadRecord(null, { background });
+        }
 
-        return loadRecord(isManageMode ? selectedEmployeeId : null, { background });
+        const requests = [loadEmployees({ background })];
+
+        if (selectedEmployeeId) {
+          requests.push(loadRecord(selectedEmployeeId, { background }));
+        }
+
+        return Promise.all(requests);
       },
-      [isManageMode, loadPrintRequest, loadRecord, selectedEmployeeId]
+      [isManageMode, loadEmployees, loadRecord, selectedEmployeeId]
     ),
     { topics: ["service_record", "employee"], refreshOnMount: false }
   );
 
+  // The directory a scoped desk works from is its own division only; an HR Staff account with no
+  // division on its employee profile gets an empty list rather than everyone's.
+  const employeeOptions = useMemo(() => {
+    if (!isDivisionScoped) {
+      return employeeDirectory;
+    }
+
+    const target = scopedDivision.toLowerCase();
+
+    return target
+      ? employeeDirectory.filter((option) => String(option.division || "").trim().toLowerCase() === target)
+      : [];
+  }, [employeeDirectory, isDivisionScoped, scopedDivision]);
+
   const selectedOption = useMemo(
-    () => employeeOptions.find((option) => option.employeeRecordId === selectedEmployeeId) || null,
+    () => employeeOptions.find(
+      (option) => String(option.employeeRecordId) === String(selectedEmployeeId)
+    ) || null,
     [employeeOptions, selectedEmployeeId]
   );
+
+  const filteredEmployees = useMemo(() => {
+    const query = employeeQuery.trim().toLowerCase();
+
+    return employeeOptions.filter((option) => {
+      const matchesQuery = !query || [
+        option.employeeName,
+        option.employeeId,
+        option.division,
+        option.position,
+        option.employmentStatus,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+      const matchesDivision = !employeeDivisionFilter
+        || String(option.division).toLowerCase() === employeeDivisionFilter.toLowerCase();
+
+      return matchesQuery && matchesDivision;
+    });
+  }, [employeeDivisionFilter, employeeOptions, employeeQuery]);
+
+  /* The division table, not the divisions found on the loaded employee list. */
+  const { divisions: employeeDivisionOptions } = useOrganizationFilterOptions();
+
+  const employeeTotalPages = Math.max(1, Math.ceil(filteredEmployees.length / EMPLOYEES_PER_PAGE));
+  const safeEmployeeCurrentPage = Math.min(employeeCurrentPage, employeeTotalPages);
+  const visibleEmployees = useMemo(() => {
+    const start = (safeEmployeeCurrentPage - 1) * EMPLOYEES_PER_PAGE;
+    return filteredEmployees.slice(start, start + EMPLOYEES_PER_PAGE);
+  }, [filteredEmployees, safeEmployeeCurrentPage]);
+  const employeeStart = filteredEmployees.length
+    ? (safeEmployeeCurrentPage - 1) * EMPLOYEES_PER_PAGE + 1
+    : 0;
+  const employeeEnd = Math.min(safeEmployeeCurrentPage * EMPLOYEES_PER_PAGE, filteredEmployees.length);
+
+  useEffect(() => {
+    setEmployeeCurrentPage(1);
+  }, [employeeDivisionFilter, employeeQuery]);
+
+  useEffect(() => {
+    if (employeeCurrentPage > employeeTotalPages) {
+      setEmployeeCurrentPage(employeeTotalPages);
+    }
+  }, [employeeCurrentPage, employeeTotalPages]);
 
   const editable = isManageMode && canManage && Boolean(employee);
 
@@ -316,12 +359,14 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
       const row = SALARY_SCHEDULE[Number(grade)];
       const stepIdx = Number(step) - 1;
       const stepValid = row && stepIdx >= 0 && stepIdx < row.length && row[stepIdx] !== null;
+      const monthlySalary = salary != null ? String(salary) : (stepValid ? current.monthlySalary : "");
 
       return {
         ...current,
         salaryGrade: grade,
         stepIncrement: stepValid ? step : "",
-        monthlySalary: salary != null ? String(salary) : (stepValid ? current.monthlySalary : ""),
+        monthlySalary,
+        annualSalary: annualFromMonthly(monthlySalary),
       };
     });
     setFormErrors((current) => ({ ...current, salaryGrade: "" }));
@@ -332,33 +377,126 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
 
     setForm((current) => {
       const salary = lookupSalary(current.salaryGrade, step);
+      const monthlySalary = salary != null ? String(salary) : current.monthlySalary;
 
       return {
         ...current,
         stepIncrement: step,
-        monthlySalary: salary != null ? String(salary) : current.monthlySalary,
+        monthlySalary,
+        annualSalary: annualFromMonthly(monthlySalary),
       };
     });
     setFormErrors((current) => ({ ...current, stepIncrement: "" }));
   };
 
+  /** The two salary fields move together: typing in either one fills in the other. */
+  const handleMonthlySalaryChange = (event) => {
+    const { value } = event.target;
+
+    setForm((current) => ({ ...current, monthlySalary: value, annualSalary: annualFromMonthly(value) }));
+    setFormErrors((current) => ({ ...current, monthlySalary: "" }));
+  };
+
+  const handleAnnualSalaryChange = (event) => {
+    const { value } = event.target;
+
+    setForm((current) => ({ ...current, annualSalary: value, monthlySalary: monthlyFromAnnual(value) }));
+    setFormErrors((current) => ({ ...current, monthlySalary: "" }));
+  };
+
+  /*
+   * Leaving the annual field shows what will print: twelve times the monthly rate that gets saved.
+   * That only differs from what was typed when the amount does not split into whole centavos a month.
+   */
+  const settleAnnualSalary = () => {
+    setForm((current) => ({ ...current, annualSalary: annualFromMonthly(current.monthlySalary) }));
+  };
+
   /** Step options react to the selected salary grade (e.g. grade 33 only has steps 1–2). */
   const stepOptions = useMemo(() => getStepOptions(form.salaryGrade), [form.salaryGrade]);
 
-  const openAddModal = () => {
+  const prepareNewEntryForm = (targetEmployee) => {
     setForm({
       ...EMPTY_FORM,
       // Pre-fill from the employee's current record so HR is confirming rather than retyping.
-      designationTitle: employee?.designationTitle || "",
-      employmentStatus: employee?.employmentStatus || "",
-      station: employee?.station || "",
-      monthlySalary: employee?.basicSalary ?? "",
+      designationTitle: targetEmployee?.designationTitle || "",
+      employmentStatus: targetEmployee?.employmentStatus || "",
+      station: targetEmployee?.station || "",
+      monthlySalary: targetEmployee?.basicSalary ?? "",
+      annualSalary: annualFromMonthly(targetEmployee?.basicSalary),
     });
+  };
+
+  const openAddModal = async (option = null) => {
+    prepareNewEntryForm(null);
     setFormErrors({});
+
+    if (!option?.employeeRecordId) {
+      setSelectedEmployeeId(null);
+      setEmployee(null);
+      setRecords([]);
+      setModalOpen(true);
+      return;
+    }
+
+    setSelectedEmployeeId(option.employeeRecordId);
+
+    if (String(employee?.id) === String(option.employeeRecordId)) {
+      prepareNewEntryForm(employee);
+      setModalOpen(true);
+      return;
+    }
+
+    setEmployee(null);
+    setRecords([]);
+    const result = await loadRecord(option.employeeRecordId);
+
+    if (!result?.employee) {
+      return;
+    }
+
+    if (!result.canManage) {
+      toast.error("You do not have permission to add service record entries.");
+      return;
+    }
+
+    prepareNewEntryForm(result.employee);
     setModalOpen(true);
   };
 
+  const openImportModal = async (option) => {
+    setSelectedEmployeeId(option.employeeRecordId);
+    const result = await loadRecord(option.employeeRecordId);
+    if (!result?.employee) return;
+    if (!result.canManage) {
+      toast.error("You do not have permission to import service records.");
+      return;
+    }
+    setImportEmployee(result.employee);
+  };
+
+  const openEmployeeRecord = async (option) => {
+    if (!option?.employeeRecordId) {
+      return;
+    }
+
+    setSelectedEmployeeId(option.employeeRecordId);
+    setEmployee(null);
+    setRecords([]);
+    setRecordViewerOpen(true);
+    await loadRecord(option.employeeRecordId);
+  };
+
+  const closeEmployeeRecord = () => {
+    setRecordViewerOpen(false);
+    setSelectedEmployeeId(null);
+    setEmployee(null);
+    setRecords([]);
+    setError("");
+  };
+
   const openEditModal = (record) => {
+    setRecordViewerOpen(false);
     setForm(formFromRecord(record));
     setFormErrors({});
     setModalOpen(true);
@@ -368,13 +506,14 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
     event.preventDefault();
 
     if (!employee) {
+      toast.error("Choose an employee from the table before adding an entry.");
       return;
     }
 
     setSaving(true);
 
     try {
-      const { serviceToPresent, ...fields } = form;
+      const { serviceToPresent, annualSalary, ...fields } = form;
       const payload = {
         ...fields,
         // An open period is sent as no end date; the parked value stays in the form only.
@@ -424,168 +563,290 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
     }
   };
 
-  /*
-   * Who may print without asking. `canManage` is the same role list the print endpoint treats as
-   * direct printers, so the button and the API can never disagree about who has to request.
-   */
-  const needsPrintApproval = !isManageMode && !canManage;
-  const printApproved = printRequest?.status === "approved";
-  const printPending = printRequest?.status === "pending";
-
-  const handlePrint = async () => {
+  const handlePrint = () => {
     if (!employee) {
       return;
     }
 
     /*
-     * The certifying officer is whoever is issuing the document, so it is their signature on the
-     * form — not the subject employee's. In manage mode that is the session, resolved by the
-     * backend; under an approval it is the HR Head or Admin who granted it, because a CS Form No. 1
-     * signed by the person it describes certifies nothing.
+     * The print view is assembled entirely in the browser from data already loaded for this screen.
+     * Only HR's management view may fill the certification line; self-service copies leave it blank
+     * for an authorized officer to sign instead of treating the subject employee as the certifier.
      */
-    const approvedCertifier = needsPrintApproval && printApproved && printRequest?.approverName;
+    const canCertify = isManageMode && canManage;
     const opened = printServiceRecord({
       employee,
       records,
-      certifiedBy: approvedCertifier
-        ? printRequest.approverName
-        : certifier?.name || user?.full_name || user?.username || "",
-      signatureDataUrl: approvedCertifier
-        ? printRequest.approverSignatureDataUrl || ""
-        : certifier?.signatureDataUrl || "",
+      certifiedBy: canCertify
+        ? certifier?.name || user?.full_name || user?.username || ""
+        : "",
+      signatureDataUrl: canCertify ? certifier?.signatureDataUrl || "" : "",
     });
 
     if (!opened) {
       toast.error("Unable to open the print window. Check your pop-up blocker.");
-      return;
     }
+  };
 
-    if (!needsPrintApproval || !printRequest?.id) {
-      return;
-    }
-
-    /*
-     * One approval, one copy. Spending it here rather than at the moment it was granted means a
-     * blocked pop-up leaves the approval intact for the retry above.
-     */
+  const handleDownloadPdf = async () => {
+    if (!employee || downloadingPdf) return;
+    setDownloadingPdf(true);
     try {
-      await markServiceRecordPrinted(printRequest.id);
+      const { downloadServiceRecordPdf } = await import("./serviceRecordPdf");
+      const canCertify = isManageMode && canManage;
+      await downloadServiceRecordPdf({
+        employee,
+        records,
+        certifiedBy: canCertify ? certifier?.name || user?.full_name || user?.username || "" : "",
+        signatureDataUrl: canCertify ? certifier?.signatureDataUrl || "" : "",
+      });
     } catch {
-      // The copy is already on its way to the printer, so a failure to close the request must not
-      // interrupt it. Requesting again returns the still-approved row and the button recovers.
+      toast.error("Unable to download the service record PDF. Please try again.");
     } finally {
-      setPrintRequest(null);
+      setDownloadingPdf(false);
     }
   };
 
-  const handleRequestPrint = async () => {
-    if (printRequestBusy) {
-      return;
-    }
+  const downloadPdfButton = (
+    <Button variant="secondary" icon={Download} onClick={handleDownloadPdf} disabled={loading || !records.length || downloadingPdf}>
+      {downloadingPdf ? "Downloading..." : "Download PDF"}
+    </Button>
+  );
 
-    setPrintRequestBusy(true);
+  const directoryColumns = [
+    {
+      key: "employee",
+      header: "Employee",
+      cardRole: "title",
+      render: (row) => (
+        <div className="flex min-w-[210px] items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 shadow-sm">
+            {employeeInitials(row.employeeName)}
+          </div>
+          <div className="min-w-0">
+            <p className="m-0 truncate text-sm font-semibold text-slate-900">
+              {row.employeeName || "Unnamed employee"}
+            </p>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "division",
+      header: "Division",
+      render: (row) => <span className="text-sm text-slate-700">{row.division || "—"}</span>,
+    },
+    {
+      key: "position",
+      header: "Position",
+      cardRole: "subtitle",
+      render: (row) => <span className="text-sm text-slate-700">{row.position || "—"}</span>,
+    },
+    {
+      key: "employmentStatus",
+      header: "Employment",
+      render: (row) => <span className="text-sm text-slate-700">{row.employmentStatus || "—"}</span>,
+    },
+    {
+      key: "dateHired",
+      header: "Date Hired",
+      render: (row) => (
+        <span className="whitespace-nowrap text-sm text-slate-700">
+          {formatServiceDate(row.dateHired)}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      cardRole: "actions",
+      headerClassName: "!text-center",
+      cellClassName: "!text-center",
+      render: (row) => (
+        <div className="flex w-full flex-wrap items-center justify-center gap-2">
+          <ActionIconButton
+            label={`View ${row.employeeName || "employee"}`}
+            icon={faEye}
+            tone="view"
+            onClick={() => void openEmployeeRecord(row)}
+          />
+          <ActionIconButton
+            label={`Import Record for ${row.employeeName || "employee"}`}
+            icon={faFileImport}
+            tone="export"
+            text="Import Record"
+            onClick={() => void openImportModal(row)}
+          />
+          <ActionIconButton
+            label={`Add service record entry for ${row.employeeName || "employee"}`}
+            icon={faPlus}
+            tone="edit"
+            text="Add Entry"
+            onClick={() => void openAddModal(row)}
+          />
+        </div>
+      ),
+    },
+  ];
 
-    try {
-      const result = await requestServiceRecordPrint();
-
-      setPrintRequest(result?.request || null);
-      toast.success(result?.message || "Your print request has been sent.");
-    } catch (requestError) {
-      toast.error(requestError.response?.data?.message || "Unable to send the print request.");
-    } finally {
-      setPrintRequestBusy(false);
-    }
-  };
-
-  /* One button, two jobs: issue the form, or ask for permission to. */
-  const printAction = needsPrintApproval && !printApproved
-    ? {
-        label: printPending ? "Print Requested" : printRequestBusy ? "Sending..." : "Request Print",
-        title: printPending ? "Waiting for HR Head or Admin approval." : "",
-        onClick: handleRequestPrint,
-        disabled: printPending || printRequestBusy,
-      }
-    : { label: "Print", title: "", onClick: handlePrint, disabled: false };
+  const directoryHasNoMatches = !employeeListLoading
+    && employeeOptions.length > 0
+    && filteredEmployees.length === 0;
+  const directoryHasNoDivision = !employeeListLoading && isDivisionScoped && !scopedDivision;
+  const directoryEmptyState = (
+    <div className="mx-auto flex max-w-lg flex-col items-center py-10 text-center sm:py-14">
+      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-blue-50 text-blue-600 ring-1 ring-blue-100">
+        {directoryHasNoMatches ? <Search size={21} /> : <UsersRound size={21} />}
+      </div>
+      <p className="m-0 mt-4 text-sm font-semibold text-slate-900">
+        {directoryHasNoMatches
+          ? "No employees match your search"
+          : directoryHasNoDivision
+            ? "Your employee profile has no assigned division"
+            : "No employee service records yet"}
+      </p>
+      <p className="m-0 mt-1.5 max-w-md text-sm leading-6 text-slate-500">
+        {directoryHasNoMatches
+          ? "Try a different name, employee ID, division, or position."
+          : directoryHasNoDivision
+            ? "Service records are listed for your division only. Ask an administrator to set your division in Employee Management."
+            : "Employee records will appear here once they are available."}
+      </p>
+    </div>
+  );
 
   return (
     <div className="w-full space-y-4">
+      {importEmployee && <ServiceRecordImportModal
+        key={importEmployee.id}
+        employee={importEmployee}
+        onClose={() => setImportEmployee(null)}
+        onImported={(result) => {
+          setRecords(Array.isArray(result.records) ? result.records : []);
+          setImportEmployee(null);
+          setRecordViewerOpen(true);
+        }}
+      />}
       {error ? <SettingsNotice tone="error">{error}</SettingsNotice> : null}
 
-      {needsPrintApproval && printPending ? (
+      {!isManageMode ? (
         <SettingsNotice tone="info">
-          Your print request is waiting for HR Head or Admin approval. The Print button appears here
-          once it is granted.
+          This self-service copy is prepared in your browser. Its certification line is left blank
+          for an authorized HR officer to sign.
         </SettingsNotice>
       ) : null}
 
-      {needsPrintApproval && printApproved ? (
-        <SettingsNotice tone="success">
-          Your print request was approved
-          {printRequest?.approverName ? ` by ${printRequest.approverName}` : ""}. It covers one copy —
-          printing closes it, and another copy needs a new request.
-        </SettingsNotice>
-      ) : null}
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <h3 className="m-0 text-base font-semibold text-slate-950">
-              {employee?.fullName || (isManageMode ? "Service Record" : "My Service Record")}
-            </h3>
-            <p className="m-0 mt-1 text-sm text-slate-500">
-              {employee
-                ? `${employee.employeeCode || "No employee number"} · ${employee.designationTitle || "No designation"} · ${employee.station || "No division"}`
-                : "Chronological record of appointments, salaries, and separations (CS Form No. 1)."}
-            </p>
+      {isManageMode ? (
+        <section className="overflow-hidden rounded-2xl border border-blue-200 border-t-2 border-t-blue-600 bg-white shadow-sm">
+          <div className="flex flex-col gap-4 px-4 py-5 sm:px-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <h3 className="m-0 text-base font-semibold text-slate-950">Service Records</h3>
+              <p className="m-0 mt-1 text-sm text-slate-500">
+                Review employee appointments, salary history, and separations on CS Form No. 1.
+              </p>
+            </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={!employee || !records.length || printAction.disabled}
-              onClick={printAction.onClick}
-              title={printAction.title || undefined}
-              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Printer size={16} />
-              {printAction.label}
-            </button>
-            {editable ? (
-              <button
-                type="button"
-                onClick={openAddModal}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
-              >
-                <Plus size={16} />
-                Add Entry
-              </button>
-            ) : null}
-          </div>
-        </div>
+          <div className="border-t border-slate-100 px-4 pb-4 pt-4 sm:px-5 sm:pb-5">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="block w-full sm:max-w-sm">
+                <span className="mb-1.5 block text-sm font-semibold text-slate-700">Search Employees</span>
+                <span className="relative block">
+                  <Search
+                    size={16}
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="search"
+                    value={employeeQuery}
+                    onChange={(event) => setEmployeeQuery(event.target.value)}
+                    placeholder="Search employee or division"
+                    className="min-h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  />
+                </span>
+              </label>
+              <label className="block w-full sm:w-40">
+                <span className="mb-1.5 block text-sm font-semibold text-slate-700">Division</span>
+                <select
+                  value={isDivisionScoped ? scopedDivision : employeeDivisionFilter}
+                  disabled={isDivisionScoped}
+                  onChange={(event) => setEmployeeDivisionFilter(event.target.value)}
+                  className="min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-600"
+                >
+                  {isDivisionScoped ? (
+                    <option value={scopedDivision}>{scopedDivision || "No assigned division"}</option>
+                  ) : (
+                    <>
+                      <option value="">All divisions</option>
+                      {employeeDivisionOptions.map((division) => (
+                        <option key={division} value={division}>{division}</option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              </label>
+            </div>
 
-        {isManageMode ? (
-          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,280px)]">
-            <EmployeeSearchSelect
-              employeeOptions={employeeOptions}
-              selectedEmployee={selectedOption}
-              onSelect={(option) => setSelectedEmployeeId(option?.employeeRecordId ?? null)}
-              placeholder="Search employee..."
+            <Table
+              columns={directoryColumns}
+              data={visibleEmployees}
+              rowKey="employeeRecordId"
+              loading={employeeListLoading}
+              loadingRows={5}
+              emptyState={directoryEmptyState}
+              cardsClassName="lg:hidden"
+              tableWrapperClassName="hidden rounded-xl border border-slate-200 lg:block"
+              minWidthClassName="min-w-[1050px]"
             />
-          </div>
-        ) : null}
 
-        <div className="mt-4">
-          {isManageMode && !selectedEmployeeId && !employee ? (
-            <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 px-4 py-14 text-center">
-              <div className="max-w-md">
-                <FileText size={24} className="mx-auto text-slate-300" aria-hidden="true" />
-                <p className="m-0 mt-3 text-sm font-semibold text-slate-700">Choose an employee</p>
-                <p className="m-0 mt-1.5 text-sm text-slate-500">
-                  Search above to open a service record and issue the certified form.
+            <div className="mt-4 flex flex-col gap-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                Showing {employeeStart} to {employeeEnd} of {filteredEmployees.length} employee{filteredEmployees.length === 1 ? "" : "s"}
+              </span>
+              <Pagination
+                currentPage={safeEmployeeCurrentPage}
+                totalPages={employeeTotalPages}
+                onPageChange={setEmployeeCurrentPage}
+                disabled={employeeListLoading}
+              />
+            </div>
+          </div>
+        </section>
+      ) : (
+        <section className="overflow-hidden rounded-2xl border border-blue-200 border-t-2 border-t-blue-600 bg-white shadow-sm">
+          <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="min-w-0">
+                <p className="m-0 text-xs font-bold uppercase tracking-[0.12em] text-blue-600">
+                  My service record
+                </p>
+                <h3 className="m-0 mt-0.5 truncate text-lg font-semibold text-slate-950">
+                  {employee?.fullName || selectedOption?.employeeName || "Service Record"}
+                </h3>
+                <p className="m-0 mt-1 text-sm text-slate-500">
+                  {`${employee?.employeeCode || selectedOption?.employeeId || "No employee number"} · ${employee?.designationTitle || selectedOption?.position || "No position"} · ${employee?.station || selectedOption?.division || "No division"}`}
                 </p>
               </div>
             </div>
-          ) : (
+
+            {employee ? (
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!records.length}
+                  onClick={handlePrint}
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Printer size={16} />
+                  Print
+                </button>
+                {downloadPdfButton}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="border-t border-slate-200 p-4 sm:p-5">
             <ServiceRecordTable
               records={records}
               canManage={editable}
@@ -593,9 +854,49 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
               onEdit={openEditModal}
               onArchive={handleArchive}
             />
-          )}
+          </div>
+        </section>
+      )}
+
+      <ProfileFloatingCard
+        open={isManageMode && recordViewerOpen}
+        onClose={closeEmployeeRecord}
+        closeLabel="Close service record"
+        title={employee?.fullName || selectedOption?.employeeName || "Employee Service Record"}
+        subtitle={`${employee?.employeeCode || selectedOption?.employeeId || "No employee number"} · ${employee?.designationTitle || selectedOption?.position || "No position"} · ${employee?.station || selectedOption?.division || "No division"}`}
+        icon={ScrollText}
+        maxWidth="max-w-[min(96vw,1400px)]"
+        bodyClassName="px-4 pb-5 sm:px-5"
+      >
+        <div className="mb-4 flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="m-0 text-sm font-semibold text-slate-900">CS Form No. 1</p>
+            <p className="m-0 mt-1 text-xs text-slate-500">Appointment, salary, and separation history</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={loading || !records.length}
+              onClick={handlePrint}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Printer size={16} aria-hidden="true" />
+              Print
+            </button>
+            {downloadPdfButton}
+          </div>
         </div>
-      </section>
+
+        {error ? <SettingsNotice tone="error">{error}</SettingsNotice> : null}
+
+        <ServiceRecordTable
+          records={records}
+          canManage={editable}
+          loading={loading}
+          onEdit={openEditModal}
+          onArchive={handleArchive}
+        />
+      </ProfileFloatingCard>
 
       <Modal
         open={modalOpen}
@@ -604,9 +905,23 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
         maxWidth="max-w-3xl"
       >
         <form className="grid gap-4" onSubmit={handleSubmit}>
+          {form.id && employee ? (
+            <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 shadow-sm">
+                {employeeInitials(employee.fullName)}
+              </div>
+              <div className="min-w-0">
+                <p className="m-0 truncate text-sm font-semibold text-slate-900">{employee.fullName}</p>
+                <p className="m-0 mt-0.5 truncate text-xs text-slate-500">
+                  {employee.employeeCode || "No employee ID"}
+                </p>
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <InputField
-              label="Service from"
+              label={requiredFieldLabel("Service from")}
               name="serviceFrom"
               type="date"
               value={form.serviceFrom}
@@ -617,7 +932,7 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
             <div className="w-full">
               <div className="mb-1.5 flex items-center justify-between gap-2">
                 <label htmlFor="serviceTo" className="block text-sm font-semibold text-slate-700">
-                  Service to
+                  {requiredFieldLabel("Service to")}
                 </label>
                 <button
                   type="button"
@@ -657,9 +972,9 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
             Saving a new entry closes the open one the day before this start date.
           </p>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <InputField
-              label="Designation"
+              label={requiredFieldLabel("Position")}
               name="designationTitle"
               value={form.designationTitle}
               onChange={updateField("designationTitle")}
@@ -669,19 +984,28 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
             />
             <SettingsSelect
               name="employmentStatus"
-              label="Employment"
+              label={requiredFieldLabel("Employment")}
               value={form.employmentStatus}
               onChange={updateField("employmentStatus")}
               options={employmentStatuses}
               placeholder="Select employment"
               error={formErrors.employmentStatus}
             />
+            <SettingsSelect
+              name="stClassification"
+              label={requiredFieldLabel("SNT classification")}
+              value={form.stClassification}
+              onChange={updateField("stClassification")}
+              options={stClassifications}
+              placeholder="Select classification"
+              error={formErrors.stClassification}
+            />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <SettingsSelect
               name="salaryGrade"
-              label="Salary grade"
+              label={requiredFieldLabel("Salary grade")}
               value={form.salaryGrade}
               onChange={handleSalaryGradeChange}
               options={SALARY_GRADE_OPTIONS}
@@ -690,7 +1014,7 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
             />
             <SettingsSelect
               name="stepIncrement"
-              label="Step"
+              label={requiredFieldLabel("Step")}
               value={form.stepIncrement}
               onChange={handleStepChange}
               options={stepOptions}
@@ -698,20 +1022,35 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
               error={formErrors.stepIncrement}
             />
             <InputField
-              label="Monthly salary"
+              label={requiredFieldLabel("Monthly salary")}
               name="monthlySalary"
               type="number"
               min="0"
               step="0.01"
               value={form.monthlySalary}
-              onChange={updateField("monthlySalary")}
+              onChange={handleMonthlySalaryChange}
               error={formErrors.monthlySalary}
+            />
+            <InputField
+              label={requiredFieldLabel("Salary / annum")}
+              name="annualSalary"
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.annualSalary}
+              onChange={handleAnnualSalaryChange}
+              onBlur={settleAnnualSalary}
             />
           </div>
 
+          <p className="m-0 -mt-2 text-xs text-slate-500">
+            Salary / annum is the monthly salary × 12, the figure printed on the service record. Fill in
+            either one, or pick a grade and step to fill in both.
+          </p>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <InputField
-              label="Station / place of assignment"
+              label={requiredFieldLabel("Station / place of assignment")}
               name="station"
               value={form.station}
               onChange={updateField("station")}
@@ -719,7 +1058,7 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
               required
             />
             <InputField
-              label="Branch"
+              label={requiredFieldLabel("Branch")}
               name="branch"
               value={form.branch}
               onChange={updateField("branch")}
@@ -728,7 +1067,7 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
 
           <div className="grid gap-4 sm:grid-cols-2">
             <InputField
-              label="Separation date"
+              label={requiredFieldLabel("Separation date")}
               name="separationDate"
               type="date"
               value={form.separationDate}
@@ -736,7 +1075,7 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
               error={formErrors.separationDate}
             />
             <InputField
-              label="Cause of separation"
+              label={requiredFieldLabel("Cause of separation")}
               name="separationCause"
               value={form.separationCause}
               onChange={updateField("separationCause")}
@@ -745,7 +1084,7 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
           </div>
 
           <InputField
-            label="Remarks"
+            label={requiredFieldLabel("Remarks")}
             name="remarks"
             value={form.remarks}
             onChange={updateField("remarks")}
@@ -753,9 +1092,6 @@ export default function ServiceRecordWorkspace({ user, mode = "manage" }) {
           />
 
           <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
-            <Button type="button" variant="ghost" onClick={() => setModalOpen(false)}>
-              Cancel
-            </Button>
             <Button type="submit" loading={saving}>
               {form.id ? "Save Changes" : "Add Entry"}
             </Button>

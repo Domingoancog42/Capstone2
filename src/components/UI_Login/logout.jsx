@@ -32,9 +32,6 @@ export default function Logout({ onLogout }) {
         onClose={() => setOpen(false)}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
             <Button variant="danger" icon={LogOut} loading={loading} onClick={handleLogout}>
               Logout
             </Button>

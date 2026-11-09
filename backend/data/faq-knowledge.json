@@ -1,0 +1,86 @@
+[
+  {
+    "id": "file-leave",
+    "category": "Leave & requests",
+    "question": "How do I file a leave request?",
+    "answer": "In the employee portal, open File Request > Leave Request and click File Leave Request. Select the leave type and dates, complete the required fields and attachments shown on the form, review the details, and submit. You can follow its status in the leave request list. Filing a request does not mean it is already approved.",
+    "keywords": ["apply", "submit", "file", "leave", "vacation", "sick", "request"]
+  },
+  {
+    "id": "request-status",
+    "category": "Leave & requests",
+    "question": "How do I check my request's approval status?",
+    "answer": "Open the module where you filed the request, such as Leave Request, Travel Order, Pass Slips, Compensatory Time Off, or Overtime Request. Find the request using the list's search and filters and check its Status. Open its details for the available information. Check the notification bell for updates. If an approval needs follow-up, contact your supervisor or HR; the help assistant cannot approve requests or check your live status.",
+    "keywords": ["request", "status", "pending", "approved", "approval", "rejected", "track", "notification"]
+  },
+  {
+    "id": "leave-balance",
+    "category": "Leave & requests",
+    "question": "Where can I see my leave balance?",
+    "answer": "Your employee dashboard shows a Leave Balance summary. The leave workspace also provides the leave credit information available to your account. Review the displayed credit types before filing leave. Contact HR if a balance looks incorrect. The help assistant does not have access to your personal leave balance and cannot change leave credits.",
+    "keywords": ["leave", "balance", "credit", "credits", "remaining", "days"]
+  },
+  {
+    "id": "edit-profile",
+    "category": "Profile & PDS",
+    "question": "How do I edit my profile, and why are some details read-only?",
+    "answer": "Open My Profile or use your account menu's profile option, then click Edit Profile. Update the available sections and click Save Changes. Some Personal Details require an edit request: use the request edit option shown in that section and wait for Admin or HR Head approval. Employment information is maintained by the authorized management role. Contact HR to correct fields you cannot edit.",
+    "keywords": ["profile", "edit", "update", "personal", "details", "read-only", "readonly", "locked", "name", "address"]
+  },
+  {
+    "id": "profile-photo",
+    "category": "Profile & PDS",
+    "question": "How do I change my profile picture or choose whether it appears in my PDS?",
+    "answer": "Open My Profile, click Edit Profile, then Change Photo. In Profile Picture, choose Upload Image and adjust the framing. Select Include my profile picture in my PDS to include the photo in PDS Excel and PDF downloads; uncheck it to leave the photo out while keeping your profile picture. Click Save Picture to save the photo and this preference. You can change the checkbox for an existing photo without uploading it again. To remove the profile picture itself, click Remove and then Save Picture.",
+    "keywords": ["profile", "photo", "picture", "image", "avatar", "pds", "include", "exclude", "remove", "checkbox"]
+  },
+  {
+    "id": "download-pds",
+    "category": "Profile & PDS",
+    "question": "How do I download my Personal Data Sheet (PDS)?",
+    "answer": "Open My Profile and save any edits first. Use Export PDS Excel for the workbook or Download PDS PDF for the PDF. Complete the relevant profile sections, including Family Background, Educational Background, Civil Service Eligibility, and Learning & Development, before downloading. Photo inclusion follows the checkbox saved in Change Photo. Your account must be linked to an employee record.",
+    "keywords": ["download", "export", "pds", "personal data sheet", "excel", "pdf", "family", "education", "eligibility", "training"]
+  },
+  {
+    "id": "payslip",
+    "category": "Attendance & pay",
+    "question": "Where can I view and download my payslip?",
+    "answer": "Open the payslip page in your portal, select the available payroll period, and use the view, download, or print actions shown. Available payslips come from paid payroll records. If the period is missing or the salary details look incorrect, contact Payroll or HR. The help assistant cannot retrieve salary amounts, release payroll, or change a payslip.",
+    "keywords": ["payslip", "pay", "payroll", "salary", "download", "print", "period", "missing"]
+  },
+  {
+    "id": "attendance",
+    "category": "Attendance & pay",
+    "question": "How do I check my attendance or DTR?",
+    "answer": "Open My DTR or the Attendance page available to your role. Select the relevant period and review your attendance records. Contact HR or the attendance administrator about missing or incorrect time entries; attendance imports and corrections require an authorized role. The help assistant cannot see or change your actual time logs.",
+    "keywords": ["attendance", "dtr", "time", "log", "logs", "biometric", "late", "absent", "missing"]
+  },
+  {
+    "id": "other-requests",
+    "category": "Leave & requests",
+    "question": "Where do I file a travel order, pass slip, overtime, or CTO request?",
+    "answer": "In the employee portal, expand File Request and select Travel Order, Pass Slips, Overtime Request, or Compensatory Time Off. Use the filing action on that page, complete its required fields, and submit for the applicable review. Follow the request status in the same module. Available modules and actions depend on your role and assigned permissions.",
+    "keywords": ["travel", "order", "pass", "slip", "overtime", "cto", "compensatory", "file", "request"]
+  },
+  {
+    "id": "account-security",
+    "category": "Account & access",
+    "question": "How do I change my password, email, or two-factor authentication settings?",
+    "answer": "Open your profile's Security section to find password and email change actions and Personal 2FA. Follow the verification steps shown for the action you select. If you cannot sign in, use Forgot Password on the login screen. If account access or verification remains unavailable, contact your system administrator. Never send your password, verification code, or API key to the help assistant.",
+    "keywords": ["password", "email", "security", "2fa", "otp", "verification", "forgot", "login", "sign in"]
+  },
+  {
+    "id": "missing-access",
+    "category": "Account & access",
+    "question": "Why can't I see a page or use an action?",
+    "answer": "The modules and actions shown depend on your assigned role and permissions. Contact your system administrator or HR if you need access for your duties or believe your account is linked to the wrong employee record. The help assistant cannot grant permissions, bypass an approval, or edit employee records.",
+    "keywords": ["permission", "access", "role", "missing", "page", "button", "module", "denied", "account", "linked"]
+  },
+  {
+    "id": "contact-hr",
+    "category": "Account & access",
+    "question": "Who can help with incorrect employee records or questions the assistant cannot answer?",
+    "answer": "Contact your office's HR team for employee information, leave credits, employment records, and HR policy questions. Contact Payroll for salary or payslip concerns and your system administrator for login or access issues. Use your office's established contact details or the system's Messages page. No HR phone number or email address is configured in this FAQ.",
+    "keywords": ["contact", "help", "hr", "support", "incorrect", "record", "policy", "phone", "email"]
+  }
+]

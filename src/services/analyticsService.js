@@ -18,6 +18,9 @@ export const fetchDashboardAnalytics = (year = new Date().getFullYear()) => (
 export const fetchRoleDistribution = () => getAnalytics("role_distribution");
 export const fetchEmploymentStatus = () => getAnalytics("employment_status");
 export const fetchAttendanceTrend = (days = 30) => getAnalytics("attendance_trend", { days });
+export const fetchPerformanceManagement = (year = new Date().getFullYear()) => (
+  getAnalytics("performance_management", { year })
+);
 export const fetchPWDDistribution = () => getAnalytics("pwd_distribution");
 export const fetchGenderDistribution = () => getAnalytics("gender_distribution");
 export const fetchSeniorCitizenData = () => getAnalytics("senior_citizen");
@@ -33,6 +36,7 @@ const analyticsService = {
   fetchRoleDistribution,
   fetchEmploymentStatus,
   fetchAttendanceTrend,
+  fetchPerformanceManagement,
   fetchPWDDistribution,
   fetchGenderDistribution,
   fetchSeniorCitizenData,

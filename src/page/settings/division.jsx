@@ -2,16 +2,16 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Archive,
+  ArrowLeft,
   Building2,
   ClipboardList,
   Database,
   FileText,
   Gauge,
-  KeyRound,
   Layers,
   LockKeyhole,
   MailX,
-  Pencil,
+  MapPin,
   PenLine,
   Palette,
   Plus,
@@ -19,9 +19,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
-  RotateCcw,
   UserRoundCog,
-  Users,
 } from "lucide-react";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
@@ -31,6 +29,10 @@ import InputField from "../../components/UI/InputField";
 import Modal from "../../components/UI/modal";
 import Table from "../../components/UI/table";
 import Pagination from "../../components/UI/Pagination";
+import ActionIconButton from "../../components/UI/ActionIconButton";
+import { faBoxArchive, faPen, faRotateLeft } from "@fortawesome/free-solid-svg-icons";
+import { AccessDeniedInline } from "../../components/auth/AccessDenied";
+import { userCanAccessModule } from "../../utils/permissions";
 import {
   SettingsCheckbox,
   SettingsNav,
@@ -66,6 +68,7 @@ import {
   saveDesignation,
   saveDivision,
   saveLeaveType,
+  updateLeaveTypeStatus,
   saveRateLimitSettings,
   savePayrollSignatories,
   saveSecurityPolicySettings,
@@ -108,6 +111,7 @@ import PermissionSettings, {
   permissionSections,
 } from "./permission";
 import PreferencesSettings from "./preferences";
+import AddressSettings from "./addresses";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
   applyUiThemeColor,
@@ -130,13 +134,6 @@ const settingsGroups = [
     label: "Organization",
     items: [
       {
-        key: "organizationStructure",
-        label: "Organization Structure",
-        icon: Building2,
-        description: "Divisions and designations",
-        keywords: ["division", "designation", "department", "unit", "structure"],
-      },
-      {
         key: "leaveType",
         label: "Leave Types",
         icon: FileText,
@@ -145,9 +142,9 @@ const settingsGroups = [
       },
       {
         key: "deduction",
-        label: "Deductions",
+        label: "Deduction Setup",
         icon: ClipboardList,
-        description: "Payroll deduction names",
+        description: "Manage deduction names, rates, computation settings, and status.",
         keywords: ["deduction", "payroll", "phic", "gsis", "hdmf", "philhealth", "pagibig"],
       },
       {
@@ -157,31 +154,24 @@ const settingsGroups = [
         description: "Who certifies, approves and pays a payroll",
         keywords: ["signatory", "signature", "certified", "payroll", "register", "approve", "cashier", "director", "chief"],
       },
+      {
+        key: "addresses",
+        label: "Add Address",
+        icon: MapPin,
+        description: "Regions, provinces, cities, addresses, and ZIP codes for employee addresses",
+        keywords: ["address", "region", "province", "city", "municipality", "barangay", "zip", "postal", "location"],
+      },
     ],
   },
   {
     label: "Access & Security",
     items: [
       {
-        key: "users",
-        label: "Users",
-        icon: Users,
-        description: "Create users and review their assigned roles",
-        keywords: ["user", "employee", "account", "add", "create", "role", "employee id"],
-      },
-      {
         key: "roles",
         label: "Create New Role",
         icon: Layers,
         description: "Create custom roles and choose their modules",
         keywords: ["role", "custom", "add", "create", "base", "module", "access"],
-      },
-      {
-        key: "permissions",
-        label: "Permissions",
-        icon: KeyRound,
-        description: "Role and per-user access",
-        keywords: ["permission", "role", "access", "user", "grant", "revoke"],
       },
       {
         key: "securitySettings",
@@ -199,10 +189,10 @@ const settingsGroups = [
       },
       {
         key: "captcha",
-        label: "Login Captcha",
+        label: "Captcha",
         icon: ShieldCheck,
-        description: "Math captcha on the login page",
-        keywords: ["captcha", "login", "bot", "math"],
+        description: "Login captcha and payroll email verification",
+        keywords: ["captcha", "login", "bot", "math", "payroll", "otp", "verification"],
       },
       {
         key: "emailDomainPolicy",
@@ -301,13 +291,6 @@ const defaultSystemConfiguration = {
     deductionPerHour: "100.00",
   },
 };
-
-const overtimeRuleFields = [
-  { key: "regularOvertimePercent", label: "Regular Overtime (%)" },
-  { key: "restDayOvertimePercent", label: "Rest day Overtime (%)" },
-  { key: "specialHolidayOvertimePercent", label: "Special Holiday Overtime (%)" },
-  { key: "regularHolidayOvertimePercent", label: "Regular Holiday Overtime (%)" },
-];
 
 const securityPolicyFields = [
   {
@@ -474,22 +457,39 @@ function organizationRecordIsArchived(record = {}) {
   return Number(record.is_archived ?? record.isArchived ?? 0) === 1;
 }
 
-function organizationStatusClass(record = {}) {
-  return organizationRecordIsArchived(record)
-    ? "border-slate-200 bg-slate-100 text-slate-700"
-    : "border-emerald-200 bg-emerald-50 text-emerald-700";
+function OrganizationArchiveButton({ archiveView, onToggle, label }) {
+  const Icon = archiveView ? ArrowLeft : Archive;
+  return (
+    <button
+      type="button"
+      aria-label={archiveView ? `Back to ${label}` : `View archived ${label}`}
+      aria-pressed={archiveView}
+      onClick={() => onToggle(!archiveView)}
+      className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 text-xs font-semibold text-indigo-600 transition hover:border-indigo-300 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+    >
+      <Icon size={14} aria-hidden="true" />
+      {archiveView ? `Back to ${label}` : "Archive"}
+    </button>
+  );
 }
 
-export default function DivisionSettings({ onSettingsChange, renderUsersSection }) {
-  const [activeTab, setActiveTab] = useState("organizationStructure");
+export default function DivisionSettings({ user, onSettingsChange, workspaceView = null, initialPermissionRoleKey = "", onOpenPermissions }) {
+  const isStandaloneView = ["divisions", "designations", "rbac"].includes(workspaceView);
+  const [settingsTab, setActiveTab] = useState("leaveType");
+  const activeTab = workspaceView === "rbac" ? "permissions" : isStandaloneView ? workspaceView : settingsTab;
+  const canViewAuditLogs = userCanAccessModule(user, "auditLogs");
   const [sectionQuery, setSectionQuery] = useState("");
   const activeSection = settingsSections.find((section) => section.key === activeTab);
   const ActiveSectionIcon = activeSection?.icon || Settings2;
   const [divisions, setDivisions] = useState([]);
   const [designations, setDesignations] = useState([]);
+  const [settingsLoadState, setSettingsLoadState] = useState("loading");
   const [leaveTypes, setLeaveTypes] = useState([]);
-  const [divisionQuery, setDivisionQuery] = useState("");
+  const [togglingLeaveTypeId, setTogglingLeaveTypeId] = useState(null);
   const [designationQuery, setDesignationQuery] = useState("");
+  const [designationFilter, setDesignationFilter] = useState("");
+  const [divisionArchiveView, setDivisionArchiveView] = useState(false);
+  const [designationArchiveView, setDesignationArchiveView] = useState(false);
   const [leaveTypeQuery, setLeaveTypeQuery] = useState("");
   const [divisionModalOpen, setDivisionModalOpen] = useState(false);
   const [designationModalOpen, setDesignationModalOpen] = useState(false);
@@ -501,12 +501,16 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   const [divisionDescription, setDivisionDescription] = useState("");
   const [designationName, setDesignationName] = useState("");
   const [designationDivisionId, setDesignationDivisionId] = useState("");
+  // The position's rung in the office hierarchy (1 = lowest). A promotion must move an employee
+  // to a strictly higher level, so this is what the Promotions desk filters its targets by.
+  const [designationLevel, setDesignationLevel] = useState("1");
   const [leaveTypeName, setLeaveTypeName] = useState("");
   const [leaveTypeCode, setLeaveTypeCode] = useState("");
   const [deductionTypes, setDeductionTypes] = useState([]);
   const [deductionAllowances, setDeductionAllowances] = useState([]);
   const [deductionLoading, setDeductionLoading] = useState(false);
   const [deductionSaving, setDeductionSaving] = useState(false);
+  const [togglingDeductionId, setTogglingDeductionId] = useState(null);
   const [editingDeduction, setEditingDeduction] = useState(null);
   const deductionNotice = useSettingsNotice();
   // Categories drive the panels now, so the initial key is empty until the API answers.
@@ -517,6 +521,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [loginCaptchaEnabled, setLoginCaptchaEnabled] = useState(true);
+  const [payrollWorkflowOtpEnabled, setPayrollWorkflowOtpEnabled] = useState(true);
   const captchaNotice = useSettingsNotice();
   const [emailDomainPolicy, setEmailDomainPolicy] = useState(defaultEmailDomainPolicy);
   const [emailDomainPolicySaving, setEmailDomainPolicySaving] = useState(false);
@@ -554,7 +559,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   const [permissionUserCounts, setPermissionUserCounts] = useState({});
   const permissionNotice = useSettingsNotice();
   const [permissionSavingRole, setPermissionSavingRole] = useState("");
-  const [selectedPermissionRole, setSelectedPermissionRole] = useState(permissionRoles[0]?.key || "admin");
+  const [selectedPermissionRole, setSelectedPermissionRole] = useState(initialPermissionRoleKey || permissionRoles[0]?.key || "admin");
   const [expandedPermissionSections, setExpandedPermissionSections] = useState({});
   const [permissionMode, setPermissionMode] = useState("role");
   const [permissionUsers, setPermissionUsers] = useState([]);
@@ -564,12 +569,11 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   const [userPermissionDraft, setUserPermissionDraft] = useState(() => normalizeSinglePermissionTemplate({}));
   const [permissionUserDirty, setPermissionUserDirty] = useState(false);
   const [permissionSavingUser, setPermissionSavingUser] = useState(false);
-  const [actionPopover, setActionPopover] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditSearchInput, setAuditSearchInput] = useState("");
   const [auditSearch, setAuditSearch] = useState("");
   const [auditDateRange, setAuditDateRange] = useState("30d");
-  const [auditPageSize, setAuditPageSize] = useState(25);
+  const [auditPageSize, setAuditPageSize] = useState(10);
   const [auditPage, setAuditPage] = useState(1);
   const [auditPagination, setAuditPagination] = useState(defaultAuditPagination);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -585,6 +589,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   const [backupHistory, setBackupHistory] = useState([]);
 
   const loadSettings = useCallback(async () => {
+    setSettingsLoadState("loading");
     try {
       // Roles are fetched beside the settings payload because the latter contains
       // permission templates but no display metadata for administrator-created roles.
@@ -622,6 +627,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       setDivisionPage(1);
       setDesignationPage(1);
       setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
+      setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setEmailDomainPolicy(nextEmailDomainPolicy);
       emailDomainPolicyNotice.clear();
       setRateLimitSettings(result.rateLimit?.settings || defaultRateLimitSettings);
@@ -662,6 +668,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         leaveTypes: result.leaveTypes || [],
         security: {
           loginCaptchaEnabled: result.security?.loginCaptchaEnabled !== false,
+          payrollWorkflowOtpEnabled: result.security?.payrollWorkflowOtpEnabled !== false,
           ...securityPolicyFields.reduce((settings, field) => ({
             ...settings,
             [field.key]: Number(nextSecurityPolicy[field.key]),
@@ -682,7 +689,9 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         emailDomainPolicy: nextEmailDomainPolicy,
       });
       setMessage("");
+      setSettingsLoadState("ready");
     } catch (error) {
+      setSettingsLoadState("error");
       setMessage(error.response?.data?.message || "Unable to load settings.");
     }
     }, [emailDomainPolicyNotice, onSettingsChange, permissionNotice, systemConfigNotice, twoFactorNotice]);
@@ -690,23 +699,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
-
-  // Close the floating action card when the layout shifts under it.
-  useEffect(() => {
-    if (!actionPopover) {
-      return undefined;
-    }
-
-    const close = () => setActionPopover(null);
-
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [actionPopover]);
 
   // Default to the first user once the user list is available in "By User" mode.
   useEffect(() => {
@@ -783,7 +775,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       const pagination = result.pagination || {};
       const nextPagination = {
         page: Number(pagination.page || params.page || 1),
-        perPage: Number(pagination.perPage || params.perPage || 25),
+        perPage: Number(pagination.perPage || params.perPage || 10),
         total: Number(pagination.total || 0),
         totalPages: Number(pagination.totalPages || 1),
         from: Number(pagination.from || 0),
@@ -821,8 +813,10 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   }, [auditSearchInput]);
 
   useEffect(() => {
-    loadAuditLogs();
-  }, [loadAuditLogs]);
+    if (activeTab === "auditLogs" && canViewAuditLogs) {
+      loadAuditLogs();
+    }
+  }, [activeTab, canViewAuditLogs, loadAuditLogs]);
 
   /*
    * Deliberately not `loadSettings`. That re-seeds every form on this screen from the server, so
@@ -857,8 +851,8 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
    * a set of query overrides. Calling it bare keeps the admin's current filters and page.
    */
   useAutoRefreshOnChange(() => loadAuditLogs(), {
-    topic: "auth_activity",
-    enabled: activeTab === "auditLogs",
+    topic: "audit_activity",
+    enabled: activeTab === "auditLogs" && canViewAuditLogs,
     refreshOnMount: false,
   });
 
@@ -897,34 +891,36 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   }, [activeDivisions, designationDivisionId, divisions, editingDesignation?.division_id]);
 
   const filteredDivisions = useMemo(() => {
-    const search = divisionQuery.trim().toLowerCase();
-    const results = !search
-      ? divisions
-      : divisions.filter((division) =>
-        [
-          division.name,
-          division.description,
-          division.code,
-        ]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(search))
-      );
+    return divisions.filter(
+      (division) => organizationRecordIsArchived(division) === divisionArchiveView
+    );
+  }, [divisions, divisionArchiveView]);
 
-    return results;
-  }, [divisionQuery, divisions]);
+  const designationFilterOptions = useMemo(
+    () => Array.from(new Set(
+      designations
+        .filter((designation) => organizationRecordIsArchived(designation) === designationArchiveView)
+        .map((designation) => String(designation.name || "").trim())
+        .filter(Boolean)
+    )).sort(),
+    [designationArchiveView, designations]
+  );
 
   const filteredDesignations = useMemo(() => {
     const search = designationQuery.trim().toLowerCase();
-    const results = !search
-      ? designations
-      : designations.filter((designation) =>
+    const viewRecords = designations.filter((designation) => organizationRecordIsArchived(designation) === designationArchiveView);
+    const searchResults = !search
+      ? viewRecords
+      : viewRecords.filter((designation) =>
         [designation.name, designation.division_name]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(search))
       );
 
-    return results;
-  }, [designationQuery, designations]);
+    return designationFilter
+      ? searchResults.filter((designation) => designation.name === designationFilter)
+      : searchResults;
+  }, [designationArchiveView, designationFilter, designationQuery, designations]);
 
   const divisionTotalPages = Math.max(1, Math.ceil(filteredDivisions.length / organizationRowsPerPage));
   const designationTotalPages = Math.max(1, Math.ceil(filteredDesignations.length / organizationRowsPerPage));
@@ -957,6 +953,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     setEditingDesignation(designation);
     setDesignationName(designation?.name || "");
     setDesignationDivisionId(String(designation?.division_id || ""));
+    setDesignationLevel(String(designation?.hierarchy_level || "1"));
     setErrors({});
     setDesignationModalOpen(true);
   };
@@ -1043,10 +1040,14 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     const nextErrors = {};
 
     if (!designationName.trim()) {
-      nextErrors.designationName = "Designation name is required.";
+      nextErrors.designationName = "Position title is required.";
     }
     if (!designationDivisionId) {
       nextErrors.designationDivisionId = "Division is required.";
+    }
+    const level = Number(designationLevel);
+    if (!Number.isInteger(level) || level < 1 || level > 20) {
+      nextErrors.designationLevel = "Level must be a whole number from 1 to 20.";
     }
 
     if (Object.keys(nextErrors).length > 0) {
@@ -1060,6 +1061,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         id: editingDesignation?.id,
         name: designationName.trim(),
         divisionId: designationDivisionId,
+        hierarchyLevel: level,
       });
       setDivisions(result.divisions || []);
       setDesignations(result.designations || []);
@@ -1071,9 +1073,10 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       setEditingDesignation(null);
       setDesignationName("");
       setDesignationDivisionId("");
-      toast.success(editingDesignation ? "Designation updated successfully." : "Designation added successfully.");
+      setDesignationLevel("1");
+      toast.success(editingDesignation ? "Position updated successfully." : "Position added successfully.");
     } catch (error) {
-      const message = error.response?.data?.message || "Unable to save designation.";
+      const message = error.response?.data?.message || "Unable to save position.";
       setErrors(
         message.toLowerCase().includes("division")
           ? { designationDivisionId: message }
@@ -1096,7 +1099,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     const confirmation = await Swal.fire({
       title: "Archive division?",
       text: designationCount
-        ? `This will archive ${designationCount} designation${designationCount === 1 ? "" : "s"} under this division.`
+        ? `This will archive ${designationCount} position${designationCount === 1 ? "" : "s"} under this division.`
         : "This division will be archived.",
       icon: "warning",
       showCancelButton: true,
@@ -1119,7 +1122,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         divisions: result.divisions || [],
         designations: result.designations || [],
       });
-      toast.success("Division archived successfully. Its designations were archived too.");
+      toast.success("Division archived successfully. Its positions were archived too.");
     } catch (error) {
       const message = error.response?.data?.message || "Unable to archive division.";
       toast.error(message);
@@ -1155,7 +1158,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         divisions: result.divisions || [],
         designations: result.designations || [],
       });
-      toast.success("Division restored successfully. Restore designations as needed.");
+      toast.success("Division restored successfully. Restore positions as needed.");
     } catch (error) {
       const message = error.response?.data?.message || "Unable to restore division.";
       toast.error(message);
@@ -1168,8 +1171,8 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     }
 
     const confirmation = await Swal.fire({
-      title: "Archive designation?",
-      text: `Archive ${designation.name || "this designation"}?`,
+      title: "Archive position?",
+      text: `Archive ${designation.name || "this position"}?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonText: "Archive",
@@ -1191,9 +1194,9 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         divisions: result.divisions || [],
         designations: result.designations || [],
       });
-      toast.success("Designation archived successfully.");
+      toast.success("Position archived successfully.");
     } catch (error) {
-      const message = error.response?.data?.message || "Unable to archive designation.";
+      const message = error.response?.data?.message || "Unable to archive position.";
       toast.error(message);
     }
   };
@@ -1204,13 +1207,13 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     }
 
     if (Number(designation.division_is_archived ?? 0) === 1) {
-      toast.error("Restore the division before restoring this designation.");
+      toast.error("Restore the division before restoring this position.");
       return;
     }
 
     const confirmation = await Swal.fire({
-      title: "Restore designation?",
-      text: `Restore ${designation.name || "this designation"}?`,
+      title: "Restore position?",
+      text: `Restore ${designation.name || "this position"}?`,
       icon: "question",
       showCancelButton: true,
       confirmButtonText: "Restore",
@@ -1232,9 +1235,9 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         divisions: result.divisions || [],
         designations: result.designations || [],
       });
-      toast.success("Designation restored successfully.");
+      toast.success("Position restored successfully.");
     } catch (error) {
-      const message = error.response?.data?.message || "Unable to restore designation.";
+      const message = error.response?.data?.message || "Unable to restore position.";
       toast.error(message);
     }
   };
@@ -1278,6 +1281,23 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     }
   };
 
+  const handleToggleLeaveTypeStatus = async (leaveType) => {
+    if (togglingLeaveTypeId !== null) return;
+
+    const isActive = Number(leaveType.isActive) === 1 ? 0 : 1;
+    setTogglingLeaveTypeId(leaveType.id);
+    try {
+      const result = await updateLeaveTypeStatus(leaveType.id, isActive);
+      setLeaveTypes(result.leaveTypes || []);
+      onSettingsChange?.({ leaveTypes: result.leaveTypes || [] });
+      toast.success(`Leave type ${isActive ? "activated" : "deactivated"} successfully.`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to update leave type status.");
+    } finally {
+      setTogglingLeaveTypeId(null);
+    }
+  };
+
   const handleSaveDeductionType = async (event) => {
     event.preventDefault();
 
@@ -1296,13 +1316,18 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
 
     setDeductionSaving(true);
     try {
+      const definitionFields = group.key === "other" ? {
+        type_name: deductionDefinitionForm.type_name,
+        description: deductionDefinitionForm.description,
+        default_amount: deductionDefinitionForm.default_amount,
+      } : deductionDefinitionForm;
       const payload = {
         action: "definition_type",
         groupKey: group.key,
-        ...deductionDefinitionForm,
+        ...definitionFields,
         type_name: deductionDefinitionForm.type_name.trim(),
         description: deductionDefinitionForm.description.trim(),
-        threshold_rules: deductionDefinitionForm.threshold_rules.trim(),
+        ...(group.key !== "other" ? { threshold_rules: deductionDefinitionForm.threshold_rules.trim() } : {}),
       };
       if (editingDeduction?.id) {
         await updateDeductionType({
@@ -1329,17 +1354,54 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     }
   };
 
-  const handleToggleLoginCaptcha = async () => {
-    const nextEnabledState = !loginCaptchaEnabled;
+  const handleToggleDeductionStatus = async (deduction) => {
+    if (!deduction?.id) {
+      return;
+    }
+
+    const nextActive = Number(deduction.is_active ?? 1) === 1 ? "0" : "1";
+    setTogglingDeductionId(deduction.id);
+
+    try {
+      const result = await updateDeductionType({
+        action: "definition_type",
+        id: deduction.id,
+        definitionId: deduction.id,
+        groupKey: deduction.groupKey,
+        type_name: deduction.type_name,
+        description: deduction.description || "",
+        default_amount: deduction.default_amount ?? "0.00",
+        default_rate: deduction.default_rate ?? "0.0000",
+        threshold_amount: deduction.threshold_amount ?? "0.00",
+        threshold_mode: deduction.threshold_mode || "fixed",
+        threshold_rules: deduction.threshold_rules || "",
+        base_floor: deduction.base_floor ?? "0.00",
+        base_cap: deduction.base_cap ?? "",
+        is_active: nextActive,
+      });
+
+      setDeductionTypes(Array.isArray(result.definitionTypes) ? result.definitionTypes : deductionTypes);
+      toast.success(`${deduction.type_name} ${nextActive === "1" ? "activated" : "deactivated"} successfully.`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to update deduction status.");
+    } finally {
+      setTogglingDeductionId(null);
+    }
+  };
+
+  const handleTogglePayrollWorkflowOtp = async () => {
+    const nextEnabledState = !payrollWorkflowOtpEnabled;
 
     setSecuritySaving(true);
+    captchaNotice.clear();
     try {
       const result = await saveSecuritySettings({
-        loginCaptchaEnabled: nextEnabledState,
+        payrollWorkflowOtpEnabled: nextEnabledState,
       });
       setDivisions(result.divisions || []);
       setDesignations(result.designations || []);
       setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
+      setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
       setLockedAccounts(Array.isArray(result.lockedAccounts) ? result.lockedAccounts : []);
       onSettingsChange?.({
@@ -1350,11 +1412,44 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       setMessage("");
       captchaNotice.success(
         nextEnabledState
-          ? "Math captcha is now enabled on the login page."
-          : "Math captcha is now disabled on the login page."
+          ? "Payroll email OTP verification is now enabled."
+          : "Payroll email OTP verification is now disabled."
       );
     } catch (error) {
-      captchaNotice.error(error.response?.data?.message || "Unable to update login security settings.");
+      captchaNotice.error(error.response?.data?.message || "Unable to update payroll email OTP verification.");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const handleToggleLoginCaptcha = async () => {
+    const nextEnabledState = !loginCaptchaEnabled;
+
+    setSecuritySaving(true);
+    captchaNotice.clear();
+    try {
+      const result = await saveSecuritySettings({
+        loginCaptchaEnabled: nextEnabledState,
+      });
+      setDivisions(result.divisions || []);
+      setDesignations(result.designations || []);
+      setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
+      setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
+      setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
+      setLockedAccounts(Array.isArray(result.lockedAccounts) ? result.lockedAccounts : []);
+      onSettingsChange?.({
+        divisions: result.divisions || [],
+        designations: result.designations || [],
+        security: result.security || {},
+      });
+      setMessage("");
+      captchaNotice.success(
+        nextEnabledState
+          ? "Login math captcha is now enabled."
+          : "Login math captcha is now disabled."
+      );
+    } catch (error) {
+      captchaNotice.error(error.response?.data?.message || "Unable to update the login math captcha.");
     } finally {
       setSecuritySaving(false);
     }
@@ -1488,6 +1583,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       setDesignations(result.designations || []);
       setSecurityPolicyForm(securityPolicyFormFromSettings(result.security || {}));
       setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
+      setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
       setLockedAccounts(Array.isArray(result.lockedAccounts) ? result.lockedAccounts : []);
       onSettingsChange?.({
@@ -1624,18 +1720,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     systemConfigNotice.clear();
   };
 
-  const updateSystemConfigNestedField = (section, field) => (event) => {
-    setSystemConfigForm((current) => ({
-      ...current,
-      [section]: {
-        ...current[section],
-        [field]: event.target.value,
-      },
-    }));
-    setSystemConfigErrors((current) => ({ ...current, [field]: "" }));
-    systemConfigNotice.clear();
-  };
-
   const handleToggleSystemWorkDay = (day) => {
     setSystemConfigForm((current) => {
       const selectedDays = new Set(current.workWeek || []);
@@ -1652,17 +1736,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       };
     });
     setSystemConfigErrors((current) => ({ ...current, workWeek: "" }));
-    systemConfigNotice.clear();
-  };
-
-  const handleToggleUndertimeDeduction = (event) => {
-    setSystemConfigForm((current) => ({
-      ...current,
-      undertimeRules: {
-        ...current.undertimeRules,
-        enabled: event.target.checked,
-      },
-    }));
     systemConfigNotice.clear();
   };
 
@@ -1812,6 +1885,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       setDivisions(result.divisions || []);
       setDesignations(result.designations || []);
       setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
+      setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setSecurityPolicyForm(nextSecurityPolicy);
       setTwoFactorForm(nextTwoFactor);
       setPermissionTemplates(nextPermissionTemplates);
@@ -1881,15 +1955,10 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     });
 
     if (createdRole) {
-      // The new template is already saved with the role.  Take the administrator
-      // straight to the normal permission editor, with that role selected, so any
-      // finer action-level adjustments are immediately available.
-      setPermissionMode("role");
-      setActionPopover(null);
-      setActiveTab("permissions");
-      permissionNotice.success(`${createdRole.label || "New role"} was created. You can now review its permissions.`);
+      // Continue editing the saved role on the standalone RBAC page.
+      onOpenPermissions?.(createdRole.key);
     }
-  }, [onSettingsChange, permissionNotice]);
+  }, [onOpenPermissions, onSettingsChange]);
 
   const applyPermissionSettingsResult = (result) => {
     const nextPermissionTemplates = normalizePermissionTemplates(result.permissions?.templates || {});
@@ -1899,6 +1968,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     setDivisions(result.divisions || []);
     setDesignations(result.designations || []);
     setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
+    setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
     setSecurityPolicyForm(securityPolicyFormFromSettings(result.security || {}));
     setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
     setPermissionTemplates(nextPermissionTemplates);
@@ -2013,7 +2083,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         [roleKey]: defaultPermissionTemplateForRole(roleKey, normalizedCurrent),
       };
     });
-    setActionPopover(null);
     permissionNotice.clear();
   };
 
@@ -2044,7 +2113,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   const handleToggleActivePermissionAction = (moduleKey, actionKey) => {
     const permissionItem = permissionItems.find((item) => item.key === moduleKey);
 
-    if (!permissionItem || !permissionItem.defaultActions.includes(actionKey)) {
+    if (!permissionItem || !permissionItem.availableActions.includes(actionKey)) {
       return;
     }
 
@@ -2058,7 +2127,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         actionSet.add(actionKey);
       }
 
-      const actions = permissionItem.defaultActions.filter((action) => actionSet.has(action));
+      const actions = permissionItem.availableActions.filter((action) => actionSet.has(action));
 
       return {
         ...template,
@@ -2075,13 +2144,11 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
 
   const handlePermissionModeChange = (modeKey) => {
     setPermissionMode(modeKey);
-    setActionPopover(null);
     permissionNotice.clear();
   };
 
   const handleSelectPermissionRole = (roleKey) => {
     setSelectedPermissionRole(roleKey);
-    setActionPopover(null);
   };
 
   const handleTogglePermissionSection = (scopeKey, sectionTitle) => {
@@ -2093,40 +2160,10 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
     }));
   };
 
-  // Open/close the floating action card anchored to the clicked control.
-  const handleToggleActionPopover = (event, moduleKey) => {
-    const rowKey = `${permissionMode === "user" ? `user:${selectedPermissionUserId}` : selectedPermissionRole}:${moduleKey}`;
-    // React clears currentTarget once the click handler returns. Capture the position now,
-    // before the state updater runs, otherwise opening an action checklist can throw when
-    // it tries to call getBoundingClientRect() on null.
-    const triggerRect = event.currentTarget?.getBoundingClientRect?.();
-
-    if (!triggerRect) {
-      return;
-    }
-
-    const popoverTop = triggerRect.bottom + 8;
-    const popoverRight = Math.max(16, window.innerWidth - triggerRect.right);
-
-    setActionPopover((current) => {
-      if (current?.rowKey === rowKey) {
-        return null;
-      }
-
-      return {
-        rowKey,
-        moduleKey,
-        top: popoverTop,
-        right: popoverRight,
-      };
-    });
-  };
-
   const selectPermissionUser = (userId) => {
     const user = permissionUsers.find((candidate) => candidate.id === userId);
 
     setSelectedPermissionUserId(userId);
-    setActionPopover(null);
     setUserPermissionDraft(buildUserPermissionDraft(user, permissionTemplates, permissionUserOverrides));
     setPermissionUserDirty(false);
     permissionNotice.clear();
@@ -2190,7 +2227,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       // Nothing stored yet â€” just restore the draft to the role default.
       setUserPermissionDraft(buildUserPermissionDraft(user, permissionTemplates, {}));
       setPermissionUserDirty(false);
-      setActionPopover(null);
       permissionNotice.clear();
       return;
     }
@@ -2204,7 +2240,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
 
       setUserPermissionDraft(buildUserPermissionDraft(user, nextPermissionTemplates, {}));
       setPermissionUserDirty(false);
-      setActionPopover(null);
       permissionNotice.success(`${user.fullName || user.username} now inherits the ${user.role || "role"} default.`);
     } catch (error) {
       permissionNotice.error(error.response?.data?.message || "Unable to reset user permissions.");
@@ -2437,32 +2472,18 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       ),
     },
     {
-      key: "status",
-      header: "Status",
-      cardRole: "badge",
-      render: (row) => (
-        <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${organizationStatusClass(row)}`}>
-          {organizationRecordIsArchived(row) ? "Archived" : "Active"}
-        </span>
-      ),
-    },
-    {
       key: "actions",
       header: "Actions",
       cardRole: "actions",
       render: (row) => (
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" icon={Pencil} onClick={() => openDivisionModal(row)}>
-            Edit
-          </Button>
           {organizationRecordIsArchived(row) ? (
-            <Button variant="secondary" size="sm" icon={RotateCcw} onClick={() => handleRestoreDivision(row)}>
-              Restore
-            </Button>
+            <ActionIconButton label="Restore" tone="restore" icon={faRotateLeft} onClick={() => handleRestoreDivision(row)} />
           ) : (
-            <Button variant="danger" size="sm" icon={Archive} onClick={() => handleArchiveDivision(row)}>
-              Archive
-            </Button>
+            <>
+              <ActionIconButton label="Edit" tone="edit" icon={faPen} onClick={() => openDivisionModal(row)} />
+              <ActionIconButton label="Archive" tone="archive" icon={faBoxArchive} onClick={() => handleArchiveDivision(row)} />
+            </>
           )}
         </div>
       ),
@@ -2472,7 +2493,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
   const designationColumns = [
     {
       key: "name",
-      header: "Designation Name",
+      header: "Position Title",
       cardRole: "title",
       render: (row) => <span className="font-semibold text-slate-900">{row.name}</span>,
     },
@@ -2481,23 +2502,13 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       header: "Assigned Division",
       cardRole: "subtitle",
       render: (row) => (
-        <div>
-          <p className="m-0 font-semibold text-slate-900">{row.division_name || "Unassigned"}</p>
+        <span className="block">
+          <span className="block font-semibold text-slate-900">{row.division_name || "Unassigned"}</span>
           {Number(row.division_is_archived ?? 0) === 1 ? (
-            <p className="m-0 mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-amber-600">
+            <span className="mt-1 block text-xs font-semibold uppercase tracking-[0.08em] text-amber-600">
               Archived division
-            </p>
+            </span>
           ) : null}
-        </div>
-      ),
-    },
-    {
-      key: "status",
-      header: "Status",
-      cardRole: "badge",
-      render: (row) => (
-        <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${organizationStatusClass(row)}`}>
-          {organizationRecordIsArchived(row) ? "Archived" : "Active"}
         </span>
       ),
     },
@@ -2507,23 +2518,20 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       cardRole: "actions",
       render: (row) => (
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" icon={Pencil} onClick={() => openDesignationModal(row)}>
-            Edit
-          </Button>
           {organizationRecordIsArchived(row) ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={RotateCcw}
+            <ActionIconButton
+              label="Restore"
+              tone="restore"
+              icon={faRotateLeft}
               onClick={() => handleRestoreDesignation(row)}
               disabled={Number(row.division_is_archived ?? 0) === 1}
-            >
-              Restore
-            </Button>
+              title={Number(row.division_is_archived ?? 0) === 1 ? "Restore the division first" : "Restore position"}
+            />
           ) : (
-            <Button variant="danger" size="sm" icon={Archive} onClick={() => handleArchiveDesignation(row)}>
-              Archive
-            </Button>
+            <>
+              <ActionIconButton label="Edit" tone="edit" icon={faPen} onClick={() => openDesignationModal(row)} />
+              <ActionIconButton label="Archive" tone="archive" icon={faBoxArchive} onClick={() => handleArchiveDesignation(row)} />
+            </>
           )}
         </div>
       ),
@@ -2532,29 +2540,31 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
 
   return (
     <div className="w-full">
-      <header className="mb-5">
+      {!isStandaloneView ? <header className="mb-5">
         <h1 className="m-0 text-xl font-semibold text-slate-900">Settings</h1>
         <p className="m-0 mt-1 text-sm leading-6 text-slate-500">
-          Manage organization setup, access control, and system behaviour.
+          Manage employee policies, access control, and system behaviour.
         </p>
         {message ? (
           <SettingsNotice tone="error" className="mt-3 max-w-3xl">
             {message}
           </SettingsNotice>
         ) : null}
-      </header>
+      </header> : message ? (
+        <SettingsNotice tone="error" className="mb-4">{message}</SettingsNotice>
+      ) : null}
 
-      <div className="grid gap-5 lg:grid-cols-[248px_minmax(0,1fr)] lg:items-start">
-        <SettingsNav
+      <div className={isStandaloneView ? "w-full" : "grid gap-5 lg:grid-cols-[248px_minmax(0,1fr)] lg:items-start"}>
+        {!isStandaloneView ? <SettingsNav
           groups={settingsGroups}
           activeKey={activeTab}
           onSelect={setActiveTab}
           query={sectionQuery}
           onQueryChange={setSectionQuery}
-        />
+        /> : null}
 
         <div className="min-w-0">
-          <div className="relative mb-4 overflow-hidden rounded-[20px] border border-slate-200 bg-white px-5 py-5 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.65)] sm:px-6">
+          {!isStandaloneView ? <div className="relative mb-4 overflow-hidden rounded-[20px] border border-slate-200 bg-white px-5 py-5 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.65)] sm:px-6">
             <div className="pointer-events-none absolute -right-12 -top-16 h-36 w-36 rounded-full bg-indigo-100/80 blur-3xl" aria-hidden="true" />
             <div className="relative flex min-w-0 items-start gap-4">
               <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-indigo-600 to-sky-500 text-white shadow-sm shadow-indigo-200">
@@ -2570,7 +2580,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
                 ) : null}
               </div>
             </div>
-          </div>
+          </div> : null}
 
           <AnimatePresence mode="wait">
             <motion.div
@@ -2581,60 +2591,38 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
               transition={{ duration: 0.18, ease: "easeOut" }}
               className="transform-gpu"
             >
-      {activeTab === "organizationStructure" ? (
-        <div className="grid gap-4">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 to-white p-4">
-              <p className="m-0 text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-600">Active divisions</p>
-              <p className="m-0 mt-1 text-2xl font-bold tracking-tight text-slate-950">{activeDivisions.length}</p>
-              <p className="m-0 mt-1 text-xs leading-5 text-slate-500">Operational units in your organization</p>
-            </div>
-            <div className="rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-4">
-              <p className="m-0 text-[10px] font-bold uppercase tracking-[0.14em] text-sky-600">Designations</p>
-              <p className="m-0 mt-1 text-2xl font-bold tracking-tight text-slate-950">{designations.length}</p>
-              <p className="m-0 mt-1 text-xs leading-5 text-slate-500">Role titles linked to divisions</p>
-            </div>
-            <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4">
-              <p className="m-0 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-700">Directory health</p>
-              <p className="m-0 mt-1 text-2xl font-bold tracking-tight text-slate-950">Ready</p>
-              <p className="m-0 mt-1 text-xs leading-5 text-slate-500">Structure is ready for employee assignments</p>
-            </div>
-          </div>
-
-          <div className="grid gap-4 2xl:grid-cols-2">
+      {activeTab === "divisions" ? (
           <SettingsPanel
             icon={Building2}
-            title="Divisions"
-            description="View, search, archive, and restore divisions."
+            title={divisionArchiveView ? "Archived Divisions" : "Divisions Management"}
+            description={divisionArchiveView ? "Review archived divisions and restore them when needed." : "View and manage active divisions."}
             className="border-indigo-100"
             actions={
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
-                {activeDivisions.length} active
-              </span>
+              <>
+                <span className="text-xs font-semibold text-slate-500">
+                  {divisionArchiveView ? divisions.length - activeDivisions.length : activeDivisions.length} {divisionArchiveView ? "archived" : "active"}
+                </span>
+                <OrganizationArchiveButton
+                  label="divisions"
+                  archiveView={divisionArchiveView}
+                  onToggle={(nextView) => {
+                    setDivisionArchiveView(nextView);
+                    setDivisionPage(1);
+                  }}
+                />
+              </>
             }
           >
-            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
-              <InputField
-                name="divisionSearch"
-                value={divisionQuery}
-                onChange={(event) => {
-                  setDivisionQuery(event.target.value);
-                  setDivisionPage(1);
-                }}
-                placeholder="Search divisions"
-                icon={Search}
-                aria-label="Search divisions"
-                className="w-full sm:flex-1"
-              />
-              <Button icon={Plus} onClick={() => openDivisionModal()}>
+            {!divisionArchiveView ? <div className="flex justify-end">
+              <Button icon={Plus} onClick={() => openDivisionModal()} disabled={settingsLoadState !== "ready"}>
                 Add Division
               </Button>
-            </div>
+            </div> : null}
             <Table
               columns={divisionColumns}
               data={visibleDivisions}
-              emptyMessage="No divisions found."
-              tableClassName="min-w-[980px]"
+              loading={settingsLoadState === "loading"}
+              emptyMessage={settingsLoadState === "error" ? "Unable to load divisions." : divisionArchiveView ? "No archived divisions found." : "No divisions found."}
               className="mt-4 rounded-lg border border-slate-200"
               stickyHeader
               cardsClassName="mt-4 lg:hidden"
@@ -2648,30 +2636,39 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
               />
             </div>
           </SettingsPanel>
+      ) : null}
 
+      {activeTab === "designations" ? (
           <SettingsPanel
             icon={UserRoundCog}
-            title="Designations"
-            description="View, search, archive, and restore designations while keeping each role linked to a division."
+            title={designationArchiveView ? "Archived Positions" : "Positions Management"}
+            description={designationArchiveView ? "Review archived positions and restore them when needed." : "View, search, and manage active positions and their assigned divisions. Designations are set on each employee record."}
             className="border-sky-100"
-            /*
-             * "Restore" only makes sense when there is something archived to restore. An empty list
-             * means either a fresh database or a settings load that failed, and telling an
-             * administrator to restore a division they never had sends them looking in the wrong
-             * place entirely.
-             */
+            /* Only a successful load can confirm that divisions are missing or archived. */
             notice={
-              activeDivisions.length > 0
+              designationArchiveView || settingsLoadState !== "ready" || activeDivisions.length > 0
                 ? ""
                 : divisions.length === 0
-                  ? "No divisions are available. Add one first — every designation belongs to a division."
-                  : "Restore a division before creating a new designation."
+                  ? "Add a division in Divisions Management before creating a position."
+                  : "Restore a division in Divisions Management before creating a new position."
             }
             noticeTone="warning"
             actions={
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
-                {visibleDesignations.length} shown
-              </span>
+              <>
+                <span className="text-xs font-semibold text-slate-500">
+                  {designations.filter((row) => organizationRecordIsArchived(row) === designationArchiveView).length} {designationArchiveView ? "archived" : "active"}
+                </span>
+                <OrganizationArchiveButton
+                  label="positions"
+                  archiveView={designationArchiveView}
+                  onToggle={(nextView) => {
+                    setDesignationArchiveView(nextView);
+                    setDesignationQuery("");
+                    setDesignationFilter("");
+                    setDesignationPage(1);
+                  }}
+                />
+              </>
             }
           >
             <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
@@ -2682,24 +2679,42 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
                   setDesignationQuery(event.target.value);
                   setDesignationPage(1);
                 }}
-                placeholder="Search designations"
+                placeholder={designationArchiveView ? "Search archived positions" : "Search positions"}
                 icon={Search}
-                aria-label="Search designations"
-                className="w-full sm:flex-1"
+                aria-label="Search positions"
+                className="w-full sm:max-w-xs"
               />
-              <Button
+              <label className="w-full sm:w-56">
+                <span className="sr-only">Filter by position</span>
+                <select
+                  value={designationFilter}
+                  onChange={(event) => {
+                    setDesignationFilter(event.target.value);
+                    setDesignationPage(1);
+                  }}
+                  aria-label="Filter by position"
+                  className="min-h-[40px] w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                >
+                  <option value="">All positions</option>
+                  {designationFilterOptions.map((designation) => (
+                    <option key={designation} value={designation}>{designation}</option>
+                  ))}
+                </select>
+              </label>
+              {!designationArchiveView ? <Button
+                className="sm:ml-auto"
                 icon={Plus}
                 onClick={() => openDesignationModal()}
-                disabled={activeDivisions.length === 0}
+                disabled={settingsLoadState !== "ready" || activeDivisions.length === 0}
               >
-                Add Designation
-              </Button>
+                Add Position
+              </Button> : null}
             </div>
             <Table
               columns={designationColumns}
               data={visibleDesignations}
-              emptyMessage="No designations found."
-              tableClassName="min-w-[1020px]"
+              loading={settingsLoadState === "loading"}
+              emptyMessage={settingsLoadState === "error" ? "Unable to load positions." : designationArchiveView ? "No archived positions found." : "No positions found."}
               className="mt-4 rounded-lg border border-slate-200"
               stickyHeader
               cardsClassName="mt-4 lg:hidden"
@@ -2713,16 +2728,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
               />
             </div>
           </SettingsPanel>
-        </div>
-        </div>
-      ) : null}
-
-      {activeTab === "users" ? (
-        renderUsersSection?.() || (
-          <SettingsNotice tone="error">
-            User management is unavailable. Refresh the page and try again.
-          </SettingsNotice>
-        )
       ) : null}
 
       {activeTab === "leaveType" ? (
@@ -2731,6 +2736,8 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
           query={leaveTypeQuery}
           onQueryChange={(event) => setLeaveTypeQuery(event.target.value)}
           onAdd={openLeaveTypeModal}
+          onToggleStatus={handleToggleLeaveTypeStatus}
+          togglingId={togglingLeaveTypeId}
         />
       ) : null}
 
@@ -2742,8 +2749,10 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
           loading={deductionLoading}
           message={deductionNotice.text}
           messageTone={deductionNotice.tone}
+          togglingDeductionId={togglingDeductionId}
           onAdd={openDeductionModal}
           onEdit={openEditDeductionModal}
+          onToggleStatus={handleToggleDeductionStatus}
           onRefresh={loadDeductionTypes}
         />
       ) : null}
@@ -2759,6 +2768,8 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         />
       ) : null}
 
+      {activeTab === "addresses" ? <AddressSettings user={user} /> : null}
+
       {activeTab === "rateLimiting" ? (
         <RateLimitSettings
           settings={rateLimitSettings}
@@ -2772,11 +2783,13 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
 
       {activeTab === "captcha" ? (
         <MathCaptchaSettings
-          enabled={loginCaptchaEnabled}
+          mathEnabled={loginCaptchaEnabled}
+          payrollOtpEnabled={payrollWorkflowOtpEnabled}
           message={captchaNotice.text}
           messageTone={captchaNotice.tone}
           saving={securitySaving}
-          onToggle={handleToggleLoginCaptcha}
+          onToggleMath={handleToggleLoginCaptcha}
+          onTogglePayrollOtp={handleTogglePayrollWorkflowOtp}
         />
       ) : null}
 
@@ -2791,7 +2804,9 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       ) : null}
 
       {activeTab === "roles" ? (
-        <RoleSettings onRolesChanged={handleRolesChanged} />
+        userCanAccessModule(user, "permissions")
+          ? <RoleSettings onRolesChanged={handleRolesChanged} />
+          : <AccessDeniedInline />
       ) : null}
 
       {activeTab === "permissions" ? (
@@ -2821,9 +2836,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
           onResetUser={handleResetUserPermissions}
           expandedSections={expandedPermissionSections}
           onToggleSection={handleTogglePermissionSection}
-          actionPopover={actionPopover}
-          onToggleActionPopover={handleToggleActionPopover}
-          onCloseActionPopover={() => setActionPopover(null)}
           onToggleEnabled={handleToggleActivePermissionEnabled}
           onToggleModule={handleToggleActivePermissionModule}
           onToggleAction={handleToggleActivePermissionAction}
@@ -2831,6 +2843,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
       ) : null}
 
       {activeTab === "auditLogs" ? (
+        canViewAuditLogs ? (
         <AuditLogsSettings
           logs={auditLogs}
           loading={auditLoading}
@@ -2847,6 +2860,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
           onPreviousPage={handleAuditPreviousPage}
           onNextPage={handleAuditNextPage}
         />
+        ) : <AccessDeniedInline />
       ) : null}
 
       {activeTab === "backupData" ? (
@@ -2883,7 +2897,7 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
         <SettingsPanel
           icon={Settings2}
           title="System Configuration"
-          description="Company identity, work schedule, and the rules payroll uses to value overtime and undertime."
+          description="Company identity and work schedule settings."
           className="border-violet-100"
           notice={systemConfigNotice.text}
           noticeTone={systemConfigNotice.tone}
@@ -2976,65 +2990,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
               </div>
             </SettingsSection>
 
-            <SettingsSection title="Overtime Rules" description="Percentage of the hourly rate paid for each overtime category.">
-              <div className="grid gap-3 sm:grid-cols-2">
-                {overtimeRuleFields.map((field) => (
-                  <SettingsNumberField
-                    key={field.key}
-                    name={field.key}
-                    label={field.label}
-                    suffix="%"
-                    min="0"
-                    max="500"
-                    step="0.01"
-                    value={systemConfigForm.overtimeRules[field.key]}
-                    onChange={updateSystemConfigNestedField("overtimeRules", field.key)}
-                    error={systemConfigErrors[field.key]}
-                  />
-                ))}
-              </div>
-            </SettingsSection>
-
-            <SettingsSection title="Undertime Rules" description="How short hours are treated when payroll is generated.">
-              <div className="grid gap-3">
-                <SettingsRow
-                  label="Undertime deduction"
-                  description="Deduct pay when an employee works fewer than the required hours."
-                  htmlFor="undertimeEnabled"
-                  control={
-                    <SettingsCheckbox
-                      name="undertimeEnabled"
-                      label={systemConfigForm.undertimeRules.enabled ? "Enabled" : "Disabled"}
-                      checked={systemConfigForm.undertimeRules.enabled}
-                      onChange={handleToggleUndertimeDeduction}
-                    />
-                  }
-                />
-                <SettingsNumberField
-                  name="gracePeriodMinutes"
-                  label="Grace period"
-                  suffix="minutes"
-                  min="0"
-                  max="240"
-                  step="1"
-                  value={systemConfigForm.undertimeRules.gracePeriodMinutes}
-                  onChange={updateSystemConfigNestedField("undertimeRules", "gracePeriodMinutes")}
-                  error={systemConfigErrors.gracePeriodMinutes}
-                  disabled={!systemConfigForm.undertimeRules.enabled}
-                />
-                <SettingsNumberField
-                  name="deductionPerHour"
-                  label="Deduction"
-                  suffix="per hour"
-                  min="0"
-                  step="0.01"
-                  value={systemConfigForm.undertimeRules.deductionPerHour}
-                  onChange={updateSystemConfigNestedField("undertimeRules", "deductionPerHour")}
-                  error={systemConfigErrors.deductionPerHour}
-                  disabled={!systemConfigForm.undertimeRules.enabled}
-                />
-              </div>
-            </SettingsSection>
           </div>
         </SettingsPanel>
       ) : null}
@@ -3173,9 +3128,6 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
             />
           </div>
           <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
-            <Button type="button" variant="ghost" onClick={() => setDivisionModalOpen(false)}>
-              Cancel
-            </Button>
             <Button type="submit" loading={saving}>
               {editingDivision ? "Save Changes" : "Save Division"}
             </Button>
@@ -3185,19 +3137,19 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
 
       <Modal
         open={designationModalOpen}
-        title={editingDesignation ? "Edit Designation" : "Add Designation"}
+        title={editingDesignation ? "Edit Position" : "Add Position"}
         onClose={() => setDesignationModalOpen(false)}
       >
         <form className="grid gap-5" onSubmit={handleSaveDesignation}>
           <InputField
-            label="Designation Name"
+            label="Position Title"
             name="designationName"
             value={designationName}
             onChange={(event) => {
               setDesignationName(event.target.value);
               setErrors((current) => ({ ...current, designationName: "" }));
             }}
-            placeholder="Enter designation name"
+            placeholder="Enter position title, e.g. Engineer IV"
             error={errors.designationName}
           />
           <div>
@@ -3234,8 +3186,8 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
             {editableDesignationDivisionOptions.length === 0 ? (
               <p className="mt-1.5 text-sm text-amber-700">
                 {divisions.length === 0
-                  ? "No divisions are available. Add one first — every designation belongs to a division."
-                  : "Restore a division before creating or editing a designation."}
+                  ? "No divisions are available. Add one first — every position belongs to a division."
+                  : "Restore a division before creating or editing a position."}
               </p>
             ) : null}
             {editingDesignation && Number(
@@ -3244,19 +3196,35 @@ export default function DivisionSettings({ onSettingsChange, renderUsersSection 
               )?.is_archived ?? 0
             ) === 1 ? (
               <p className="mt-1.5 text-sm text-amber-700">
-                This designation is currently assigned to an archived division. Select an active division before saving.
+                This position is currently assigned to an archived division. Select an active division before saving.
               </p>
             ) : null}
             {errors.designationDivisionId ? (
               <p className="mt-1.5 text-sm text-rose-700">{errors.designationDivisionId}</p>
             ) : null}
           </div>
+          <div>
+            <InputField
+              label="Hierarchy Level"
+              name="designationLevel"
+              type="number"
+              min="1"
+              max="20"
+              step="1"
+              value={designationLevel}
+              onChange={(event) => {
+                setDesignationLevel(event.target.value);
+                setErrors((current) => ({ ...current, designationLevel: "" }));
+              }}
+              error={errors.designationLevel}
+            />
+            <p className="mt-1.5 text-xs leading-5 text-slate-500">
+              1 is the lowest rung. A promotion can only move an employee to a position with a higher level.
+            </p>
+          </div>
           <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
-            <Button type="button" variant="ghost" onClick={() => setDesignationModalOpen(false)}>
-              Cancel
-            </Button>
             <Button type="submit" loading={saving}>
-              {editingDesignation ? "Save Changes" : "Save Designation"}
+              {editingDesignation ? "Save Changes" : "Save Position"}
             </Button>
           </div>
         </form>

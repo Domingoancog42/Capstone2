@@ -7,16 +7,16 @@ declare(strict_types=1);
  * The account lockout in login.php counts failures against one user row, so it only ever slows an
  * attacker who keeps guessing the same username. It does nothing about the shapes of abuse that
  * spread the load: one client walking a password list across a hundred usernames, a script hammering
- * the reset-code form, or a loop pointed at any endpoint at all. Those are counted here instead, by
- * *caller* rather than by account, in fixed windows.
+ * the reset-code form, or a loop pointed at any endpoint at all. Those are counted here in fixed
+ * windows using the identity chosen for each rule below.
  *
  * Six groups, each configurable from Settings > Rate Limiting:
  *
  *   login                 sign-in attempts, keyed by IP address and the username typed
- *   passwordReset         reset-code submissions, keyed by IP address
- *   passwordResetRequest  reset-code *requests*, keyed by IP address — a separate budget on purpose
+ *   passwordReset         reset-code submissions, keyed by account identifier
+ *   passwordResetRequest  reset-code *requests*, keyed by account identifier — a separate budget
  *   twoFactor             one-time passcode submissions, keyed by IP address
- *   leaveRequest          leave filings, keyed by user id — a daily quota rather than an abuse guard
+ *   leaveRequest          all request filings, keyed by user id (legacy key retained for saved limits)
  *   api                   every authenticated request, keyed by user id (or IP before sign-in)
  *
  * Everything about this fails open. A missing table, a database error, an open transaction: the
@@ -44,25 +44,26 @@ function rate_limit_rule_definitions(): array
         'passwordReset' => [
             'label' => 'Password reset codes',
             'description' => 'Reset-code submissions. The code is six digits, so without a limit it can simply be counted through.',
-            'scope' => 'Per IP address',
+            'scope' => 'Per employee account. Employees sharing an office network have separate counters.',
             'default' => ['enabled' => true, 'maxRequests' => 8, 'windowSeconds' => 900, 'blockSeconds' => 900],
         ],
         'passwordResetRequest' => [
             'label' => 'Password reset requests',
-            'description' => 'Asking for a reset code, as opposed to submitting one. Deliberately a separate group from the one above: a client that has spent its guesses must not be able to reach for a fresh code, and someone who genuinely never received the first email must not have that count as a guess. It also caps how many mails one client can have sent to somebody else\'s inbox.',
-            'scope' => 'Per IP address',
+            'description' => 'Asking for a reset code, as opposed to submitting one. Deliberately a separate group from the one above: someone who genuinely never received the first email must not have that count as a code guess. It caps how many reset emails can be sent to each mailbox without blocking other employees on the same network.',
+            'scope' => 'Per employee account. Employees sharing an office network have separate counters.',
             'default' => ['enabled' => true, 'maxRequests' => 5, 'windowSeconds' => 900, 'blockSeconds' => 900],
         ],
         'twoFactor' => [
             'label' => 'Two-factor codes',
-            'description' => 'One-time passcode submissions. The per-session attempt counter resets whenever a new code is sent; this one does not.',
-            'scope' => 'Per IP address',
+            'description' => 'One-time passcode submissions and resend requests. Verification attempts and resends have separate counters, and each uses this maximum.',
+            'scope' => 'Per IP address and request type',
             'default' => ['enabled' => true, 'maxRequests' => 12, 'windowSeconds' => 600, 'blockSeconds' => 900],
         ],
+        // Keep the stored key so existing settings and active filing counters continue to apply.
         'leaveRequest' => [
-            'label' => 'Leave Request Limit',
-            'description' => 'How many leave requests one account may file per day. Set it to 50 and the fifty-first filing that day is refused until the allowance resets. Only a submission that passed validation is counted, so a form the employee got wrong does not spend the allowance.',
-            'scope' => 'Per signed-in account. Someone filing on behalf of others spends their own allowance.',
+            'label' => 'Request Filing Limit',
+            'description' => 'One shared allowance for filing leave requests, travel orders, CTO requests, pass slips, overtime requests, loan requests, and leave monetization. For example, a limit of 50 allows 50 combined filings across these modules during the selected period. Submissions rejected by form validation do not spend the allowance.',
+            'scope' => 'Per signed-in account, shared across all request modules. Filing on behalf of others spends the signed-in account\'s allowance.',
             /*
              * Presented as a plain "N requests per day" control rather than the burst-guard card the
              * other groups use. It is the same three stored numbers underneath -- the cool-down is
@@ -531,6 +532,7 @@ function rate_limit_enforce(PDO $pdo, string $ruleKey, string $identifier, ?arra
     json_response([
         'success' => false,
         'reason' => 'rate_limited',
+        'rule' => $ruleKey,
         'message' => ($message !== '' ? $message : 'Too many requests.') . ' Please try again in ' . $waitText . '.',
         'retryAfter' => (int)$result['retryAfter'],
     ], 429);
@@ -546,4 +548,3 @@ function rate_limit_enforce(PDO $pdo, string $ruleKey, string $identifier, ?arra
  * untouched -- rate_limit_consume() still writes them and rate_limit_prune() still clears out what
  * has expired -- there is simply nothing that reads them back or clears one early any more.
  */
-

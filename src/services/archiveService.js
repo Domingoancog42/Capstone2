@@ -17,6 +17,7 @@ const MODULE_ENDPOINTS = {
   attendance: "/attendance.php",
   leaveBalance: "/leave_credit.php",
   leaveMonetization: "/leave_monetization.php",
+  promotions: "/promotion.php",
 };
 
 /** Fired after a successful archive or restore so other open workspaces can reload. */

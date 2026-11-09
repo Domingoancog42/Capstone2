@@ -15,6 +15,7 @@ export { default as SeniorCitizenCard } from './SeniorCitizenCard';
 export { default as AgeGroupCard } from './AgeGroupCard';
 export { default as DepartmentHeadcountCard } from './DepartmentHeadcountCard';
 export { default as AttendanceTrendCard } from './AttendanceTrendCard';
+export { default as PerformanceManagementCard } from './PerformanceManagementCard';
 
 // Usage Example:
 // import { DashboardAnalytics, RoleDistributionCard } from '../../components/analytics';

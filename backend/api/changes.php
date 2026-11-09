@@ -67,16 +67,21 @@ const CHANGE_FEED_TOPICS = [
     'travel_order' => [
         ['table' => 'travel_orders', 'pk' => 'travel_order_id', 'stamp' => 'updated_at', 'status' => 'status'],
     ],
-    // No status to fingerprint -- a pass slip is never approved. Its ON UPDATE `updated_at` plus the
-    // row count catches everything that can change about one.
+    // A pass slip moves through approval and then through two QR scans, and the scans are made at a
+    // different machine from the one watching the slip -- the guard's reader, not the employee's
+    // browser. `status` is fingerprinted so that transition reaches the other screen even though the
+    // scan writes no new row, and `pass_slip_scans` so the scan-history panel follows it.
     'pass_slip' => [
-        ['table' => 'pass_slip', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
+        ['table' => 'pass_slip', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
+        ['table' => 'pass_slip_scans', 'pk' => 'id', 'stamp' => 'scanned_at', 'status' => null],
     ],
     'compensatory' => [
         ['table' => 'compensatory', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
     ],
     'overtime' => [
         ['table' => 'overtime', 'pk' => 'overtime_id', 'stamp' => 'created_at', 'status' => 'status'],
+        // The memo an employee files for rendered overtime; noting it changes only its status.
+        ['table' => 'overtime_accomplishment_reports', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
     ],
     'leave_credit' => [
         ['table' => 'leave_credits', 'pk' => 'leave_credits_id', 'stamp' => 'updated_at', 'status' => null],
@@ -89,7 +94,6 @@ const CHANGE_FEED_TOPICS = [
     ],
     'attendance' => [
         ['table' => 'attendance_daily_records', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
-        ['table' => 'attendance_adjustments', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
         ['table' => 'attendance_logs', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'raw_state'],
     ],
     'ipcr' => [
@@ -99,24 +103,14 @@ const CHANGE_FEED_TOPICS = [
         ['table' => 'opcr_templates', 'pk' => 'template_id', 'stamp' => 'updated_at', 'status' => 'template_status'],
         ['table' => 'division_opcr_assignments', 'pk' => 'assignment_id', 'stamp' => 'updated_at', 'status' => 'assignment_status'],
     ],
-    /*
-     * The record itself, plus the print requests raised against it. The second table is the reason
-     * this topic matters to an employee at all: HR approves the request on their own machine, and
-     * without it the employee's Print button would only appear on their next reload.
-     */
     'service_record' => [
         ['table' => 'service_records', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'employment_status'],
-        ['table' => 'service_record_print_requests', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
+    ],
+    'promotion' => [
+        ['table' => 'promotions', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
     ],
     'employee' => [
         ['table' => 'employees', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
-    ],
-    /*
-     * Personal details edit requests. HR decides them on their own machine, and without this the
-     * requester's profile would stay locked until they happened to reload it.
-     */
-    'profile_edit_request' => [
-        ['table' => 'profile_edit_requests', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
     ],
     'payroll' => [
         ['table' => 'payroll', 'pk' => 'payroll_id', 'stamp' => 'payroll_date', 'status' => 'status'],
@@ -134,6 +128,8 @@ const CHANGE_FEED_TOPICS = [
     'rewards' => [
         ['table' => 'reward_cycles', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => 'status'],
         ['table' => 'reward_cycle_votes', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
+        // The employees' ballots, so the HR Head's live results move as the votes come in.
+        ['table' => 'reward_employee_votes', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
         // Certificates are minted by closing a cycle, so My Awards fills in without a reload.
         ['table' => 'reward_certificates', 'pk' => 'id', 'stamp' => 'updated_at', 'status' => null],
     ],
@@ -163,6 +159,31 @@ const CHANGE_FEED_TOPICS = [
             'stamp' => 'updated_at',
             'status' => 'setting_value',
             'where' => 'setting_key = "system_configuration"',
+        ],
+    ],
+    /*
+     * A shorter inactivity timeout must reach dashboards that were already open when an
+     * administrator saved it. Keeping this to the timeout row avoids waking every browser for an
+     * unrelated Settings change while still carrying the policy across machines.
+     */
+    'security_policy' => [
+        [
+            'table' => 'settings',
+            'pk' => 'setting_key',
+            'stamp' => 'updated_at',
+            'status' => 'setting_value',
+            'where' => 'setting_key = "security_session_timeout_minutes"',
+        ],
+    ],
+    // Open filing forms must follow signatory display changes made by an administrator on another
+    // machine. Fingerprint the JSON value as well as the timestamp to catch saves in the same second.
+    'filing_signatories' => [
+        [
+            'table' => 'settings',
+            'pk' => 'setting_key',
+            'stamp' => 'updated_at',
+            'status' => 'setting_value',
+            'where' => 'setting_key = "filing_signatories"',
         ],
     ],
     'access_request' => [
@@ -207,6 +228,18 @@ const CHANGE_FEED_TOPICS = [
         ],
     ],
     /*
+     * The administrator's Audit Logs screen monitors the full trail, including the automatic
+     * safety-net rows written for modules that do not have a more specific audit event.
+     */
+    'audit_activity' => [
+        [
+            'table' => 'audit_logs',
+            'pk' => 'id',
+            'stamp' => 'created_at',
+            'status' => null,
+        ],
+    ],
+    /*
      * Calendar announcements. Everyone's calendar shows them, so a notice published by HR has to
      * reach the machines already sitting on the calendar rather than waiting for their next reload.
      */
@@ -235,8 +268,13 @@ const CHANGE_FEED_TOPICS = [
  * `max_execution_time` of 30s, and the 30–60s idle timeouts common to proxies and antivirus web
  * shields. Raising it lengthens the quiet period between requests but makes an unexpected mid-flight
  * cut more likely, and every extra second is a second an Apache worker thread stays occupied.
+ *
+ * The floor is 0 so a client can ask for no hold at all: one snapshot, answered at once. That is
+ * what the shared-hosting build does (REACT_APP_LIVE_UPDATES_POLL_SECONDS), because a host such as
+ * InfinityFree caps concurrent PHP processes and CPU time, and a parked request spends both. The
+ * default long-poll client still asks for 25 and is unaffected.
  */
-const CHANGE_FEED_MIN_HOLD_SECONDS = 5;
+const CHANGE_FEED_MIN_HOLD_SECONDS = 0;
 const CHANGE_FEED_MAX_HOLD_SECONDS = 25;
 const CHANGE_FEED_DEFAULT_HOLD_SECONDS = 25;
 
@@ -386,7 +424,10 @@ $holdSeconds = max(CHANGE_FEED_MIN_HOLD_SECONDS, min(CHANGE_FEED_MAX_HOLD_SECOND
 $clientCursor = trim((string)($_GET['cursor'] ?? ''));
 
 // The default 30s cap would kill a full hold mid-flight; the margin covers the final tick's queries.
-set_time_limit($holdSeconds + 15);
+// Guarded because shared hosts may disable it, and PHP 8 fatals on a disabled function.
+if (function_exists('set_time_limit')) {
+    set_time_limit($holdSeconds + 15);
+}
 
 $revisions = changes_snapshot($pdo);
 $cursor = changes_cursor($revisions);

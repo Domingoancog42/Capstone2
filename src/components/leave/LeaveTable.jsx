@@ -1,13 +1,21 @@
 import React from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide } from "lucide-react";
-import { faBan, faCheck, faEye, faFileLines, faXmark } from "@fortawesome/free-solid-svg-icons";
+import { faBan, faCheck, faEye, faFileArrowDown, faFileLines, faPrint, faXmark } from "@fortawesome/free-solid-svg-icons";
 import ActionIconButton from "../UI/ActionIconButton";
+import ActionsMenu from "../UI/ActionsMenu";
 import RecordCards from "../UI/RecordCards";
+import SelectionCheckbox from "../UI/SelectionCheckbox";
 import LeaveStatusBadge from "./LeaveStatusBadge";
+import LeaveAttachmentUploadButton from "./LeaveAttachmentUploadButton";
 import {
+  canUploadLeaveMedicalCertificate,
+  canRejectLeaveForUser,
   formatDateDisplay,
   formatDurationLabel,
+  isLeaveDivisionDesk,
+  isRegionalDirectorApproved,
   normalizeLeaveStatus,
+  resolveLeaveApprovalActionForUser,
 } from "../../utils/leaveHelpers";
 import { resolveMonetizationRowActions } from "../../utils/leaveMonetization";
 
@@ -38,10 +46,10 @@ function SortButton({ columnKey, label, sortBy, sortDirection, onSort }) {
   );
 }
 
-function SkeletonRow() {
+function SkeletonRow({ columnCount = 8 }) {
   return (
     <tr className="animate-pulse">
-      {Array.from({ length: 8 }).map((_, index) => (
+      {Array.from({ length: columnCount }).map((_, index) => (
         <td key={index} className="border-b border-slate-200 px-3 py-3">
           <div className="h-4 w-full rounded bg-slate-200" />
         </td>
@@ -55,21 +63,28 @@ export default function LeaveTable({
   loading = false,
   canManage = false,
   roleKey = "",
+  user = null,
   canManageRow,
   sortBy = "dateFiled",
   sortDirection = "desc",
-  rowStart = 0,
   onSort,
   onAction,
+  selection,
+  canSelectRow = () => false,
 }) {
   const normalizedRoleKey = String(roleKey || "").trim().toLowerCase();
   const isHrHead = normalizedRoleKey === "hrhead";
   const isHrStaff = normalizedRoleKey === "hrstaff";
+  const isChief = normalizedRoleKey === "chief";
+  /* A Planning Officer granted approve/reject in RBAC works the Chief's division desk. */
+  const isDivisionDesk = isChief || isLeaveDivisionDesk(user);
   const isRegionalDirector = normalizedRoleKey === "regionaldirector";
+  const selectableRows = selection ? rows.filter(canSelectRow) : [];
+  const showSelection = Boolean(selection);
 
   /*
    * Which decisions a row offers depends on the viewer's role and where the request sits in the
-   * HR Head then Regional Director chain. Decided once here, for the table and for the cards.
+   * Chief, HR, then Regional Director chain. Decided once here, for the table and for the cards.
    */
   const renderRowActions = (row) => {
     const allowRowManagement = typeof canManageRow === "function" ? canManageRow(row) : true;
@@ -77,7 +92,8 @@ export default function LeaveTable({
     /*
      * Monetization filings sit in this list as a leave type of their own, but they answer to
      * leave_monetization.php: the HR Head reviews first and only then may the Regional Director
-     * give the final approval. Their form carries its own Print button, so the row offers none.
+     * give the final approval. Once the Regional Director has signed, any viewer may print it or
+     * download it as a PDF.
      */
     if (row.isLeaveMonetization) {
       const monetizationActions = resolveMonetizationRowActions({
@@ -120,6 +136,23 @@ export default function LeaveTable({
               onClick={() => onAction?.("cancel", row)}
             />
           ) : null}
+          {isRegionalDirectorApproved(row) ? (
+            <>
+              <ActionIconButton
+                label="Print leave monetization form"
+                icon={faPrint}
+                tone="print"
+                onClick={() => onAction?.("print", row)}
+              />
+              <ActionIconButton
+                label="Download leave monetization form as PDF"
+                text="Download PDF"
+                icon={faFileArrowDown}
+                tone="export"
+                onClick={() => onAction?.("download", row)}
+              />
+            </>
+          ) : null}
           <ActionIconButton
             label="View leave monetization form"
             icon={faEye}
@@ -132,53 +165,46 @@ export default function LeaveTable({
 
     const normalizedStatus = normalizeLeaveStatus(row.status);
     const showOwnRegionalDirectorFormOnly = isRegionalDirector && !allowRowManagement;
-    const showReviewDecisionAction = allowRowManagement && isHrHead && normalizedStatus === "Pending";
-    const showApprovalDecisionAction = allowRowManagement
+    const approvalAction = allowRowManagement
+      ? resolveLeaveApprovalActionForUser(user, normalizedStatus)
+      : null;
+    const showRejectAction = allowRowManagement
+      && canRejectLeaveForUser(user, normalizedStatus);
+    /* Cancellation is an applicant/Admin action, not an approval-chain decision. */
+    const showCancelAction = showRejectAction
+      && !isDivisionDesk
+      && !isHrHead
       && !isHrStaff
-      && (
-        (isRegionalDirector && normalizedStatus === "Reviewed")
-        || (!isHrHead && !isRegionalDirector && (normalizedStatus === "Pending" || normalizedStatus === "Reviewed"))
-      );
-    const showRejectAction = allowRowManagement && !isHrStaff && (
-      (isHrHead && normalizedStatus === "Pending")
-      || (isRegionalDirector && normalizedStatus === "Reviewed")
-      || (!isHrHead && !isRegionalDirector && (normalizedStatus === "Pending" || normalizedStatus === "Reviewed"))
-    );
-    /*
-     * The HR head reviews a filing and may reject it, but withdrawing one is not their call — that
-     * belongs to the employee who filed it and to the desks further down the chain.
-     */
-    const showCancelAction = showRejectAction && !isHrHead;
+      && !isRegionalDirector;
 
     return (
       <>
         {canManage && allowRowManagement ? (
           <>
             <ActionIconButton
-              label={isHrHead ? "Open leave request" : "Review leave request"}
+              label="Review leave request"
               icon={faFileLines}
               tone="review"
               onClick={() => onAction?.("review", row)}
             />
-            {showReviewDecisionAction ? (
+            {approvalAction ? (
               <ActionIconButton
-                label="Approve leave request"
+                label={normalizedStatus === "Chief Reviewed"
+                  ? "Final approve leave request"
+                  : normalizedStatus === "Pending"
+                      ? "Verify leave balance"
+                      : normalizedStatus === "Reviewed"
+                        ? "Complete Division Chief review"
+                        : "Approve leave request"}
                 icon={faCheck}
                 tone="approve"
-                onClick={() => onAction?.(isHrHead ? "markReviewed" : "approve", row)}
-              />
-            ) : null}
-            {showApprovalDecisionAction ? (
-              <ActionIconButton
-                label={isRegionalDirector ? "Final approve leave request" : "Approve leave request"}
-                icon={faCheck}
-                tone="approve"
-                onClick={() => onAction?.("approve", row)}
+                onClick={() => onAction?.(approvalAction.action, row)}
               />
             ) : null}
             {showRejectAction ? (
               <ActionIconButton
-                label="Reject leave request"
+                label="Disapprove leave request"
+                text="Disapprove"
                 icon={faXmark}
                 tone="reject"
                 onClick={() => onAction?.("reject", row)}
@@ -194,6 +220,24 @@ export default function LeaveTable({
             ) : null}
           </>
         ) : null}
+        {/* The form is only worth printing or saving once the Regional Director has signed it; then every role may. */}
+        {isRegionalDirectorApproved(row) ? (
+          <>
+            <ActionIconButton
+              label="Print leave form"
+              icon={faPrint}
+              tone="print"
+              onClick={() => onAction?.("print", row)}
+            />
+            <ActionIconButton
+              label="Download leave form as PDF"
+              text="Download PDF"
+              icon={faFileArrowDown}
+              tone="export"
+              onClick={() => onAction?.("download", row)}
+            />
+          </>
+        ) : null}
         <ActionIconButton
           label={showOwnRegionalDirectorFormOnly ? "Leave Request Form" : "View leave form"}
           icon={faEye}
@@ -203,6 +247,18 @@ export default function LeaveTable({
       </>
     );
   };
+
+  const renderActions = (row) => (
+    <div className="flex items-center gap-2 whitespace-nowrap">
+      <ActionsMenu>{renderRowActions(row)}</ActionsMenu>
+      {canUploadLeaveMedicalCertificate(user, row) ? (
+        <LeaveAttachmentUploadButton
+          request={row}
+          onUploaded={(updatedRequest) => onAction?.("attachmentUploaded", updatedRequest)}
+        />
+      ) : null}
+    </div>
+  );
 
   return (
     <>
@@ -221,17 +277,31 @@ export default function LeaveTable({
           title: "No leave requests found.",
           description: "Try adjusting filters or file a new leave request.",
         }}
-        renderCard={(row, index) => ({
-          eyebrow: `#${rowStart + index + 1}`,
+        renderCard={(row) => ({
           title: row.employeeName,
           subtitle: row.leaveType,
-          badge: <LeaveStatusBadge status={row.status} roleKey={roleKey} />,
+          badge: (
+            <LeaveStatusBadge
+              status={row.status}
+              rejectedByRole={row.rejectedByRole}
+              startDate={row.startDate}
+              endDate={row.endDate}
+              pendingByRole
+            />
+          ),
+          selection: showSelection && canSelectRow(row) ? (
+            <SelectionCheckbox
+              checked={selection.isSelected(row)}
+              onChange={() => selection.toggleRow(row)}
+              label={`Select ${row.employeeName || "leave request"}`}
+            />
+          ) : null,
           fields: [
             { label: "Division", value: row.division },
             { label: "Leave Duration", value: formatDurationLabel(row.numberOfDays) },
             { label: "Date Filed", value: formatDateDisplay(row.dateFiled) },
           ],
-          actions: renderRowActions(row),
+          actions: renderActions(row),
         })}
       />
 
@@ -240,9 +310,18 @@ export default function LeaveTable({
         <table className="min-w-[1540px] w-full border-collapse">
           <thead>
             <tr className="bg-slate-50/90">
-              <th className="border-b border-slate-200 px-3 py-3 text-left align-middle text-xs font-extrabold uppercase text-slate-700">
-                #
-              </th>
+              {showSelection ? (
+                <th className="border-b border-slate-200 px-3 py-3 text-left align-middle">
+                  {selectableRows.length > 0 ? (
+                    <SelectionCheckbox
+                      checked={selection.areAllSelected(selectableRows)}
+                      indeterminate={selection.areSomeSelected(selectableRows) && !selection.areAllSelected(selectableRows)}
+                      onChange={() => selection.toggleRows(selectableRows)}
+                      label="Select all leave requests on this page"
+                    />
+                  ) : null}
+                </th>
+              ) : null}
               {Object.entries(sortableColumns).map(([columnKey, label]) => (
                 <th key={columnKey} className="border-b border-slate-200 px-3 py-3 text-left align-middle">
                   <SortButton
@@ -262,10 +341,10 @@ export default function LeaveTable({
 
           <tbody>
             {loading ? (
-              Array.from({ length: 5 }).map((_, index) => <SkeletonRow key={index} />)
+              Array.from({ length: 5 }).map((_, index) => <SkeletonRow key={index} columnCount={showSelection ? 8 : 7} />)
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center">
+                <td colSpan={showSelection ? 8 : 7} className="px-4 py-10 text-center">
                   <p className="m-0 text-sm font-semibold text-slate-700">No leave requests found.</p>
                   <p className="m-0 mt-1 text-sm text-slate-500">
                     Try adjusting filters or file a new leave request.
@@ -273,12 +352,20 @@ export default function LeaveTable({
                 </td>
               </tr>
             ) : (
-              rows.map((row, index) => {
+              rows.map((row) => {
                 return (
                   <tr key={row.rowKey || row.id} className="border-b border-slate-100 transition hover:bg-slate-50/70">
-                    <td className="px-3 py-3.5 text-sm font-semibold text-slate-600">
-                      {rowStart + index + 1}
-                    </td>
+                    {showSelection ? (
+                      <td className="px-3 py-3.5">
+                        {canSelectRow(row) ? (
+                          <SelectionCheckbox
+                            checked={selection.isSelected(row)}
+                            onChange={() => selection.toggleRow(row)}
+                            label={`Select ${row.employeeName || "leave request"}`}
+                          />
+                        ) : null}
+                      </td>
+                    ) : null}
                     <td className="px-3 py-3.5">
                       <div>
                         <p className="m-0 text-sm font-semibold text-slate-900">{row.employeeName}</p>
@@ -291,10 +378,16 @@ export default function LeaveTable({
                       {formatDurationLabel(row.numberOfDays)}
                     </td>
                     <td className="px-3 py-3.5">
-                      <LeaveStatusBadge status={row.status} roleKey={roleKey} />
+                      <LeaveStatusBadge
+                        status={row.status}
+                        rejectedByRole={row.rejectedByRole}
+                        startDate={row.startDate}
+                        endDate={row.endDate}
+                        pendingByRole
+                      />
                     </td>
                     <td className="px-3 py-3.5">
-                      <div className="flex flex-wrap items-center gap-1.5">{renderRowActions(row)}</div>
+                      {renderActions(row)}
                     </td>
                   </tr>
                 );

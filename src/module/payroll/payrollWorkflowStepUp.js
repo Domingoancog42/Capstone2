@@ -3,10 +3,11 @@ import { promptServerCaptcha, escapeHtml } from "../../utils/serverCaptchaPrompt
 import { requestPayrollWorkflowOtp } from "../../services/payrollService";
 
 /**
- * The two-step check in front of submitting a payroll for approval and approving one.
+ * The payroll security check in front of submitting, approving, and releasing payslips.
  *
  *   step 1   the math sum, dealt by the server. It answers "did someone mean to do this?"
- *   step 2   a six-digit code emailed to the acting user. It answers "is it the person whose
+ *   step 2   when enabled by an administrator, a six-digit code emailed to the acting user. It
+ *            answers "is it the person whose
  *            session this is?", which the sum cannot -- anything holding the session cookie can
  *            read the sum and type it.
  *
@@ -16,12 +17,12 @@ import { requestPayrollWorkflowOtp } from "../../services/payrollService";
  * there). Nothing in this file decides anything, which is the same reason the captcha it builds on
  * is worth having.
  *
- * Marking a batch paid still asks for the sum alone, through promptPayrollWorkflowCaptcha; returning
- * one for correction asks for nothing. See workflow-otp-utils.php for why the line falls there.
+ * Returning one for correction asks for nothing because that transition can be reversed. See
+ * workflow-otp-utils.php for the server-side gate behind every protected action.
  *
- * Resolves to `{ otpTicket, otpCode }` for the caller to send with the transition, or `null` when
- * the user backed out or a step could not be completed. A `null` is always a reason not to proceed,
- * so callers return on it rather than falling through.
+ * Resolves to `{ otpTicket, otpCode }` when email OTP is enabled, `{}` after the math check when it
+ * is disabled, or `null` when the user backed out or a step could not be completed. A `null` is
+ * always a reason not to proceed, so callers return on it rather than falling through.
  */
 
 const STEP_LABELS = ["Security check", "Email code"];
@@ -151,11 +152,15 @@ async function promptForCode({ maskedEmail, resendAvailableInSeconds, resendsRem
     title: "Email Verification",
     html: otpDialogHtml(maskedEmail, message),
     input: "text",
+    inputPlaceholder: "6-digit code",
     inputAttributes: {
       "aria-label": "Six digit authorization code",
       autocomplete: "one-time-code",
       inputmode: "numeric",
       maxlength: "6",
+    },
+    customClass: {
+      input: "payroll-email-code-input",
     },
     // Only what this browser can judge on its own: that six digits were typed. Whether they are the
     // RIGHT six is the server's call, and asking it here would mean this file knew the code.
@@ -272,12 +277,19 @@ export async function promptPayrollWorkflowStepUp({
 
       await Swal.fire({
         title: "Code Not Sent",
-        text: serverMessage(error, "The authorization code could not be sent, so nothing was submitted. Try again in a moment."),
+        text: serverMessage(error, "The authorization code could not be sent, so no payroll action was completed. Try again in a moment."),
         icon: "error",
         confirmButtonColor: "#dc2626",
       });
 
       return null;
+    }
+
+    // The server still verifies and spends the payroll math challenge when email OTP is disabled.
+    // An empty credential is intentionally truthy, so callers continue to the protected transition.
+    if (issued?.otpRequired === false) {
+      Swal.close();
+      return {};
     }
 
     /*
@@ -287,7 +299,7 @@ export async function promptPayrollWorkflowStepUp({
     if (!issued?.otpTicket) {
       await Swal.fire({
         title: "Code Not Sent",
-        text: "The authorization code could not be sent, so nothing was submitted. Try again in a moment.",
+        text: "The authorization code could not be sent, so no payroll action was completed. Try again in a moment.",
         icon: "error",
         confirmButtonColor: "#dc2626",
       });

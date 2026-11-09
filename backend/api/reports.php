@@ -3,9 +3,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/deduction-catalog.php';
-// The Deduction Distribution chart lists the payslip's own deduction lines, so it reads the roster
-// the payslip prints from rather than keeping a second idea of what a deduction is called.
+// Normalizes historical deduction names; the report and chart share an ordered catalog roster.
 require_once __DIR__ . '/payslip-deductions.php';
+require_once __DIR__ . '/report-payroll-deductions.php';
 
 $sessionUser = require_session_user();
 $roleKey = user_role_key($sessionUser);
@@ -21,6 +21,7 @@ if (!in_array($roleKey, ['admin', 'administrator', 'hrhead', 'hrstaff'], true)) 
 }
 
 date_default_timezone_set('Asia/Manila');
+ensure_payroll_embedded_detail_columns($pdo);
 
 /**
  * Reports the signed-in role may not run.
@@ -36,6 +37,69 @@ date_default_timezone_set('Asia/Manila');
 function reports_blocked_report_keys(string $roleKey): array
 {
     return in_array($roleKey, ['hrhead', 'hrstaff'], true) ? ['employee-list'] : [];
+}
+
+/**
+ * Report categories the signed-in role may not open at all.
+ *
+ * The audit trail is the record of who did what across the system -- sign-ins, exports, deletions --
+ * and reading it is an oversight function, not a clerical one. HR Staff run the operational reports;
+ * the Audit tab belongs to the HR Head and Admin.
+ *
+ * Applied at the catalog and again at the data endpoint, for the same reason as the blocked keys.
+ * Mirrors HR_STAFF_HIDDEN_REPORT_CATEGORIES in Hrstaffdashboard.jsx, which leaves the tab out of the
+ * sidebar.
+ */
+function reports_blocked_category_keys(string $roleKey): array
+{
+    return $roleKey === 'hrstaff' ? ['audit'] : [];
+}
+
+/*
+ * Reserved support for a future division-scoped reporting desk. HR Staff currently work every
+ * operational report organization-wide. If a role is added here, every definition in a scoped
+ * category must carry a `divisionId` filter or the endpoint safely returns no rows.
+ */
+const REPORTS_DIVISION_SCOPED_ROLES = [];
+const REPORTS_DIVISION_SCOPED_CATEGORIES = ['employee', 'payroll', 'leave', 'attendance', 'travel', 'cto', 'performance'];
+
+/**
+ * The division the signed-in desk's scoped reports count within: null for a desk that reads the
+ * whole organization, the division id for a scoped desk, and 0 for a scoped desk with no division
+ * on its employee record -- which leaves it nothing to list rather than everyone.
+ */
+function reports_scope_division_id(PDO $pdo, array $user, string $roleKey): ?int
+{
+    if (!in_array($roleKey, REPORTS_DIVISION_SCOPED_ROLES, true)) {
+        return null;
+    }
+
+    $division = trimmed_text($user['division'] ?? '');
+
+    if ($division === '') {
+        return 0;
+    }
+
+    // One placeholder per marker: native prepares are on, so a reused name throws HY093.
+    $statement = $pdo->prepare(
+        'SELECT id
+         FROM divisions
+         WHERE is_archived = 0
+           AND (name COLLATE utf8mb4_unicode_ci = :division_name OR code COLLATE utf8mb4_unicode_ci = :division_code)
+         LIMIT 1'
+    );
+    $statement->execute([
+        ':division_name' => $division,
+        ':division_code' => $division,
+    ]);
+    $divisionId = (int)$statement->fetchColumn();
+
+    return $divisionId > 0 ? $divisionId : 0;
+}
+
+function reports_category_is_division_scoped(string $categoryKey): bool
+{
+    return in_array($categoryKey, REPORTS_DIVISION_SCOPED_CATEGORIES, true);
 }
 
 function reports_text(mixed $value): string
@@ -142,6 +206,71 @@ function reports_employee_name_expression(): string
     return 'TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name))';
 }
 
+/*
+ * What "released" means to every payroll report and KPI in this file, in one place. The registry
+ * only ever writes `Paid` (see PAYROLL_ALL_STATUSES in payroll.php); the other spellings cover
+ * imported rows. Anything not released and not settled by cancelling or archiving is pending.
+ */
+function reports_payroll_released_condition(string $alias = 'p'): string
+{
+    return 'LOWER(COALESCE(' . $alias . '.status, "")) IN ("released", "paid", "posted", "completed")';
+}
+
+function reports_payroll_pending_condition(string $alias = 'p'): string
+{
+    return 'LOWER(COALESCE(' . $alias . '.status, ""))
+        NOT IN ("released", "paid", "posted", "completed", "cancelled", "archived")';
+}
+
+/**
+ * The day a batch was released: the stamp the Cashier's Paid transition writes, or the payroll date
+ * for a row released before the stamp existed and left unstamped by the backfill.
+ */
+function reports_payroll_release_date_sql(string $alias = 'p'): string
+{
+    return 'COALESCE(' . $alias . '.released_at, ' . $alias . '.payroll_date)';
+}
+
+/**
+ * The pay period the batch covered, as the registry labels it ("1st Half (2026-09-01 to
+ * 2026-09-15)"), read from the row's meta. JSON_VALUE yields NULL for a legacy row whose meta is not
+ * JSON, so the column falls back to the payroll date rather than failing the report.
+ */
+function reports_payroll_period_sql(string $alias = 'p'): string
+{
+    $meta = $alias . '.meta_json';
+    $payPeriod = 'NULLIF(JSON_VALUE(' . $meta . ', "$.payPeriod"), "")';
+
+    // Mirrors the periodLabel payroll.php builds for the registry.
+    return 'CASE
+        WHEN ' . $payPeriod . ' IS NULL THEN ' . $alias . '.payroll_date
+        ELSE CONCAT(
+            ' . $payPeriod . ', " (",
+            COALESCE(NULLIF(JSON_VALUE(' . $meta . ', "$.startDate"), ""), "N/A"), " to ",
+            COALESCE(NULLIF(JSON_VALUE(' . $meta . ', "$.endDate"), ""), ' . $alias . '.payroll_date, "N/A"), ")"
+        )
+    END';
+}
+
+/**
+ * The desk that released the batch, by the employee name behind the user account (as the payroll
+ * approval trail resolves it) or the username for an account with no employee record.
+ */
+function reports_payroll_released_by_sql(string $alias = 'p'): string
+{
+    return '(SELECT COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(re.first_name, ""), " ", COALESCE(re.last_name, ""))), ""),
+                ru.username
+            )
+            FROM users ru
+            LEFT JOIN employees re
+                ON re.email COLLATE utf8mb4_unicode_ci = ru.email COLLATE utf8mb4_unicode_ci
+               AND re.is_archived = 0
+            WHERE ru.id = ' . $alias . '.released_by
+            ORDER BY re.id ASC
+            LIMIT 1)';
+}
+
 /**
  * Shared employee projection. Every employee-flavoured report selects the same
  * superset of columns and only varies the visible column list plus an extra
@@ -157,6 +286,7 @@ function reports_employee_base_sql(string $extraWhere = ''): string
             ' . $name . ' AS employeeName,
             d.name AS division,
             des.name AS position,
+            e.designation,
             e.employment_status AS employmentStatus,
             e.gender,
             e.email,
@@ -223,7 +353,8 @@ function reports_employee_definition(array $options): array
         ['employeeId', 'Employee ID'],
         ['employeeName', 'Employee Name'],
         ['division', 'Division'],
-        ['position', 'Designation'],
+        ['position', 'Position'],
+        ['designation', 'Designation'],
         ['employmentStatus', 'Employment Status'],
         ['status', 'Status'],
         ['dateHired', 'Date Hired'],
@@ -237,7 +368,7 @@ function reports_employee_definition(array $options): array
         'dateExpression' => array_key_exists('dateExpression', $options)
             ? $options['dateExpression']
             : 'COALESCE(e.date_hired, DATE(e.created_at))',
-        'searchExpressions' => ['e.employee_id', $name, 'd.name', 'des.name', 'e.email', 'e.status', 'e.employment_status'],
+        'searchExpressions' => ['e.employee_id', $name, 'd.name', 'des.name', 'e.designation', 'e.email', 'e.status', 'e.employment_status'],
         'columns' => reports_columns($columns),
         'sql' => reports_employee_base_sql($options['where'] ?? ''),
         'orderBy' => $options['orderBy'] ?? 'employeeName ASC',
@@ -277,9 +408,12 @@ function reports_definitions(): array
     // ---------------------------------------------------------------
     $employeeVariants = [
         'employee-list' => [
-            'label' => 'Employee Master List',
-            'description' => 'Complete employee master list filtered by hiring or creation date.',
+            'label' => 'Employee List',
+            'description' => 'Complete list of all non-archived employees.',
             'where' => '',
+            // A roster is a current snapshot, not a hiring activity report. Applying the default
+            // Last 30 Days window here reduced the table to only recently added employees.
+            'dateExpression' => null,
         ],
         // Both are headcount snapshots of the whole roster, so they opt out of the hire-date window
         // the other employee reports use. Left on it, "Total Active Employees" on the default Last
@@ -318,7 +452,7 @@ function reports_definitions(): array
                 ['employeeId', 'Employee ID'],
                 ['employeeName', 'Employee Name'],
                 ['division', 'Division'],
-                ['position', 'Designation'],
+                ['position', 'Position'],
                 ['pwd', 'PWD'],
                 ['status', 'Status'],
                 ['dateHired', 'Date Hired'],
@@ -394,7 +528,7 @@ function reports_definitions(): array
                 ['employeeId', 'Employee ID'],
                 ['employeeName', 'Employee Name'],
                 ['division', 'Division'],
-                ['position', 'Designation'],
+                ['position', 'Position'],
                 ['age', 'Age'],
                 ['yearsOfService', 'Years of Service'],
             ],
@@ -434,12 +568,12 @@ function reports_definitions(): array
     ]);
 
     $definitions['employees-by-designation'] = reports_employee_aggregate_definition([
-        'label' => 'Employees by Designation',
-        'description' => 'Employee headcount grouped by position or designation.',
+        'label' => 'Employees by Position',
+        'description' => 'Employee headcount grouped by position.',
         'requiredTables' => ['employees', 'designations', 'divisions'],
         'searchExpressions' => ['des.name', 'd.name'],
         'columns' => [
-            ['position', 'Designation'],
+            ['position', 'Position'],
             ['division', 'Division'],
             ['employees', 'Employees'],
             ['activeEmployees', 'Active'],
@@ -571,15 +705,59 @@ function reports_definitions(): array
         'payrollMonth' => 'MONTH(p.payroll_date)',
         'status' => 'p.status',
     ];
-    $payrollJoins = 'FROM Payroll p
+    $payrollJoins = 'FROM payroll p
             LEFT JOIN employees e ON e.id = p.employee_id
             LEFT JOIN divisions d ON d.id = e.division_id';
+
+    /*
+     * First in the category, so it is the table the Payroll Reports tab opens on: a batch reaches
+     * this list the moment the Cashier releases it from the payroll registry, and not before. The
+     * date window runs on the release stamp (falling back to the payroll date for rows released
+     * before the stamp existed), so a batch released today is in "Today" and "Last 30 Days" whatever
+     * pay period it covered; the Payroll Year / Month filters still narrow by the period itself.
+     */
+    $definitions['payroll-released'] = [
+        'label' => 'Released Payroll',
+        'description' => 'Payroll the Cashier has released from the payroll registry, listed by release date.',
+        'category' => 'payroll',
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
+        'dateExpression' => reports_payroll_release_date_sql(),
+        'searchExpressions' => [$employeeName, 'd.name', 'p.status', 'p.payroll_date'],
+        'columns' => reports_columns([
+            ['employeeName', 'Employee Name'],
+            ['division', 'Division'],
+            ['period', 'Pay Period'],
+            ['grossPay', 'Gross Pay'],
+            ['totalAllowance', 'Allowances'],
+            ['totalDeduction', 'Deductions'],
+            ['netPay', 'Net Pay'],
+            ['releasedOn', 'Released On'],
+            ['releasedBy', 'Released By'],
+            ['status', 'Status'],
+        ]),
+        'sql' => 'SELECT
+                p.payroll_id AS id,
+                ' . $employeeName . ' AS employeeName,
+                d.name AS division,
+                ' . reports_payroll_period_sql() . ' AS period,
+                p.gross_pay AS grossPay,
+                p.total_allowance AS totalAllowance,
+                p.total_deduction AS totalDeduction,
+                p.net_pay AS netPay,
+                DATE(p.released_at) AS releasedOn,
+                ' . reports_payroll_released_by_sql() . ' AS releasedBy,
+                p.status
+            ' . $payrollJoins . '
+            WHERE ' . reports_payroll_released_condition(),
+        'orderBy' => reports_payroll_release_date_sql() . ' DESC, p.payroll_date DESC, employeeName ASC',
+        'filters' => $payrollFilters,
+    ];
 
     $definitions['payroll-report'] = [
         'label' => 'Payroll Register',
         'description' => 'Payroll summaries including gross pay, allowances, deductions, net pay, and status.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [$employeeName, 'd.name', 'p.status', 'p.payroll_date'],
         'columns' => reports_columns([
@@ -607,40 +785,11 @@ function reports_definitions(): array
         'filters' => $payrollFilters,
     ];
 
-    $definitions['payroll-released'] = [
-        'label' => 'Released Payroll',
-        'description' => 'Payroll runs already released, paid, or posted within the selected period.',
-        'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
-        'dateExpression' => 'p.payroll_date',
-        'searchExpressions' => [$employeeName, 'd.name', 'p.status'],
-        'columns' => reports_columns([
-            ['employeeName', 'Employee Name'],
-            ['division', 'Division'],
-            ['payrollDate', 'Payroll Date'],
-            ['grossPay', 'Gross Pay'],
-            ['netPay', 'Net Pay'],
-            ['status', 'Status'],
-        ]),
-        'sql' => 'SELECT
-                p.payroll_id AS id,
-                ' . $employeeName . ' AS employeeName,
-                d.name AS division,
-                p.payroll_date AS payrollDate,
-                p.gross_pay AS grossPay,
-                p.net_pay AS netPay,
-                p.status
-            ' . $payrollJoins . '
-            WHERE LOWER(COALESCE(p.status, "")) IN ("released", "paid", "posted", "completed")',
-        'orderBy' => 'p.payroll_date DESC, employeeName ASC',
-        'filters' => $payrollFilters,
-    ];
-
     $definitions['payroll-pending'] = [
         'label' => 'Pending Payroll',
         'description' => 'Payroll runs still awaiting review, approval, or release.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [$employeeName, 'd.name', 'p.status'],
         'columns' => reports_columns([
@@ -660,7 +809,7 @@ function reports_definitions(): array
                 p.net_pay AS netPay,
                 p.status
             ' . $payrollJoins . '
-            WHERE LOWER(COALESCE(p.status, "")) NOT IN ("released", "paid", "posted", "completed", "cancelled", "archived")',
+            WHERE ' . reports_payroll_pending_condition(),
         'orderBy' => 'p.payroll_date DESC, employeeName ASC',
         'filters' => $payrollFilters,
     ];
@@ -669,7 +818,7 @@ function reports_definitions(): array
         'label' => 'Payroll by Division',
         'description' => 'Total payroll expense aggregated per division.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => ['d.name'],
         'columns' => reports_columns([
@@ -699,7 +848,7 @@ function reports_definitions(): array
         'label' => 'Payroll by Employee',
         'description' => 'Year-to-date payroll totals summarised per employee.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll', 'employees', 'divisions'],
+        'requiredTables' => ['payroll', 'employees', 'divisions'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [$employeeName, 'd.name'],
         'columns' => reports_columns([
@@ -729,7 +878,7 @@ function reports_definitions(): array
         'label' => 'Payroll Summary (Monthly)',
         'description' => 'Month-by-month payroll totals across the selected period.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll'],
+        'requiredTables' => ['payroll'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => [],
         'columns' => reports_columns([
@@ -741,6 +890,8 @@ function reports_definitions(): array
             ['totalDeduction', 'Deductions'],
             ['netPay', 'Net Pay'],
         ]),
+        // The employee join carries the division, so a division-scoped desk's monthly totals
+        // cover its own people only.
         'sql' => 'SELECT
                 DATE_FORMAT(p.payroll_date, "%Y-%m") AS period,
                 COUNT(p.payroll_id) AS payrollRuns,
@@ -749,51 +900,38 @@ function reports_definitions(): array
                 ROUND(SUM(p.total_allowance), 2) AS totalAllowance,
                 ROUND(SUM(p.total_deduction), 2) AS totalDeduction,
                 ROUND(SUM(p.net_pay), 2) AS netPay
-            FROM Payroll p
+            FROM payroll p
+            LEFT JOIN employees e ON e.id = p.employee_id
             GROUP BY DATE_FORMAT(p.payroll_date, "%Y-%m")',
         'orderBy' => 'period DESC',
         'isAggregate' => true,
         'filterBefore' => ' GROUP BY ',
+        'filters' => ['divisionId' => 'e.division_id'],
     ];
 
     $definitions['payroll-deductions'] = [
         'label' => 'Payroll Deductions',
-        'description' => 'Itemised deductions applied to payroll runs, grouped by deduction type.',
+        'description' => 'Employee deductions saved on paid payroll records for the selected period.',
         'category' => 'payroll',
-        // The catalog is one table per deduction family; the query unions them under the column
-        // names it was written against.
-        'requiredTables' => array_merge(
-            ['PayrollDeduction', 'Payroll'],
-            array_column(DEDUCTION_FAMILIES, 'table')
-        ),
+        'requiredTables' => ['payroll'],
         'dateExpression' => 'p.payroll_date',
-        'searchExpressions' => ['dt.deduction_name', 'dt.category_name'],
-        'columns' => reports_columns([
-            ['deductionName', 'Deduction'],
-            ['category', 'Category'],
-            ['records', 'Records'],
-            ['totalAmount', 'Total Amount'],
-        ]),
-        'sql' => 'SELECT
-                dt.deduction_name AS deductionName,
-                dt.category_name AS category,
-                COUNT(pd.payroll_id) AS records,
-                ROUND(SUM(pd.amount), 2) AS totalAmount
-            FROM PayrollDeduction pd
-            INNER JOIN ' . deduction_catalog_type_union_sql() . ' dt
-                    ON dt.deduction_type_id = pd.deduction_type_id
-            INNER JOIN Payroll p ON p.payroll_id = pd.payroll_id
-            GROUP BY dt.deduction_type_id, dt.deduction_name, dt.category_name',
-        'orderBy' => 'totalAmount DESC',
-        'isAggregate' => true,
-        'filterBefore' => ' GROUP BY ',
+        'searchExpressions' => [],
+        'columns' => reports_columns(array_merge(
+            [['employeeId', 'Employee ID'], ['employeeName', 'Employee Name'], ['payrollId', 'Payroll ID'], ['payrollDate', 'Payroll Date']],
+            array_map(static fn (array $deduction): array => ['amount_' . $deduction[0], $deduction[1]], REPORT_PAYROLL_DEDUCTIONS)
+        )),
+        'sql' => '',
+        'fetchRows' => 'reports_fetch_payroll_deduction_rows',
+        'isAggregate' => false,
+        // Honoured inside the fetcher rather than by SQL injection like the others.
+        'filters' => ['divisionId' => 'e.division_id'],
     ];
 
     $definitions['payroll-net-pay-summary'] = [
         'label' => 'Net Pay Summary',
         'description' => 'Net pay totals per payroll status for the selected period.',
         'category' => 'payroll',
-        'requiredTables' => ['Payroll'],
+        'requiredTables' => ['payroll'],
         'dateExpression' => 'p.payroll_date',
         'searchExpressions' => ['p.status'],
         'columns' => reports_columns([
@@ -809,133 +947,218 @@ function reports_definitions(): array
                 ROUND(SUM(p.gross_pay), 2) AS grossPay,
                 ROUND(SUM(p.total_deduction), 2) AS totalDeduction,
                 ROUND(SUM(p.net_pay), 2) AS netPay
-            FROM Payroll p
+            FROM payroll p
+            LEFT JOIN employees e ON e.id = p.employee_id
             GROUP BY COALESCE(NULLIF(TRIM(p.status), ""), "Unspecified")',
         'orderBy' => 'netPay DESC',
         'isAggregate' => true,
         'filterBefore' => ' GROUP BY ',
+        'filters' => ['divisionId' => 'e.division_id'],
     ];
 
     // ---------------------------------------------------------------
     // Leave reports
     // ---------------------------------------------------------------
     $leaveFilters = [
+        'employeeId' => 'e.id',
         'divisionId' => 'e.division_id',
-        'employmentStatus' => reports_employment_status_label_sql('e.employment_status'),
         'leaveTypeId' => 'lr.leave_type_id',
-        'status' => 'lr.status',
+        // A reviewed filing is still pending final action, so the reporting filter deliberately
+        // presents both workflow states as one public-facing Pending status.
+        'status' => 'CASE WHEN LOWER(lr.status) IN ("pending", "endorsed", "reviewed") THEN "pending" ELSE LOWER(lr.status) END',
     ];
     $leaveJoins = 'FROM leave_requests lr
             INNER JOIN employees e ON e.id = lr.employee_id
             INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
             LEFT JOIN divisions d ON d.id = e.division_id';
-    $leaveColumns = [
-        ['employeeName', 'Employee Name'],
-        ['division', 'Division'],
-        ['leaveType', 'Leave Type'],
-        ['startDate', 'Start Date'],
-        ['endDate', 'End Date'],
-        ['days', 'Days'],
-        ['status', 'Status'],
-    ];
+    $leaveStatus = 'CASE
+                WHEN LOWER(lr.status) IN ("pending", "endorsed", "reviewed") THEN "Pending"
+                ELSE CONCAT(UPPER(LEFT(lr.status, 1)), LOWER(SUBSTRING(lr.status, 2)))
+            END';
+    $paidDays = 'COALESCE(lr.paid_days, CASE WHEN lt.is_with_pay = 1 THEN lr.total_days ELSE 0 END)';
+    $unpaidDays = 'COALESCE(lr.unpaid_days, CASE WHEN lt.is_with_pay = 1 THEN 0 ELSE lr.total_days END)';
+
+    /*
+     * leave_credits.remaining_credits is the current authority. To show the balance that surrounded
+     * an older application, add back approved usage and monetization that happened at or after that
+     * filing. This reconstructs history from the records the leave workflow already owns and avoids
+     * creating a duplicate balance ledger just for reporting.
+     */
+    $leaveBalanceBefore = 'ROUND(COALESCE(lc.remaining_credits, 0)
+                + COALESCE((
+                    SELECT SUM(COALESCE(lr_future.paid_days, lr_future.total_days))
+                    FROM leave_requests lr_future
+                    WHERE lr_future.employee_id = lr.employee_id
+                      AND lr_future.leave_type_id = lr.leave_type_id
+                      AND YEAR(lr_future.start_date) = YEAR(lr.start_date)
+                      AND LOWER(lr_future.status) = "approved"
+                      AND (lr_future.requested_at > lr.requested_at
+                           OR (lr_future.requested_at = lr.requested_at
+                               AND lr_future.leave_request_id >= lr.leave_request_id))
+                ), 0)
+                + COALESCE((
+                    SELECT SUM(lm_future.number_of_days)
+                    FROM leave_monetization_requests lm_future
+                    WHERE lm_future.employee_id = lr.employee_id
+                      AND lm_future.leave_type_id = lr.leave_type_id
+                      AND YEAR(lm_future.date_filed) = YEAR(lr.start_date)
+                      AND LOWER(lm_future.status) = "approved"
+                      AND lm_future.date_filed >= DATE(lr.requested_at)
+                ), 0), 2)';
+    $leaveBalanceAfter = 'ROUND((' . $leaveBalanceBefore . ')
+                - CASE WHEN LOWER(lr.status) = "approved" THEN ' . $paidDays . ' ELSE 0 END, 2)';
     $leaveSelect = 'SELECT
                 lr.leave_request_id AS id,
+                e.employee_id AS employeeNo,
                 ' . $employeeName . ' AS employeeName,
                 COALESCE(d.name, "Unassigned") AS division,
                 lt.name AS leaveType,
-                lr.start_date AS startDate,
-                lr.end_date AS endDate,
-                lr.total_days AS days,
-                lr.status
+                DATE(lr.requested_at) AS dateFiled,
+                CONCAT(DATE_FORMAT(lr.start_date, "%b %e, %Y"), " - ", DATE_FORMAT(lr.end_date, "%b %e, %Y")) AS leavePeriod,
+                ' . $paidDays . ' AS withPay,
+                ' . $unpaidDays . ' AS withoutPay,
+                lr.total_days AS totalDays,
+                ' . $leaveBalanceBefore . ' AS balanceBefore,
+                ' . $leaveBalanceAfter . ' AS balanceAfter,
+                ' . $leaveStatus . ' AS status,
+                lr.start_date AS startDateRaw,
+                lr.end_date AS endDateRaw,
+                DATE(lr.updated_at) AS approvalDateRaw
             ' . $leaveJoins;
 
-    $leaveVariants = [
-        'leave-report' => ['label' => 'Leave Report', 'description' => 'All leave applications with covered dates, total days, and approval status.', 'where' => ''],
-        'leave-filed' => ['label' => 'Filed Leave', 'description' => 'Every leave application filed within the selected period.', 'where' => ''],
-        'leave-approved' => ['label' => 'Approved Leave', 'description' => 'Leave applications that completed the approval workflow.', 'where' => 'LOWER(lr.status) = "approved"'],
-        'leave-rejected' => ['label' => 'Rejected Leave', 'description' => 'Leave applications declined by an approver.', 'where' => 'LOWER(lr.status) = "rejected"'],
-        'leave-pending' => ['label' => 'Pending Leave', 'description' => 'Leave applications still awaiting review or approval.', 'where' => 'LOWER(lr.status) IN ("pending", "reviewed")'],
-        'leave-cancelled' => ['label' => 'Cancelled Leave', 'description' => 'Leave applications cancelled before or after approval.', 'where' => 'LOWER(lr.status) = "cancelled"'],
-    ];
-
-    foreach ($leaveVariants as $key => $options) {
-        $definitions[$key] = [
-            'label' => $options['label'],
-            'description' => $options['description'],
-            'category' => 'leave',
-            'requiredTables' => ['leave_requests', 'leave_types', 'employees'],
-            'dateExpression' => 'lr.start_date',
-            'searchExpressions' => [$employeeName, 'lt.name', 'lr.status', 'lr.reason', 'd.name'],
-            'columns' => reports_columns($leaveColumns),
-            'sql' => $leaveSelect . ($options['where'] !== '' ? ' WHERE ' . $options['where'] : ''),
-            'orderBy' => 'lr.start_date DESC, employeeName ASC',
-            'filters' => $leaveFilters,
-        ];
-    }
-
-    $definitions['leave-monetized'] = [
-        'label' => 'Monetized Leave',
-        'description' => 'Leave monetization requests with computed amounts and approval status.',
+    $definitions['leave-applications'] = [
+        'label' => 'Leave Applications',
+        'description' => 'Filed, approved, pending, rejected, and cancelled leave applications in one report.',
         'category' => 'leave',
-        'requiredTables' => ['leave_monetization_requests', 'employees', 'leave_types'],
-        'dateExpression' => 'lm.date_filed',
-        'searchExpressions' => [$employeeName, 'lt.name', 'lm.status'],
+        'requiredTables' => ['leave_requests', 'leave_types', 'employees', 'leave_credits', 'leave_monetization_requests', 'divisions'],
+        'dateExpression' => 'lr.requested_at',
+        'searchExpressions' => ['e.employee_id', $employeeName, 'lt.name', 'lr.status', 'lr.reason', 'd.name'],
         'columns' => reports_columns([
+            ['rowNumber', '#'],
+            ['employeeNo', 'Employee No.'],
             ['employeeName', 'Employee Name'],
-            ['division', 'Division'],
+            ['division', 'Division/Department'],
             ['leaveType', 'Leave Type'],
             ['dateFiled', 'Date Filed'],
-            ['numberOfDays', 'Days'],
-            ['dailyRate', 'Daily Rate'],
-            ['amount', 'Estimated Amount'],
+            ['leavePeriod', 'Leave Period'],
+            ['withPay', 'With Pay'],
+            ['withoutPay', 'Without Pay'],
+            ['totalDays', 'Total Days'],
+            ['balanceBefore', 'Balance Before'],
+            ['balanceAfter', 'Balance After'],
+            ['status', 'Status'],
+        ]),
+        'sql' => $leaveSelect . '
+            LEFT JOIN leave_credits lc
+              ON lc.employee_id = lr.employee_id
+             AND lc.leave_type_id = lr.leave_type_id
+             AND lc.year = YEAR(lr.start_date)',
+        'orderBy' => 'lr.requested_at DESC, employeeName ASC',
+        'filters' => $leaveFilters,
+        'includeRowNumber' => true,
+    ];
+
+    $definitions['leave-monetization'] = [
+        'label' => 'Leave Monetization',
+        'description' => 'All leave monetization requests, their approval results, and computed amounts.',
+        'category' => 'leave',
+        'requiredTables' => ['leave_monetization_requests', 'employees', 'leave_types', 'divisions'],
+        'dateExpression' => 'lm.date_filed',
+        'searchExpressions' => ['e.employee_id', $employeeName, 'lt.name', 'lm.status', 'd.name'],
+        'columns' => reports_columns([
+            ['rowNumber', '#'],
+            ['employeeNo', 'Employee No.'],
+            ['employeeName', 'Employee Name'],
+            ['division', 'Division/Department'],
+            ['leaveType', 'Leave Type'],
+            ['dateRequested', 'Date Requested'],
+            ['availableLeaveBalance', 'Available Leave Balance'],
+            ['daysRequested', 'Days Requested for Monetization'],
+            ['daysApproved', 'Days Approved'],
+            ['rateBasis', 'Rate / Basis'],
+            ['computedAmount', 'Computed Amount'],
+            ['approvalDate', 'Approval Date'],
             ['status', 'Status'],
         ]),
         'sql' => 'SELECT
                 lm.id,
+                e.employee_id AS employeeNo,
                 ' . $employeeName . ' AS employeeName,
                 COALESCE(d.name, "Unassigned") AS division,
                 lt.name AS leaveType,
-                lm.date_filed AS dateFiled,
-                lm.number_of_days AS numberOfDays,
-                lm.daily_rate AS dailyRate,
-                lm.estimated_amount AS amount,
-                lm.status
+                lm.date_filed AS dateRequested,
+                lm.credits_before AS availableLeaveBalance,
+                lm.number_of_days AS daysRequested,
+                CASE WHEN LOWER(lm.status) = "approved" THEN lm.number_of_days ELSE 0 END AS daysApproved,
+                lm.daily_rate AS rateBasis,
+                lm.estimated_amount AS computedAmount,
+                lm.approved_at AS approvalDate,
+                CASE
+                    WHEN LOWER(lm.status) IN ("pending", "endorsed", "reviewed", "chief_reviewed") THEN "Pending"
+                    ELSE CONCAT(UPPER(LEFT(lm.status, 1)), LOWER(SUBSTRING(lm.status, 2)))
+                END AS status
             FROM leave_monetization_requests lm
             INNER JOIN employees e ON e.id = lm.employee_id
             LEFT JOIN leave_types lt ON lt.leave_type_id = lm.leave_type_id
             LEFT JOIN divisions d ON d.id = e.division_id',
         'orderBy' => 'lm.date_filed DESC, employeeName ASC',
         'filters' => [
+            'employeeId' => 'e.id',
             'divisionId' => 'e.division_id',
-            'status' => 'lm.status',
+            'status' => 'CASE WHEN LOWER(lm.status) IN ("pending", "endorsed", "reviewed", "chief_reviewed") THEN "pending" ELSE LOWER(lm.status) END',
         ],
+        'includeRowNumber' => true,
     ];
 
     $definitions['leave-balance'] = [
         'label' => 'Leave Balance',
-        'description' => 'Remaining leave credits per employee and leave type for the current year.',
+        'description' => 'Current employee leave credits, usage, monetization, and remaining balances.',
         'category' => 'leave',
-        'requiredTables' => ['leave_credits', 'leave_types', 'employees'],
+        'requiredTables' => ['leave_credits', 'leave_types', 'employees', 'leave_monetization_requests', 'divisions'],
         'dateExpression' => null,
-        'searchExpressions' => [$employeeName, 'lt.name'],
+        'searchExpressions' => ['e.employee_id', $employeeName, 'lt.name', 'd.name'],
         'columns' => reports_columns([
+            ['rowNumber', '#'],
+            ['employeeNo', 'Employee No.'],
             ['employeeName', 'Employee Name'],
-            ['division', 'Division'],
+            ['division', 'Division/Department'],
             ['leaveType', 'Leave Type'],
-            ['year', 'Year'],
-            ['totalCredits', 'Total Credits'],
-            ['usedCredits', 'Used'],
-            ['remainingCredits', 'Remaining'],
+            ['beginningBalance', 'Beginning Balance'],
+            ['earnedCredits', 'Earned Credits'],
+            ['usedCredits', 'Used Credits'],
+            ['monetizedCredits', 'Monetized Credits'],
+            ['adjustments', 'Adjustments'],
+            ['remainingBalance', 'Remaining Balance'],
+            ['asOfDate', 'As of Date'],
         ]),
         'sql' => 'SELECT
                 lc.leave_credits_id AS id,
+                e.employee_id AS employeeNo,
                 ' . $employeeName . ' AS employeeName,
                 COALESCE(d.name, "Unassigned") AS division,
                 lt.name AS leaveType,
                 lc.year,
-                lc.total_credits AS totalCredits,
+                ROUND(lc.total_credits + COALESCE((
+                    SELECT SUM(lm.number_of_days)
+                    FROM leave_monetization_requests lm
+                    WHERE lm.employee_id = lc.employee_id
+                      AND lm.leave_type_id = lc.leave_type_id
+                      AND YEAR(lm.date_filed) = lc.year
+                      AND LOWER(lm.status) = "approved"
+                ), 0), 2) AS beginningBalance,
+                0.00 AS earnedCredits,
                 lc.used_credits AS usedCredits,
-                lc.remaining_credits AS remainingCredits
+                COALESCE((
+                    SELECT SUM(lm.number_of_days)
+                    FROM leave_monetization_requests lm
+                    WHERE lm.employee_id = lc.employee_id
+                      AND lm.leave_type_id = lc.leave_type_id
+                      AND YEAR(lm.date_filed) = lc.year
+                      AND LOWER(lm.status) = "approved"
+                ), 0) AS monetizedCredits,
+                0.00 AS adjustments,
+                lc.remaining_credits AS remainingBalance,
+                DATE(lc.updated_at) AS asOfDate
             FROM leave_credits lc
             INNER JOIN employees e ON e.id = lc.employee_id
             INNER JOIN leave_types lt ON lt.leave_type_id = lc.leave_type_id
@@ -943,96 +1166,62 @@ function reports_definitions(): array
             WHERE e.is_archived = 0',
         'orderBy' => 'employeeName ASC, lt.name ASC',
         'filters' => [
+            'employeeId' => 'e.id',
             'divisionId' => 'e.division_id',
             'leaveTypeId' => 'lc.leave_type_id',
+            'year' => 'lc.year',
         ],
+        'includeRowNumber' => true,
     ];
 
     $definitions['leave-utilization'] = [
         'label' => 'Leave Utilization',
-        'description' => 'Approved leave days consumed per leave type.',
+        'description' => 'Approved leave days actually consumed, including paid and unpaid portions.',
         'category' => 'leave',
-        'requiredTables' => ['leave_requests', 'leave_types', 'employees'],
+        'requiredTables' => ['leave_requests', 'leave_types', 'employees', 'leave_credits', 'leave_monetization_requests', 'divisions'],
         'dateExpression' => 'lr.start_date',
-        'searchExpressions' => ['lt.name'],
+        'searchExpressions' => ['e.employee_id', $employeeName, 'lt.name', 'd.name'],
         'columns' => reports_columns([
-            ['leaveType', 'Leave Type'],
-            ['requests', 'Requests'],
-            ['employees', 'Employees'],
-            ['totalDays', 'Total Days'],
-            ['averageDays', 'Avg. Days / Request'],
-        ]),
-        'sql' => 'SELECT
-                lt.name AS leaveType,
-                COUNT(lr.leave_request_id) AS requests,
-                COUNT(DISTINCT lr.employee_id) AS employees,
-                ROUND(SUM(lr.total_days), 2) AS totalDays,
-                ROUND(AVG(lr.total_days), 2) AS averageDays
-            ' . $leaveJoins . '
-            WHERE LOWER(lr.status) = "approved"
-            GROUP BY lt.leave_type_id, lt.name',
-        'orderBy' => 'totalDays DESC',
-        'isAggregate' => true,
-        'filterBefore' => ' GROUP BY ',
-        'filters' => $leaveFilters,
-    ];
-
-    $definitions['leave-by-division'] = [
-        'label' => 'Leave by Division',
-        'description' => 'Leave volume and approval outcomes grouped per division.',
-        'category' => 'leave',
-        'requiredTables' => ['leave_requests', 'leave_types', 'employees', 'divisions'],
-        'dateExpression' => 'lr.start_date',
-        'searchExpressions' => ['d.name'],
-        'columns' => reports_columns([
-            ['division', 'Division'],
-            ['requests', 'Requests'],
-            ['approved', 'Approved'],
-            ['pending', 'Pending'],
-            ['rejected', 'Rejected'],
-            ['totalDays', 'Total Days'],
-        ]),
-        'sql' => 'SELECT
-                COALESCE(d.name, "Unassigned") AS division,
-                COUNT(lr.leave_request_id) AS requests,
-                SUM(CASE WHEN LOWER(lr.status) = "approved" THEN 1 ELSE 0 END) AS approved,
-                SUM(CASE WHEN LOWER(lr.status) IN ("pending", "reviewed") THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN LOWER(lr.status) = "rejected" THEN 1 ELSE 0 END) AS rejected,
-                ROUND(SUM(lr.total_days), 2) AS totalDays
-            ' . $leaveJoins . '
-            GROUP BY COALESCE(d.name, "Unassigned")',
-        'orderBy' => 'requests DESC',
-        'isAggregate' => true,
-        'filterBefore' => ' GROUP BY ',
-        'filters' => $leaveFilters,
-    ];
-
-    $definitions['leave-by-employee'] = [
-        'label' => 'Leave by Employee',
-        'description' => 'Leave requests and days consumed summarised per employee.',
-        'category' => 'leave',
-        'requiredTables' => ['leave_requests', 'leave_types', 'employees'],
-        'dateExpression' => 'lr.start_date',
-        'searchExpressions' => [$employeeName],
-        'columns' => reports_columns([
+            ['rowNumber', '#'],
+            ['employeeNo', 'Employee No.'],
             ['employeeName', 'Employee Name'],
-            ['division', 'Division'],
-            ['requests', 'Requests'],
-            ['approved', 'Approved'],
-            ['totalDays', 'Total Days'],
+            ['division', 'Division/Department'],
+            ['leaveType', 'Leave Type'],
+            ['leavePeriod', 'Leave Period'],
+            ['dateApproved', 'Date Approved'],
+            ['withPay', 'With Pay'],
+            ['withoutPay', 'Without Pay'],
+            ['totalDaysUsed', 'Total Days Used'],
+            ['balanceBefore', 'Balance Before'],
+            ['balanceAfter', 'Balance After'],
         ]),
         'sql' => 'SELECT
+                lr.leave_request_id AS id,
+                e.employee_id AS employeeNo,
                 ' . $employeeName . ' AS employeeName,
                 COALESCE(d.name, "Unassigned") AS division,
-                COUNT(lr.leave_request_id) AS requests,
-                SUM(CASE WHEN LOWER(lr.status) = "approved" THEN 1 ELSE 0 END) AS approved,
-                ROUND(SUM(lr.total_days), 2) AS totalDays
+                lt.name AS leaveType,
+                CONCAT(DATE_FORMAT(lr.start_date, "%b %e, %Y"), " - ", DATE_FORMAT(lr.end_date, "%b %e, %Y")) AS leavePeriod,
+                DATE(lr.updated_at) AS dateApproved,
+                ' . $paidDays . ' AS withPay,
+                ' . $unpaidDays . ' AS withoutPay,
+                lr.total_days AS totalDaysUsed,
+                ' . $leaveBalanceBefore . ' AS balanceBefore,
+                ' . $leaveBalanceAfter . ' AS balanceAfter,
+                lr.start_date AS startDateRaw
             ' . $leaveJoins . '
-            GROUP BY lr.employee_id, employeeName, division',
-        'orderBy' => 'totalDays DESC',
-        'isAggregate' => true,
-        'filterBefore' => ' GROUP BY ',
-        'filters' => $leaveFilters,
+            LEFT JOIN leave_credits lc
+              ON lc.employee_id = lr.employee_id
+             AND lc.leave_type_id = lr.leave_type_id
+             AND lc.year = YEAR(lr.start_date)
+            WHERE LOWER(lr.status) = "approved"',
+        'orderBy' => 'lr.start_date DESC, employeeName ASC',
+        'filters' => [
+            'employeeId' => 'e.id',
+            'divisionId' => 'e.division_id',
+            'leaveTypeId' => 'lr.leave_type_id',
+        ],
+        'includeRowNumber' => true,
     ];
 
     // ---------------------------------------------------------------
@@ -1191,6 +1380,119 @@ function reports_definitions(): array
     ];
 
     // ---------------------------------------------------------------
+    // Travel order reports
+    // ---------------------------------------------------------------
+    /*
+     * One public status per filing, the way the leave reports read: a travel order the Planning
+     * Officer has recommended ("reviewed") or the Division Chief has approved ("chief_reviewed") is
+     * still waiting on the next desk, so every open stage reports as Pending. The raw stage stays on
+     * the row for the analytics.
+     */
+    $travelStatus = 'CASE LOWER(t.status)
+                WHEN "approved" THEN "Approved"
+                WHEN "rejected" THEN "Rejected"
+                WHEN "cancelled" THEN "Cancelled"
+                ELSE "Pending"
+            END';
+    $definitions['travel-orders'] = [
+        'label' => 'Travel Orders',
+        'description' => 'Every travel order with destination, purpose, travel dates, days away, and status. The date range follows the travel start date.',
+        'category' => 'travel',
+        'requiredTables' => ['travel_orders', 'employees', 'divisions'],
+        'dateExpression' => 't.start_date',
+        'searchExpressions' => ['e.employee_id', $employeeName, 'd.name', 't.destination', 't.purpose', 't.status'],
+        'columns' => reports_columns([
+            ['rowNumber', '#'],
+            ['employeeNo', 'Employee No.'],
+            ['employeeName', 'Employee Name'],
+            ['division', 'Division/Department'],
+            ['destination', 'Destination'],
+            ['purpose', 'Purpose'],
+            ['dateFiled', 'Date Filed'],
+            ['travelPeriod', 'Travel Period'],
+            ['travelDays', 'Days'],
+            ['status', 'Status'],
+        ]),
+        'sql' => 'SELECT
+                t.travel_order_id AS id,
+                e.employee_id AS employeeNo,
+                ' . $employeeName . ' AS employeeName,
+                COALESCE(d.name, "Unassigned") AS division,
+                t.destination,
+                t.purpose,
+                DATE(t.created_at) AS dateFiled,
+                CONCAT(DATE_FORMAT(t.start_date, "%b %e, %Y"), " - ", DATE_FORMAT(COALESCE(t.end_date, t.start_date), "%b %e, %Y")) AS travelPeriod,
+                DATEDIFF(COALESCE(t.end_date, t.start_date), t.start_date) + 1 AS travelDays,
+                ' . $travelStatus . ' AS status,
+                LOWER(t.status) AS workflowStage,
+                t.start_date AS startDateRaw
+            FROM travel_orders t
+            INNER JOIN employees e ON e.id = t.employee_id
+            LEFT JOIN divisions d ON d.id = e.division_id',
+        'orderBy' => 't.start_date DESC, employeeName ASC',
+        'filters' => [
+            'employeeId' => 'e.id',
+            'divisionId' => 'e.division_id',
+            'status' => 'CASE WHEN LOWER(t.status) IN ("pending", "reviewed", "chief_reviewed") THEN "pending" ELSE LOWER(t.status) END',
+        ],
+        'includeRowNumber' => true,
+    ];
+
+    // ---------------------------------------------------------------
+    // Compensatory time off reports
+    // ---------------------------------------------------------------
+    /* Pending, Endorsed and Reviewed are the three open signatures of one filing: all Pending here. */
+    $ctoStatus = 'CASE c.status
+                WHEN "Approved" THEN "Approved"
+                WHEN "Rejected" THEN "Rejected"
+                WHEN "Cancelled" THEN "Cancelled"
+                ELSE "Pending"
+            END';
+    $definitions['cto-requests'] = [
+        'label' => 'Compensatory Time Off Requests',
+        'description' => 'CTO filings with covered dates, hours applied, credit balance at filing, unpaid hours, and status. The date range follows the CTO start date.',
+        'category' => 'cto',
+        'requiredTables' => ['compensatory', 'employees', 'divisions'],
+        'dateExpression' => 'c.start_date',
+        'searchExpressions' => ['e.employee_id', $employeeName, 'd.name', 'c.status', 'c.remarks'],
+        'columns' => reports_columns([
+            ['rowNumber', '#'],
+            ['employeeNo', 'Employee No.'],
+            ['employeeName', 'Employee Name'],
+            ['division', 'Division/Department'],
+            ['dateFiled', 'Date Filed'],
+            ['ctoPeriod', 'CTO Period'],
+            ['hoursApplied', 'Hours Applied'],
+            ['cocBalanceHours', 'Credit Balance at Filing'],
+            ['unpaidHours', 'Unpaid Hours'],
+            ['status', 'Status'],
+        ]),
+        'sql' => 'SELECT
+                c.id,
+                e.employee_id AS employeeNo,
+                ' . $employeeName . ' AS employeeName,
+                COALESCE(d.name, "Unassigned") AS division,
+                DATE(c.created_at) AS dateFiled,
+                CONCAT(DATE_FORMAT(c.start_date, "%b %e, %Y"), " - ", DATE_FORMAT(COALESCE(c.end_date, c.start_date), "%b %e, %Y")) AS ctoPeriod,
+                c.hours_applied AS hoursApplied,
+                COALESCE(c.coc_balance_hours, 0) AS cocBalanceHours,
+                COALESCE(c.unpaid_hours, 0) AS unpaidHours,
+                ' . $ctoStatus . ' AS status,
+                c.status AS workflowStage,
+                c.start_date AS startDateRaw
+            FROM compensatory c
+            INNER JOIN employees e ON e.id = c.employee_id
+            LEFT JOIN divisions d ON d.id = e.division_id',
+        'orderBy' => 'c.start_date DESC, employeeName ASC',
+        'filters' => [
+            'employeeId' => 'e.id',
+            'divisionId' => 'e.division_id',
+            'status' => 'CASE WHEN c.status IN ("Pending", "Endorsed", "Reviewed") THEN "pending" ELSE LOWER(c.status) END',
+        ],
+        'includeRowNumber' => true,
+    ];
+
+    // ---------------------------------------------------------------
     // Performance reports
     // ---------------------------------------------------------------
     $definitions['ipcr-report'] = [
@@ -1242,6 +1544,11 @@ function reports_definitions(): array
             ['status', 'Status'],
             ['finalRating', 'Final Rating'],
         ]),
+        /*
+         * An OPCR assignment records its division by name, not id, so the division filter is
+         * resolved through a name join -- the same pairing reports_performance_by_division() makes
+         * for the dashboard. Both columns are utf8mb4_unicode_ci, so the join needs no COLLATE.
+         */
         'sql' => 'SELECT
                 doa.assignment_id AS id,
                 doa.opcr_no AS opcrNo,
@@ -1252,8 +1559,10 @@ function reports_definitions(): array
                 doa.assignment_status AS status,
                 doa.final_rating AS finalRating
             FROM division_opcr_assignments doa
+            LEFT JOIN divisions dv ON LOWER(TRIM(dv.name)) = LOWER(TRIM(doa.division)) AND dv.is_archived = 0
             WHERE doa.is_archived = 0',
         'orderBy' => 'doa.created_at DESC, doa.assignment_id DESC',
+        'filters' => ['divisionId' => 'dv.id'],
     ];
 
     $definitions['performance-top-performers'] = [
@@ -1421,6 +1730,8 @@ function reports_category_labels(): array
         'payroll' => 'Payroll Reports',
         'leave' => 'Leave Reports',
         'attendance' => 'Attendance Reports',
+        'travel' => 'Travel Order Reports',
+        'cto' => 'Compensatory Time Off Reports',
         'performance' => 'Performance Reports',
         'training' => 'Training Reports',
         'audit' => 'Audit Reports',
@@ -1526,10 +1837,10 @@ function reports_add_filters(array $definition, array $dateWindow, string $searc
         if ($markerAt !== false) {
             $before = substr($sql, 0, $markerAt);
             $after = substr($sql, $markerAt);
-            $before .= stripos($before, ' WHERE ') === false ? ' WHERE ' : ' AND ';
+            $before .= reports_sql_has_outer_where($before) ? ' AND ' : ' WHERE ';
             $sql = $before . implode(' AND ', $whereClauses) . ' ' . $after;
         } else {
-            $sql .= stripos($sql, ' WHERE ') === false ? ' WHERE ' : ' AND ';
+            $sql .= reports_sql_has_outer_where($sql) ? ' AND ' : ' WHERE ';
             $sql .= implode(' AND ', $whereClauses);
         }
     }
@@ -1541,17 +1852,140 @@ function reports_add_filters(array $definition, array $dateWindow, string $searc
     return [$sql, $params];
 }
 
+/**
+ * Whether the statement's outermost SELECT already has a WHERE clause.
+ *
+ * A plain stripos() for " WHERE " is not enough: the leave reports carry correlated subqueries in
+ * their select lists, each with a WHERE of its own, and that match used to make this file append
+ * its filters with " AND " -- onto the end of the last LEFT JOIN's ON condition. The join went
+ * quietly unmatched and the date window, status, and division filters never reached the rows.
+ * Only a WHERE at parenthesis depth zero counts; string literals are skipped so a quoted "where"
+ * cannot count either.
+ */
+function reports_sql_has_outer_where(string $sql): bool
+{
+    $depth = 0;
+    $quote = '';
+    $length = strlen($sql);
+
+    for ($index = 0; $index < $length; $index++) {
+        $character = $sql[$index];
+
+        if ($quote !== '') {
+            if ($character === $quote) {
+                $quote = '';
+            }
+
+            continue;
+        }
+
+        if ($character === '"' || $character === "'") {
+            $quote = $character;
+            continue;
+        }
+
+        if ($character === '(') {
+            $depth++;
+            continue;
+        }
+
+        if ($character === ')') {
+            $depth = max(0, $depth - 1);
+            continue;
+        }
+
+        if (
+            $depth === 0
+            && ($character === 'w' || $character === 'W')
+            && strcasecmp(substr($sql, $index, 5), 'where') === 0
+            && ($index === 0 || ctype_space($sql[$index - 1]))
+            && ($index + 5 >= $length || ctype_space($sql[$index + 5]))
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/** Read each employee's saved deductions from paid payroll records. */
+function reports_fetch_payroll_deduction_rows(
+    PDO $pdo,
+    array $dateWindow,
+    string $search,
+    array $activeFilters = []
+): array {
+    // The only filter this report takes; the rest of the machinery never sees its rows.
+    $divisionId = (int)($activeFilters['divisionId']['value'] ?? 0);
+    $params = [
+        ':start_date' => $dateWindow['start'],
+        ':end_date' => $dateWindow['end'],
+    ];
+    $divisionScope = '';
+
+    if ($divisionId > 0) {
+        $divisionScope = ' AND p.employee_id IN (SELECT e.id FROM employees e WHERE e.division_id = :division_id)';
+        $params[':division_id'] = $divisionId;
+    }
+
+    $statement = $pdo->prepare(
+        'SELECT p.payroll_id, p.payroll_date, p.deduction_items_json,
+                e.employee_id AS employeeId,
+                TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName
+         FROM payroll p
+         INNER JOIN employees e ON e.id = p.employee_id
+         WHERE DATE(p.payroll_date) BETWEEN :start_date AND :end_date
+           AND p.status = "Paid"
+           AND p.deduction_items_json IS NOT NULL
+           AND TRIM(p.deduction_items_json) <> ""' . $divisionScope . '
+         ORDER BY e.last_name, e.first_name, p.payroll_date, p.payroll_id'
+    );
+    $statement->execute($params);
+
+    $types = deduction_catalog_type_map($pdo);
+    $rows = [];
+
+    foreach ($statement as $payroll) {
+        $payrollId = (int)($payroll['payroll_id'] ?? 0);
+        $items = deduction_catalog_normalize_payroll_items(
+            $pdo,
+            payroll_decode_embedded_json_list($payroll['deduction_items_json'] ?? null),
+            $payrollId,
+            $types
+        );
+
+        if ($items === []) continue;
+        $searchable = $payroll['employeeId'] . ' ' . $payroll['employeeName'] . ' ' . $payrollId . ' '
+            . implode(' ', array_column($items, 'name'));
+        if ($search !== '' && !str_contains(strtolower($searchable), strtolower($search))) continue;
+        $row = report_payroll_deduction_totals($items);
+        unset($row['summaryLabel']);
+        $row['id'] = $payrollId;
+        $row['employeeId'] = $payroll['employeeId'];
+        $row['employeeName'] = $payroll['employeeName'];
+        $row['payrollId'] = 'PR-' . str_pad((string)$payrollId, 4, '0', STR_PAD_LEFT);
+        $row['payrollDate'] = $payroll['payroll_date'];
+        $rows[] = $row;
+    }
+
+    return $rows;
+}
+
 function reports_fetch_rows(PDO $pdo, array $definition, array $dateWindow, string $search, array $activeFilters = []): array
 {
     if (!reports_required_tables_exist($pdo, $definition)) {
         return [];
     }
 
+    if (isset($definition['fetchRows']) && is_callable($definition['fetchRows'])) {
+        return $definition['fetchRows']($pdo, $dateWindow, $search, $activeFilters);
+    }
+
     [$sql, $params] = reports_add_filters($definition, $dateWindow, $search, $activeFilters);
     $statement = $pdo->prepare($sql);
     $statement->execute($params);
 
-    return array_map(static function (array $row): array {
+    $rows = array_map(static function (array $row): array {
         foreach ($row as $key => $value) {
             if ($value === null) {
                 $row[$key] = 'N/A';
@@ -1560,6 +1994,14 @@ function reports_fetch_rows(PDO $pdo, array $definition, array $dateWindow, stri
 
         return $row;
     }, $statement->fetchAll());
+
+    if (!empty($definition['includeRowNumber'])) {
+        foreach ($rows as $index => $row) {
+            $rows[$index]['rowNumber'] = $index + 1;
+        }
+    }
+
+    return $rows;
 }
 
 function reports_numeric_sum(array $rows, array $keys): ?float
@@ -1636,6 +2078,70 @@ function reports_summary(array $definition, array $rows, array $dateWindow): arr
 {
     $totalRecords = count($rows);
     $keyStatistics = [];
+    $label = (string)($definition['label'] ?? '');
+
+    if ($label === 'Leave Applications') {
+        $statusCounts = ['Approved' => 0, 'Pending' => 0, 'Rejected' => 0, 'Cancelled' => 0];
+        foreach ($rows as $row) {
+            $status = ucfirst(strtolower(reports_text($row['status'] ?? '')));
+            if (array_key_exists($status, $statusCounts)) {
+                $statusCounts[$status] += 1;
+            }
+        }
+        $totalDays = reports_numeric_sum($rows, ['totalDays']) ?? 0.0;
+        $keyStatistics = [
+            ['label' => 'Total Applications', 'value' => number_format($totalRecords)],
+            ['label' => 'Approved', 'value' => number_format($statusCounts['Approved'])],
+            ['label' => 'Pending', 'value' => number_format($statusCounts['Pending'])],
+            ['label' => 'Rejected', 'value' => number_format($statusCounts['Rejected'])],
+            ['label' => 'Cancelled', 'value' => number_format($statusCounts['Cancelled'])],
+            ['label' => 'Total Leave Days', 'value' => number_format($totalDays, 2)],
+        ];
+    } elseif ($label === 'Leave Monetization') {
+        $statusCounts = ['Approved' => 0, 'Pending' => 0, 'Rejected' => 0];
+        $approvedDays = 0.0;
+        $approvedAmount = 0.0;
+        foreach ($rows as $row) {
+            $status = ucfirst(strtolower(reports_text($row['status'] ?? '')));
+            if (array_key_exists($status, $statusCounts)) {
+                $statusCounts[$status] += 1;
+            }
+            if ($status === 'Approved') {
+                $approvedDays += (float)($row['daysApproved'] ?? 0);
+                $approvedAmount += (float)($row['computedAmount'] ?? 0);
+            }
+        }
+        $keyStatistics = [
+            ['label' => 'Total Requests', 'value' => number_format($totalRecords)],
+            ['label' => 'Approved Requests', 'value' => number_format($statusCounts['Approved'])],
+            ['label' => 'Pending Requests', 'value' => number_format($statusCounts['Pending'])],
+            ['label' => 'Rejected Requests', 'value' => number_format($statusCounts['Rejected'])],
+            ['label' => 'Total Days Monetized', 'value' => number_format($approvedDays, 2)],
+            ['label' => 'Total Monetized Amount', 'value' => 'PHP ' . number_format($approvedAmount, 2)],
+        ];
+    } elseif ($label === 'Leave Balance') {
+        $keyStatistics = [
+            ['label' => 'Total Employees', 'value' => number_format(reports_distinct_count($rows, ['employeeNo']))],
+            ['label' => 'Total Available Credits', 'value' => number_format(reports_numeric_sum($rows, ['remainingBalance']) ?? 0, 2)],
+        ];
+    } elseif ($label === 'Leave Utilization') {
+        $keyStatistics = [
+            ['label' => 'Total Leave Days Used', 'value' => number_format(reports_numeric_sum($rows, ['totalDaysUsed']) ?? 0, 2)],
+            ['label' => 'Employees Who Used Leave', 'value' => number_format(reports_distinct_count($rows, ['employeeNo']))],
+            ['label' => 'With Pay Days', 'value' => number_format(reports_numeric_sum($rows, ['withPay']) ?? 0, 2)],
+            ['label' => 'Without Pay Days', 'value' => number_format(reports_numeric_sum($rows, ['withoutPay']) ?? 0, 2)],
+        ];
+    }
+
+    if ($keyStatistics !== []) {
+        return [
+            'totalRecords' => $totalRecords,
+            'keyStatistics' => $keyStatistics,
+            'description' => $definition['description'],
+            'distribution' => reports_distribution($rows),
+            'dateRange' => $dateWindow,
+        ];
+    }
 
     $uniqueEmployees = reports_distinct_count($rows, ['employeeId', 'employeeName']);
     if ($uniqueEmployees > 0) {
@@ -1729,6 +2235,7 @@ function reports_write_audit(PDO $pdo, array $user, string $action, string $summ
             ':details_json' => $detailsJson,
             ':user_agent' => $context['userAgent'] ?? null,
         ]);
+        audit_mark_entry_written();
     } catch (Throwable $exception) {
         // Reporting must never fail because the optional audit write failed.
     }
@@ -1952,47 +2459,47 @@ function reports_employee_kpis(PDO $pdo, ?int $divisionId, string $previousMonth
 
 function reports_payroll_kpis(PDO $pdo, ?int $divisionId): array
 {
-    if (!reports_table_exists($pdo, 'Payroll')) {
+    if (!reports_table_exists($pdo, 'payroll')) {
         return [];
     }
 
     [$scope, $scopeParams] = reports_division_scope($divisionId);
-    $join = 'FROM Payroll p LEFT JOIN employees e ON e.id = p.employee_id WHERE 1 = 1' . $scope;
-    $released = ' AND LOWER(COALESCE(p.status, "")) IN ("released", "paid", "posted", "completed")';
+    $join = 'FROM payroll p LEFT JOIN employees e ON e.id = p.employee_id WHERE 1 = 1' . $scope;
+    $released = ' AND ' . reports_payroll_released_condition();
+    // Counted by the day the Cashier released the batch, the way the Released Payroll table lists it.
+    $releasedOn = reports_payroll_release_date_sql();
 
     $thisMonth = reports_scalar(
         $pdo,
         'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . $released . '
-            AND p.payroll_date >= DATE_FORMAT(CURDATE(), "%Y-%m-01")',
+            AND ' . $releasedOn . ' >= DATE_FORMAT(CURDATE(), "%Y-%m-01")',
         $scopeParams
     );
     $lastMonth = reports_scalar(
         $pdo,
         'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . $released . '
-            AND p.payroll_date >= DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, "%Y-%m-01")
-            AND p.payroll_date < DATE_FORMAT(CURDATE(), "%Y-%m-01")',
+            AND ' . $releasedOn . ' >= DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, "%Y-%m-01")
+            AND ' . $releasedOn . ' < DATE_FORMAT(CURDATE(), "%Y-%m-01")',
         $scopeParams
     );
     $thisYear = reports_scalar(
         $pdo,
-        'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . $released . ' AND YEAR(p.payroll_date) = YEAR(CURDATE())',
+        'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . $released . ' AND YEAR(' . $releasedOn . ') = YEAR(CURDATE())',
         $scopeParams
     );
     $lastYear = reports_scalar(
         $pdo,
-        'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . $released . ' AND YEAR(p.payroll_date) = YEAR(CURDATE()) - 1',
+        'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . $released . ' AND YEAR(' . $releasedOn . ') = YEAR(CURDATE()) - 1',
         $scopeParams
     );
     $pending = reports_scalar(
         $pdo,
-        'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . '
-            AND LOWER(COALESCE(p.status, "")) NOT IN ("released", "paid", "posted", "completed", "cancelled", "archived")',
+        'SELECT COALESCE(SUM(p.net_pay), 0) ' . $join . ' AND ' . reports_payroll_pending_condition(),
         $scopeParams
     );
     $pendingCount = reports_scalar(
         $pdo,
-        'SELECT COUNT(p.payroll_id) ' . $join . '
-            AND LOWER(COALESCE(p.status, "")) NOT IN ("released", "paid", "posted", "completed", "cancelled", "archived")',
+        'SELECT COUNT(p.payroll_id) ' . $join . ' AND ' . reports_payroll_pending_condition(),
         $scopeParams
     );
 
@@ -2029,7 +2536,7 @@ function reports_leave_kpis(PDO $pdo, ?int $divisionId): array
 
     $kpis = [
         $statusKpi('approvedLeaves', 'Approved Leaves', 'calendar-check', 'LOWER(lr.status) = "approved"'),
-        $statusKpi('pendingLeaves', 'Pending Leaves', 'calendar-clock', 'LOWER(lr.status) IN ("pending", "reviewed")'),
+        $statusKpi('pendingLeaves', 'Pending Leaves', 'calendar-clock', 'LOWER(lr.status) IN ("pending", "endorsed", "reviewed")'),
         $statusKpi('rejectedLeaves', 'Rejected Leaves', 'calendar-x', 'LOWER(lr.status) = "rejected"'),
     ];
 
@@ -2278,6 +2785,63 @@ function reports_employee_growth(PDO $pdo, ?int $divisionId, array $dateWindow):
 }
 
 /**
+ * Twelve calendar-month hire counts for the year containing the report window's closing date.
+ * Unlike employeeGrowth, this series deliberately covers the full year even when the report uses
+ * Last 7/30/90 Days: every point answers the same question from employees.date_hired, and missing
+ * months are genuine zeroes rather than months the query never inspected.
+ */
+function reports_monthly_headcount_growth(PDO $pdo, ?int $divisionId, array $dateWindow): array
+{
+    [$scope, $scopeParams] = reports_division_scope($divisionId);
+
+    $today = new DateTimeImmutable('today');
+    $windowEnd = new DateTimeImmutable((string)$dateWindow['end']);
+    if ($windowEnd > $today) {
+        $windowEnd = $today;
+    }
+
+    $year = (int)$windowEnd->format('Y');
+    $yearStart = sprintf('%04d-01-01', $year);
+    $nextYearStart = sprintf('%04d-01-01', $year + 1);
+    $series = [];
+
+    for ($month = 1; $month <= 12; $month++) {
+        $period = sprintf('%04d-%02d', $year, $month);
+        $series[$period] = [
+            'period' => $period,
+            'label' => (new DateTimeImmutable($period . '-01'))->format('M Y'),
+            'shortLabel' => (new DateTimeImmutable($period . '-01'))->format('M'),
+            'granularity' => 'month',
+            'hires' => 0,
+        ];
+    }
+
+    $rows = reports_rows(
+        $pdo,
+        'SELECT DATE_FORMAT(e.date_hired, "%Y-%m") AS period, COUNT(e.id) AS hires
+         FROM employees e
+         WHERE e.is_archived = 0
+           AND e.date_hired >= :year_start
+           AND e.date_hired < :next_year_start' . $scope . '
+         GROUP BY period
+         ORDER BY period',
+        array_merge($scopeParams, [
+            ':year_start' => $yearStart,
+            ':next_year_start' => $nextYearStart,
+        ])
+    );
+
+    foreach ($rows as $row) {
+        $period = (string)($row['period'] ?? '');
+        if (isset($series[$period])) {
+            $series[$period]['hires'] = (int)($row['hires'] ?? 0);
+        }
+    }
+
+    return array_values($series);
+}
+
+/**
  * Every deduction line a payslip prints, with the total payroll has withheld against it.
  *
  * This used to chart the ten largest catalog deductions, which left the rest of the payslip
@@ -2295,27 +2859,37 @@ function reports_employee_growth(PDO $pdo, ?int $divisionId, array $dateWindow):
  */
 function reports_deduction_distribution(PDO $pdo): array
 {
-    $rows = reports_rows(
-        $pdo,
-        'SELECT dt.deduction_name AS name, ROUND(SUM(pd.amount), 2) AS amount
-         FROM PayrollDeduction pd
-         INNER JOIN ' . deduction_catalog_type_union_sql() . ' dt
-                 ON dt.deduction_type_id = pd.deduction_type_id
-         GROUP BY dt.deduction_type_id, dt.deduction_name'
+    $types = deduction_catalog_type_map($pdo);
+    $reportItems = [];
+    $statement = $pdo->query(
+        'SELECT payroll_id, deduction_items_json
+         FROM payroll
+         WHERE status = "Paid" AND deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
     );
 
-    if ($rows === []) {
-        return [];
+    foreach ($statement as $payroll) {
+        $items = deduction_catalog_normalize_payroll_items(
+            $pdo,
+            payroll_decode_embedded_json_list($payroll['deduction_items_json'] ?? null),
+            (int)($payroll['payroll_id'] ?? 0),
+            $types
+        );
+
+        foreach ($items as $item) {
+            $name = reports_text($item['name'] ?? '');
+            if ($name !== '') {
+                $reportItems[] = $item;
+            }
+        }
     }
 
-    $lines = payslip_deduction_lines($rows);
-
-    // usort is stable in PHP 8, so equal amounts keep the payslip order they came in with.
-    usort($lines, static fn (array $left, array $right): int => $right['value'] <=> $left['value']);
-
+    $totals = report_payroll_deduction_totals($reportItems);
     return array_map(
-        static fn (array $line): array => ['label' => $line['label'], 'value' => (float)$line['value']],
-        $lines
+        static fn (array $deduction): array => [
+            'label' => $deduction[1],
+            'value' => $totals['amount_' . $deduction[0]],
+        ],
+        REPORT_PAYROLL_DEDUCTIONS
     );
 }
 
@@ -2325,6 +2899,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
     $charts = [];
 
     $charts['employeeGrowth'] = reports_employee_growth($pdo, $divisionId, $dateWindow);
+    $charts['monthlyHeadcountGrowth'] = reports_monthly_headcount_growth($pdo, $divisionId, $dateWindow);
 
     // Active against everything else, which is what the active and inactive employee reports ask.
     // Each slice keeps the individual record statuses that rolled into it so the card's table view
@@ -2490,7 +3065,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
     );
 
     // --- Payroll ---
-    if (reports_table_exists($pdo, 'Payroll')) {
+    if (reports_table_exists($pdo, 'payroll')) {
         $payrollSeries = reports_month_series(12);
         foreach ($payrollSeries as $key => $entry) {
             $payrollSeries[$key]['gross'] = 0.0;
@@ -2504,7 +3079,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
                     ROUND(SUM(p.gross_pay), 2) AS gross,
                     ROUND(SUM(p.total_deduction), 2) AS deductions,
                     ROUND(SUM(p.net_pay), 2) AS net
-             FROM Payroll p
+             FROM payroll p
              LEFT JOIN employees e ON e.id = p.employee_id
              WHERE p.payroll_date >= :window_start' . $scope . '
              GROUP BY DATE_FORMAT(p.payroll_date, "%Y-%m")',
@@ -2527,7 +3102,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
             reports_rows(
                 $pdo,
                 'SELECT COALESCE(d.name, "Unassigned") AS label, ROUND(SUM(p.net_pay), 2) AS value
-                 FROM Payroll p
+                 FROM payroll p
                  LEFT JOIN employees e ON e.id = p.employee_id
                  LEFT JOIN divisions d ON d.id = e.division_id
                  WHERE DATE(p.payroll_date) BETWEEN :start_date AND :end_date' . $scope . '
@@ -2545,7 +3120,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
                 'SELECT COALESCE(NULLIF(TRIM(p.status), ""), "Unspecified") AS label,
                         COUNT(p.payroll_id) AS value,
                         ROUND(SUM(p.net_pay), 2) AS amount
-                 FROM Payroll p
+                 FROM payroll p
                  LEFT JOIN employees e ON e.id = p.employee_id
                  WHERE DATE(p.payroll_date) BETWEEN :start_date AND :end_date' . $scope . '
                  GROUP BY label
@@ -2559,7 +3134,7 @@ function reports_dashboard_charts(PDO $pdo, ?int $divisionId, array $dateWindow)
         $charts['payrollStatus'] = [];
     }
 
-    if (reports_table_exists($pdo, 'PayrollDeduction') && reports_table_exists($pdo, 'other_deductions')) {
+    if (reports_table_exists($pdo, 'payroll') && reports_table_exists($pdo, 'other_deductions')) {
         $charts['deductionDistribution'] = reports_deduction_distribution($pdo);
     } else {
         $charts['deductionDistribution'] = [];
@@ -2806,15 +3381,42 @@ function reports_performance_by_division(PDO $pdo, ?int $divisionId): array
     return array_slice($rows, 0, 12);
 }
 
-function reports_dashboard(PDO $pdo, array $query): array
+/**
+ * `$scopeDivisionId` is the signed-in desk's own division when the category being summarised is a
+ * scoped one (see reports_scope_division_id()); it overrides whatever division the picker sent, so
+ * the charts count the same people the table lists. 0 -- a scoped desk with no division -- draws
+ * nothing rather than everyone.
+ */
+function reports_dashboard(PDO $pdo, array $query, ?int $scopeDivisionId = null): array
 {
-    $divisionId = (int)reports_text($query['divisionId'] ?? '0');
-    $divisionId = $divisionId > 0 ? $divisionId : null;
     $dateWindow = reports_date_window(
         reports_text($query['dateRange'] ?? 'last30'),
         $query['customStart'] ?? null,
         $query['customEnd'] ?? null
     );
+    $availability = [
+        'payroll' => reports_table_exists($pdo, 'payroll'),
+        'leave' => reports_table_exists($pdo, 'leave_requests'),
+        'attendance' => reports_table_exists($pdo, 'attendance_daily_records'),
+        // Either instrument is enough to draw the performance card, which plots both.
+        'performance' => reports_table_exists($pdo, 'ipcr')
+            || reports_table_exists($pdo, 'division_opcr_assignments'),
+        'training' => reports_table_exists($pdo, 'training_seminars'),
+        'recruitment' => reports_table_exists($pdo, 'applicants'),
+    ];
+
+    if ($scopeDivisionId === 0) {
+        return [
+            'generatedAt' => date('Y-m-d H:i:s'),
+            'dateRange' => $dateWindow,
+            'kpis' => [],
+            'charts' => [],
+            'availability' => $availability,
+        ];
+    }
+
+    $divisionId = $scopeDivisionId ?? (int)reports_text($query['divisionId'] ?? '0');
+    $divisionId = $divisionId > 0 ? $divisionId : null;
 
     $previousMonthEnd = (new DateTimeImmutable('first day of this month'))->modify('-1 day')->format('Y-m-d');
 
@@ -2829,16 +3431,7 @@ function reports_dashboard(PDO $pdo, array $query): array
         'dateRange' => $dateWindow,
         'kpis' => $kpis,
         'charts' => reports_dashboard_charts($pdo, $divisionId, $dateWindow),
-        'availability' => [
-            'payroll' => reports_table_exists($pdo, 'Payroll'),
-            'leave' => reports_table_exists($pdo, 'leave_requests'),
-            'attendance' => reports_table_exists($pdo, 'attendance_daily_records'),
-            // Either instrument is enough to draw the performance card, which plots both.
-            'performance' => reports_table_exists($pdo, 'ipcr')
-                || reports_table_exists($pdo, 'division_opcr_assignments'),
-            'training' => reports_table_exists($pdo, 'training_seminars'),
-            'recruitment' => reports_table_exists($pdo, 'applicants'),
-        ],
+        'availability' => $availability,
     ];
 }
 
@@ -2846,9 +3439,42 @@ function reports_dashboard(PDO $pdo, array $query): array
 // Filter options + catalog
 // ===================================================================
 
-function reports_filter_options(PDO $pdo): array
+/**
+ * `$scopeDivisionId` narrows the people-shaped pickers -- Division and Employee -- to the signed-in
+ * desk's own division (see reports_scope_division_id()), so a scoped desk is not offered names its
+ * reports will never return. 0 leaves both pickers empty. Everything else (leave types, payroll
+ * periods, statuses) is office-wide vocabulary and stays as it is.
+ */
+function reports_filter_options(PDO $pdo, ?int $scopeDivisionId = null): array
 {
-    $divisions = reports_rows($pdo, 'SELECT id, name, code FROM divisions WHERE is_archived = 0 ORDER BY name ASC');
+    $divisionScope = '';
+    $employeeScope = '';
+    $scopeParams = [];
+
+    if ($scopeDivisionId !== null) {
+        if ($scopeDivisionId > 0) {
+            $divisionScope = ' AND id = :division_id';
+            $employeeScope = ' AND e.division_id = :division_id';
+            $scopeParams = [':division_id' => $scopeDivisionId];
+        } else {
+            $divisionScope = ' AND 1 = 0';
+            $employeeScope = ' AND 1 = 0';
+        }
+    }
+
+    $divisions = reports_rows(
+        $pdo,
+        'SELECT id, name, code FROM divisions WHERE is_archived = 0' . $divisionScope . ' ORDER BY name ASC',
+        $scopeParams
+    );
+    $employees = reports_rows(
+        $pdo,
+        'SELECT e.id, e.employee_id, ' . reports_employee_name_expression() . ' AS employeeName
+         FROM employees e
+         WHERE e.is_archived = 0' . $employeeScope . '
+         ORDER BY employeeName ASC',
+        $scopeParams
+    );
     $designations = reports_rows(
         $pdo,
         'SELECT des.id, des.name, d.name AS division
@@ -2882,11 +3508,22 @@ function reports_filter_options(PDO $pdo): array
     $leaveTypes = reports_table_exists($pdo, 'leave_types')
         ? reports_rows($pdo, 'SELECT leave_type_id AS id, name, code FROM leave_types WHERE is_active = 1 ORDER BY name ASC')
         : [];
-    $payrollYears = reports_table_exists($pdo, 'Payroll')
-        ? reports_rows($pdo, 'SELECT DISTINCT YEAR(payroll_date) AS value FROM Payroll WHERE payroll_date IS NOT NULL ORDER BY value DESC')
+    $payrollYears = reports_table_exists($pdo, 'payroll')
+        ? reports_rows($pdo, 'SELECT DISTINCT YEAR(payroll_date) AS value FROM payroll WHERE payroll_date IS NOT NULL ORDER BY value DESC')
+        : [];
+    $leaveYears = reports_table_exists($pdo, 'leave_credits')
+        ? reports_rows($pdo, 'SELECT DISTINCT year AS value FROM leave_credits ORDER BY year DESC')
         : [];
 
     return [
+        'employees' => array_map(
+            static fn (array $row): array => [
+                'value' => (string)$row['id'],
+                'label' => (string)$row['employeeName'],
+                'employeeNo' => (string)$row['employee_id'],
+            ],
+            $employees
+        ),
         'divisions' => array_map(
             static fn (array $row): array => ['value' => (string)$row['id'], 'label' => (string)$row['name'], 'code' => (string)($row['code'] ?? '')],
             $divisions
@@ -2911,6 +3548,14 @@ function reports_filter_options(PDO $pdo): array
             static fn (array $row): array => ['value' => (string)$row['id'], 'label' => (string)$row['name']],
             $leaveTypes
         ),
+        'leaveStatuses' => array_map(
+            static fn (string $status): array => ['value' => strtolower($status), 'label' => $status],
+            ['Approved', 'Pending', 'Rejected', 'Cancelled']
+        ),
+        'leaveYears' => array_map(
+            static fn (array $row): array => ['value' => (string)$row['value'], 'label' => (string)$row['value']],
+            $leaveYears
+        ),
         'payrollYears' => array_map(
             static fn (array $row): array => ['value' => (string)$row['value'], 'label' => (string)$row['value']],
             $payrollYears
@@ -2927,6 +3572,7 @@ function reports_catalog(PDO $pdo, string $roleKey = ''): array
     $definitions = reports_definitions();
     $categoryLabels = reports_category_labels();
     $blocked = reports_blocked_report_keys($roleKey);
+    $blockedCategories = reports_blocked_category_keys($roleKey);
     $catalog = [];
 
     foreach ($definitions as $key => $definition) {
@@ -2935,6 +3581,10 @@ function reports_catalog(PDO $pdo, string $roleKey = ''): array
         }
 
         $categoryKey = $definition['category'] ?? 'employee';
+
+        if (in_array($categoryKey, $blockedCategories, true)) {
+            continue;
+        }
 
         if (!isset($catalog[$categoryKey])) {
             $catalog[$categoryKey] = [
@@ -2966,6 +3616,48 @@ function reports_catalog(PDO $pdo, string $roleKey = ''): array
     return $ordered;
 }
 
+/** Human-readable filter labels for exported and printed report metadata. */
+function reports_describe_active_filters(PDO $pdo, array $activeFilters): array
+{
+    if ($activeFilters === []) {
+        return [];
+    }
+
+    $labels = [
+        'employeeId' => ['Employee', 'employees'],
+        'divisionId' => ['Division/Department', 'divisions'],
+        'designationId' => ['Position', 'designations'],
+        'employmentStatus' => ['Employment Status', 'employmentStatuses'],
+        'gender' => ['Gender', 'genders'],
+        'status' => ['Status', 'leaveStatuses'],
+        'leaveTypeId' => ['Leave Type', 'leaveTypes'],
+        'year' => ['Year', null],
+        'payrollYear' => ['Payroll Year', 'payrollYears'],
+        'payrollMonth' => ['Payroll Month', 'payrollMonths'],
+    ];
+    $options = reports_filter_options($pdo);
+    $described = [];
+
+    foreach ($activeFilters as $key => $filter) {
+        [$label, $optionsKey] = $labels[$key] ?? [ucwords(preg_replace('/(?<!^)[A-Z]/', ' $0', (string)$key)), null];
+        $rawValue = reports_text($filter['value'] ?? '');
+        $displayValue = $rawValue;
+
+        if ($optionsKey !== null) {
+            foreach ($options[$optionsKey] ?? [] as $option) {
+                if ((string)($option['value'] ?? '') === $rawValue) {
+                    $displayValue = (string)($option['label'] ?? $rawValue);
+                    break;
+                }
+            }
+        }
+
+        $described[] = ['key' => (string)$key, 'label' => $label, 'value' => $displayValue];
+    }
+
+    return $described;
+}
+
 // ===================================================================
 // Export writers
 // ===================================================================
@@ -2981,6 +3673,28 @@ function reports_export_filename(string $label, string $extension): string
 function reports_cell_value(array $row, string $key): string
 {
     $value = $row[$key] ?? '';
+
+    if (in_array($key, ['computedAmount', 'rateBasis'], true) && is_numeric($value)) {
+        return '₱' . number_format((float)$value, 2, '.', ',');
+    }
+
+    if (in_array($key, [
+        'withPay', 'withoutPay', 'totalDays', 'balanceBefore', 'balanceAfter',
+        'availableLeaveBalance', 'daysRequested', 'daysApproved', 'beginningBalance',
+        'earnedCredits', 'usedCredits', 'monetizedCredits', 'adjustments',
+        'remainingBalance', 'totalDaysUsed',
+    ], true) && is_numeric($value)) {
+        return number_format((float)$value, 2, '.', ',');
+    }
+
+    if (in_array($key, ['dateFiled', 'dateRequested', 'approvalDate', 'asOfDate', 'dateApproved'], true)
+        && reports_text($value) !== '' && reports_text($value) !== 'N/A') {
+        try {
+            return (new DateTimeImmutable((string)$value))->format('M j, Y');
+        } catch (Throwable) {
+            // Keep the database value when an imported record carries a non-standard date.
+        }
+    }
 
     if (is_float($value)) {
         return number_format($value, 2, '.', '');
@@ -3008,7 +3722,7 @@ function reports_export_columns(array $definition): array
 {
     $columns = $definition['columns'] ?? [];
 
-    if (!empty($definition['isAggregate'])) {
+    if (!empty($definition['isAggregate']) || !empty($definition['keepStatus'])) {
         return $columns;
     }
 
@@ -3057,7 +3771,13 @@ function reports_excel_column(int $index): string
     return $name;
 }
 
-function reports_worksheet_xml(array $definition, array $rows, array $dateWindow): string
+function reports_worksheet_xml(
+    array $definition,
+    array $rows,
+    array $dateWindow,
+    array $summary = [],
+    array $appliedFilters = []
+): string
 {
     $xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
     $xml .= '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">';
@@ -3077,7 +3797,19 @@ function reports_worksheet_xml(array $definition, array $rows, array $dateWindow
     $writeRow([$definition['label']]);
     $writeRow(['Generated', date('Y-m-d H:i:s')]);
     $writeRow(['Date Range', $dateWindow['label'] . ' (' . $dateWindow['start'] . ' to ' . $dateWindow['end'] . ')']);
+    $writeRow([
+        'Applied Filters',
+        $appliedFilters === []
+            ? 'None'
+            : implode('; ', array_map(
+                static fn (array $filter): string => $filter['label'] . ': ' . $filter['value'],
+                $appliedFilters
+            )),
+    ]);
     $writeRow(['Records', (string)count($rows)]);
+    foreach ($summary['keyStatistics'] ?? [] as $statistic) {
+        $writeRow([(string)$statistic['label'], (string)$statistic['value']]);
+    }
     $writeRow([]);
 
     $columns = reports_export_columns($definition);
@@ -3095,10 +3827,76 @@ function reports_worksheet_xml(array $definition, array $rows, array $dateWindow
     return $xml;
 }
 
-function reports_stream_xlsx(array $definition, array $rows, array $dateWindow): void
+/** Excel-compatible XML fallback for XAMPP installations without PHP's Zip extension. */
+function reports_stream_excel_xml(
+    array $definition,
+    array $rows,
+    array $dateWindow,
+    array $summary = [],
+    array $appliedFilters = []
+): void {
+    $filename = reports_export_filename($definition['label'], 'xls');
+    $xml = '<?xml version="1.0" encoding="UTF-8"?>';
+    $xml .= '<?mso-application progid="Excel.Sheet"?>';
+    $xml .= '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" '
+        . 'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">';
+    $xml .= '<Worksheet ss:Name="Report"><Table>';
+
+    $writeRow = static function (array $values) use (&$xml): void {
+        $xml .= '<Row>';
+        foreach ($values as $value) {
+            $xml .= '<Cell><Data ss:Type="String">' . reports_xml($value) . '</Data></Cell>';
+        }
+        $xml .= '</Row>';
+    };
+
+    $writeRow([$definition['label']]);
+    $writeRow(['Generated', date('Y-m-d H:i:s')]);
+    $writeRow(['Date Range', $dateWindow['label'] . ' (' . $dateWindow['start'] . ' to ' . $dateWindow['end'] . ')']);
+    $writeRow([
+        'Applied Filters',
+        $appliedFilters === []
+            ? 'None'
+            : implode('; ', array_map(
+                static fn (array $filter): string => $filter['label'] . ': ' . $filter['value'],
+                $appliedFilters
+            )),
+    ]);
+    $writeRow(['Records', (string)count($rows)]);
+    foreach ($summary['keyStatistics'] ?? [] as $statistic) {
+        $writeRow([(string)$statistic['label'], (string)$statistic['value']]);
+    }
+    $writeRow([]);
+
+    $columns = reports_export_columns($definition);
+    $writeRow(array_column($columns, 'label'));
+    foreach ($rows as $row) {
+        $writeRow(array_map(
+            static fn (array $column): string => reports_cell_value($row, $column['key']),
+            $columns
+        ));
+    }
+
+    $xml .= '</Table></Worksheet></Workbook>';
+
+    header_remove('Content-Type');
+    header('Content-Type: application/vnd.ms-excel; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Content-Length: ' . strlen($xml));
+    echo $xml;
+    exit;
+}
+
+function reports_stream_xlsx(
+    array $definition,
+    array $rows,
+    array $dateWindow,
+    array $summary = [],
+    array $appliedFilters = []
+): void
 {
     if (!class_exists(ZipArchive::class)) {
-        reports_stream_csv($definition, $rows);
+        reports_stream_excel_xml($definition, $rows, $dateWindow, $summary, $appliedFilters);
     }
 
     $filename = reports_export_filename($definition['label'], 'xlsx');
@@ -3106,14 +3904,17 @@ function reports_stream_xlsx(array $definition, array $rows, array $dateWindow):
     $zip = new ZipArchive();
 
     if ($tempFile === false || $zip->open($tempFile, ZipArchive::OVERWRITE) !== true) {
-        reports_stream_csv($definition, $rows);
+        reports_stream_excel_xml($definition, $rows, $dateWindow, $summary, $appliedFilters);
     }
 
     $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>');
     $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>');
     $zip->addFromString('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
     $zip->addFromString('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Report" sheetId="1" r:id="rId1"/></sheets></workbook>');
-    $zip->addFromString('xl/worksheets/sheet1.xml', reports_worksheet_xml($definition, $rows, $dateWindow));
+    $zip->addFromString(
+        'xl/worksheets/sheet1.xml',
+        reports_worksheet_xml($definition, $rows, $dateWindow, $summary, $appliedFilters)
+    );
     $zip->addFromString('docProps/core.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>' . reports_xml($definition['label']) . '</dc:title><dc:creator>HRIS</dc:creator></cp:coreProperties>');
     $zip->addFromString('docProps/app.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>HRIS</Application></Properties>');
     $zip->close();
@@ -3133,12 +3934,24 @@ function reports_pdf_escape(string $value): string
     return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $value);
 }
 
-function reports_pdf_lines(array $definition, array $rows, array $dateWindow, array $summary): array
+function reports_pdf_lines(
+    array $definition,
+    array $rows,
+    array $dateWindow,
+    array $summary,
+    array $appliedFilters = []
+): array
 {
     $lines = [
         $definition['label'],
         'Generated: ' . date('Y-m-d H:i:s'),
         'Date Range: ' . $dateWindow['label'] . ' (' . $dateWindow['start'] . ' to ' . $dateWindow['end'] . ')',
+        'Applied Filters: ' . ($appliedFilters === []
+            ? 'None'
+            : implode('; ', array_map(
+                static fn (array $filter): string => $filter['label'] . ': ' . $filter['value'],
+                $appliedFilters
+            ))),
         'Records: ' . count($rows),
     ];
 
@@ -3215,10 +4028,16 @@ function reports_build_pdf(array $lines): string
     return $pdf;
 }
 
-function reports_stream_pdf(array $definition, array $rows, array $dateWindow, array $summary): void
+function reports_stream_pdf(
+    array $definition,
+    array $rows,
+    array $dateWindow,
+    array $summary,
+    array $appliedFilters = []
+): void
 {
     $filename = reports_export_filename($definition['label'], 'pdf');
-    $pdf = reports_build_pdf(reports_pdf_lines($definition, $rows, $dateWindow, $summary));
+    $pdf = reports_build_pdf(reports_pdf_lines($definition, $rows, $dateWindow, $summary, $appliedFilters));
 
     header_remove('Content-Type');
     header('Content-Type: application/pdf');
@@ -3228,14 +4047,21 @@ function reports_stream_pdf(array $definition, array $rows, array $dateWindow, a
     exit;
 }
 
-function reports_stream_export(string $format, array $definition, array $rows, array $dateWindow, array $summary): void
+function reports_stream_export(
+    string $format,
+    array $definition,
+    array $rows,
+    array $dateWindow,
+    array $summary,
+    array $appliedFilters = []
+): void
 {
     if ($format === 'pdf') {
-        reports_stream_pdf($definition, $rows, $dateWindow, $summary);
+        reports_stream_pdf($definition, $rows, $dateWindow, $summary, $appliedFilters);
     }
 
     if ($format === 'xlsx') {
-        reports_stream_xlsx($definition, $rows, $dateWindow);
+        reports_stream_xlsx($definition, $rows, $dateWindow, $summary, $appliedFilters);
     }
 
     reports_stream_csv($definition, $rows);
@@ -3301,6 +4127,8 @@ if ($action === 'log') {
 
 require_method('GET');
 
+$scopeDivisionId = reports_scope_division_id($pdo, $sessionUser, $roleKey);
+
 if ($action === 'catalog') {
     json_response([
         'success' => true,
@@ -3311,14 +4139,21 @@ if ($action === 'catalog') {
 if ($action === 'filters') {
     json_response([
         'success' => true,
-        'filters' => reports_filter_options($pdo),
+        'filters' => reports_filter_options($pdo, $scopeDivisionId),
     ]);
 }
 
 if ($action === 'dashboard') {
+    // The client names the category it is summarising so a scoped desk's employee charts count the
+    // same division its employee tables list. Other categories, and unscoped desks, are unaffected.
+    $dashboardCategory = reports_text($_GET['category'] ?? '');
+    $dashboardScope = $scopeDivisionId !== null && reports_category_is_division_scoped($dashboardCategory)
+        ? $scopeDivisionId
+        : null;
+
     json_response([
         'success' => true,
-        'dashboard' => reports_dashboard($pdo, $_GET),
+        'dashboard' => reports_dashboard($pdo, $_GET, $dashboardScope),
     ]);
 }
 
@@ -3343,6 +4178,16 @@ if (in_array($reportType, reports_blocked_report_keys($roleKey), true)) {
     ], 403);
 }
 
+$definition = $definitions[$reportType];
+$reportCategory = $definition['category'] ?? 'employee';
+
+if (in_array($reportCategory, reports_blocked_category_keys($roleKey), true)) {
+    json_response([
+        'success' => false,
+        'message' => 'You do not have permission to run this report.',
+    ], 403);
+}
+
 if ($exportFormat !== '' && !in_array($exportFormat, ['pdf', 'xlsx', 'csv'], true)) {
     json_response([
         'success' => false,
@@ -3350,12 +4195,34 @@ if ($exportFormat !== '' && !in_array($exportFormat, ['pdf', 'xlsx', 'csv'], tru
     ], 422);
 }
 
-$definition = $definitions[$reportType];
+/*
+ * A scoped desk's employee reports list its own division whatever the query string asked for: the
+ * division is written over the request here so the same filter machinery narrows the rows, names
+ * the division in the export's applied-filter metadata, and covers the download path as much as the
+ * read path. A scoped desk with no division has nothing to list -- and so does a scoped report that
+ * carries no division filter to narrow by, rather than falling open to everyone.
+ */
+$reportIsDivisionScoped = $scopeDivisionId !== null && reports_category_is_division_scoped($reportCategory);
+$reportCanNarrow = $scopeDivisionId > 0 && isset($definition['filters']['divisionId']);
+
+if ($reportIsDivisionScoped) {
+    // The desk's own division, or none at all -- never the one the query string asked for, which
+    // would otherwise be printed on an empty export as if it had been applied.
+    if ($reportCanNarrow) {
+        $_GET['divisionId'] = (string)$scopeDivisionId;
+    } else {
+        unset($_GET['divisionId']);
+    }
+}
+
 $dateWindow = reports_date_window($dateRange, $_GET['customStart'] ?? null, $_GET['customEnd'] ?? null);
 $activeFilters = reports_active_filters($definition, $_GET);
-$rows = reports_fetch_rows($pdo, $definition, $dateWindow, $search, $activeFilters);
+$rows = $reportIsDivisionScoped && !$reportCanNarrow
+    ? []
+    : reports_fetch_rows($pdo, $definition, $dateWindow, $search, $activeFilters);
 $summary = reports_summary($definition, $rows, $dateWindow);
 $tablesReady = reports_required_tables_exist($pdo, $definition);
+$appliedFilterLabels = reports_describe_active_filters($pdo, $activeFilters);
 
 if ($exportFormat !== '') {
     reports_write_audit($pdo, $sessionUser, 'report.exported', 'Exported "' . $definition['label'] . '" as ' . strtoupper($exportFormat) . '.', [
@@ -3367,7 +4234,7 @@ if ($exportFormat !== '') {
         'filters' => array_map(static fn (array $filter): string => $filter['value'], $activeFilters),
     ]);
 
-    reports_stream_export($exportFormat, $definition, $rows, $dateWindow, $summary);
+    reports_stream_export($exportFormat, $definition, $rows, $dateWindow, $summary, $appliedFilterLabels);
 }
 
 // Reading a report is not audited here — the browser refetches on every filter
@@ -3389,10 +4256,12 @@ json_response([
          * paper; a detail report's repeats the filter and does not.
          */
         'isAggregate' => !empty($definition['isAggregate']),
+        'keepStatus' => !empty($definition['keepStatus']),
         'rows' => $rows,
         'summary' => $summary,
         'dateRange' => $dateWindow,
         'available' => $tablesReady,
         'supportedFilters' => array_keys($definition['filters'] ?? []),
+        'appliedFilters' => $appliedFilterLabels,
     ],
 ]);

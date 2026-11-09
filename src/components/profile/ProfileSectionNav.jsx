@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 
 /**
@@ -15,13 +15,23 @@ export default function ProfileSectionNav({
   actions = [],
   className = "",
 }) {
+  const tabRefs = useRef({});
+
+  useEffect(() => {
+    tabRefs.current[activeSection]?.scrollIntoView?.({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [activeSection]);
+
   return (
     <div
-      className={`profile-section-nav sticky top-20 z-30 rounded-xl border border-slate-200 bg-white/95 p-2 shadow-sm backdrop-blur ${className}`.trim()}
+      className={`profile-section-nav sticky top-[3.75rem] z-30 min-w-0 max-w-full rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur sm:p-2 lg:top-20 ${className}`.trim()}
     >
       <div className="flex flex-col gap-2 xl:flex-row xl:items-center">
-        <div className="profile-section-nav-rail min-w-0 flex-1 overflow-x-auto">
-          <div className="flex min-w-max gap-1" role="tablist" aria-label="Profile sections">
+        <div className="profile-section-nav-rail min-w-0 flex-1 overflow-x-auto overscroll-x-contain">
+          <div className="flex min-w-max flex-nowrap gap-1" role="tablist" aria-label="Profile sections">
             {sections.map((section) => {
               const Icon = section.icon;
               const isActive = section.id === activeSection;
@@ -29,12 +39,19 @@ export default function ProfileSectionNav({
               return (
                 <button
                   key={section.id}
+                  ref={(node) => {
+                    if (node) {
+                      tabRefs.current[section.id] = node;
+                    } else {
+                      delete tabRefs.current[section.id];
+                    }
+                  }}
                   type="button"
                   role="tab"
                   aria-selected={isActive}
                   data-active={isActive}
                   onClick={() => onSelect?.(section.id)}
-                  className={`profile-section-nav-item relative inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                  className={`profile-section-nav-item relative inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold transition sm:gap-2 sm:px-3 ${
                     isActive ? "text-[#D61E1E]" : "text-slate-500 hover:text-[#B41818]"
                   }`}
                 >

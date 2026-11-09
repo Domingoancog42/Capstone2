@@ -55,14 +55,20 @@ function normalizeLeaveTypeName(value) {
 }
 
 /**
- * The printed checklist plus any leave type an administrator has added since, so a filing under a
- * configured type still has a box of its own to tick.
+ * Keep the CSC order for active standard types, then append active configured types.
+ * The active list is authoritative: adding the entire printed checklist would restore disabled types.
  */
 export function mergeCscLeaveTypes(configuredLeaveTypes) {
-  const merged = [...CSC_FORM_LEAVE_TYPES];
+  const activeTypes = (configuredLeaveTypes || []).filter((leaveType) => (
+    leaveType?.isActive === undefined || Number(leaveType.isActive) === 1
+  ));
+  const activeNames = new Set(activeTypes.map((leaveType) => (
+    normalizeLeaveTypeName(leaveType?.name ?? leaveType)
+  )));
+  const merged = CSC_FORM_LEAVE_TYPES.filter((name) => activeNames.has(normalizeLeaveTypeName(name)));
   const seen = new Set(merged.map(normalizeLeaveTypeName));
 
-  (configuredLeaveTypes || []).forEach((leaveType) => {
+  activeTypes.forEach((leaveType) => {
     const name = String(leaveType?.name ?? leaveType ?? "").trim();
     const normalized = normalizeLeaveTypeName(name);
 
@@ -90,4 +96,13 @@ export const DIVISIONS = [
   "IT Services",
 ];
 
-export const LEAVE_STATUSES = ["Pending", "Reviewed", "Approved", "Rejected", "Cancelled"];
+export const LEAVE_STATUSES = [
+  "Submitted",
+  "Pending Leave Balance Verification",
+  "Pending HR Head Approval",
+  "Pending Division Chief Review",
+  "Pending Regional Director Approval",
+  "Approved",
+  "Disapproved",
+  "Cancelled",
+];

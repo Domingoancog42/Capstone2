@@ -2,7 +2,19 @@ export const AUTO_REFRESH_EVENT = "hris:auto-refresh";
 export const AUTO_REFRESH_CHANNEL_NAME = "hris:auto-refresh";
 export const AUTO_REFRESH_STORAGE_KEY = "hris:auto-refresh:last-event";
 export const AUTO_REFRESH_DEBOUNCE_MS = 250;
-export const AUTO_REFRESH_FALLBACK_INTERVAL_MS = 10000;
+
+/**
+ * Multiplier for every fixed background polling interval. 1 — the default, and what XAMPP and
+ * `npm start` get — leaves them as written. The shared-hosting build sets
+ * REACT_APP_POLL_INTERVAL_SCALE so the timers fit inside the host's daily request quota.
+ */
+const POLL_INTERVAL_SCALE = Math.max(1, Number(process.env.REACT_APP_POLL_INTERVAL_SCALE) || 1);
+
+export function scalePollInterval(ms) {
+  return ms * POLL_INTERVAL_SCALE;
+}
+
+export const AUTO_REFRESH_FALLBACK_INTERVAL_MS = scalePollInterval(10000);
 /**
  * The safety-net interval used while the long-poll feed is delivering.
  *
@@ -11,7 +23,7 @@ export const AUTO_REFRESH_FALLBACK_INTERVAL_MS = 10000;
  * without saying so. A minute is frequent enough to be that backstop and infrequent enough that the
  * two mechanisms together cost less than the 10s timer did on its own.
  */
-export const AUTO_REFRESH_LIVE_INTERVAL_MS = 60000;
+export const AUTO_REFRESH_LIVE_INTERVAL_MS = scalePollInterval(60000);
 export const AUTO_REFRESH_ALL_TOPIC = "*";
 export const LIVE_UPDATES_HEALTH_EVENT = "hris:live-updates:health";
 
@@ -33,7 +45,6 @@ const EXCLUDED_ENDPOINTS = [
 const LEGACY_TOPIC_EVENTS = {
   notifications: ["hris:notifications:changed"],
   attendance: ["attendance:changed"],
-  attendance_adjustments: ["attendance:changed"],
   attendance_daily_records: ["attendance:changed"],
   attendance_logs: ["attendance:changed"],
   compensatory: ["leave-requests:changed"],

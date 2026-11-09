@@ -1,25 +1,43 @@
 import React, { useEffect, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { Check, ChevronRight, Contrast, Moon, Sun } from "lucide-react";
 
 const THEME_STORAGE_KEY = "hris_theme";
+const THEME_CHANGE_EVENT = "hris:theme-change";
+
+function normalizeTheme(theme) {
+  return theme === "dark" ? "dark" : "light";
+}
 
 export function getStoredTheme() {
   if (typeof window === "undefined") {
     return "light";
   }
 
-  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return storedTheme === "dark" ? "dark" : "light";
+  try {
+    const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return storedTheme === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
 }
 
 export function applyTheme(theme) {
+  const nextTheme = normalizeTheme(theme);
+
   if (typeof document === "undefined") {
-    return;
+    return nextTheme;
   }
 
-  document.documentElement.classList.toggle("dark", theme === "dark");
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
+  const root = document.documentElement;
+  root.classList.toggle("dark", nextTheme === "dark");
+  root.dataset.theme = nextTheme;
+  root.style.colorScheme = nextTheme;
+
+  const browserThemeColor = document.querySelector('meta[name="theme-color"]');
+  browserThemeColor?.setAttribute("content", nextTheme === "dark" ? "#020617" : "#fff8fb");
+
+  return nextTheme;
 }
 
 export function initializeTheme() {
@@ -30,37 +48,106 @@ export function isDarkThemeEnabled() {
   return typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 }
 
-export function ThemeToggleButton({ className = "" }) {
+export function setThemePreference(theme) {
+  const nextTheme = normalizeTheme(theme);
+
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    } catch {
+      // The visual preference still applies when storage is unavailable or disabled.
+    }
+  }
+
+  applyTheme(nextTheme);
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: { theme: nextTheme } }));
+  }
+
+  return nextTheme;
+}
+
+function useThemePreference() {
   const [theme, setTheme] = useState(getStoredTheme);
-  const isDark = theme === "dark";
 
   useEffect(() => {
-    applyTheme(theme);
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [theme]);
+    const storedTheme = getStoredTheme();
+    applyTheme(storedTheme);
+    setTheme(storedTheme);
+
+    const syncTheme = (event) => {
+      setTheme(normalizeTheme(event?.detail?.theme || getStoredTheme()));
+    };
+    const syncStoredTheme = (event) => {
+      if (event.key === THEME_STORAGE_KEY) {
+        const nextTheme = getStoredTheme();
+        applyTheme(nextTheme);
+        setTheme(nextTheme);
+      }
+    };
+
+    window.addEventListener(THEME_CHANGE_EVENT, syncTheme);
+    window.addEventListener("storage", syncStoredTheme);
+
+    return () => {
+      window.removeEventListener(THEME_CHANGE_EVENT, syncTheme);
+      window.removeEventListener("storage", syncStoredTheme);
+    };
+  }, []);
+
+  return [theme, setThemePreference];
+}
+
+export function ThemeToggleButton({ className = "" }) {
+  const [theme, setTheme] = useThemePreference();
+  const reducedMotion = useReducedMotion();
+  const isDark = theme === "dark";
 
   return (
-    <button
+    <motion.button
       type="button"
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       aria-pressed={isDark}
       title={isDark ? "Switch to light mode" : "Switch to dark mode"}
-      onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-      className={`grid h-10 w-10 place-items-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition hover:border-slate-300 hover:bg-white ${className}`.trim()}
+      onClick={() => setTheme(isDark ? "light" : "dark")}
+      data-theme={theme}
+      className={`app-theme-toggle relative grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 text-slate-700 shadow-sm transition duration-200 hover:-translate-y-px hover:border-slate-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D61E1E]/35 focus-visible:ring-offset-2 ${className}`.trim()}
     >
-      {isDark ? <Sun size={18} /> : <Moon size={18} />}
-    </button>
+      <motion.span
+        className="relative grid h-5 w-5 place-items-center origin-top"
+        animate={reducedMotion ? { rotate: 0, x: 0 } : "themeIconIdle"}
+
+        variants={reducedMotion ? undefined : {
+          themeIconIdle: {
+            rotate: [0, -12, 12, -10, 10, 0],
+            x: [0, -1, 1, -1, 1, 0],
+            transition: { duration: 0.9, repeat: Infinity, repeatDelay: 2.5, ease: "easeInOut" },
+          },
+        }}
+      >
+      <Moon
+        aria-hidden="true"
+        size={17}
+        className={`absolute transition duration-200 ${
+          isDark ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"
+        }`}
+      />
+      <Sun
+        aria-hidden="true"
+        size={17}
+        className={`absolute transition duration-200 ${
+          isDark ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"
+        }`}
+      />
+      </motion.span>
+    </motion.button>
   );
 }
 
 export default function DarkModeToggle({ collapsed = false, variant = "default" }) {
-  const [theme, setTheme] = useState(getStoredTheme);
+  const [theme, setTheme] = useThemePreference();
   const isCrimson = variant === "crimson";
-
-  useEffect(() => {
-    applyTheme(theme);
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [theme]);
 
   const options = [
     { key: "light", label: "Light", icon: Sun },
@@ -99,6 +186,7 @@ export default function DarkModeToggle({ collapsed = false, variant = "default" 
                 key={option.key}
                 type="button"
                 onClick={() => setTheme(option.key)}
+                aria-pressed={active}
                 className="flex min-h-10 w-full items-center justify-between gap-3 px-4 text-left text-sm text-slate-700 transition hover:bg-slate-50 hover:text-slate-950"
               >
                 <span className="flex min-w-0 items-center gap-3">

@@ -1,12 +1,24 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 import { toast } from "react-hot-toast";
 import {
+  Archive,
+  BarChart3,
+  Download,
+  FileText,
   Plus,
+  RotateCcw,
   Search,
+  Upload,
+  Users,
 } from "lucide-react";
-import { faEye as faEyeAction, faPen } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBoxArchive,
+  faClockRotateLeft,
+  faEye as faEyeAction,
+  faPen,
+} from "@fortawesome/free-solid-svg-icons";
 import {
   employeeStatusBadgeClass,
   formatEmployeeCurrencyValue,
@@ -15,6 +27,10 @@ import {
   resolveEmployeeInitials,
 } from "../../components/employee/AdminEmployeeCard";
 import { EmployeeDocumentDownloadButtons } from "../../components/employee/EmployeeDocumentsModal";
+import EmployeeDocumentManager from "../../components/employee/EmployeeDocumentManager";
+import EmployeeDocumentUploadFields from "../../components/employee/EmployeeDocumentUploadFields";
+import EmployeeDocumentRetryModal from "../../components/employee/EmployeeDocumentRetryModal";
+import { saveEmployeeDocumentFiles } from "../../services/employeeDocumentUploads";
 import ActionIconButton from "../../components/UI/ActionIconButton";
 import Button from "../../components/UI/button";
 import Card, {
@@ -31,35 +47,48 @@ import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalis
 import CreateEmployee from "../../page/Admin/create_employee";
 import {
   createEmployee,
+  deleteEmployee,
+  getArchivedUsers,
   getEmployeeOptions,
+  getArchivedEmployees,
   getEmployees,
   getUsers,
+  importEmployeesCsv,
+  restoreEmployee,
   updateEmployee,
   updateEmployeeProfileImage,
 } from "../../services/api";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 import { showEmployeeCredentialsAlert } from "../../utils/employeeAccountAlert";
 import { consumeEmployeeProfileHandoff, findEmployeeFromProfileHandoff } from "../../utils/employeeProfileHandoff";
-import { getManagedRoleOptions, getRoleBadgeClass, getRoleLabel, normalizeStatus } from "../../utils/roleRoutes";
+import {
+  getManagedRoleOptions,
+  getRoleBadgeClass,
+  getRoleLabel,
+  normalizeStatus,
+  resolveUserRoleKey,
+} from "../../utils/roleRoutes";
 import { numberFormatter } from "../../utils/format";
+import { buildNextEmployeeId } from "../../utils/employeeIds";
+import EmployeeReportsAnalytics from "./EmployeeReportsAnalytics";
 
 const DEFAULT_EMPLOYEE_ROWS_PER_PAGE = 10;
 const EMPLOYEE_MANAGEMENT_FORM_ID = "employee-management-form";
-function buildNextEmployeeId(employees) {
-  const year = new Date().getFullYear();
-  const prefix = `EMP${year}-`;
-  const maxNumber = employees.reduce((max, employee) => {
-    const employeeId = String(employee.employeeId || "");
 
-    if (!employeeId.startsWith(prefix)) {
-      return max;
-    }
+function csvCell(value) {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
 
-    const numericPart = Number.parseInt(employeeId.slice(prefix.length), 10);
-    return Number.isNaN(numericPart) ? max : Math.max(max, numericPart);
-  }, 0);
-
-  return `${prefix}${String(maxNumber + 1).padStart(4, "0")}`;
+function downloadCsv(filename, rows) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.URL.revokeObjectURL(url);
 }
 
 const employeeIdCollator = new Intl.Collator(undefined, {
@@ -86,9 +115,12 @@ function compareEmployeesByEmployeeId(firstEmployee, secondEmployee) {
   return Number(firstEmployee?.id || 0) - Number(secondEmployee?.id || 0);
 }
 
-/** The employee fields that appear on CS Form No. 1 and therefore open a new service period. */
+/**
+ * The employee fields that appear on CS Form No. 1 and therefore open a new service period. The
+ * designation is not one of them: it is an assignment on top of the position, not an appointment.
+ */
 const SERVICE_RECORD_FIELDS = [
-  { key: "designationId", label: "Designation" },
+  { key: "designationId", label: "Position" },
   { key: "basicSalary", label: "Salary" },
   { key: "employmentStatus", label: "Employment status" },
   { key: "divisionId", label: "Division" },
@@ -177,45 +209,73 @@ async function requestServiceRecordChange(previousEmployee, nextEmployee) {
 }
 
 export default function EmployeeManagementWorkspace({
+  user,
   allowAccountCreation = false,
 }) {
+  /* HR Head and HR Staff share the employee-management desk and its complete action set. */
+  const userRoleKey = resolveUserRoleKey(user);
+  const canManageEmployees = ["admin", "hrhead", "hrstaff"].includes(userRoleKey);
+  const canUploadEmployeeDocuments = ["admin", "hrhead", "hrstaff"].includes(userRoleKey);
+  const canArchiveEmployees = ["admin", "hrhead", "hrstaff"].includes(userRoleKey);
   const [employees, setEmployees] = useState([]);
+  const [archivedEmployees, setArchivedEmployees] = useState([]);
   const [users, setUsers] = useState([]);
+  const [archivedUsers, setArchivedUsers] = useState([]);
   const [employeeQuery, setEmployeeQuery] = useState("");
   const [employeeDivisionFilter, setEmployeeDivisionFilter] = useState("");
+  const [employeeDesignationFilter, setEmployeeDesignationFilter] = useState("");
   const [employeeStatusFilter, setEmployeeStatusFilter] = useState("");
   const [employeeRowsPerPage, setEmployeeRowsPerPage] = useState(DEFAULT_EMPLOYEE_ROWS_PER_PAGE);
   const [employeeCurrentPage, setEmployeeCurrentPage] = useState(1);
-  const [employeeOptions, setEmployeeOptions] = useState({ divisions: [], designations: [], roles: [] });
+  const [employeeArchiveView, setEmployeeArchiveView] = useState("active");
+  const [workspaceTab, setWorkspaceTab] = useState("employees");
+  const [employeeOptions, setEmployeeOptions] = useState({
+    divisions: [],
+    designations: [],
+    accountStatuses: [],
+    roles: [],
+    emailDomainPolicy: {},
+  });
   const [employeeError, setEmployeeError] = useState("");
   const [employeeSaving, setEmployeeSaving] = useState(false);
+  const [employeeImporting, setEmployeeImporting] = useState(false);
   const [employeeLoading, setEmployeeLoading] = useState(true);
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
+  const [employeeDocuments, setEmployeeDocuments] = useState([]);
+  const [documentRetry, setDocumentRetry] = useState(null);
   const [employeeViewOpen, setEmployeeViewOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [viewingEmployee, setViewingEmployee] = useState(null);
+  const employeeImportInputRef = useRef(null);
 
   const loadEmployees = useCallback(async ({ background = false } = {}) => {
     setEmployeeLoading(!background);
 
     try {
-      const [employeesResult, optionsResult, usersResult] = await Promise.all([
+      const [employeesResult, archivedEmployeesResult, optionsResult, usersResult, archivedUsersResult] = await Promise.all([
         getEmployees(),
+        canArchiveEmployees ? getArchivedEmployees() : Promise.resolve({ employees: [] }),
         getEmployeeOptions(),
         getUsers(),
+        canArchiveEmployees ? getArchivedUsers() : Promise.resolve({ users: [] }),
       ]);
 
       setEmployees(employeesResult.employees || []);
+      setArchivedEmployees(archivedEmployeesResult.employees || []);
       setUsers(usersResult.users || []);
+      setArchivedUsers(archivedUsersResult.users || []);
       setEmployeeOptions({
         divisions: optionsResult.divisions || [],
         designations: optionsResult.designations || [],
+        designationSuggestions: optionsResult.designationSuggestions || [],
+        accountStatuses: optionsResult.accountStatuses || [],
         /*
          * HR Head and HR Staff must not be able to hand out an Admin account, so the role
          * choices come from the shared managed-role list, which covers the assignable
          * built-ins plus any custom roles and leaves Admin out.
          */
         roles: getManagedRoleOptions(usersResult.roles || []),
+        emailDomainPolicy: optionsResult.emailDomainPolicy || {},
       });
       setEmployeeError("");
     } catch (error) {
@@ -225,7 +285,7 @@ export default function EmployeeManagementWorkspace({
     } finally {
       setEmployeeLoading(false);
     }
-  }, []);
+  }, [canArchiveEmployees]);
 
   useAutoRefreshOnChange(loadEmployees, { topics: ["employee", "service_record"] });
 
@@ -259,20 +319,60 @@ export default function EmployeeManagementWorkspace({
     return nextMap;
   }, [users]);
 
-  const employeeStatusOptions = useMemo(() => ["Active", "Inactive"], []);
+  const allUserByEmail = useMemo(() => {
+    const nextMap = new Map();
 
+    [...archivedUsers, ...users].forEach((item) => {
+      const emailKey = String(item?.email || "").trim().toLowerCase();
+
+      if (emailKey) {
+        nextMap.set(emailKey, item);
+      }
+    });
+
+    return nextMap;
+  }, [archivedUsers, users]);
+
+  const employeeFormInitialValues = useMemo(() => {
+    if (!editingEmployee) {
+      return null;
+    }
+
+    const linkedUser = userByEmail.get(String(editingEmployee.email || "").trim().toLowerCase());
+
+    return {
+      ...editingEmployee,
+      roleId: linkedUser?.roleId ? String(linkedUser.roleId) : "",
+    };
+  }, [editingEmployee, userByEmail]);
+
+  /* The values users.status accepts, as employee.php reports them. */
+  const employeeStatusOptions = useMemo(
+    () => (employeeOptions.accountStatuses || []).map((status) => String(status || "").trim()).filter(Boolean),
+    [employeeOptions.accountStatuses]
+  );
+
+  /*
+   * Every employee record is listed whatever role its account holds -- a Chief, HR Head, or
+   * Regional Director created from User Management lands here the same as an Employee, with the
+   * Role column telling them apart. Filtering the roster by account role also made it depend on
+   * the users list, which a desk without the users permission never receives.
+   */
+  const visibleEmployees = employeeArchiveView === "archive" ? archivedEmployees : employees;
   const filteredEmployees = useMemo(() => {
     const search = employeeQuery.trim().toLowerCase();
 
-    return employees.filter((employee) => {
-      const linkedUser = userByEmail.get(String(employee.email || "").trim().toLowerCase());
-      const statusLabel = getEmployeeCardStatus(employee, linkedUser);
+    return visibleEmployees.filter((employee) => {
+      const emailKey = String(employee.email || "").trim().toLowerCase();
+      const linkedUser = userByEmail.get(emailKey);
+      const statusLabel = getEmployeeCardStatus(employee, linkedUser, employeeArchiveView);
       const matchesSearch = !search || [
         employee.employeeId,
         employee.fullName,
         employee.department,
         employee.position,
-        linkedUser?.role,
+        employee.designation,
+        getRoleLabel(allUserByEmail.get(emailKey)?.role),
         linkedUser?.status,
         statusLabel,
         employee.basicSalary,
@@ -281,15 +381,16 @@ export default function EmployeeManagementWorkspace({
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(search));
       const matchesDivision = !employeeDivisionFilter || employee.department === employeeDivisionFilter;
+      const matchesDesignation = !employeeDesignationFilter || employee.position === employeeDesignationFilter;
       const matchesStatus = !employeeStatusFilter || statusLabel === employeeStatusFilter;
 
-      return matchesSearch && matchesDivision && matchesStatus;
+      return matchesSearch && matchesDivision && matchesDesignation && matchesStatus;
     });
-  }, [employeeDivisionFilter, employeeQuery, employeeStatusFilter, employees, userByEmail]);
+  }, [employeeArchiveView, employeeDesignationFilter, employeeDivisionFilter, employeeQuery, employeeStatusFilter, allUserByEmail, userByEmail, visibleEmployees]);
 
   useEffect(() => {
     setEmployeeCurrentPage(1);
-  }, [employeeDivisionFilter, employeeQuery, employeeRowsPerPage, employeeStatusFilter]);
+  }, [employeeArchiveView, employeeDesignationFilter, employeeDivisionFilter, employeeQuery, employeeRowsPerPage, employeeStatusFilter]);
 
   const employeeDivisionOptions = useMemo(
     () =>
@@ -302,7 +403,18 @@ export default function EmployeeManagementWorkspace({
       ).sort(),
     [employeeOptions.divisions]
   );
-
+  /* Positions from the position catalog only -- not titles picked off the rows. */
+  const employeeDesignationOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (employeeOptions.designations || [])
+            .map((designation) => String(designation.name || "").trim())
+            .filter(Boolean)
+        )
+      ).sort(),
+    [employeeOptions.designations]
+  );
   const activeEmployeeCount = useMemo(
     () =>
       employees.filter((employee) => {
@@ -311,8 +423,12 @@ export default function EmployeeManagementWorkspace({
       }).length,
     [employees, userByEmail]
   );
-  const inactiveEmployeeCount = Math.max(0, employees.length - activeEmployeeCount);
-  const nextEmployeeId = useMemo(() => buildNextEmployeeId(employees), [employees]);
+  const inactiveEmployeeCount = Math.max(0, employees.length - activeEmployeeCount)
+    + archivedEmployees.length;
+  const nextEmployeeId = useMemo(
+    () => buildNextEmployeeId([...employees, ...archivedEmployees]),
+    [archivedEmployees, employees]
+  );
   const sortedFilteredEmployees = useMemo(
     () => [...filteredEmployees].sort(compareEmployeesByEmployeeId),
     [filteredEmployees]
@@ -352,8 +468,164 @@ export default function EmployeeManagementWorkspace({
   };
 
   const openEmployeeEditor = (employee) => {
+    setEmployeeDocuments([]);
     setEditingEmployee(employee);
     setEmployeeModalOpen(true);
+  };
+
+  const handleExportEmployees = () => {
+    const fileDate = new Date().toISOString().slice(0, 10);
+    const exportLabel = employeeArchiveView === "archive" ? "archived-employees" : "employees";
+    const rows = [
+      ["Employee ID", "Full Name", "Email", "Phone", "Division", "Position", "Designation", "Role", "Status", "Date Hired", "Salary Rate", "Basic Salary"],
+      ...filteredEmployees.map((employee) => {
+        const linkedUser = userByEmail.get(String(employee.email || "").trim().toLowerCase());
+        const statusLabel = getEmployeeCardStatus(employee, linkedUser, employeeArchiveView);
+
+        return [
+          employee.employeeId || "",
+          employee.fullName || "",
+          employee.email || "",
+          employee.phone || "",
+          employee.department || "",
+          employee.position || "",
+          employee.designation || "",
+          getRoleLabel(allUserByEmail.get(String(employee.email || "").trim().toLowerCase())?.role),
+          statusLabel,
+          formatEmployeeDateValue(employee.dateHired),
+          employee.salaryRate || "",
+          formatEmployeeCurrencyValue(employee.basicSalary),
+        ];
+      }),
+    ];
+
+    downloadCsv(`${exportLabel}-${fileDate}.csv`, rows);
+  };
+
+  const refreshEmployeeRecords = async () => {
+    const [employeesResult, archivedEmployeesResult, usersResult, archivedUsersResult] = await Promise.all([
+      getEmployees(),
+      getArchivedEmployees(),
+      getUsers(),
+      getArchivedUsers(),
+    ]);
+
+    setEmployees(employeesResult.employees || []);
+    setArchivedEmployees(archivedEmployeesResult.employees || []);
+    setUsers(usersResult.users || []);
+    setArchivedUsers(archivedUsersResult.users || []);
+  };
+
+  const importEmployeeFile = async (file) => {
+    if (!file) {
+      toast.error("Choose a CSV or Excel workbook to import.");
+      return;
+    }
+
+    setEmployeeImporting(true);
+    setEmployeeError("");
+    const toastId = toast.loading("Importing employee records...", { duration: Infinity });
+
+    try {
+      const result = await importEmployeesCsv(file);
+      try {
+        await refreshEmployeeRecords();
+      } catch (refreshError) {
+        const refreshWarning = refreshError.response?.data?.message
+          || refreshError.message
+          || "Employee records were imported, but the list could not refresh automatically.";
+        setEmployeeError(refreshWarning);
+      }
+
+      const createdCount = Number(result.summary?.created ?? result.imported ?? 0);
+      const activationQueued = Number(result.summary?.activationEmailsQueued ?? result.activationEmails?.queued ?? 0);
+      const activationSent = Number(result.summary?.activationEmailsSent ?? result.activationEmails?.sent ?? 0);
+      const activationFailed = Number(result.summary?.activationEmailsFailed ?? result.activationEmails?.failed ?? 0);
+      toast.dismiss(toastId);
+
+      if (createdCount > 0) {
+        if (activationFailed > 0) {
+          setEmployeeError(
+            `${activationFailed} activation email${activationFailed === 1 ? "" : "s"} could not be sent. Reissue those credentials from the employee record.`
+          );
+        }
+
+        await Swal.fire({
+          title: "Import Successful!",
+          text: activationFailed > 0
+            ? `The employee file has been imported. ${activationSent} activation email${activationSent === 1 ? "" : "s"} sent, ${activationFailed} failed - reissue those credentials from the employee record.`
+            : activationQueued > 0
+              ? `The employee file has been imported successfully. ${activationQueued} activation email${activationQueued === 1 ? " is" : "s are"} queued for background delivery.`
+              : `The employee file has been imported successfully. ${activationSent} activation email${activationSent === 1 ? "" : "s"} sent.`,
+          icon: activationFailed > 0 ? "warning" : "success",
+          confirmButtonText: "Done",
+          confirmButtonColor: "#0f766e",
+        });
+      } else {
+        const message = result.errors?.[0]
+          || result.message
+          || "No employees were imported. Review the file rows and try again.";
+        setEmployeeError(message);
+        await Swal.fire({
+          title: "Import Failed",
+          text: "The employee file could not be imported. Please check the file format and try again.",
+          icon: "error",
+          confirmButtonText: "Done",
+          confirmButtonColor: "#dc2626",
+        });
+      }
+    } catch (error) {
+      const message = error.code === "ECONNABORTED"
+        ? "The import is taking longer than expected. Check the employee list in a moment before importing the same file again."
+        : error.response?.data?.message || "Unable to import employee records.";
+      setEmployeeError(message);
+      toast.dismiss(toastId);
+      await Swal.fire({
+        title: "Import Failed",
+        text: "The employee file could not be imported. Please check the file format and try again.",
+        icon: "error",
+        confirmButtonText: "Done",
+        confirmButtonColor: "#dc2626",
+      });
+    } finally {
+      setEmployeeImporting(false);
+    }
+  };
+
+  const handleEmployeeImportFileChange = (event) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    const isEmployeeImportFile = /\.(csv|xlsx)$/i.test(file.name)
+      || [
+        "text/csv",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ].includes(file.type);
+
+    if (!isEmployeeImportFile) {
+      toast.error("Choose a CSV or XLSX employee file.");
+      return;
+    }
+
+    importEmployeeFile(file);
+  };
+
+  const handleOpenImportEmployees = () => {
+    employeeImportInputRef.current?.click();
+  };
+
+  const handleDownloadEmployeeTemplate = () => {
+    const link = document.createElement("a");
+    link.href = `${process.env.PUBLIC_URL || ""}/templates/HRIS-employees.xlsx`;
+    link.download = "HRIS-employees.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   };
 
   /*
@@ -362,16 +634,6 @@ export default function EmployeeManagementWorkspace({
    * account-status handler the admin screen owns, so there is nothing to toggle.
    */
   const employeeColumns = [
-    {
-      key: "index",
-      header: "#",
-      card: false,
-      render: (_row, index) => (
-        <span className="font-medium text-slate-700">
-          {(safeEmployeeCurrentPage - 1) * safeEmployeeRowsPerPage + index + 1}
-        </span>
-      ),
-    },
     {
       key: "employeeId",
       header: "Employee ID",
@@ -406,36 +668,31 @@ export default function EmployeeManagementWorkspace({
       },
     },
     {
-      key: "email",
-      header: "Email",
-      render: (row) => <span className="text-slate-700">{row.email || "N/A"}</span>,
-    },
-    {
-      key: "phone",
-      header: "Phone",
-      render: (row) => <span className="text-slate-700">{row.phone || "N/A"}</span>,
-    },
-    {
       key: "department",
       header: "Division",
       render: (row) => <span className="text-slate-700">{row.department || "N/A"}</span>,
     },
     {
       key: "position",
-      header: "Designation",
+      header: "Position",
       cardRole: "subtitle",
-      render: (row) => <span className="text-slate-700">{row.position || "N/A"}</span>,
+      render: (row) => (
+        <span className="text-slate-700">
+          {row.position || "N/A"}
+          {row.designation ? <span className="block text-xs text-slate-500">{row.designation}</span> : null}
+        </span>
+      ),
     },
     {
       key: "role",
       header: "Role",
       cardRole: "badge",
       render: (row) => {
-        const linkedUser = userByEmail.get(String(row.email || "").trim().toLowerCase());
-        const roleLabel = linkedUser?.role ? getRoleLabel(linkedUser.role) : "Employee";
+        const linkedUser = allUserByEmail.get(String(row.email || "").trim().toLowerCase());
+        const roleLabel = getRoleLabel(linkedUser?.role);
 
         return (
-          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-sm font-semibold ${getRoleBadgeClass(roleLabel)}`}>
+          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-sm font-semibold ${getRoleBadgeClass(linkedUser?.role)}`}>
             {roleLabel}
           </span>
         );
@@ -446,7 +703,7 @@ export default function EmployeeManagementWorkspace({
       header: "Status",
       render: (row) => {
         const linkedUser = userByEmail.get(String(row.email || "").trim().toLowerCase());
-        const statusLabel = getEmployeeCardStatus(row, linkedUser);
+        const statusLabel = getEmployeeCardStatus(row, linkedUser, employeeArchiveView);
 
         return (
           <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-sm font-semibold ${employeeStatusBadgeClass(statusLabel)}`}>
@@ -471,28 +728,53 @@ export default function EmployeeManagementWorkspace({
       key: "actions",
       header: "Actions",
       cardRole: "actions",
-      render: (row) => (
-        <div className="flex items-center gap-2">
-          <ActionIconButton
-            label={`View ${row.fullName || row.employeeId || "employee"}`}
-            icon={faEyeAction}
-            tone="view"
-            onClick={() => openEmployeeViewer(row)}
-          />
-          <ActionIconButton
-            label={`Edit ${row.fullName || row.employeeId || "employee"}`}
-            icon={faPen}
-            tone="edit"
-            onClick={() => openEmployeeEditor(row)}
-          />
-        </div>
-      ),
+      render: (row) => {
+        const isArchived = employeeArchiveView === "archive";
+
+        return (
+          <div className="flex items-center gap-2">
+            <ActionIconButton
+              label={`View ${row.fullName || row.employeeId || "employee"}`}
+              icon={faEyeAction}
+              tone="view"
+              onClick={() => openEmployeeViewer(row)}
+            />
+            {isArchived && canArchiveEmployees ? (
+              <ActionIconButton
+                label={`Restore ${row.fullName || row.employeeId || "employee"}`}
+                icon={faClockRotateLeft}
+                tone="approve"
+                text="Restore"
+                onClick={() => handleRestoreEmployee(row)}
+              />
+            ) : null}
+            {!isArchived && canManageEmployees ? (
+              <ActionIconButton
+                label={`Edit ${row.fullName || row.employeeId || "employee"}`}
+                icon={faPen}
+                tone="edit"
+                onClick={() => openEmployeeEditor(row)}
+              />
+            ) : null}
+            {!isArchived && canArchiveEmployees ? (
+              <ActionIconButton
+                label={`Archive ${row.fullName || row.employeeId || "employee"}`}
+                icon={faBoxArchive}
+                tone="archive"
+                onClick={() => handleArchiveEmployee(row)}
+              />
+            ) : null}
+          </div>
+        );
+      },
     },
   ];
 
   const closeEmployeeModal = () => {
+    if (employeeSaving) return;
     setEmployeeModalOpen(false);
     setEditingEmployee(null);
+    setEmployeeDocuments([]);
   };
 
   const handleSaveEmployee = async (employeeData) => {
@@ -517,11 +799,29 @@ export default function EmployeeManagementWorkspace({
     setEmployeeError("");
 
     try {
+      const savePayload = {
+        ...employeePayload,
+        // Creating an employee also creates the linked login account. Ask the API to issue the
+        // temporary password and deliver it, matching the Admin employee-directory workflow.
+        sendActivationEmail: !isEditingEmployee,
+      };
       const result = isEditingEmployee
-        ? await updateEmployee(editingEmployee.id, employeePayload)
-        : await createEmployee(employeePayload);
+        ? await updateEmployee(editingEmployee.id, savePayload)
+        : await createEmployee(savePayload);
       let savedEmployee = result.employee;
       let profileImageWarning = "";
+      const emailNotification = result.emailNotification || "";
+      const emailMessage = result.emailMessage || "";
+      const linkedUser = result.linkedUser || null;
+      let documentWarning = "";
+
+      if (canUploadEmployeeDocuments && employeeDocuments.length) {
+        const failed = await saveEmployeeDocumentFiles(savedEmployee?.id, employeeDocuments);
+        if (failed.length) {
+          documentWarning = `${failed.length} document upload${failed.length === 1 ? "" : "s"} failed. Retry the remaining files in the Documents dialog.`;
+          setDocumentRetry({ employee: savedEmployee, attachments: failed });
+        }
+      }
 
       if (savedEmployee?.id && (profileImageDataUrl || removeProfileImage)) {
         try {
@@ -533,6 +833,24 @@ export default function EmployeeManagementWorkspace({
             || imageError.message
             || "Unable to save the profile image.";
         }
+      }
+
+      if (linkedUser?.id) {
+        const previousEmailKey = String(editingEmployee?.email || "").trim().toLowerCase();
+        const linkedEmailKey = String(linkedUser.email || "").trim().toLowerCase();
+
+        setUsers((current) => {
+          const matchesLinkedAccount = (item) => {
+            const itemEmailKey = String(item.email || "").trim().toLowerCase();
+            return item.id === linkedUser.id
+              || (previousEmailKey && itemEmailKey === previousEmailKey)
+              || (linkedEmailKey && itemEmailKey === linkedEmailKey);
+          };
+
+          return current.some(matchesLinkedAccount)
+            ? current.map((item) => (matchesLinkedAccount(item) ? linkedUser : item))
+            : [linkedUser, ...current];
+        });
       }
 
       setEmployees((current) => {
@@ -548,13 +866,25 @@ export default function EmployeeManagementWorkspace({
         setEmployeeCurrentPage(1);
       }
 
-      closeEmployeeModal();
-      if (profileImageWarning) {
-        const message = `Employee saved, but ${profileImageWarning}`;
+      setEmployeeModalOpen(false);
+      setEditingEmployee(null);
+      setEmployeeDocuments([]);
+      const emailWarning = emailNotification === "warning"
+        ? (emailMessage || "Activation email could not be sent.")
+        : "";
+      const saveWarnings = [profileImageWarning, emailWarning, documentWarning].filter(Boolean);
+
+      if (saveWarnings.length > 0) {
+        const message = `Employee saved, but ${saveWarnings.join(" ")}`;
         setEmployeeError(message);
         toast.error(message);
       } else {
-        toast.success(isEditingEmployee ? "Employee edited successfully." : "Employee created successfully.");
+        toast.success([
+          isEditingEmployee ? "Employee edited successfully." : "Employee created successfully.",
+          !isEditingEmployee && emailNotification === "sent"
+            ? (emailMessage || "Activation email sent to the employee.")
+            : "",
+        ].filter(Boolean).join(" "));
       }
 
       if (!isEditingEmployee) {
@@ -562,8 +892,8 @@ export default function EmployeeManagementWorkspace({
           employee: savedEmployee,
           linkedUser: result.linkedUser,
           temporaryPassword: result.temporaryPassword,
-          emailNotification: result.emailNotification,
-          emailMessage: result.emailMessage,
+          emailNotification,
+          emailMessage,
         });
       }
     } catch (error) {
@@ -575,41 +905,253 @@ export default function EmployeeManagementWorkspace({
     }
   };
 
+  const handleArchiveEmployee = async (employee) => {
+    const employeeName = employee.fullName || employee.employeeId || "this employee";
+    const confirmation = await Swal.fire({
+      title: "Archive employee?",
+      text: `Move ${employeeName} to the employee archive?`,
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "Yes, archive",
+      cancelButtonText: "Keep employee",
+      confirmButtonColor: "#dc2626",
+      cancelButtonColor: "#64748b",
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (!confirmation.isConfirmed) {
+      return;
+    }
+
+    try {
+      Swal.fire({
+        title: "Archiving...",
+        text: "Please wait while the employee is archived.",
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => {
+          Swal.showLoading();
+        },
+      });
+
+      const result = await deleteEmployee(employee.id);
+      setEmployees((current) => current.filter((item) => item.id !== employee.id));
+      setArchivedEmployees((current) => (
+        current.some((item) => item.id === employee.id) ? current : [employee, ...current]
+      ));
+      setEmployeeError("");
+      closeEmployeeViewer();
+      await Swal.fire({
+        title: "Archived",
+        text: result.message || "Employee archived successfully.",
+        icon: "success",
+        confirmButtonColor: "#0f766e",
+      });
+    } catch (error) {
+      const message = error.response?.data?.message || "Unable to archive employee.";
+      setEmployeeError(message);
+      await Swal.fire({
+        title: "Archive failed",
+        text: message,
+        icon: "error",
+        confirmButtonColor: "#dc2626",
+      });
+    }
+  };
+
+  const handleRestoreEmployee = async (employee) => {
+    const employeeName = employee.fullName || employee.employeeId || "this employee";
+    const confirmation = await Swal.fire({
+      title: "Restore employee?",
+      text: `Move ${employeeName} back to the employees table?`,
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Yes, restore",
+      cancelButtonText: "Keep archived",
+      confirmButtonColor: "#0f766e",
+      cancelButtonColor: "#64748b",
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (!confirmation.isConfirmed) {
+      return;
+    }
+
+    try {
+      Swal.fire({
+        title: "Restoring...",
+        text: "Please wait while the employee is restored.",
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => {
+          Swal.showLoading();
+        },
+      });
+
+      const result = await restoreEmployee(employee.id);
+      const restoredEmployee = result.employee || employee;
+      setArchivedEmployees((current) => current.filter((item) => item.id !== employee.id));
+      setEmployees((current) => (
+        current.some((item) => item.id === restoredEmployee.id)
+          ? current
+          : [restoredEmployee, ...current]
+      ));
+      setEmployeeError("");
+      closeEmployeeViewer();
+      await Swal.fire({
+        title: "Restored",
+        text: result.message || "Employee restored successfully.",
+        icon: "success",
+        confirmButtonColor: "#0f766e",
+      });
+    } catch (error) {
+      const message = error.response?.data?.message || "Unable to restore employee.";
+      setEmployeeError(message);
+      await Swal.fire({
+        title: "Restore failed",
+        text: message,
+        icon: "error",
+        confirmButtonColor: "#dc2626",
+      });
+    }
+  };
+
   return (
     <>
-      <Card className="w-full">
+      <div
+        role="tablist"
+        aria-label="Employee management sections"
+        className="inline-flex flex-wrap items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm"
+      >
+        <button
+          id="employee-management-employees-tab"
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "employees"}
+          aria-controls="employee-management-employees-panel"
+          onClick={() => setWorkspaceTab("employees")}
+          className={`inline-flex min-h-9 items-center gap-2 rounded-lg px-3.5 text-sm font-semibold transition ${
+            workspaceTab === "employees"
+              ? "bg-[#D61E1E] text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+          }`}
+        >
+          <Users size={16} aria-hidden="true" />
+          Employee List
+        </button>
+        <button
+          id="employee-management-analytics-tab"
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "analytics"}
+          aria-controls="employee-management-analytics-panel"
+          onClick={() => setWorkspaceTab("analytics")}
+          className={`inline-flex min-h-9 items-center gap-2 rounded-lg px-3.5 text-sm font-semibold transition ${
+            workspaceTab === "analytics"
+              ? "bg-[#D61E1E] text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+          }`}
+        >
+          <BarChart3 size={16} aria-hidden="true" />
+          Analytics
+        </button>
+      </div>
+
+      {workspaceTab === "employees" ? (
+        <div
+          id="employee-management-employees-panel"
+          role="tabpanel"
+          aria-labelledby="employee-management-employees-tab"
+          className="mt-4"
+        >
+          <Card className="w-full">
         <CardHeader className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-2">
             <div>
-              <CardTitle className="text-lg">Employees</CardTitle>
+              <CardTitle className="text-lg">
+                {employeeArchiveView === "archive" ? "Archived Employees" : "Employees"}
+              </CardTitle>
               <CardDescription>
-                Manage employee records, accounts, and workforce information.
+                {employeeArchiveView === "archive"
+                  ? "Review employee records that have been moved to archive."
+                  : "Manage employee records, accounts, and workforce information."}
               </CardDescription>
             </div>
             <p className="m-0 text-sm text-slate-500">
-              {`${numberFormatter.format(activeEmployeeCount)} active employee${activeEmployeeCount === 1 ? "" : "s"} • ${numberFormatter.format(inactiveEmployeeCount)} inactive`}
+              {employeeArchiveView === "archive"
+                ? `${numberFormatter.format(archivedEmployees.length)} archived employee${archivedEmployees.length === 1 ? "" : "s"}`
+                : `${numberFormatter.format(activeEmployeeCount)} active employee${activeEmployeeCount === 1 ? "" : "s"} • ${numberFormatter.format(inactiveEmployeeCount)} inactive`}
             </p>
             {employeeError ? (
               <p className="m-0 text-sm font-semibold text-rose-700">{employeeError}</p>
             ) : null}
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              variant="primary"
-              icon={Plus}
-              onClick={() => {
-                setEditingEmployee(null);
-                setEmployeeModalOpen(true);
-              }}
-            >
-              Add Employee
-            </Button>
-          </div>
+          {canManageEmployees ? (
+            <div className="flex flex-wrap items-center gap-3">
+              {canArchiveEmployees ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    icon={FileText}
+                    onClick={handleDownloadEmployeeTemplate}
+                  >
+                    Download Template
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    icon={Upload}
+                    onClick={handleOpenImportEmployees}
+                    loading={employeeImporting}
+                    disabled={employeeImporting}
+                  >
+                    Import
+                  </Button>
+                  <input
+                    ref={employeeImportInputRef}
+                    type="file"
+                    accept=".csv,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    className="hidden"
+                    onChange={handleEmployeeImportFileChange}
+                    disabled={employeeImporting}
+                  />
+                  <Button variant="secondary" icon={Download} onClick={handleExportEmployees}>
+                    Export
+                  </Button>
+                </>
+              ) : null}
+              {canArchiveEmployees ? (
+                <Button
+                  variant="secondary"
+                  icon={employeeArchiveView === "archive" ? Users : Archive}
+                  onClick={() => {
+                    setEmployeeArchiveView((view) => (view === "archive" ? "active" : "archive"));
+                    setEmployeeStatusFilter("");
+                    setEmployeeCurrentPage(1);
+                  }}
+                >
+                  {employeeArchiveView === "archive" ? "Back to Employees" : "Archive"}
+                </Button>
+              ) : null}
+              <Button
+                variant="primary"
+                icon={Plus}
+                onClick={() => {
+                  setEditingEmployee(null);
+                  setEmployeeDocuments([]);
+                  setEmployeeModalOpen(true);
+                }}
+              >
+                Add Employee
+              </Button>
+            </div>
+          ) : null}
         </CardHeader>
 
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,220px)_150px_130px_110px] sm:items-end">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:items-end lg:grid-cols-[minmax(0,220px)_150px_180px_130px_110px]">
             <InputField
               label="Search Employees"
               name="employeeSearch"
@@ -636,6 +1178,24 @@ export default function EmployeeManagementWorkspace({
                 <option value="">All divisions</option>
                 {employeeDivisionOptions.map((division) => (
                   <option key={division} value={division}>{division}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="employeeDesignationFilter" className="mb-1.5 block text-sm font-semibold text-slate-700">
+                Position
+              </label>
+              <select
+                id="employeeDesignationFilter"
+                value={employeeDesignationFilter}
+                onChange={(event) => {
+                  setEmployeeDesignationFilter(event.target.value);
+                }}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none"
+              >
+                <option value="">All positions</option>
+                {employeeDesignationOptions.map((designation) => (
+                  <option key={designation} value={designation}>{designation}</option>
                 ))}
               </select>
             </div>
@@ -669,7 +1229,7 @@ export default function EmployeeManagementWorkspace({
                 }}
                 className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none"
               >
-                {[5, 10, 15, 20, 25, 50].map((value) => (
+                {[10, 20, 50, 100, 200].map((value) => (
                   <option key={value} value={value}>{value}</option>
                 ))}
               </select>
@@ -683,8 +1243,12 @@ export default function EmployeeManagementWorkspace({
                 columns={employeeColumns}
                 data={employeeCards}
                 loading={employeeLoading}
-                emptyMessage="No employee records found. Try adjusting your search or filters."
-                tableClassName="min-w-[1400px]"
+                emptyMessage={
+                  employeeArchiveView === "archive"
+                    ? "No archived employee records found."
+                    : "No employee records found. Try adjusting your search or filters."
+                }
+                tableClassName="min-w-[1100px]"
                 cardsClassName="lg:hidden"
                 tableWrapperClassName="hidden lg:block"
               />
@@ -703,7 +1267,18 @@ export default function EmployeeManagementWorkspace({
             />
           </div>
         </CardContent>
-      </Card>
+          </Card>
+        </div>
+      ) : (
+        <div
+          id="employee-management-analytics-panel"
+          role="tabpanel"
+          aria-labelledby="employee-management-analytics-tab"
+          className="mt-4"
+        >
+          <EmployeeReportsAnalytics employees={employees} loading={employeeLoading} />
+        </div>
+      )}
 
       <Modal
         open={employeeModalOpen}
@@ -712,9 +1287,6 @@ export default function EmployeeManagementWorkspace({
         onClose={closeEmployeeModal}
         footer={(
           <>
-            <Button variant="ghost" onClick={closeEmployeeModal} disabled={employeeSaving}>
-              Cancel
-            </Button>
             <Button
               type="submit"
               form={EMPLOYEE_MANAGEMENT_FORM_ID}
@@ -727,7 +1299,7 @@ export default function EmployeeManagementWorkspace({
       >
         <CreateEmployee
           formId={EMPLOYEE_MANAGEMENT_FORM_ID}
-          initialValues={editingEmployee}
+          initialValues={employeeFormInitialValues}
           options={employeeOptions}
           nextEmployeeId={nextEmployeeId}
           onCancel={closeEmployeeModal}
@@ -735,8 +1307,27 @@ export default function EmployeeManagementWorkspace({
           submitLabel={employeeSaving ? "Saving..." : editingEmployee ? "Save Changes" : "Create Employee"}
           showActions={false}
           submitting={employeeSaving}
+          additionalFields={canUploadEmployeeDocuments ? (
+            <div className="space-y-5">
+              {editingEmployee ? (
+                <EmployeeDocumentManager
+                  key={editingEmployee.id}
+                  employee={editingEmployee}
+                  disabled={employeeSaving}
+                />
+              ) : null}
+              {editingEmployee ? (
+                <p className="m-0 text-xs text-slate-500">
+                  Select corrected or additional files below. New uploads are saved when you click Save Changes.
+                </p>
+              ) : null}
+              <EmployeeDocumentUploadFields value={employeeDocuments} onChange={setEmployeeDocuments} disabled={employeeSaving} />
+            </div>
+          ) : null}
         />
       </Modal>
+
+      <EmployeeDocumentRetryModal value={documentRetry} onChange={setDocumentRetry} />
 
       <Modal
         open={employeeViewOpen}
@@ -744,15 +1335,23 @@ export default function EmployeeManagementWorkspace({
         maxWidth="max-w-[880px]"
         onClose={closeEmployeeViewer}
         footer={(
-          <>
+          <div className="flex flex-wrap items-center justify-end gap-3">
             <EmployeeDocumentDownloadButtons
               open={employeeViewOpen && Boolean(viewingEmployee)}
               employee={viewingEmployee}
             />
-            <Button variant="primary" onClick={closeEmployeeViewer}>
-              Close
-            </Button>
-          </>
+            {viewingEmployee && canArchiveEmployees ? (
+              employeeArchiveView === "archive" ? (
+                <Button
+                  variant="secondary"
+                  icon={RotateCcw}
+                  onClick={() => handleRestoreEmployee(viewingEmployee)}
+                >
+                  Restore
+                </Button>
+              ) : null
+            ) : null}
+          </div>
         )}
       >
         {viewingEmployee ? (
@@ -778,6 +1377,7 @@ export default function EmployeeManagementWorkspace({
               <div><dt className="text-sm font-semibold text-slate-500">Phone</dt><dd className="m-0 text-slate-900">{viewingEmployee.phone || "N/A"}</dd></div>
               <div><dt className="text-sm font-semibold text-slate-500">Division</dt><dd className="m-0 text-slate-900">{viewingEmployee.department || "N/A"}</dd></div>
               <div><dt className="text-sm font-semibold text-slate-500">Position</dt><dd className="m-0 text-slate-900">{viewingEmployee.position || "N/A"}</dd></div>
+              <div><dt className="text-sm font-semibold text-slate-500">Designation</dt><dd className="m-0 text-slate-900">{viewingEmployee.designation || "None"}</dd></div>
               <div><dt className="text-sm font-semibold text-slate-500">Status</dt><dd className="m-0 text-slate-900">{viewingEmployee.status || "N/A"}</dd></div>
               <div><dt className="text-sm font-semibold text-slate-500">Employment Status</dt><dd className="m-0 text-slate-900">{viewingEmployee.employmentStatus || "N/A"}</dd></div>
               <div><dt className="text-sm font-semibold text-slate-500">Date of Birth</dt><dd className="m-0 text-slate-900">{viewingEmployee.dateOfBirth || "N/A"}</dd></div>

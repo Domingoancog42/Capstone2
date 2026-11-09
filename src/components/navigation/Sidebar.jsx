@@ -2,24 +2,33 @@ import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "framer-motion";
 import {
   BarChart3,
+  Building2,
+  BriefcaseBusiness,
   ClipboardCheck,
   ClipboardList,
-  CalendarDays,
   CalendarRange,
+  Clock3,
   ChevronDown,
   FileText,
+  FileSignature,
+  KeyRound,
   LayoutDashboard,
   Menu,
   MessageCircle,
+  Plane,
   ScrollText,
-  ShieldCheck,
+  TrendingUp,
   Trophy,
+  UserRoundCog,
   Users,
   X,
 } from "lucide-react";
 import NotificationBadge from "../UI/NotificationBadge";
-import { subscribeAutoRefresh } from "../../components/auto/autorefreshconfig";
-import { buildReportNavChildren } from "../../module/reports/reportCategories";
+import { scalePollInterval, subscribeAutoRefresh } from "../../components/auto/autorefreshconfig";
+import {
+  ADMIN_HIDDEN_REPORT_CATEGORIES,
+  buildReportNavChildren,
+} from "../../module/reports/reportCategories";
 import {
   fetchLeaveRequests,
   LEAVE_REQUESTS_CHANGED_EVENT,
@@ -27,31 +36,41 @@ import {
 import { fetchTravelOrders } from "../../services/travelOrderService";
 import { fetchCompensatoryRequests } from "../../services/compensatoryService";
 import { fetchOvertimeRequests } from "../../services/overtimeService";
-import { fetchLoanRequests } from "../../services/loanService";
 import { fetchLeaveMonetizationRequests } from "../../services/leaveMonetizationService";
 import { fetchPayrollRecords } from "../../services/payrollService";
 import {
+  fetchPromotions,
+  markPromotionsViewed,
+  PROMOTIONS_CHANGED_EVENT,
+} from "../../services/promotionService";
+import { fetchIpcrRecords } from "../../services/api";
+import { performanceFormKey } from "../../module/performance/performanceFormGroups";
+import {
   canManageLeave,
-  countPendingRecords,
-  normalizeRequestStatus,
+  matchesLeaveManagementStatus,
+  matchesUserRecordScope,
+  normalizeLeaveStatus,
   resolveRoleKey,
 } from "../../utils/leaveHelpers";
-import { getRoleLabel } from "../../utils/roleRoutes";
-import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
+import { filterNavigationItemsByPermissions } from "../../utils/permissions";
+import { getRoleLabel, isFadDivisionChiefUser, normalizeRole } from "../../utils/roleRoutes";
 
 const defaultNavigationItems = [
   { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/admin/dashboard" },
-  { key: "employees", label: "Employee Directory", icon: Users, path: "/admin/employees" },
-  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/admin/calendar" },
-  { type: "section", label: "Communication" },
+  { key: "employees", label: "Employee Management", icon: Users, path: "/admin/employees" },
+  { key: "divisions", label: "Divisions Management", icon: Building2, path: "/admin/divisions" },
+  { key: "designations", label: "Positions Management", icon: BriefcaseBusiness, path: "/admin/designations" },
+  { key: "users", label: "User Management", icon: UserRoundCog, path: "/admin/users" },
+  { key: "rbac", label: "Role Based Access Control", icon: KeyRound, path: "/admin/rbac" },
+  { key: "signatories", label: "Signatories Management", icon: FileSignature, path: "/admin/signatories" },
   { key: "messages", label: "Messages", icon: MessageCircle, path: "/admin/messages" },
   { key: "notifications", label: "Notifications", path: "/admin/notifications", hidden: true },
-  { type: "section", label: "HR Operations" },
   { key: "serviceRecord", label: "Service Record", icon: ScrollText, path: "/admin/service-record" },
+  { key: "promotions", label: "Promotions", icon: TrendingUp, path: "/admin/promotions" },
   {
     key: "rewardsRecognition",
-    label: "Recognition & Rewards",
+    label: "R&R Management",
     icon: Trophy,
     path: "/admin/rewards-recognition/nomination",
     children: [
@@ -62,7 +81,7 @@ const defaultNavigationItems = [
   },
   {
     key: "performanceManagement",
-    label: "Performance Reviews",
+    label: "Performance Management",
     icon: BarChart3,
     path: "/admin/masterfiles/performance-management/opcr",
     children: [
@@ -72,17 +91,18 @@ const defaultNavigationItems = [
   },
   {
     key: "leaveBalances",
-    label: "Leave Balances",
+    label: "Leave Balance Management",
     icon: ClipboardList,
     path: "/admin/masterfiles/leave-balances",
   },
   {
     key: "attendance",
-    label: "Time & Attendance",
+    label: "Attendance Management",
     icon: ClipboardCheck,
     path: "/admin/attendance",
     children: [
-      { key: "attendance", label: "Import Attendance", path: "/admin/attendance", exact: true },
+      /* The biometric import itself lives with HR Staff; Admin keeps the records view. */
+      { key: "attendance", label: "Attendance Records", path: "/admin/attendance", exact: true },
       { key: "overtime", label: "Overtime", path: "/admin/attendance/overtime" },
     ],
   },
@@ -91,13 +111,11 @@ const defaultNavigationItems = [
     label: "Leave Management",
     icon: CalendarRange,
     path: "/admin/leave",
-    children: [
-      { key: "leave", label: "Leave", path: "/admin/leave", exact: true },
-      { key: "travel", label: "Travel Order", path: "/admin/leave/travel-order" },
-      { key: "cto", label: "Compensatory Time Off", path: "/admin/leave/compensatory-time-off" },
-      { key: "passSlip", label: "Pass Slips", path: "/admin/leave/pass-slips" },
-    ],
+    exact: true,
   },
+  { key: "travel", label: "Travel Order Management", icon: Plane, path: "/admin/leave/travel-order" },
+  { key: "cto", label: "CTO Management", icon: Clock3, path: "/admin/leave/compensatory-time-off" },
+  { key: "passSlip", label: "Pass Slips", icon: FileText, path: "/admin/leave/pass-slips" },
   {
     key: "payroll",
     label: "Payroll Management",
@@ -115,7 +133,7 @@ const defaultNavigationItems = [
     label: "Reports & Analytics",
     icon: FileText,
     path: "/admin/reports",
-    children: buildReportNavChildren("/admin/reports"),
+    children: buildReportNavChildren("/admin/reports", { exclude: ADMIN_HIDDEN_REPORT_CATEGORIES }),
   },
 ];
 
@@ -146,6 +164,9 @@ const PAYROLL_PENDING_STATUSES = [
  * The cashier's entry is "Approved" rather than a pending rung: they sit past the end of the
  * approval chain, so a batch is theirs once the Regional Director has signed it and it is waiting
  * to be released. It still fits the rule the badges follow -- "these are waiting for you to act".
+ *
+ * The second rung belongs only to the Division Chief assigned to FAD/FAM. The rung remains stored
+ * as "Pending Chief" for database compatibility.
  */
 const PAYROLL_APPROVAL_STAGES_BY_ROLE = {
   admin: PAYROLL_PENDING_STATUSES,
@@ -193,9 +214,25 @@ function normalizePayrollRegistryDate(value) {
   return isoMatch ? isoMatch[1] : text;
 }
 
+function normalizePayrollEmploymentType(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  if (["contractofservice", "contractual", "cos"].includes(normalized)) {
+    return "contractofservice";
+  }
+
+  return normalized || "unspecified";
+}
+
+/*
+ * One run of Generate New Payroll is one register for every division, so division is not part of
+ * the key -- the same grouping as getRegistryGroupKey() in PayrollManagementWorkspace.jsx, or the
+ * badge would count one register per division.
+ */
 function getPayrollRegistryGroupKey(record = {}) {
   return [
-    record.division || "Unassigned",
+    String(record.payrollType || "Salary").trim().toLowerCase(),
+    normalizePayrollEmploymentType(record.employmentType),
     record.payPeriod || "",
     normalizePayrollRegistryDate(record.startDate),
     normalizePayrollRegistryDate(record.endDate || record.payrollDate),
@@ -254,44 +291,177 @@ function countPendingPayrollRegistries(records = [], roleKey = "") {
 }
 
 /*
- * The travel orders this role still has to sign.
- *
- * A travel order carries two signatures: the Planning Officer recommends a Pending order, which
- * moves it to Reviewed, and only then does the Regional Director approve it. A Reviewed order is
- * therefore already past the planning desk, so counting it would pin a number to their sidebar that
- * no action of theirs could clear — the same trap an employee's own pending request used to be.
- * Every other approver acts on both rungs, so they keep the shared pending count.
+ * IPCR assignments still with the HR Head. The HR Head (and Admin standing in) count the queue they
+ * decide on; a chief counts the assignments of theirs still waiting -- the number they will see fall
+ * as HR works through them. One badge unit is one form (an employee and a rating period), the same
+ * unit the For Approval tab counts, however many KPI rows the chief put in it. HR Staff have no
+ * decision to make, and an employee never sees a pending row, so neither gets a badge.
  */
-function countPendingTravelOrders(records = [], roleKey = "") {
-  if (roleKey !== "planningofficer") {
-    return countPendingRecords(records);
+const IPCR_APPROVAL_BADGE_ROLES = ["admin", "hrhead", "chief"];
+
+export function hasIpcrApprovalBadge(roleKey = "") {
+  return IPCR_APPROVAL_BADGE_ROLES.includes(roleKey);
+}
+
+export function countPendingIpcrAssignments(records = [], roleKey = "") {
+  if (!hasIpcrApprovalBadge(roleKey)) {
+    return 0;
   }
 
+  const forms = new Set();
+  records.forEach((record) => {
+    if (String(record?.status || "").trim().toLowerCase() === "pending_approval") {
+      forms.add(performanceFormKey(record, "ipcr"));
+    }
+  });
+
+  return forms.size;
+}
+
+/* Shared by modules whose badge is based on the literal Pending storage value. */
+export function countPendingSidebarRecords(records = []) {
   return records.reduce(
-    (count, record) => count + (normalizeRequestStatus(record?.status) === "Pending" ? 1 : 0),
+    (count, record) => count + (String(record?.status || "").trim().toLowerCase() === "pending" ? 1 : 0),
     0
   );
 }
 
 /*
- * CTO requests move through three different desks. A badge is a to-do count, so each role only
- * sees the status it can act on; after the Chief endorses a request, it must disappear from the
- * Chief's count and move to the HR Head's instead. Admin may stand in at every open stage.
+ * A Leave Management badge counts only what is waiting for the signed-in role's signature -- the
+ * rows its table labels "Pending by <this desk>". Counting the whole open queue instead pinned a
+ * number to an approver's sidebar that no action of theirs could clear, the same trap an
+ * employee's own pending request used to be. A role with no desk in a module gets no badge for it.
+ *
+ * Each open status names the desk that owns the request, so a desk is a list of statuses. These
+ * mirror the approval chains the API enforces (travel_order.php, compensatory.php); the leave
+ * chain already lives in matchesLeaveManagementStatus(). Admin stands in at every desk so a
+ * request is never stranded while an approver is away.
  */
-const COMPENSATORY_APPROVAL_STATUSES_BY_ROLE = {
-  admin: ["Pending", "Endorsed", "Reviewed"],
-  chief: ["Pending"],
-  hrhead: ["Endorsed"],
+function countRecordsOnDesk(records, deskStatuses) {
+  if (!deskStatuses) {
+    return 0;
+  }
+
+  return records.reduce(
+    (count, record) => count + (
+      !record?.awaitingAuthorization && deskStatuses.includes(normalizeLeaveStatus(record?.status)) ? 1 : 0
+    ),
+    0
+  );
+}
+
+/*
+ * The Planning Officer recommends a Pending travel order, which moves it to Reviewed; the Division
+ * Chief approves it next, moving it to Chief Reviewed; the Regional Director then approves it. That
+ * approval parks the order at Chief Reviewed while the employee accepts the COA authorization
+ * clause, which the API flags as `awaitingAuthorization` -- nobody's signature to give, so
+ * countRecordsOnDesk() leaves it out. The HR desks only read and archive travel orders, so neither
+ * has a desk here.
+ */
+const TRAVEL_DESK_STATUSES_BY_ROLE = {
+  planningofficer: ["Pending"],
+  chief: ["Reviewed"],
+  regionaldirector: ["Chief Reviewed"],
+  admin: ["Pending", "Reviewed", "Chief Reviewed"],
+};
+
+export function countPendingTravelOrders(records = [], roleKey = "") {
+  return countRecordsOnDesk(records, TRAVEL_DESK_STATUSES_BY_ROLE[roleKey]);
+}
+
+/*
+ * Overtime badges are intentionally limited to its two signing desks: the Chief Admin, whose badge
+ * counts the Pending filings waiting for the first approval, and the Regional Director, whose badge
+ * counts the Reviewed filings waiting for final approval.
+ */
+const OVERTIME_DESK_STATUSES_BY_ROLE = {
+  chiefadmin: ["Pending"],
   regionaldirector: ["Reviewed"],
 };
 
-export function countPendingCompensatoryRequests(records = [], roleKey = "") {
-  const actionableStatuses = COMPENSATORY_APPROVAL_STATUSES_BY_ROLE[roleKey] || [];
+export function countPendingOvertimeRequests(records = [], roleKey = "") {
+  return countRecordsOnDesk(records, OVERTIME_DESK_STATUSES_BY_ROLE[roleKey]);
+}
 
+/** Use the same role-aware Pending definition as the Leave Management table. */
+export function countPendingLeaveRequests(records = [], roleKey = "") {
   return records.reduce(
-    (count, record) => count + (actionableStatuses.includes(normalizeRequestStatus(record?.status)) ? 1 : 0),
+    (count, record) => count + (
+      matchesLeaveManagementStatus(record?.status, "Pending", roleKey) ? 1 : 0
+    ),
     0
   );
+}
+
+/*
+ * Other-division CTOs wait on the Division Chief at Pending and Chief Admin at Endorsed. FAD/ORD
+ * direct-route filings wait on Chief Admin at Pending. The Regional Director signs Reviewed rows.
+ */
+const COMPENSATORY_DESK_STATUSES_BY_ROLE = {
+  chief: ["Pending"],
+  chiefadmin: ["Pending", "Endorsed"],
+  regionaldirector: ["Reviewed"],
+  admin: ["Pending", "Endorsed", "Reviewed"],
+};
+
+export function countPendingCompensatoryRequests(records = [], roleKey = "") {
+  return countRecordsOnDesk(records, COMPENSATORY_DESK_STATUSES_BY_ROLE[roleKey]);
+}
+
+/*
+ * HR handles assessment through submission; the Director handles recommended applications.
+ * Legacy pending applications are still counted at HR's desk.
+ */
+const PROMOTION_DESK_STATUSES_BY_ROLE = {
+  hrhead: ["assessment", "examination", "interview", "submission", "pending"],
+  hrstaff: ["assessment", "examination", "interview", "submission", "pending"],
+  regionaldirector: ["recommended"],
+  admin: ["assessment", "examination", "interview", "submission", "pending", "recommended"],
+};
+
+export function hasPromotionDesk(roleKey = "") {
+  return Boolean(PROMOTION_DESK_STATUSES_BY_ROLE[roleKey]);
+}
+
+export function countPendingPromotions(records = [], roleKey = "") {
+  const deskStatuses = PROMOTION_DESK_STATUSES_BY_ROLE[roleKey];
+
+  if (!deskStatuses) {
+    return 0;
+  }
+
+  return records.reduce((count, record) => {
+    const statusKey = String(record?.statusKey || record?.status || "").trim().toLowerCase();
+    return count + (!record?.isArchived && deskStatuses.includes(statusKey) ? 1 : 0);
+  }, 0);
+}
+
+/** An employee's approved promotion stays flagged until they open My Promotion. */
+export function hasUnviewedEmployeePromotion(records = []) {
+  return records.some((record) => {
+    const statusKey = String(record?.statusKey || record?.status || "").trim().toLowerCase();
+
+    return !record?.isArchived && statusKey === "approved" && record?.viewedAt == null;
+  });
+}
+
+/** Whether this role has a desk to clear in the module, and so a badge worth fetching. */
+export function hasTravelOrderDesk(roleKey = "") {
+  return Boolean(TRAVEL_DESK_STATUSES_BY_ROLE[roleKey]);
+}
+
+export function hasCompensatoryDesk(roleKey = "") {
+  return Boolean(COMPENSATORY_DESK_STATUSES_BY_ROLE[roleKey]);
+}
+
+/** Give the shared HR Operations group the name of the workspace currently using the sidebar. */
+export function getRoleOperationsLabel(label, user) {
+  if (String(label || "").trim().toLowerCase() !== "hr operations") {
+    return label;
+  }
+
+  const roleLabel = getRoleLabel(user?.role || user?.roleKey || "User");
+  return `${roleLabel} Operations`;
 }
 
 /**
@@ -327,6 +497,14 @@ const VARIANT_NAVIGATION_STYLE = {
 /** Pure CSS so a long nav does not pay for a motion component per row. */
 const HOVER_SHIFT_CLASS = "transition-transform duration-200 motion-safe:group-hover:translate-x-0.5";
 
+/*
+ * The collapsed rail shows only a 16px icon in a 64px column, so a badge there is pinned to the
+ * icon's top-right corner and shrunk a step -- the same place the header bell wears its count.
+ * Without it the rail dropped every badge, and an approver who keeps the sidebar collapsed never
+ * saw what was waiting on them.
+ */
+const COLLAPSED_BADGE_CLASS = "!right-2.5 !top-0.5 z-[1] min-h-4 min-w-4 px-1 text-[10px]";
+
 /** Grows out of the left edge on hover, so rows answer the cursor even when they are not active. */
 function HoverRail({ toneClass }) {
   return (
@@ -342,7 +520,6 @@ function HoverRail({ toneClass }) {
  * old row to the new one instead of blinking out and back in somewhere else.
  */
 const ACTIVE_SURFACE_LAYOUT_ID = "admin-sidebar-active-surface";
-
 const NAV_LIST_VARIANTS = {
   hidden: {},
   visible: { transition: { delayChildren: 0.05, staggerChildren: 0.025 } },
@@ -386,58 +563,119 @@ export default function Sidebar({
   const [pendingLeaveCounts, setPendingLeaveCounts] = useState(emptyLeavePendingCounts);
   const [pendingPayrollCount, setPendingPayrollCount] = useState(0);
   const [pendingPayrollCounts, setPendingPayrollCounts] = useState(emptyPayrollPendingCounts);
+  const [pendingIpcrCount, setPendingIpcrCount] = useState(0);
+  const [pendingPromotionCount, setPendingPromotionCount] = useState(0);
+  const [hasUnviewedPromotionBadge, setHasUnviewedPromotionBadge] = useState(false);
+  const [hasTravelAuthorization, setHasTravelAuthorization] = useState(false);
   const [expandedItems, setExpandedItems] = useState({});
-  const userName = user?.full_name || user?.username || "Admin";
-  const profileImageUrl = resolveBackendAssetUrl(user?.profile_image || user?.profileImage);
   const roleKey = resolveRoleKey(user);
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  /* Chief Admin is based on Chief but keeps distinct CTO and overtime desks. */
+  const deskRoleKey = exactRoleKey === "chiefadmin" ? exactRoleKey : roleKey;
   /*
-   * A pending badge means "these are waiting for you to act", so only the roles that can actually
-   * act on a request get one. An employee's own pending request is a status, not a task — counting
-   * it here put a permanent "1" on their sidebar that no action of theirs could ever clear.
-   *
-   * The badges have different audiences because the APIs do: leave_request.php lets admin, hrhead,
-   * hrstaff and regionaldirector act; overtime.php allows those four plus chief and
-   * planningofficer, which work the same division desk; travel_order.php adds only the planning
-   * officer to the first four. CTO has its own Chief, HR Head, Regional Director chain.
-   * HR Staff intentionally have no Leave or Travel Order to-do badge because those workspaces are
-   * record-monitoring views for them, not approval queues.
+   * Leave uses the same role-aware Pending definition in the sidebar and management table. For
+   * example, Endorsed is pending at HR's desk and Reviewed is pending at the Director's desk. An
+   * employee's own pending filing is a status to monitor, not an approval task, so employee
+   * accounts do not receive Leave or CTO action badges here. Travel orders and CTO are fetched
+   * only for the roles with a signature to give on them -- see the desk maps above.
    */
   const managesLeaveModules = canManageLeave(user);
-  const hidesHrStaffLeaveBadges = roleKey === "hrstaff";
-  const canActOnLeaveRequests = managesLeaveModules && !hidesHrStaffLeaveBadges;
-  const canActOnOvertime = managesLeaveModules || ["chief", "planningofficer"].includes(roleKey);
-  const canActOnTravelOrders = (managesLeaveModules || roleKey === "planningofficer")
-    && !hidesHrStaffLeaveBadges;
-  const canActOnCompensatoryRequests = Boolean(COMPENSATORY_APPROVAL_STATUSES_BY_ROLE[roleKey]?.length);
-  const canActOnPayrollApprovals = Boolean(PAYROLL_APPROVAL_STAGES_BY_ROLE[roleKey]?.length);
-  const canActOnLoanRequests = ["admin", "hrhead", "hrstaff", "regionaldirector"].includes(roleKey);
+  const tracksPendingLeaveRequests = managesLeaveModules;
+  const canActOnOvertime = Boolean(OVERTIME_DESK_STATUSES_BY_ROLE[deskRoleKey]);
+  const canActOnTravelOrders = hasTravelOrderDesk(roleKey);
+  const tracksPendingCompensatoryRequests = hasCompensatoryDesk(deskRoleKey);
+  const payrollDeskRoleKey = roleKey === "chief" && !isFadDivisionChiefUser(user) ? "" : deskRoleKey;
+  const canActOnPayrollApprovals = Boolean(PAYROLL_APPROVAL_STAGES_BY_ROLE[payrollDeskRoleKey]?.length);
   /*
    * Leave monetization is filed as a leave type and reviewed in the leave list, so its pending
    * filings count towards the Leave badge rather than a payroll one.
    */
   const canActOnLeaveMonetizationRequests = ["admin", "hrhead", "regionaldirector"].includes(roleKey);
-  const showsPendingBadges = canActOnLeaveRequests
+  const showsPendingBadges = tracksPendingLeaveRequests
     || canActOnOvertime
     || canActOnTravelOrders
-    || canActOnCompensatoryRequests;
-  const showsPayrollPendingBadges = canActOnPayrollApprovals || canActOnLoanRequests;
+    || tracksPendingCompensatoryRequests;
+  const showsPayrollPendingBadges = canActOnPayrollApprovals;
   /*
-   * The sidebar deliberately lists every item the role has, including ones the signed-in user has
-   * no permission for. Removing an entry made a revoked module simply vanish, which reads as the
-   * feature being gone rather than restricted. The entry stays and the page it opens answers with
-   * Access Denied, so the boundary is visible and explains itself.
+   * Only the modules the signed-in person may open are listed. Unchecking a module in RBAC
+   * Management removes its entry here as soon as the session is re-read -- App refreshes it on the
+   * `permissions` change topic -- rather than leaving a link that answers with Access Denied. A
+   * group stays while any of its children is still permitted.
    *
-   * This is presentation only — nothing here grants access. The page still checks the permission
-   * before it renders, and every API the page would call re-checks on the server.
+   * This is presentation only: nothing here grants access. The page still checks the permission
+   * before it renders, and every API the page would call re-checks on the server. A user object
+   * with no permissions map at all (a session still restoring) is listed unfiltered, since there is
+   * nothing yet to filter against.
    */
+  const permittedNavigationItems = useMemo(
+    () => (user?.permissions && typeof user.permissions === "object"
+      ? filterNavigationItemsByPermissions(navigationItems, user)
+      : navigationItems),
+    [navigationItems, user]
+  );
   const hasLeaveNavigationItem = useMemo(
-    () => navigationItems.some((item) => item.key === "leave" && !item.hidden),
-    [navigationItems]
+    () => permittedNavigationItems.some((item) => item.key === "leave" && !item.hidden),
+    [permittedNavigationItems]
   );
+  const tracksTravelAuthorization = ["employee", "hrhead", "hrstaff", "chiefadmin", "cashier"].includes(exactRoleKey)
+    && permittedNavigationItems.some((item) => !item.hidden
+      && (item.key === "travel" || item.children?.some((child) => child.key === "travel" && !child.hidden)));
+
+  useEffect(() => {
+    setHasTravelAuthorization(false);
+    if (!tracksTravelAuthorization) return undefined;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await fetchTravelOrders();
+        if (active) {
+          setHasTravelAuthorization((result.requests || []).some((request) => request.awaitingAuthorization
+            && (typeof request.isOwnTravelOrder === "boolean"
+              ? request.isOwnTravelOrder
+              : matchesUserRecordScope(request, user))));
+        }
+      } catch {
+        if (active) setHasTravelAuthorization(false);
+      }
+    };
+    void refresh();
+    window.addEventListener(LEAVE_REQUESTS_CHANGED_EVENT, refresh);
+    window.addEventListener("focus", refresh);
+    const unsubscribe = subscribeAutoRefresh(refresh, { topics: ["travel_order"] });
+    const interval = window.setInterval(refresh, scalePollInterval(30000));
+    return () => {
+      active = false;
+      window.removeEventListener(LEAVE_REQUESTS_CHANGED_EVENT, refresh);
+      window.removeEventListener("focus", refresh);
+      unsubscribe();
+      window.clearInterval(interval);
+    };
+  }, [tracksTravelAuthorization, user]);
+
   const hasPayrollNavigationItem = useMemo(
-    () => navigationItems.some((item) => item.key === "payroll" && !item.hidden),
-    [navigationItems]
+    () => permittedNavigationItems.some((item) => (
+      !item.hidden
+      && (
+        ["payroll", "payrollGenerate"].includes(item.key)
+        || item.children?.some((child) => child.key === "payrollGenerate" && !child.hidden)
+      )
+    )),
+    [permittedNavigationItems]
   );
+  /* The IPCR entry is a child of the Performance Reviews group on every role that has it. */
+  const hasIpcrNavigationItem = useMemo(
+    () => permittedNavigationItems.some((item) => !item.hidden
+      && Array.isArray(item.children)
+      && item.children.some((child) => child.key === "performanceIpcr")),
+    [permittedNavigationItems]
+  );
+  const showsIpcrPendingBadge = hasIpcrApprovalBadge(roleKey);
+  const hasPromotionsNavigationItem = useMemo(
+    () => permittedNavigationItems.some((item) => item.key === "promotions" && !item.hidden),
+    [permittedNavigationItems]
+  );
+  const showsPromotionPendingBadge = hasPromotionDesk(roleKey);
+  const showsEmployeePromotionBadge = roleKey === "employee";
   const resolvedNavigationStyle = useMemo(
     () => ({
       ...(VARIANT_NAVIGATION_STYLE[variant] || VARIANT_NAVIGATION_STYLE.default),
@@ -447,6 +685,20 @@ export default function Sidebar({
   );
   const isCrimson = variant === "crimson";
   const displayCollapsed = collapsed && !mobileOpen;
+  /*
+   * Profile remains available from the account menu in the header. Keeping this rule in the shared
+   * sidebar removes the duplicate "My Profile" entry for every current and future role without
+   * disabling the profile route itself.
+   */
+  const sidebarNavigationItems = useMemo(
+    () => permittedNavigationItems.filter((item) => {
+      const key = String(item?.key || "").trim().toLowerCase();
+      const label = String(item?.label || "").trim().toLowerCase();
+
+      return key !== "messages" && key !== "profile" && label !== "my profile";
+    }),
+    [permittedNavigationItems]
+  );
   const prefersReducedMotion = useReducedMotion();
   const surfaceTransition = prefersReducedMotion
     ? { duration: 0 }
@@ -472,7 +724,7 @@ export default function Sidebar({
       let hasChanges = false;
       const next = { ...current };
 
-      navigationItems.forEach((item) => {
+      permittedNavigationItems.forEach((item) => {
         if (!item.children?.length) {
           return;
         }
@@ -489,7 +741,7 @@ export default function Sidebar({
 
       return hasChanges ? next : current;
     });
-  }, [activeModule, matchesPath, navigationItems]);
+  }, [activeModule, matchesPath, permittedNavigationItems]);
 
   const toggleExpandedItem = (itemKey) => {
     setExpandedItems((current) => ({
@@ -498,8 +750,26 @@ export default function Sidebar({
     }));
   };
 
+  const clearEmployeePromotionBadge = () => {
+    if (!showsEmployeePromotionBadge || !hasUnviewedPromotionBadge) {
+      return;
+    }
+
+    // Clear immediately so the navigation feels like the acknowledgement it is. If persistence
+    // fails, restore it; the next refresh will also pick up the server's authoritative state.
+    setHasUnviewedPromotionBadge(false);
+    void Promise.resolve(markPromotionsViewed()).catch((error) => {
+      console.error("Failed to mark promotions as viewed:", error);
+      setHasUnviewedPromotionBadge(true);
+    });
+  };
+
   const handleNavigate = (path, key) => {
     onCloseMobile?.();
+
+    if (key === "promotions") {
+      clearEmployeePromotionBadge();
+    }
 
     if (onNavigate) {
       onNavigate(path);
@@ -532,14 +802,28 @@ export default function Sidebar({
       return pendingAttendanceCount;
     }
 
-    if (item.key === "payroll") {
+    if (["payroll", "payrollGenerate"].includes(item.key)) {
       return pendingPayrollCount;
     }
 
     if (item.key === "leave") {
       return Array.isArray(item.children) && item.children.length > 0
         ? item.children.reduce((total, child) => total + getLeaveChildPendingCount(child.key), 0)
+        : permittedNavigationItems.some((entry) => ["travel", "cto"].includes(entry.key))
+        ? getLeaveChildPendingCount("leave")
         : pendingLeaveCount;
+    }
+
+    if (["travel", "cto"].includes(item.key)) {
+      return getLeaveChildPendingCount(item.key);
+    }
+
+    if (item.key === "performanceManagement") {
+      return pendingIpcrCount;
+    }
+
+    if (item.key === "promotions") {
+      return pendingPromotionCount;
     }
 
     return 0;
@@ -567,9 +851,9 @@ export default function Sidebar({
           overtimeResult,
           leaveMonetizationResult,
         ] = await Promise.allSettled([
-          canActOnLeaveRequests ? fetchLeaveRequests() : null,
+          tracksPendingLeaveRequests ? fetchLeaveRequests() : null,
           canActOnTravelOrders ? fetchTravelOrders() : null,
-          canActOnCompensatoryRequests ? fetchCompensatoryRequests() : null,
+          tracksPendingCompensatoryRequests ? fetchCompensatoryRequests() : null,
           canActOnOvertime ? fetchOvertimeRequests() : null,
           canActOnLeaveMonetizationRequests ? fetchLeaveMonetizationRequests() : null,
         ]);
@@ -594,7 +878,7 @@ export default function Sidebar({
           overtimeResult.status === "fulfilled" && Array.isArray(overtimeResult.value?.records)
             ? overtimeResult.value.records
             : [];
-        /* Reviewed in the leave list, so these are part of the Leave badge's queue. */
+        /* Shown in the leave list, so pending monetization filings share the Leave badge. */
         const leaveMonetizationRecords =
           leaveMonetizationResult.status === "fulfilled" && Array.isArray(leaveMonetizationResult.value?.records)
             ? leaveMonetizationResult.value.records
@@ -603,11 +887,12 @@ export default function Sidebar({
         // No per-user scoping: every role that reaches here is an approver, and an approver's badge
         // is meant to count the whole queue rather than only the requests they filed themselves.
         const nextPendingCounts = {
-          leave: countPendingRecords(leaveRequests) + countPendingRecords(leaveMonetizationRecords),
+          leave: countPendingLeaveRequests(leaveRequests, roleKey)
+            + countPendingLeaveRequests(leaveMonetizationRecords, roleKey),
           travel: countPendingTravelOrders(travelRequests, roleKey),
           passSlip: 0,
-          cto: countPendingCompensatoryRequests(compensatoryRecords, roleKey),
-          overtime: countPendingRecords(overtimeRecords),
+          cto: countPendingCompensatoryRequests(compensatoryRecords, deskRoleKey),
+          overtime: countPendingOvertimeRequests(overtimeRecords, deskRoleKey),
         };
         const totalPendingLeaveCount = [
           nextPendingCounts.leave,
@@ -641,7 +926,7 @@ export default function Sidebar({
     const unsubscribeAutoRefresh = subscribeAutoRefresh(handleRefresh, {
       topics: ["leave_monetization"],
     });
-    const refreshIntervalId = window.setInterval(handleRefresh, 30000);
+    const refreshIntervalId = window.setInterval(handleRefresh, scalePollInterval(30000));
 
     return () => {
       active = false;
@@ -651,11 +936,12 @@ export default function Sidebar({
       window.clearInterval(refreshIntervalId);
     };
   }, [
-    canActOnLeaveRequests,
+    tracksPendingLeaveRequests,
     canActOnLeaveMonetizationRequests,
-    canActOnCompensatoryRequests,
+    tracksPendingCompensatoryRequests,
     canActOnOvertime,
     canActOnTravelOrders,
+    deskRoleKey,
     hasLeaveNavigationItem,
     roleKey,
     showsPendingBadges,
@@ -672,26 +958,19 @@ export default function Sidebar({
 
     const loadPendingPayrollCount = async () => {
       try {
-        const [payrollResult, loanResult] = await Promise.allSettled([
-          canActOnPayrollApprovals ? fetchPayrollRecords() : null,
-          canActOnLoanRequests ? fetchLoanRequests() : null,
-        ]);
+        const payrollResult = await fetchPayrollRecords();
 
         if (!active) {
           return;
         }
 
         const payrollRecords =
-          payrollResult.status === "fulfilled" && Array.isArray(payrollResult.value?.records)
-            ? payrollResult.value.records
-            : [];
-        const loanRecords =
-          loanResult.status === "fulfilled" && Array.isArray(loanResult.value?.records)
-            ? loanResult.value.records
+          Array.isArray(payrollResult?.records)
+            ? payrollResult.records
             : [];
         const nextPendingCounts = {
-          payrollGenerate: countPendingPayrollRegistries(payrollRecords, roleKey),
-          payrollLoan: countPendingRecords(loanRecords),
+          payrollGenerate: countPendingPayrollRegistries(payrollRecords, payrollDeskRoleKey),
+          payrollLoan: 0,
         };
         const totalPendingPayrollCount = Object.values(nextPendingCounts).reduce(
           (total, count) => total + count,
@@ -714,10 +993,10 @@ export default function Sidebar({
 
     handleRefresh();
     const unsubscribeAutoRefresh = subscribeAutoRefresh(handleRefresh, {
-      topics: ["payroll", "loan_request", "loan"],
+      topics: ["payroll"],
     });
     window.addEventListener("focus", handleRefresh);
-    const refreshIntervalId = window.setInterval(handleRefresh, 30000);
+    const refreshIntervalId = window.setInterval(handleRefresh, scalePollInterval(30000));
 
     return () => {
       active = false;
@@ -727,10 +1006,112 @@ export default function Sidebar({
     };
   }, [
     canActOnPayrollApprovals,
-    canActOnLoanRequests,
+    payrollDeskRoleKey,
     hasPayrollNavigationItem,
-    roleKey,
     showsPayrollPendingBadges,
+  ]);
+
+  useEffect(() => {
+    if (!hasIpcrNavigationItem || !showsIpcrPendingBadge) {
+      setPendingIpcrCount(0);
+      return undefined;
+    }
+
+    let active = true;
+
+    const loadPendingIpcrCount = async () => {
+      try {
+        // The server already scopes this: the whole queue for HR, their own division for a chief.
+        const result = await fetchIpcrRecords({ status: "pending_approval" });
+
+        if (!active) {
+          return;
+        }
+
+        setPendingIpcrCount(countPendingIpcrAssignments(Array.isArray(result?.records) ? result.records : [], roleKey));
+      } catch (error) {
+        if (active) {
+          setPendingIpcrCount(0);
+        }
+      }
+    };
+
+    const handleRefresh = () => {
+      void loadPendingIpcrCount();
+    };
+
+    handleRefresh();
+    const unsubscribeAutoRefresh = subscribeAutoRefresh(handleRefresh, {
+      topics: ["ipcr"],
+    });
+    window.addEventListener("focus", handleRefresh);
+    const refreshIntervalId = window.setInterval(handleRefresh, scalePollInterval(30000));
+
+    return () => {
+      active = false;
+      unsubscribeAutoRefresh();
+      window.removeEventListener("focus", handleRefresh);
+      window.clearInterval(refreshIntervalId);
+    };
+  }, [hasIpcrNavigationItem, roleKey, showsIpcrPendingBadge]);
+
+  useEffect(() => {
+    if (!hasPromotionsNavigationItem || (!showsPromotionPendingBadge && !showsEmployeePromotionBadge)) {
+      setPendingPromotionCount(0);
+      setHasUnviewedPromotionBadge(false);
+      return undefined;
+    }
+
+    let active = true;
+
+    const loadPendingPromotionCount = async () => {
+      try {
+        const result = await fetchPromotions();
+
+        if (!active) {
+          return;
+        }
+
+        const promotions = Array.isArray(result?.promotions) ? result.promotions : [];
+
+        setPendingPromotionCount(
+          showsPromotionPendingBadge ? countPendingPromotions(promotions, roleKey) : 0
+        );
+        setHasUnviewedPromotionBadge(
+          showsEmployeePromotionBadge && hasUnviewedEmployeePromotion(promotions)
+        );
+      } catch (error) {
+        if (active) {
+          setPendingPromotionCount(0);
+          setHasUnviewedPromotionBadge(false);
+        }
+      }
+    };
+
+    const handleRefresh = () => {
+      void loadPendingPromotionCount();
+    };
+
+    handleRefresh();
+    const unsubscribeAutoRefresh = subscribeAutoRefresh(handleRefresh, {
+      topics: ["promotion"],
+    });
+    window.addEventListener(PROMOTIONS_CHANGED_EVENT, handleRefresh);
+    window.addEventListener("focus", handleRefresh);
+    const refreshIntervalId = window.setInterval(handleRefresh, scalePollInterval(30000));
+
+    return () => {
+      active = false;
+      unsubscribeAutoRefresh();
+      window.removeEventListener(PROMOTIONS_CHANGED_EVENT, handleRefresh);
+      window.removeEventListener("focus", handleRefresh);
+      window.clearInterval(refreshIntervalId);
+    };
+  }, [
+    hasPromotionsNavigationItem,
+    roleKey,
+    showsEmployeePromotionBadge,
+    showsPromotionPendingBadge,
   ]);
 
   return (
@@ -740,7 +1121,7 @@ export default function Sidebar({
           ? "border-[#911212] bg-gradient-to-b from-[#D61E1E] to-[#911212]"
           : "border-slate-200 bg-white"
       } ${
-        displayCollapsed ? "w-64 lg:w-16" : "w-64"
+        displayCollapsed ? "w-64 lg:w-16" : "w-64 lg:w-72"
       } ${
         mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
       }`}
@@ -752,14 +1133,9 @@ export default function Sidebar({
           onClick={onToggleCollapse}
           className="admin-sidebar-collapse absolute left-full top-3.5 z-20 ml-4 hidden h-9 w-9 items-center justify-center rounded-lg text-slate-600 transition-colors hover:bg-slate-100 hover:text-[#D61E1E] lg:inline-flex"
         >
-          <motion.span
-            className="grid place-items-center"
-            transition={{ type: "spring", stiffness: 400, damping: 22 }}
-            whileHover={prefersReducedMotion ? undefined : { scale: 1.15 }}
-            whileTap={prefersReducedMotion ? undefined : { scale: 0.9 }}
-          >
+          <span className="admin-sidebar-icon grid place-items-center">
             <Menu size={16} />
-          </motion.span>
+          </span>
         </button>
       ) : null}
 
@@ -772,7 +1148,7 @@ export default function Sidebar({
           type="button"
           aria-label="Close navigation menu"
           onClick={onCloseMobile}
-          className={`absolute right-3 top-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-lg transition lg:hidden ${
+          className={`absolute right-1 top-1 z-20 inline-flex h-9 w-9 items-center justify-center rounded-lg transition lg:hidden ${
             isCrimson
               ? "bg-white/15 text-white hover:bg-white/25"
               : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -783,34 +1159,40 @@ export default function Sidebar({
       ) : null}
 
       <div
-        className={`admin-sidebar-brand flex shrink-0 flex-col items-center justify-center border-b px-3 ${
+        className={`admin-sidebar-brand flex shrink-0 items-center border-b ${
           isCrimson ? "border-white/20" : "border-slate-200"
-        } ${displayCollapsed ? "py-3" : "py-4"}`}
+        } ${displayCollapsed ? "justify-center px-2 py-3" : "min-h-28 justify-start gap-3 px-3 py-5"}`}
       >
         <motion.div
           className={`admin-sidebar-brand-logo grid shrink-0 place-items-center overflow-hidden rounded-full bg-white shadow-md transition-[height,width] duration-300 ${
             isCrimson ? "" : "border border-slate-200"
-          } ${displayCollapsed ? "h-11 w-11" : "h-14 w-14"}`}
+          } ${displayCollapsed ? "h-11 w-11" : "h-16 w-16"}`}
           transition={{ type: "spring", stiffness: 320, damping: 20 }}
           whileHover={prefersReducedMotion ? undefined : { scale: 1.06 }}
         >
           <img
             src="/mgb.png"
             alt="MGB logo"
-            className={`object-contain ${displayCollapsed ? "h-8 w-8" : "h-11 w-11"}`}
+            className="h-full w-full object-contain"
           />
         </motion.div>
         {!displayCollapsed && (
-          <motion.p
+          <motion.div
             animate={{ opacity: 1 }}
-            className={`admin-sidebar-brand-text m-0 mt-3 text-center text-[11px] font-bold uppercase leading-snug tracking-[0.1em] ${
+            className={`admin-sidebar-brand-text min-w-0 flex-1 text-left uppercase ${
               isCrimson ? "text-white" : "text-slate-800"
             }`}
             initial={{ opacity: 0 }}
             transition={{ delay: prefersReducedMotion ? 0 : 0.1, duration: 0.22 }}
           >
-            Mines and Geosciences Bureau
-          </motion.p>
+            <p className="admin-sidebar-brand-title m-0 text-[16px] font-extrabold leading-[1.15] tracking-tight">
+              <span className="block">Mines and</span>
+              <span className="block">Geosciences Bureau</span>
+            </p>
+            <p className="m-0 mt-1.5 text-[9px] font-semibold leading-none tracking-[0.35em] opacity-80">
+              Region X
+            </p>
+          </motion.div>
         )}
       </div>
 
@@ -827,25 +1209,27 @@ export default function Sidebar({
           initial={prefersReducedMotion ? false : "hidden"}
           variants={NAV_LIST_VARIANTS}
         >
-        {navigationItems.map((item) => {
+        {sidebarNavigationItems.map((item) => {
           if (item.type === "section") {
+            const sectionLabel = getRoleOperationsLabel(item.label, user);
+
             // Collapsed, the label has nowhere to go — a rule keeps the grouping readable.
             return displayCollapsed ? (
               <motion.div
-                key={`section-${item.label}`}
+                key={`section-${sectionLabel}`}
                 className={`mx-auto my-2 h-px w-8 first:hidden ${isCrimson ? "bg-white/20" : "bg-slate-200"}`}
                 variants={NAV_ITEM_VARIANTS}
               />
             ) : (
               // Space above the label is what separates the groups; there is no rule to lean on.
               <motion.p
-                key={`section-${item.label}`}
+                key={`section-${sectionLabel}`}
                 className={`admin-sidebar-section m-0 px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.14em] first:pt-1 ${
                   isCrimson ? "text-white/75" : "text-slate-500"
                 }`}
                 variants={NAV_ITEM_VARIANTS}
               >
-                {item.label}
+                {sectionLabel}
               </motion.p>
             );
           }
@@ -860,9 +1244,19 @@ export default function Sidebar({
             ? item.children.some((child) => (activePath ? matchesNavigationItem(child) : activeModule === child.key))
             : false;
           const isExpanded = Boolean(expandedItems[item.key]);
-          const isActive = hasActiveChild || (activePath ? matchesPath(item.path) : activeModule === item.key);
+          const isActive = hasActiveChild || (activePath ? matchesNavigationItem(item) : activeModule === item.key);
           const parentPendingCount = getParentPendingCount(item);
-          const showPendingBadge = parentPendingCount > 0;
+          const hasEmployeePromotionBadge = item.key === "promotions" && hasUnviewedPromotionBadge;
+          const hasTravelBadge = hasTravelAuthorization && (item.key === "travel"
+            || item.children?.some((child) => child.key === "travel"));
+          const notificationCount = hasEmployeePromotionBadge || hasTravelBadge ? 1 : parentPendingCount;
+          const notificationLabel = hasEmployeePromotionBadge || hasTravelBadge ? "!" : undefined;
+          const notificationTitle = hasTravelBadge
+            ? "Travel Order: accept your travel authorization"
+            : hasEmployeePromotionBadge
+            ? `${item.label}: new promotion`
+            : `${item.label} (${parentPendingCount} pending)`;
+          const showPendingBadge = notificationCount > 0;
 
           // Collapsed there is no submenu to point at, so the parent itself carries the highlight.
           const branchOnly = hasActiveChild && !displayCollapsed;
@@ -873,7 +1267,7 @@ export default function Sidebar({
               <motion.div key={item.label} className="space-y-1" variants={NAV_ITEM_VARIANTS}>
                 <button
                   type="button"
-                  title={item.label}
+                  title={displayCollapsed && showPendingBadge ? notificationTitle : item.label}
                   data-active={isActive}
                   onClick={() => {
                     if (displayCollapsed) {
@@ -903,10 +1297,9 @@ export default function Sidebar({
                     <HoverRail toneClass={resolvedNavigationStyle.hoverRail} />
                   )}
                   <span className={`relative z-[1] flex min-w-0 items-center gap-3 ${HOVER_SHIFT_CLASS}`}>
-                    <Icon
-                      size={16}
-                      className="shrink-0 transition-transform duration-200 motion-safe:group-hover:scale-110"
-                    />
+                    <span className="admin-sidebar-icon shrink-0">
+                      <Icon size={16} />
+                    </span>
                     {displayCollapsed ? null : (
                       <motion.span
                         animate={{ opacity: 1 }}
@@ -918,11 +1311,21 @@ export default function Sidebar({
                       </motion.span>
                     )}
                   </span>
-                  {displayCollapsed ? null : (
+                  {displayCollapsed ? (
+                    /* The rail has no room beside the icon, so the count sits on its corner instead. */
+                    showPendingBadge ? (
+                      <NotificationBadge
+                        count={notificationCount}
+                        label={notificationLabel}
+                        className={`${COLLAPSED_BADGE_CLASS} ${isActive ? "ring-white/70" : ""}`}
+                      />
+                    ) : null
+                  ) : (
                     <span className="relative z-[1] flex shrink-0 items-center gap-2">
                       {showPendingBadge ? (
                         <NotificationBadge
-                          count={parentPendingCount}
+                          count={notificationCount}
+                          label={notificationLabel}
                           inline
                           className={isActive ? "ring-white/70" : ""}
                         />
@@ -953,7 +1356,9 @@ export default function Sidebar({
                               ? getLeaveChildPendingCount(child.key)
                               : item.key === "payroll"
                                 ? pendingPayrollCounts[child.key] || 0
-                                : 0;
+                                : child.key === "performanceIpcr"
+                                  ? pendingIpcrCount
+                                  : 0;
 
                           return (
                             <a
@@ -980,9 +1385,10 @@ export default function Sidebar({
                               <span className={`relative z-[1] truncate ${HOVER_SHIFT_CLASS}`}>
                                 {child.label}
                               </span>
-                              {child.key !== "passSlip" && childPendingCount > 0 ? (
+                              {!["passSlip", "payrollLoan"].includes(child.key) && (childPendingCount > 0 || (child.key === "travel" && hasTravelAuthorization)) ? (
                                 <NotificationBadge
-                                  count={childPendingCount}
+                                  count={child.key === "travel" && hasTravelAuthorization ? 1 : childPendingCount}
+                                  label={child.key === "travel" && hasTravelAuthorization ? "!" : undefined}
                                   inline
                                   className={`relative z-[1] ${childIsActive ? "ring-white/70" : ""}`}
                                 />
@@ -1007,7 +1413,7 @@ export default function Sidebar({
                 event.preventDefault();
                 handleNavigate(item.path, item.key);
               }}
-              title={item.label}
+              title={displayCollapsed && showPendingBadge ? notificationTitle : item.label}
               variants={NAV_ITEM_VARIANTS}
               className={`admin-sidebar-item group relative flex min-h-9 items-center gap-3 rounded-lg text-sm transition-colors duration-150 ${
                 displayCollapsed ? "justify-center px-0" : "justify-between px-3"
@@ -1027,10 +1433,9 @@ export default function Sidebar({
                 <HoverRail toneClass={resolvedNavigationStyle.hoverRail} />
               )}
               <span className={`relative z-[1] flex min-w-0 items-center gap-3 ${HOVER_SHIFT_CLASS}`}>
-                <Icon
-                  size={16}
-                  className="shrink-0 transition-transform duration-200 motion-safe:group-hover:scale-110"
-                />
+                <span className="admin-sidebar-icon shrink-0">
+                  <Icon size={16} />
+                </span>
                 {displayCollapsed ? null : (
                   <motion.span
                     animate={{ opacity: 1 }}
@@ -1042,12 +1447,21 @@ export default function Sidebar({
                   </motion.span>
                 )}
               </span>
-              {showPendingBadge && !displayCollapsed ? (
-                <NotificationBadge
-                  count={parentPendingCount}
-                  inline
-                  className={`relative z-[1] ${isActive ? "ring-white/70" : ""}`}
-                />
+              {showPendingBadge ? (
+                displayCollapsed ? (
+                  <NotificationBadge
+                    count={notificationCount}
+                    label={notificationLabel}
+                    className={`${COLLAPSED_BADGE_CLASS} ${isActive ? "ring-white/70" : ""}`}
+                  />
+                ) : (
+                  <NotificationBadge
+                    count={notificationCount}
+                    label={notificationLabel}
+                    inline
+                    className={`relative z-[1] ${isActive ? "ring-white/70" : ""}`}
+                  />
+                )
               ) : null}
             </motion.a>
           );
@@ -1056,29 +1470,6 @@ export default function Sidebar({
         </LayoutGroup>
       </nav>
 
-      <div className={`admin-sidebar-footer shrink-0 border-t p-3 ${isCrimson ? "border-white/20" : "border-slate-200"}`}>
-        <div
-          className={`flex items-center gap-3 rounded-lg p-2 ${
-            displayCollapsed ? "justify-center" : isCrimson ? "bg-white/10" : "bg-slate-50"
-          }`}
-        >
-          <div className={`admin-sidebar-avatar grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-lg ${isCrimson ? "bg-white/20 text-white" : "bg-slate-200 text-slate-600"}`}>
-            {profileImageUrl ? (
-              <img src={profileImageUrl} alt={userName} className="h-full w-full object-cover" />
-            ) : (
-              <ShieldCheck size={16} />
-            )}
-          </div>
-          <div className={`min-w-0 ${displayCollapsed ? "hidden" : ""}`}>
-            <strong className={`admin-sidebar-user-name block truncate text-[13px] font-semibold ${isCrimson ? "text-white" : "text-slate-900"}`}>
-              {userName}
-            </strong>
-            <span className={`admin-sidebar-muted-text block truncate text-[11px] ${isCrimson ? "text-white/70" : "text-slate-500"}`}>
-              {getRoleLabel(user?.role || "Administrator")}
-            </span>
-          </div>
-        </div>
-      </div>
     </aside>
   );
 }

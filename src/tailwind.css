@@ -24,6 +24,17 @@
   --surface-top: #FFF8FB;
   --surface: #FFF0F5;
   --surface-bottom: #F6E2E9;
+
+  /* Shared semantic surfaces keep light and dark mode visually consistent across every module. */
+  --app-surface: #ffffff;
+  --app-surface-soft: #f8fafc;
+  --app-surface-raised: #ffffff;
+  --app-border: #e2e8f0;
+  --app-border-strong: #cbd5e1;
+  --app-text: #0f172a;
+  --app-text-soft: #475569;
+  --app-text-muted: #64748b;
+  --app-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
 }
 
 @layer base {
@@ -63,6 +74,19 @@
   }
 }
 
+/*
+ * Most modals render inline, as the last child of whatever stack their module sits in, and
+ * Tailwind's `space-y-*` / `space-x-*` give every child after the first a margin. A fixed element
+ * keeps its margin, so a `fixed inset-0` overlay inside a `space-y-4` slid down 1rem and left an
+ * undimmed strip across the top of the page (Leave Balances, OPCR/IPCR, Service Record). A fixed
+ * element is out of the stack's flow and never wants its spacing. `!important` because the space
+ * utilities' `> :not([hidden]) ~ :not([hidden])` selector outranks this one.
+ */
+[class*="space-y-"] > .fixed,
+[class*="space-x-"] > .fixed {
+  margin: 0 !important;
+}
+
 @media (max-width: 640px) {
   .overflow-x-auto {
     -webkit-overflow-scrolling: touch;
@@ -73,48 +97,78 @@
   }
 }
 
-html.dark,
+html.dark {
+  --surface-top: #020617 !important;
+  --surface: #07101f !important;
+  --surface-bottom: #0b1220 !important;
+  --app-surface: #0f172a;
+  --app-surface-soft: #111b2e;
+  --app-surface-raised: #182338;
+  --app-border: #293750;
+  --app-border-strong: #3a4a63;
+  --app-text: #f8fafc;
+  --app-text-soft: #cbd5e1;
+  --app-text-muted: #94a3b8;
+  --app-shadow: 0 20px 55px rgba(0, 0, 0, 0.38);
+  background: linear-gradient(180deg, var(--surface-top) 0%, var(--surface) 46%, var(--surface-bottom) 100%);
+  background-attachment: fixed;
+  color: var(--app-text);
+  scrollbar-color: #475569 #0b1220;
+}
+
 html.dark body,
 html.dark #root {
-  background: #020617;
-  color: #e2e8f0;
+  background: transparent;
+  color: var(--app-text);
 }
 
 html.dark .bg-white {
-  background-color: #0f172a !important;
+  background-color: var(--app-surface) !important;
 }
 
-html.dark .bg-slate-50,
+html.dark .bg-slate-50 {
+  background-color: var(--app-surface-soft) !important;
+}
+
 html.dark .bg-slate-100 {
-  background-color: #111827 !important;
+  background-color: #182338 !important;
 }
 
 html.dark .bg-slate-200 {
-  background-color: #1f2937 !important;
+  background-color: #223049 !important;
 }
 
-html.dark .bg-slate-800,
+html.dark .bg-slate-800 {
+  background-color: #1e293b !important;
+}
+
 html.dark .bg-slate-900 {
-  background-color: #020617 !important;
+  background-color: #0b1220 !important;
 }
 
 html.dark .text-slate-950,
-html.dark .text-slate-900,
+html.dark .text-slate-900 {
+  color: var(--app-text) !important;
+}
+
 html.dark .text-slate-800,
 html.dark .text-slate-700 {
-  color: #f8fafc !important;
+  color: #e2e8f0 !important;
 }
 
 html.dark .text-slate-600,
-html.dark .text-slate-500,
+html.dark .text-slate-500 {
+  color: #b3c0d2 !important;
+}
+
 html.dark .text-slate-400 {
-  color: #cbd5e1 !important;
+  color: var(--app-text-muted) !important;
 }
 
 html.dark .border-slate-100,
 html.dark .border-slate-200,
 html.dark .border-slate-300 {
-  border-color: #334155 !important;
+  border-color: var(--app-border) !important;
 }
 
 html.dark .bg-white\/95,
@@ -140,6 +194,12 @@ html.dark .dashboard-welcome-banner {
   box-shadow: 0 22px 50px rgba(2, 6, 23, 0.45) !important;
 }
 
+html.dark .dashboard-welcome-banner--clean {
+  border-color: rgba(51, 65, 85, 0.8) !important;
+  background: #0f172a !important;
+  box-shadow: 0 18px 48px rgba(2, 6, 23, 0.32) !important;
+}
+
 html.dark .dashboard-welcome-banner .bg-white\/15 {
   background-color: rgba(30, 41, 59, 0.7) !important;
 }
@@ -154,6 +214,66 @@ html.dark .dashboard-welcome-banner .bg-white\/10 {
 
 html.dark .dashboard-welcome-banner .bg-white\/5 {
   background-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Dashboard welcome backdrop supplied as a panoramic image. It remains decorative and slightly
+   softened so the live text, assignment cards, and calendar stay legible above it. */
+.dashboard-welcome-banner {
+  --welcome-accent-rgb: var(--ui-accent-rgb, 37 99 235);
+}
+
+.dashboard-welcome-backdrop {
+  background: #eaf5ff;
+}
+
+html.dark .dashboard-welcome-backdrop {
+  background: #0f172a;
+}
+
+.dashboard-welcome-backdrop__image {
+  opacity: 0.86;
+  filter: saturate(0.96) contrast(0.98);
+  object-position: 50% top;
+}
+
+.dashboard-welcome-backdrop__image-overlay {
+  background: linear-gradient(90deg, rgb(255 255 255 / 0.16) 0%, transparent 48%, rgb(255 255 255 / 0.08) 100%);
+}
+
+.dashboard-welcome-backdrop__hairline {
+  background: linear-gradient(90deg, transparent 0%, rgb(var(--welcome-accent-rgb) / 0.45) 50%, transparent 100%);
+}
+
+html.dark .dashboard-welcome-backdrop__image {
+  opacity: 0.3;
+  filter: saturate(0.72) brightness(0.72);
+}
+
+html.dark .dashboard-welcome-backdrop__image-overlay {
+  background: rgb(15 23 42 / 0.34);
+}
+
+html.dark .dashboard-welcome-backdrop__hairline {
+  background: linear-gradient(90deg, transparent 0%, rgb(var(--welcome-accent-rgb) / 0.55) 50%, transparent 100%);
+}
+
+/* Below the two-column desktop layout the card becomes much taller. Keep the artwork in a
+   dedicated top area instead of enlarging it to the full stacked-card height. The focal point
+   follows the people in the source image and the fade blends into the card on narrow screens. */
+@media (max-width: 1535px) {
+  .dashboard-welcome-backdrop__image {
+    height: clamp(20rem, 45vw, 30rem);
+    object-position: 36% top;
+    -webkit-mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
+  }
+}
+
+@media (max-width: 639px) {
+  .dashboard-welcome-backdrop__image {
+    height: 21rem;
+    object-position: 35% top;
+  }
 }
 
 html.dark .analytics-card-shell .analytics-dataset-toggle[data-active="true"] {
@@ -389,6 +509,55 @@ html.dark [class*="border-slate-100/"] {
   border-color: #334155 !important;
 }
 
+.app-header-brand {
+  container-type: inline-size;
+}
+
+@container (min-width: 64rem) {
+  .app-header-tagline {
+    display: block;
+  }
+}
+
+.admin-sidebar {
+  isolation: isolate;
+}
+
+.admin-sidebar-brand-title {
+  font-family: "Arial Narrow", "Roboto Condensed", Arial, sans-serif;
+  font-stretch: condensed;
+}
+
+/* Keep the supplied artwork independent of the theme's sidebar gradients. */
+.admin-sidebar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: url("./assets/sidebar-background.png") center / 100% 100% no-repeat;
+  opacity: 0.18;
+}
+
+html.dark .admin-sidebar::before {
+  opacity: 0.1;
+}
+
+@keyframes sidebar-icon-hover {
+  0%, 100% { transform: translateY(0) rotate(0) scale(1); }
+  33% { transform: translateY(-4px) rotate(-16deg) scale(1.15); }
+  50% { transform: translateY(-5px) rotate(0) scale(1.2); }
+  66% { transform: translateY(-4px) rotate(16deg) scale(1.15); }
+}
+
+/* Only the hovered row triggers its icon; leaving the row cancels the animation. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .admin-sidebar-item:hover .admin-sidebar-icon,
+  .admin-sidebar-collapse:hover .admin-sidebar-icon {
+    animation: sidebar-icon-hover 0.55s ease-in-out;
+  }
+}
+
 /* The nav scrolls inside a saturated panel, so the default scrollbar reads as a bright seam. */
 .admin-sidebar-nav {
   scrollbar-width: thin;
@@ -429,24 +598,20 @@ html.dark .admin-sidebar {
   color: #e2e8f0 !important;
 }
 
-html.dark .admin-sidebar .admin-sidebar-brand,
-html.dark .admin-sidebar .admin-sidebar-footer {
+html.dark .admin-sidebar .admin-sidebar-brand {
   border-color: rgba(51, 65, 85, 0.9) !important;
 }
 
-html.dark .admin-sidebar .admin-sidebar-brand-logo,
-html.dark .admin-sidebar .admin-sidebar-avatar {
+html.dark .admin-sidebar .admin-sidebar-brand-logo {
   border-color: rgba(51, 65, 85, 0.9) !important;
-  background: rgba(15, 23, 42, 0.95) !important;
+  background: #fff !important;
   color: #cbd5e1 !important;
 }
 
-html.dark .admin-sidebar .admin-sidebar-brand-text,
-html.dark .admin-sidebar .admin-sidebar-user-name {
+html.dark .admin-sidebar .admin-sidebar-brand-text {
   color: #f8fafc !important;
 }
 
-html.dark .admin-sidebar .admin-sidebar-muted-text,
 html.dark .admin-sidebar .admin-sidebar-section {
   color: #94a3b8 !important;
 }
@@ -483,9 +648,10 @@ html.dark .admin-sidebar .admin-sidebar-collapse:hover {
 html.dark input,
 html.dark select,
 html.dark textarea {
-  background-color: #0f172a;
-  border-color: #334155;
-  color: #f8fafc;
+  background-color: var(--app-surface);
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
+  color-scheme: dark;
 }
 
 html.dark input::placeholder,
@@ -496,7 +662,26 @@ html.dark textarea::placeholder {
 html.dark table thead,
 html.dark .bg-gray-50,
 html.dark .bg-gray-100 {
-  background-color: #111827 !important;
+  background-color: var(--app-surface-soft) !important;
+}
+
+html.dark .text-gray-950,
+html.dark .text-gray-900,
+html.dark .text-gray-800,
+html.dark .text-gray-700 {
+  color: var(--app-text) !important;
+}
+
+html.dark .text-gray-600,
+html.dark .text-gray-500,
+html.dark .text-gray-400 {
+  color: var(--app-text-muted) !important;
+}
+
+html.dark .border-gray-100,
+html.dark .border-gray-200,
+html.dark .border-gray-300 {
+  border-color: var(--app-border) !important;
 }
 
 html.dark .hover\:bg-white:hover,
@@ -518,7 +703,7 @@ html.dark .shadow-sm,
 html.dark .shadow-md,
 html.dark .shadow-lg,
 html.dark .shadow-xl {
-  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35) !important;
+  box-shadow: var(--app-shadow) !important;
 }
 
 html.dark .shadow-\[0_8px_20px_rgba\(15\,23\,42\,0\.06\)\],
@@ -536,44 +721,43 @@ html.dark .ring-white\/70 {
   --tw-ring-color: rgba(15, 23, 42, 0.8) !important;
 }
 
-html.dark .login-page,
-html.dark .login-page .bg-white,
-html.dark .login-page .bg-white\/95 {
-  color: #0f172a;
+html.dark .login-page {
+  background-color: transparent !important;
+  color: var(--app-text);
 }
 
 html.dark .login-page .bg-white,
 html.dark .login-page .bg-white\/95 {
-  background-color: rgba(255, 255, 255, 0.95) !important;
+  background-color: rgba(15, 23, 42, 0.96) !important;
 }
 
 html.dark .login-page .bg-slate-50,
 html.dark .login-page .bg-slate-100 {
-  background-color: #f8fafc !important;
+  background-color: var(--app-surface-soft) !important;
 }
 
 html.dark .login-page input,
 html.dark .login-page textarea,
 html.dark .login-page select {
-  background-color: #ffffff;
-  border-color: #cbd5e1;
-  color: #0f172a;
+  background-color: #0b1220;
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
 }
 
 html.dark .login-page .text-slate-900,
 html.dark .login-page .text-slate-800,
 html.dark .login-page .text-slate-700 {
-  color: #0f172a !important;
+  color: var(--app-text) !important;
 }
 
 html.dark .login-page .text-slate-600,
 html.dark .login-page .text-slate-500 {
-  color: #64748b !important;
+  color: #b3c0d2 !important;
 }
 
 html.dark .login-page .border-slate-200,
 html.dark .login-page .border-slate-300 {
-  border-color: #cbd5e1 !important;
+  border-color: var(--app-border) !important;
 }
 
 
@@ -805,9 +989,22 @@ html.dark .account-use-return-card .account-use-return-card-description {
   --brand-700: #B41818;
   --brand-800: #911212;
   --brand-950: #5C0A0A;
+
+  /* The `accent` Tailwind scale for the stock crimson, until applyUiThemeColor() paints the pick. */
+  --accent-50-rgb: 252 237 237;
+  --accent-100-rgb: 248 219 219;
+  --accent-200-rgb: 242 183 183;
+  --accent-300-rgb: 235 143 143;
+  --accent-400-rgb: 225 89 89;
+  --accent-500-rgb: 219 57 57;
+  --accent-600-rgb: 214 30 30;
+  --accent-700-rgb: 180 25 25;
+  --accent-800-rgb: 141 20 20;
+  --accent-900-rgb: 111 16 16;
+  --accent-950-rgb: 81 11 11;
 }
 
-.bg-teal-50   { background-color: var(--brand-50) !important; }
+.bg-teal-50  { background-color: var(--brand-50) !important; }
 .bg-teal-100  { background-color: var(--brand-100) !important; }
 .bg-teal-200  { background-color: var(--brand-200) !important; }
 .bg-teal-500  { background-color: var(--brand-500) !important; }
@@ -967,6 +1164,12 @@ button.focus\:ring-indigo-500:focus {
   box-shadow: inset 0 3px 0 0 var(--brand-600), 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
 }
 
+/* Registry form controls should not inherit the decorative top edge used on cards.
+ * Preserve Tailwind's focus rings and ordinary shadows for keyboard navigation. */
+.leave-credit-registry :is(input, select, textarea, button):is(.rounded-2xl, .rounded-3xl).border.border-slate-200.bg-white {
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow, 0 0 #0000);
+}
+
 /* Dark mode keeps its own surfaces; only the accent carries over. */
 html.dark .rounded-xl.border.border-slate-200.bg-white,
 html.dark .rounded-2xl.border.border-slate-200.bg-white,
@@ -977,57 +1180,57 @@ html.dark .rounded-3xl.border.border-slate-200.bg-white {
 html.dark button.bg-teal-600,
 html.dark button.bg-teal-700,
 html.dark label.bg-teal-700 {
-  background-color: #21c45d !important;
+  background-color: var(--ui-accent, var(--brand)) !important;
 }
 
 html.dark button.border-teal-700,
 html.dark label.border-teal-700,
 html.dark button.text-teal-700,
 html.dark label.text-teal-700 {
-  border-color: #21c45d !important;
-  color: #21c45d !important;
+  border-color: var(--ui-accent-on-dark, #f07171) !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
 }
 
 html.dark button.hover\:bg-teal-700:hover,
 html.dark button.hover\:bg-teal-800:hover,
 html.dark label.hover\:bg-teal-800:hover {
-  background-color: #18a84c !important;
+  background-color: var(--ui-accent-hover, var(--brand-hover)) !important;
 }
 
 html.dark button.hover\:border-teal-800:hover,
 html.dark label.hover\:border-teal-800:hover {
-  border-color: #18a84c !important;
+  border-color: var(--ui-accent-on-dark, #f07171) !important;
 }
 
 html.dark button.from-teal-500,
 html.dark button.from-teal-600,
 html.dark button.from-teal-700 {
-  --tw-gradient-from: #21c45d var(--tw-gradient-from-position) !important;
-  --tw-gradient-to: rgb(33 196 93 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-from: var(--ui-accent, var(--brand)) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(var(--ui-accent-rgb, 214 30 30) / 0) var(--tw-gradient-to-position) !important;
   --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
 }
 
 html.dark button.to-blue-600,
 html.dark button.to-cyan-600,
 html.dark button.to-sky-600 {
-  --tw-gradient-to: #18a84c var(--tw-gradient-to-position) !important;
+  --tw-gradient-to: var(--ui-accent-deep, var(--brand-deep)) var(--tw-gradient-to-position) !important;
 }
 
 html.dark button.hover\:from-teal-700:hover {
-  --tw-gradient-from: #18a84c var(--tw-gradient-from-position) !important;
-  --tw-gradient-to: rgb(24 168 76 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-from: var(--ui-accent-hover, var(--brand-hover)) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(var(--ui-accent-rgb, 214 30 30) / 0) var(--tw-gradient-to-position) !important;
   --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
 }
 
 html.dark button.hover\:to-blue-700:hover,
 html.dark button.hover\:to-cyan-700:hover,
 html.dark button.hover\:to-sky-700:hover {
-  --tw-gradient-to: #18a84c var(--tw-gradient-to-position) !important;
+  --tw-gradient-to: var(--ui-accent-deep, var(--brand-deep)) var(--tw-gradient-to-position) !important;
 }
 
 html.dark button.focus\:ring-teal-200:focus,
 html.dark label.focus-within\:ring-teal-200:focus-within {
-  --tw-ring-color: rgb(33 196 93 / 0.2) !important;
+  --tw-ring-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.28) !important;
 }
 html.dark .leave-management-workspace [class*="border-white"],
 html.dark .employee-leave-workspace [class*="border-white"],
@@ -1534,6 +1737,22 @@ html.dark .notification-bell .disabled\:text-slate-400:disabled,
 html.dark .notification-center-page .disabled\:text-slate-400:disabled {
   color: #64748b !important;
 }
+
+/* Row action dropdowns keep existing action buttons but stack them in one compact menu. */
+.row-actions-menu-content > div,
+.row-actions-menu-content > span {
+  display: flex;
+  min-width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.375rem;
+}
+
+.row-actions-menu-content > button,
+.row-actions-menu-content .action-icon-button {
+  width: 100%;
+  justify-content: flex-start;
+}
 /* Action button palette — one solid set of tones shared by light and dark themes.
    Every tone declares its fill, a darker hover/edge shade and a matching focus
    ring; `view` doubles as the default for any tone that isn't listed below. */
@@ -1892,6 +2111,12 @@ html[data-ui-theme-color] .dashboard-welcome-banner {
   box-shadow: 0 14px 30px rgb(var(--ui-accent-rgb) / 0.28) !important;
 }
 
+html[data-ui-theme-color] .dashboard-welcome-banner--clean {
+  border-color: var(--ui-accent-border) !important;
+  background: #ffffff !important;
+  box-shadow: 0 18px 50px rgb(var(--ui-accent-rgb) / 0.1) !important;
+}
+
 html[data-ui-theme-color] .app-topbar-themed {
   border-color: var(--ui-accent-border) !important;
 }
@@ -1995,4 +2220,1069 @@ html.dark[data-ui-theme-color] .profile-section-nav-item:hover {
 html.dark[data-ui-theme-color] .profile-section-indicator {
   border-color: rgb(var(--ui-accent-rgb) / 0.45) !important;
   background: linear-gradient(135deg, #111827, rgb(var(--ui-accent-rgb) / 0.2)) !important;
+}
+
+/* ==========================================================================
+ * Unified dark interface
+ *
+ * This finishing layer intentionally follows the configurable accent rules above. Dark mode owns
+ * the surfaces; the selected system color remains an accent instead of repainting cards and
+ * navigation with near-white tints.
+ * ========================================================================== */
+html.dark ::selection {
+  background: rgb(var(--ui-accent-rgb, 214 30 30) / 0.34);
+  color: #ffffff;
+}
+
+html.dark hr {
+  border-color: var(--app-border);
+}
+
+html.dark option,
+html.dark optgroup {
+  background-color: #0f172a;
+  color: var(--app-text);
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder,
+html.dark .placeholder\:text-slate-400::placeholder,
+html.dark .placeholder\:text-slate-500::placeholder {
+  color: #7f90aa !important;
+}
+
+html.dark input:disabled,
+html.dark select:disabled,
+html.dark textarea:disabled,
+html.dark .disabled\:bg-slate-50:disabled,
+html.dark .disabled\:bg-slate-100:disabled {
+  border-color: #26344a !important;
+  background-color: #111827 !important;
+  color: #77869d !important;
+}
+
+html.dark input:-webkit-autofill,
+html.dark input:-webkit-autofill:hover,
+html.dark input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--app-text);
+  box-shadow: 0 0 0 1000px #0b1220 inset !important;
+  caret-color: var(--app-text);
+}
+
+html.dark input[type="checkbox"],
+html.dark input[type="radio"] {
+  accent-color: var(--ui-accent, #d61e1e);
+}
+
+html.dark .from-white {
+  --tw-gradient-from: var(--app-surface) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(15 23 42 / 0) var(--tw-gradient-to-position) !important;
+}
+
+html.dark .via-white {
+  --tw-gradient-to: rgb(15 23 42 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--app-surface) var(--tw-gradient-via-position), var(--tw-gradient-to) !important;
+}
+
+html.dark .to-white {
+  --tw-gradient-to: var(--app-surface) var(--tw-gradient-to-position) !important;
+}
+
+html.dark .from-slate-50,
+html.dark .from-gray-50 {
+  --tw-gradient-from: var(--app-surface-soft) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(17 27 46 / 0) var(--tw-gradient-to-position) !important;
+}
+
+html.dark .via-slate-50,
+html.dark .via-gray-50 {
+  --tw-gradient-to: rgb(17 27 46 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--app-surface-soft) var(--tw-gradient-via-position), var(--tw-gradient-to) !important;
+}
+
+html.dark .to-slate-50,
+html.dark .to-gray-50,
+html.dark .to-slate-100,
+html.dark .to-gray-100 {
+  --tw-gradient-to: var(--app-surface-soft) var(--tw-gradient-to-position) !important;
+}
+
+/* Semantic badges and notices keep their hue while using low-luminance surfaces. */
+html.dark .bg-red-50,
+html.dark .bg-red-100,
+html.dark .bg-rose-50,
+html.dark .bg-rose-100,
+html.dark .bg-rose-50\/70 {
+  background-color: rgb(190 24 93 / 0.16) !important;
+}
+
+html.dark .border-red-100,
+html.dark .border-red-200,
+html.dark .border-red-300,
+html.dark .border-rose-100,
+html.dark .border-rose-200,
+html.dark .border-rose-300 {
+  border-color: rgb(251 113 133 / 0.36) !important;
+}
+
+html.dark .text-red-600,
+html.dark .text-red-700,
+html.dark .text-red-800,
+html.dark .text-red-900,
+html.dark .text-rose-600,
+html.dark .text-rose-700,
+html.dark .text-rose-800,
+html.dark .text-rose-900,
+html.dark .text-rose-950 {
+  color: #fda4af !important;
+}
+
+html.dark .bg-orange-50,
+html.dark .bg-orange-100,
+html.dark .bg-amber-50,
+html.dark .bg-amber-100,
+html.dark .bg-yellow-50,
+html.dark .bg-yellow-100 {
+  background-color: rgb(217 119 6 / 0.15) !important;
+}
+
+html.dark .border-orange-100,
+html.dark .border-orange-200,
+html.dark .border-orange-300,
+html.dark .border-amber-100,
+html.dark .border-amber-200,
+html.dark .border-amber-300,
+html.dark .border-yellow-100,
+html.dark .border-yellow-200,
+html.dark .border-yellow-300 {
+  border-color: rgb(251 191 36 / 0.35) !important;
+}
+
+html.dark .text-orange-600,
+html.dark .text-orange-700,
+html.dark .text-orange-800,
+html.dark .text-orange-900,
+html.dark .text-amber-600,
+html.dark .text-amber-700,
+html.dark .text-amber-800,
+html.dark .text-amber-900,
+html.dark .text-yellow-600,
+html.dark .text-yellow-700,
+html.dark .text-yellow-800,
+html.dark .text-yellow-900 {
+  color: #fcd34d !important;
+}
+
+html.dark .bg-green-50,
+html.dark .bg-green-100,
+html.dark .bg-emerald-50,
+html.dark .bg-emerald-100,
+html.dark .bg-emerald-50\/35,
+html.dark .bg-emerald-50\/60,
+html.dark .bg-emerald-50\/70,
+html.dark .bg-teal-50,
+html.dark .bg-teal-100 {
+  background-color: rgb(16 185 129 / 0.14) !important;
+}
+
+html.dark .border-green-100,
+html.dark .border-green-200,
+html.dark .border-green-300,
+html.dark .border-emerald-100,
+html.dark .border-emerald-200,
+html.dark .border-emerald-300,
+html.dark .border-teal-100,
+html.dark .border-teal-200,
+html.dark .border-teal-300 {
+  border-color: rgb(52 211 153 / 0.34) !important;
+}
+
+html.dark .text-green-600,
+html.dark .text-green-700,
+html.dark .text-green-800,
+html.dark .text-green-900,
+html.dark .text-emerald-600,
+html.dark .text-emerald-700,
+html.dark .text-emerald-800,
+html.dark .text-emerald-900,
+html.dark .text-emerald-950,
+html.dark .text-teal-600,
+html.dark .text-teal-700,
+html.dark .text-teal-800,
+html.dark .text-teal-900,
+html.dark .text-teal-950 {
+  color: #6ee7b7 !important;
+}
+
+html.dark .bg-cyan-50,
+html.dark .bg-cyan-100,
+html.dark .bg-sky-50,
+html.dark .bg-sky-100,
+html.dark .bg-sky-50\/70,
+html.dark .bg-blue-50,
+html.dark .bg-blue-100 {
+  background-color: rgb(14 165 233 / 0.14) !important;
+}
+
+html.dark .border-cyan-100,
+html.dark .border-cyan-200,
+html.dark .border-cyan-300,
+html.dark .border-sky-100,
+html.dark .border-sky-200,
+html.dark .border-sky-300,
+html.dark .border-blue-100,
+html.dark .border-blue-200,
+html.dark .border-blue-300 {
+  border-color: rgb(56 189 248 / 0.34) !important;
+}
+
+html.dark .text-cyan-600,
+html.dark .text-cyan-700,
+html.dark .text-cyan-800,
+html.dark .text-cyan-900,
+html.dark .text-sky-600,
+html.dark .text-sky-700,
+html.dark .text-sky-800,
+html.dark .text-sky-900,
+html.dark .text-blue-600,
+html.dark .text-blue-700,
+html.dark .text-blue-800,
+html.dark .text-blue-900,
+html.dark .text-blue-950 {
+  color: #7dd3fc !important;
+}
+
+html.dark .bg-indigo-50,
+html.dark .bg-indigo-100,
+html.dark .bg-indigo-50\/70,
+html.dark .bg-violet-50,
+html.dark .bg-violet-100,
+html.dark .bg-purple-50,
+html.dark .bg-purple-100 {
+  background-color: rgb(124 58 237 / 0.15) !important;
+}
+
+html.dark .border-indigo-100,
+html.dark .border-indigo-200,
+html.dark .border-indigo-300,
+html.dark .border-violet-100,
+html.dark .border-violet-200,
+html.dark .border-violet-300,
+html.dark .border-purple-100,
+html.dark .border-purple-200,
+html.dark .border-purple-300 {
+  border-color: rgb(167 139 250 / 0.34) !important;
+}
+
+html.dark .text-indigo-600,
+html.dark .text-indigo-700,
+html.dark .text-indigo-800,
+html.dark .text-indigo-900,
+html.dark .text-violet-600,
+html.dark .text-violet-700,
+html.dark .text-violet-800,
+html.dark .text-violet-900,
+html.dark .text-purple-600,
+html.dark .text-purple-700,
+html.dark .text-purple-800,
+html.dark .text-purple-900 {
+  color: #c4b5fd !important;
+}
+
+/* Configurable brand tints must never resolve to their light, white-mixed values in dark mode. */
+html.dark[data-ui-theme-color] [class~="bg-[#FEF1F1]"],
+html.dark[data-ui-theme-color] [class~="bg-[#fff5f5]"],
+html.dark[data-ui-theme-color] [class~="bg-[#fff7f7]"],
+html.dark[data-ui-theme-color] [class~="bg-[#fdf2f2]"] {
+  background-color: rgb(var(--ui-accent-rgb) / 0.14) !important;
+}
+
+html.dark[data-ui-theme-color] [class~="hover:bg-[#FEF1F1]"]:hover,
+html.dark[data-ui-theme-color] [class~="hover:bg-[#fff5f5]"]:hover,
+html.dark[data-ui-theme-color] [class~="hover:bg-[#fff7f7]"]:hover {
+  background-color: rgb(var(--ui-accent-rgb) / 0.2) !important;
+}
+
+html.dark[data-ui-theme-color] [class~="border-[#F8BFBF]"],
+html.dark[data-ui-theme-color] [class~="border-[#F18E8E]"] {
+  border-color: rgb(var(--ui-accent-rgb) / 0.48) !important;
+}
+
+html.dark[data-ui-theme-color] [class~="text-[#D61E1E]"],
+html.dark[data-ui-theme-color] [class~="text-[#B41818]"],
+html.dark[data-ui-theme-color] [class~="hover:text-[#D61E1E]"]:hover,
+html.dark[data-ui-theme-color] [class~="hover:text-[#B41818]"]:hover {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+/* Teal utilities are the legacy application accent, so they follow the selected system color. */
+html.dark[data-ui-theme-color] .bg-teal-50,
+html.dark[data-ui-theme-color] .bg-teal-100 {
+  background-color: rgb(var(--ui-accent-rgb) / 0.14) !important;
+}
+
+html.dark[data-ui-theme-color] .bg-teal-200 {
+  background-color: rgb(var(--ui-accent-rgb) / 0.22) !important;
+}
+
+html.dark[data-ui-theme-color] .border-teal-100,
+html.dark[data-ui-theme-color] .border-teal-200,
+html.dark[data-ui-theme-color] .border-teal-300,
+html.dark[data-ui-theme-color] .border-teal-400,
+html.dark[data-ui-theme-color] .border-teal-500 {
+  border-color: rgb(var(--ui-accent-rgb) / 0.46) !important;
+}
+
+html.dark[data-ui-theme-color] .text-teal-600,
+html.dark[data-ui-theme-color] .text-teal-700,
+html.dark[data-ui-theme-color] .text-teal-800,
+html.dark[data-ui-theme-color] .text-teal-900,
+html.dark[data-ui-theme-color] .text-teal-950 {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+/*
+ * The `accent` scale (the OPCR and IPCR screens) gets the same dark treatment: its light tints and
+ * deep text shades would otherwise read as pale washes and low-contrast type on dark surfaces.
+ */
+html.dark .bg-accent-50,
+html.dark .bg-accent-100,
+html.dark .bg-accent-50\/40,
+html.dark .bg-accent-50\/50,
+html.dark .bg-accent-50\/60 {
+  background-color: rgb(var(--accent-600-rgb) / 0.14) !important;
+}
+
+html.dark .hover\:bg-accent-50\/40:hover,
+html.dark .hover\:bg-accent-50\/60:hover,
+html.dark .hover\:bg-accent-100:hover {
+  background-color: rgb(var(--accent-600-rgb) / 0.2) !important;
+}
+
+html.dark .border-accent-200,
+html.dark .border-accent-300 {
+  border-color: rgb(var(--accent-600-rgb) / 0.4) !important;
+}
+
+html.dark .text-accent-600,
+html.dark .text-accent-700,
+html.dark .text-accent-800 {
+  color: rgb(var(--accent-300-rgb)) !important;
+}
+
+html.dark[data-ui-theme-color] .admin-sidebar {
+  border-color: rgb(var(--ui-accent-rgb) / 0.3) !important;
+  background: linear-gradient(180deg, #070d18 0%, #0b1220 48%, #0f172a 100%) !important;
+  box-shadow: 18px 0 45px rgba(0, 0, 0, 0.18) !important;
+}
+
+html.dark[data-ui-theme-color] .admin-sidebar [class~="text-[#D61E1E]"],
+html.dark[data-ui-theme-color] .admin-sidebar [class~="hover:text-[#D61E1E]"]:hover {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark[data-ui-theme-color] .admin-sidebar .admin-sidebar-active-surface {
+  border: 1px solid rgb(var(--ui-accent-rgb) / 0.28) !important;
+  background: linear-gradient(135deg, rgb(var(--ui-accent-rgb) / 0.2), rgb(var(--ui-accent-rgb) / 0.08)) !important;
+}
+
+html.dark[data-ui-theme-color] .dashboard-welcome-banner {
+  border: 1px solid rgb(var(--ui-accent-rgb) / 0.24) !important;
+  background:
+    radial-gradient(circle at 88% 16%, rgb(var(--ui-accent-rgb) / 0.22), transparent 32%),
+    linear-gradient(135deg, #08101e 0%, #0f172a 54%, #111c30 100%) !important;
+  box-shadow: var(--app-shadow) !important;
+}
+
+html.dark[data-ui-theme-color] .dashboard-welcome-banner--clean {
+  background: #0f172a !important;
+}
+
+html.dark[data-ui-theme-color] .app-topbar-themed {
+  border-color: var(--app-border) !important;
+  background-color: rgb(7 13 24 / 0.94) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16) !important;
+  backdrop-filter: blur(16px);
+}
+
+html.dark .app-theme-toggle {
+  border-color: var(--app-border) !important;
+  background: linear-gradient(145deg, #172238, #0f172a) !important;
+  color: #fbbf24 !important;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 8px 20px rgb(0 0 0 / 0.2) !important;
+}
+
+html.dark .app-theme-toggle:hover {
+  border-color: #52617a !important;
+  background: #1e293b !important;
+}
+
+html.dark .app-theme-toggle:focus-visible {
+  --tw-ring-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.48) !important;
+  --tw-ring-offset-color: #07101f !important;
+}
+
+html[data-ui-theme-color] .app-theme-toggle:focus-visible {
+  --tw-ring-color: rgb(var(--ui-accent-rgb) / 0.4) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-trigger {
+  border-color: var(--app-border) !important;
+  background-color: #111b2e !important;
+  color: var(--app-text-soft) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-trigger:hover {
+  border-color: rgb(var(--ui-accent-rgb) / 0.42) !important;
+  background-color: #182338 !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu,
+html.dark .notification-bell-panel,
+html.dark .chat-bubble-panel {
+  border-color: var(--app-border) !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.5) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-banner {
+  background:
+    linear-gradient(135deg, rgb(var(--ui-accent-rgb) / 0.6), rgb(var(--ui-accent-rgb) / 0.18)),
+    #111827 !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-avatar {
+  border-color: #0f172a !important;
+  background-color: #182338 !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-action:hover {
+  background-color: rgb(var(--ui-accent-rgb) / 0.13) !important;
+  color: var(--app-text) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-action:hover .app-account-menu-action-icon,
+html.dark[data-ui-theme-color] .app-account-menu-action--logout .app-account-menu-action-icon {
+  background-color: rgb(var(--ui-accent-rgb) / 0.16) !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark[data-ui-theme-color] .app-account-menu-action--logout {
+  color: #fda4af !important;
+}
+
+html.dark[data-ui-theme-color] .profile-header-card,
+html.dark[data-ui-theme-color] .profile-section-nav,
+html.dark[data-ui-theme-color] .profile-section-card,
+html.dark[data-ui-theme-color] .profile-section-card-header,
+html.dark[data-ui-theme-color] .profile-section-card-footer,
+html.dark[data-ui-theme-color] .profile-section-nav-actions {
+  border-color: var(--app-border) !important;
+}
+
+html.dark[data-ui-theme-color] .profile-section-card-icon {
+  border-color: rgb(var(--ui-accent-rgb) / 0.38) !important;
+  background-color: rgb(var(--ui-accent-rgb) / 0.14) !important;
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark .app-card-title {
+  color: var(--ui-accent-on-dark, #f07171) !important;
+}
+
+html.dark .ring-offset-2,
+html.dark .focus\:ring-offset-2:focus,
+html.dark .focus-visible\:ring-offset-2:focus-visible {
+  --tw-ring-offset-color: #07101f !important;
+}
+
+/*
+ * Captcha answers and emailed verification codes are short, so SweetAlert's default full-width,
+ * left-aligned field gives them far more visual weight than they need. Compact centered controls
+ * keep each security prompt and its answer visually connected.
+ */
+.swal2-popup .swal2-input.security-check-answer-input,
+.swal2-popup .swal2-input.payroll-email-code-input {
+  display: block;
+  width: min(11rem, calc(100% - 2rem));
+  height: 3rem;
+  margin: 1.125rem auto 0.25rem;
+  padding: 0 0.875rem;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.625rem;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  caret-color: var(--ui-accent, var(--brand));
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  line-height: 3rem;
+  text-align: center;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.swal2-popup .swal2-input.security-check-answer-input::placeholder,
+.swal2-popup .swal2-input.payroll-email-code-input::placeholder {
+  color: #94a3b8;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: normal;
+}
+
+.swal2-popup .swal2-input.security-check-answer-input:hover,
+.swal2-popup .swal2-input.payroll-email-code-input:hover {
+  border-color: #94a3b8;
+}
+
+.swal2-popup .swal2-input.security-check-answer-input:focus,
+.swal2-popup .swal2-input.payroll-email-code-input:focus {
+  border-color: var(--ui-accent, var(--brand));
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.14);
+}
+
+/* Six digits need a little more breathing room than the one- or two-digit math answer. */
+.swal2-popup .swal2-input.payroll-email-code-input {
+  width: min(14rem, calc(100% - 2rem));
+  letter-spacing: 0.22em;
+}
+
+/*
+ * The congratulations card the dashboard shows an employee whose promotion the Regional Director
+ * just approved (usePromotionGreeting). Colours come from the app variables so the card follows
+ * the theme the way the rest of the SweetAlert portal does.
+ */
+.swal2-popup.promotion-greeting-popup {
+  border-radius: 1.25rem;
+  padding-bottom: 1.5rem;
+}
+
+.swal2-icon.promotion-greeting-icon {
+  width: 5.25rem;
+  height: 5.25rem;
+  margin: 1.75rem auto 0.75rem;
+  border: 0;
+  background: transparent;
+}
+
+.promotion-greeting-badge {
+  display: grid;
+  place-items: center;
+  width: 5.25rem;
+  height: 5.25rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #f59e0b 0%, #ef4444 55%, #db2777 100%);
+  box-shadow: 0 18px 40px rgba(239, 68, 68, 0.3), 0 0 0 8px rgba(245, 158, 11, 0.14);
+  color: #ffffff;
+  animation: promotion-greeting-pop 600ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes promotion-greeting-pop {
+  from {
+    transform: scale(0.4) rotate(-20deg);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+.swal2-title.promotion-greeting-title {
+  padding-top: 0;
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--app-text);
+}
+
+.swal2-html-container.promotion-greeting-body {
+  margin-top: 0.25rem;
+  text-align: center;
+  color: var(--app-text-soft);
+}
+
+.promotion-greeting-lead {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+.promotion-greeting-designation {
+  margin: 0.25rem 0 0;
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1.3;
+  color: #0f766e;
+}
+
+.promotion-greeting-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--app-text-soft);
+}
+
+.promotion-greeting-path-icon {
+  display: inline-flex;
+  color: #0f766e;
+}
+
+.promotion-greeting-details {
+  display: grid;
+  gap: 0;
+  margin: 1.1rem 0 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 0.875rem;
+  background: var(--app-surface-soft);
+  list-style: none;
+  text-align: left;
+}
+
+.promotion-greeting-row {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.875rem;
+  border-top: 1px solid var(--app-border);
+}
+
+.promotion-greeting-row:first-child {
+  border-top: 0;
+}
+
+.promotion-greeting-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.5rem;
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+}
+
+.promotion-greeting-row-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--app-text-muted);
+}
+
+.promotion-greeting-row-value {
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-align: right;
+  color: var(--app-text);
+}
+
+.promotion-greeting-footnote {
+  margin: 0.9rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--app-text-muted);
+}
+
+html.dark .promotion-greeting-designation,
+html.dark .promotion-greeting-path-icon,
+html.dark .promotion-greeting-row-icon {
+  color: #5eead4;
+}
+
+html.dark .promotion-greeting-row-icon {
+  background: rgba(94, 234, 212, 0.12);
+}
+
+/* SweetAlert and toast portals sit outside the page components, so they need a shared theme. */
+html.dark .swal2-popup {
+  border: 1px solid var(--app-border) !important;
+  background: #0f172a !important;
+  color: var(--app-text) !important;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55) !important;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input {
+  border-color: #475569;
+  background: #111b2e;
+  color: #f8fafc;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input::placeholder,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input::placeholder {
+  color: #94a3b8;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input:hover,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input:hover {
+  border-color: #64748b;
+}
+
+html.dark .swal2-popup .swal2-input.security-check-answer-input:focus,
+html.dark .swal2-popup .swal2-input.payroll-email-code-input:focus {
+  border-color: var(--ui-accent-on-dark, #f07171);
+  box-shadow: 0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.24);
+}
+
+html.dark .swal2-title,
+html.dark .swal2-html-container,
+html.dark .app-swal-copy,
+html.dark .swal2-close {
+  color: var(--app-text-soft) !important;
+}
+
+html.dark .swal2-title {
+  color: var(--app-text) !important;
+}
+
+html.dark .swal2-timer-progress-bar {
+  background: rgb(var(--ui-accent-rgb, 214 30 30) / 0.75) !important;
+}
+
+html.dark .swal2-loader {
+  border-color: var(--ui-accent-on-dark, #f07171) transparent var(--ui-accent-on-dark, #f07171) transparent !important;
+}
+
+html.dark .app-toast {
+  border: 1px solid var(--app-border) !important;
+  background: #111b2e !important;
+  color: var(--app-text) !important;
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.45) !important;
+}
+
+html.dark .calendar-activity-tone {
+  border-color: color-mix(in srgb, var(--activity-color) 42%, transparent) !important;
+  background-color: color-mix(in srgb, var(--activity-color) 16%, transparent) !important;
+  color: color-mix(in srgb, var(--activity-color) 45%, white) !important;
+}
+
+html.dark .recharts-cartesian-grid line {
+  stroke: #334155 !important;
+}
+
+html.dark .recharts-cartesian-axis-tick-value,
+html.dark .recharts-polar-angle-axis-tick-value,
+html.dark .recharts-polar-radius-axis-tick-value {
+  fill: #94a3b8 !important;
+}
+
+html.dark .recharts-default-tooltip,
+html.dark .apexcharts-tooltip,
+html.dark .apexcharts-xaxistooltip,
+html.dark .apexcharts-yaxistooltip {
+  border-color: var(--app-border) !important;
+  background: #0f172a !important;
+  color: var(--app-text) !important;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.4) !important;
+}
+
+html.dark .recharts-tooltip-label,
+html.dark .recharts-tooltip-item,
+html.dark .recharts-legend-item-text,
+html.dark .apexcharts-tooltip-text,
+html.dark .apexcharts-tooltip-title {
+  color: var(--app-text-soft) !important;
+}
+
+html.dark .apexcharts-tooltip-title {
+  border-color: var(--app-border) !important;
+  background: var(--app-surface-soft) !important;
+}
+
+html.dark .apexcharts-text,
+html.dark .apexcharts-text tspan {
+  fill: #94a3b8 !important;
+}
+
+/* Preview chrome follows the application theme; the official form nested inside stays paper-white. */
+html.dark .leave-form-preview,
+html.dark .travel-order-form-preview,
+html.dark .compensatory-form-preview,
+html.dark .pass-slip-form-preview {
+  background-color: var(--app-surface) !important;
+  color: var(--app-text) !important;
+}
+
+html.dark .leave-form-preview .bg-white,
+html.dark .travel-order-form-preview .bg-white,
+html.dark .compensatory-form-preview .bg-white,
+html.dark .pass-slip-form-preview .bg-white,
+html.dark .leave-form-preview .bg-white\/95,
+html.dark .travel-order-form-preview .bg-white\/95,
+html.dark .compensatory-form-preview .bg-white\/95,
+html.dark .pass-slip-form-preview .bg-white\/95 {
+  background-color: var(--app-surface) !important;
+}
+
+html.dark .leave-form-preview .bg-slate-50,
+html.dark .leave-form-preview .bg-slate-100,
+html.dark .travel-order-form-preview .bg-slate-50,
+html.dark .travel-order-form-preview .bg-slate-100,
+html.dark .compensatory-form-preview .bg-slate-50,
+html.dark .compensatory-form-preview .bg-slate-100,
+html.dark .pass-slip-form-preview .bg-slate-50,
+html.dark .pass-slip-form-preview .bg-slate-100 {
+  background-color: var(--app-surface-soft) !important;
+}
+
+html.dark .leave-form-preview .text-slate-950,
+html.dark .leave-form-preview .text-slate-900,
+html.dark .leave-form-preview .text-slate-800,
+html.dark .leave-form-preview .text-slate-700,
+html.dark .travel-order-form-preview .text-slate-950,
+html.dark .travel-order-form-preview .text-slate-900,
+html.dark .travel-order-form-preview .text-slate-800,
+html.dark .travel-order-form-preview .text-slate-700,
+html.dark .compensatory-form-preview .text-slate-950,
+html.dark .compensatory-form-preview .text-slate-900,
+html.dark .compensatory-form-preview .text-slate-800,
+html.dark .compensatory-form-preview .text-slate-700,
+html.dark .pass-slip-form-preview .text-slate-950,
+html.dark .pass-slip-form-preview .text-slate-900,
+html.dark .pass-slip-form-preview .text-slate-800,
+html.dark .pass-slip-form-preview .text-slate-700 {
+  color: var(--app-text) !important;
+}
+
+html.dark .leave-form-preview .text-slate-600,
+html.dark .leave-form-preview .text-slate-500,
+html.dark .travel-order-form-preview .text-slate-600,
+html.dark .travel-order-form-preview .text-slate-500,
+html.dark .compensatory-form-preview .text-slate-600,
+html.dark .compensatory-form-preview .text-slate-500,
+html.dark .pass-slip-form-preview .text-slate-600,
+html.dark .pass-slip-form-preview .text-slate-500 {
+  color: var(--app-text-muted) !important;
+}
+
+html.dark .leave-form-preview .border-slate-100,
+html.dark .leave-form-preview .border-slate-200,
+html.dark .leave-form-preview .border-slate-300,
+html.dark .travel-order-form-preview .border-slate-100,
+html.dark .travel-order-form-preview .border-slate-200,
+html.dark .travel-order-form-preview .border-slate-300,
+html.dark .compensatory-form-preview .border-slate-100,
+html.dark .compensatory-form-preview .border-slate-200,
+html.dark .compensatory-form-preview .border-slate-300,
+html.dark .pass-slip-form-preview .border-slate-100,
+html.dark .pass-slip-form-preview .border-slate-200,
+html.dark .pass-slip-form-preview .border-slate-300 {
+  border-color: var(--app-border) !important;
+}
+
+html.dark .leave-form-paper,
+html.dark .travel-order-form-paper,
+html.dark .compensatory-form-paper,
+html.dark .pass-slip-form-paper,
+html.dark .document-paper {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  color-scheme: light;
+}
+
+html.dark .document-preview-well {
+  background: #080f1d !important;
+}
+
+html.dark .document-paper thead,
+html.dark .document-paper tbody,
+html.dark .document-paper tr {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-paper .bg-white,
+html.dark .travel-order-form-paper .bg-white,
+html.dark .compensatory-form-paper .bg-white,
+html.dark .pass-slip-form-paper .bg-white,
+html.dark .document-paper .bg-white {
+  background-color: #ffffff !important;
+}
+
+html.dark .leave-form-paper .bg-slate-50,
+html.dark .leave-form-paper .bg-slate-100,
+html.dark .travel-order-form-paper .bg-slate-50,
+html.dark .travel-order-form-paper .bg-slate-100,
+html.dark .compensatory-form-paper .bg-slate-50,
+html.dark .compensatory-form-paper .bg-slate-100,
+html.dark .pass-slip-form-paper .bg-slate-50,
+html.dark .pass-slip-form-paper .bg-slate-100,
+html.dark .document-paper .bg-slate-50,
+html.dark .document-paper .bg-slate-100 {
+  background-color: #f8fafc !important;
+}
+
+html.dark .leave-form-paper .text-slate-950,
+html.dark .leave-form-paper .text-slate-900,
+html.dark .leave-form-paper .text-slate-800,
+html.dark .leave-form-paper .text-slate-700,
+html.dark .travel-order-form-paper .text-slate-950,
+html.dark .travel-order-form-paper .text-slate-900,
+html.dark .travel-order-form-paper .text-slate-800,
+html.dark .travel-order-form-paper .text-slate-700,
+html.dark .compensatory-form-paper .text-slate-950,
+html.dark .compensatory-form-paper .text-slate-900,
+html.dark .compensatory-form-paper .text-slate-800,
+html.dark .compensatory-form-paper .text-slate-700,
+html.dark .pass-slip-form-paper .text-slate-950,
+html.dark .pass-slip-form-paper .text-slate-900,
+html.dark .pass-slip-form-paper .text-slate-800,
+html.dark .pass-slip-form-paper .text-slate-700,
+html.dark .document-paper .text-slate-950,
+html.dark .document-paper .text-slate-900,
+html.dark .document-paper .text-slate-800,
+html.dark .document-paper .text-slate-700,
+html.dark .document-paper .text-black {
+  color: #0f172a !important;
+}
+
+html.dark .leave-form-paper .text-slate-600,
+html.dark .leave-form-paper .text-slate-500,
+html.dark .travel-order-form-paper .text-slate-600,
+html.dark .travel-order-form-paper .text-slate-500,
+html.dark .compensatory-form-paper .text-slate-600,
+html.dark .compensatory-form-paper .text-slate-500,
+html.dark .pass-slip-form-paper .text-slate-600,
+html.dark .pass-slip-form-paper .text-slate-500,
+html.dark .document-paper .text-slate-600,
+html.dark .document-paper .text-slate-500 {
+  color: #475569 !important;
+}
+
+html.dark .document-paper input,
+html.dark .document-paper select,
+html.dark .document-paper textarea {
+  background-color: #ffffff !important;
+  border-color: #64748b !important;
+  color: #0f172a !important;
+  color-scheme: light;
+}
+
+/* Every visible input/select/textarea label in an application workspace receives the same
+   non-themeable required marker. Official printable form labels, search-only wrappers, hidden
+   labels, checkboxes, radio buttons, and file-upload buttons are intentionally excluded, as is
+   any field wrapped in .app-optional-field (one the form lets the user leave blank). */
+.app-workspace form label[for]:not(.sr-only):not(.app-optional-field label):not(:has(.app-required-marker))::after,
+.app-workspace form label:not([for]):not(.app-optional-field label):has(
+  > input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  > select,
+  > textarea
+) > span:first-of-type:not(:has(.app-required-marker)):not(:has(> span))::after {
+  margin-left: 0.125rem;
+  color: #D61E1E !important;
+  font-weight: 700;
+  content: "*";
+}
+
+.unsafe-text-validation-message {
+  display: block;
+  margin-top: 0.375rem;
+  color: #B91C1C !important;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+
+input[data-unsafe-text-invalid="true"],
+textarea[data-unsafe-text-invalid="true"] {
+  border-color: #E11D48 !important;
+  box-shadow: 0 0 0 2px rgb(225 29 72 / 0.12) !important;
+}
+
+[data-validation-field]:has(> div > input[data-unsafe-text-invalid="true"]) > div {
+  border-color: #E11D48 !important;
+  box-shadow: 0 0 0 2px rgb(225 29 72 / 0.12) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-theme-toggle,
+  .app-theme-toggle svg {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+ * Breadcrumbs follow the system theme colour picked in Settings, like the sidebar. Parent crumbs are
+ * a light tint of the accent; the selected module is the one solid crumb, with a soft accent glow
+ * standing in for the old offset ring (the page behind it is a gradient, so an offset ring had no
+ * single colour to match). The fallbacks are the default Crimson theme.
+ */
+.breadcrumb-crumb {
+  border-color: var(--ui-accent-border, #F3A5A5);
+  background-image: linear-gradient(135deg, #FFFFFF 0%, var(--ui-accent-tint, #FEF1F1) 100%);
+  color: var(--ui-accent-deep, #8D1414);
+  box-shadow: 0 1px 2px rgb(var(--ui-accent-rgb, 214 30 30) / 0.12);
+}
+
+.breadcrumb-crumb .breadcrumb-crumb__icon {
+  color: var(--ui-accent, #D61E1E);
+}
+
+button.breadcrumb-crumb:hover {
+  border-color: var(--ui-accent-border-hover, #EB8F8F);
+  color: var(--ui-accent, #D61E1E);
+  box-shadow: 0 6px 14px rgb(var(--ui-accent-rgb, 214 30 30) / 0.18);
+}
+
+.breadcrumb-crumb.breadcrumb-crumb--current {
+  border-color: var(--ui-accent-deep, #8D1414);
+  background-image: linear-gradient(135deg, var(--ui-accent, #D61E1E) 0%, var(--ui-accent-deep, #8D1414) 100%);
+  color: var(--ui-on-accent, #FFFFFF);
+  box-shadow:
+    0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.18),
+    0 10px 20px rgb(var(--ui-accent-rgb, 214 30 30) / 0.28);
+}
+
+.breadcrumb-crumb.breadcrumb-crumb--current .breadcrumb-crumb__icon {
+  color: inherit;
+}
+
+.breadcrumb-separator {
+  color: var(--ui-accent-border-hover, #EB8F8F);
+}
+
+html.dark .breadcrumb-crumb {
+  border-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.35);
+  background-image: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
+  color: var(--ui-accent-soft-on-dark, #EB8F8F);
+  box-shadow: none;
+}
+
+html.dark .breadcrumb-crumb .breadcrumb-crumb__icon {
+  color: var(--ui-accent-on-dark, #E26262);
+}
+
+html.dark button.breadcrumb-crumb:hover {
+  border-color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.6);
+  color: var(--ui-accent-on-dark, #E26262);
+}
+
+html.dark .breadcrumb-crumb .breadcrumb-crumb__gloss {
+  opacity: 0;
+}
+
+html.dark .breadcrumb-crumb.breadcrumb-crumb--current {
+  border-color: var(--ui-accent, #D61E1E);
+  background-image: linear-gradient(135deg, var(--ui-accent, #D61E1E) 0%, var(--ui-accent-deep, #8D1414) 100%);
+  color: var(--ui-on-accent, #FFFFFF);
+  box-shadow: 0 0 0 3px rgb(var(--ui-accent-rgb, 214 30 30) / 0.3);
+}
+
+html.dark .breadcrumb-separator {
+  color: rgb(var(--ui-accent-rgb, 214 30 30) / 0.55);
 }

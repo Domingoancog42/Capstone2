@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
+require_once __DIR__ . '/leave-medical-certificate-utils.php';
 
 $sessionUser = require_session_user();
 
@@ -49,14 +50,22 @@ function notifications_list(PDO $pdo, array $sessionUser): void
     $userId = (int)($sessionUser['id'] ?? 0);
     $page = max(1, (int)($_GET['page'] ?? 1));
     $perPage = (int)($_GET['perPage'] ?? ($_GET['per_page'] ?? 20));
-    $perPage = max(5, min(100, $perPage));
+    $perPage = max(5, min(200, $perPage));
     $offset = ($page - 1) * $perPage;
     $search = notifications_text($_GET['search'] ?? '');
     $type = normalize_notification_type((string)($_GET['type'] ?? ''));
     $status = strtolower(notifications_text($_GET['status'] ?? 'all'));
 
-    $conditions = ['user_id = :user_id'];
-    $params = [':user_id' => $userId];
+    $conditions = [
+        'user_id = :user_id',
+        'title <> :hidden_account_created',
+        'title <> :hidden_employee_added',
+    ];
+    $params = [
+        ':user_id' => $userId,
+        ':hidden_account_created' => 'Account Created',
+        ':hidden_employee_added' => 'Employee Added',
+    ];
 
     if ($search !== '') {
         $conditions[] = '(title LIKE :search OR message LIKE :search OR type LIKE :search OR COALESCE(reference_id, "") LIKE :search)';
@@ -83,9 +92,15 @@ function notifications_list(PDO $pdo, array $sessionUser): void
         'SELECT COUNT(*)
          FROM notifications
          WHERE user_id = :user_id
-           AND is_read = 0'
+           AND is_read = 0
+           AND title <> :hidden_account_created
+           AND title <> :hidden_employee_added'
     );
-    $unreadStatement->execute([':user_id' => $userId]);
+    $unreadStatement->execute([
+        ':user_id' => $userId,
+        ':hidden_account_created' => 'Account Created',
+        ':hidden_employee_added' => 'Employee Added',
+    ]);
     $unreadCount = (int)$unreadStatement->fetchColumn();
 
     $statement = $pdo->prepare(
@@ -282,6 +297,7 @@ try {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'GET') {
+        send_due_leave_medical_certificate_reminders($pdo, $sessionUser);
         notifications_list($pdo, $sessionUser);
     }
 

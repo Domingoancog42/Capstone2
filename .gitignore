@@ -20,6 +20,7 @@
 # misc
 .DS_Store
 .env.local
+.env
 .env.development.local
 .env.test.local
 .env.production.local
@@ -45,6 +46,8 @@ yarn-error.log*
 # dropped in this directory stays ignored.
 /backend/database/*.sql
 !/backend/database/hris.sql
+!/backend/database/remove_request_tables.sql
+/backend/database/sample-faces/
 
 # Anything users uploaded, plus the chat presence file, which is runtime state
 # carrying account emails. Empty directories are recreated on first upload;
@@ -52,10 +55,10 @@ yarn-error.log*
 /backend/uploads/**
 !/backend/uploads/**/
 !/backend/uploads/.htaccess
+!/backend/uploads/promotion-documents/.htaccess
 !/backend/uploads/**/.gitkeep
 
-# Live SMTP credentials (a Gmail app password). The file's own docblock says it
-# is gitignored -- this is the line that makes that true. The .example.php
-# template beside it is committed and carries empty values.
-/backend/api/smtp-credentials.local.php
+# The complete SMTP configuration includes a live Gmail app password, so the
+# single local config file must never be committed.
+/backend/api/smtp-config.php
 /backend/api/*.local.php

@@ -49,7 +49,11 @@ function leave_date_or_null(mixed $value): ?string
 function leave_status_to_client(string $status): string
 {
     return match (strtolower($status)) {
+        /* Legacy rows are presented as the balance-verification stage. */
+        'submitted' => 'Pending',
+        'endorsed' => 'Endorsed',
         'reviewed' => 'Reviewed',
+        'chief_reviewed' => 'Chief Reviewed',
         'approved' => 'Approved',
         'rejected' => 'Rejected',
         'cancelled', 'canceled', 'withdrawn' => 'Cancelled',
@@ -60,7 +64,11 @@ function leave_status_to_client(string $status): string
 function leave_status_to_database(mixed $status): string
 {
     return match (strtolower(leave_text($status))) {
-        'reviewed' => 'reviewed',
+        'submitted' => 'submitted',
+        'pending', 'pending leave balance verification' => 'pending',
+        'endorsed', 'pending hr head approval' => 'endorsed',
+        'reviewed', 'pending chief admin review', 'pending division chief review' => 'reviewed',
+        'chief_reviewed', 'chief reviewed', 'chiefreviewed', 'pending regional director approval' => 'chief_reviewed',
         'approved' => 'approved',
         'rejected' => 'rejected',
         'cancelled', 'canceled', 'withdrawn' => 'cancelled',
@@ -73,14 +81,43 @@ function leave_role_key(array $user): string
     return user_role_key($user);
 }
 
-function leave_can_manage(array $user): bool
+/** The Leave Management action an administrator ticked for the role under Settings > Roles. */
+function leave_role_has_action(array $user, string $action): bool
 {
-    return in_array(leave_role_key($user), ['admin', 'hrhead', 'hrstaff', 'regionaldirector'], true);
+    return user_has_permission($user, 'leave', $action);
 }
 
-function leave_can_view_all(array $user): bool
+/*
+ * A division desk on the leave request register: the Chief by role, and a Planning Officer once an
+ * administrator grants Leave Management approve or reject in RBAC. The Planning Officer works the
+ * same division desk a Chief does, so the grant seats them at the Chief's stage for their own
+ * division; without it their Leave page stays a self-service filing page. Mirrors
+ * isLeaveDivisionDesk() in frontend/src/utils/leaveHelpers.js.
+ */
+function leave_is_division_desk(array $user): bool
 {
-    return leave_role_key($user) !== 'employee';
+    $roleKey = leave_role_key($user);
+
+    return $roleKey === 'chief'
+        || ($roleKey === 'planningofficer'
+            && (leave_role_has_action($user, 'approve') || leave_role_has_action($user, 'reject')));
+}
+
+function leave_can_manage(array $user): bool
+{
+    return in_array(leave_role_key($user), ['admin', 'chief', 'hrhead', 'hrstaff', 'regionaldirector'], true)
+        || leave_is_division_desk($user);
+}
+
+/** Personal leave roles may archive and restore only requests within their own scope. */
+function leave_is_self_service_role(array $user): bool
+{
+    return in_array(leave_role_key($user), ['employee', 'planningofficer', 'cashier'], true);
+}
+
+function leave_can_archive(array $user): bool
+{
+    return leave_can_manage($user) || leave_is_self_service_role($user);
 }
 
 function leave_can_select_employee(array $user): bool
@@ -88,14 +125,107 @@ function leave_can_select_employee(array $user): bool
     return leave_role_key($user) === 'admin';
 }
 
-function leave_can_mark_reviewed(array $user): bool
+function leave_is_chief(array $user): bool
 {
-    return leave_role_key($user) === 'hrhead';
+    return leave_role_key($user) === 'chief';
+}
+
+function leave_is_hr_reviewer(array $user): bool
+{
+    return in_array(leave_role_key($user), ['hrhead', 'hrstaff'], true);
 }
 
 function leave_is_regional_director(array $user): bool
 {
     return leave_role_key($user) === 'regionaldirector';
+}
+
+/*
+ * Each open status identifies the desk that owns the request. Admin can stand in at an open desk,
+ * but every other role must wait for the preceding approval instead of signing out of sequence.
+ * A Chief's first-stage authority covers their own division only (see leave_read_scopes()).
+ */
+const LEAVE_APPROVAL_CHAIN = [
+    /* Legacy submitted rows skip the removed start-verification stage. */
+    'submitted' => ['roles' => ['hrstaff'], 'next' => 'endorsed'],
+    'pending' => ['roles' => ['hrstaff'], 'next' => 'endorsed'],
+    'endorsed' => ['roles' => ['hrhead'], 'next' => 'reviewed'],
+    'reviewed' => ['roles' => ['chief'], 'next' => 'chief_reviewed'],
+    'chief_reviewed' => ['roles' => ['regionaldirector'], 'next' => 'approved'],
+];
+
+function leave_stage_roles(string $status): array
+{
+    return LEAVE_APPROVAL_CHAIN[strtolower($status)]['roles'] ?? [];
+}
+
+function leave_stage_next_status(string $status): ?string
+{
+    return LEAVE_APPROVAL_CHAIN[strtolower($status)]['next'] ?? null;
+}
+
+/*
+ * Whether the caller may take `$action` ('approve' or 'reject') on a request at `$status`. The chain
+ * decides which desk the request is waiting on; the Leave Management approve/reject checkboxes an
+ * administrator ticked for the role in RBAC decide whether that desk may act. A Planning Officer
+ * seated as a division desk stands at the Chief's stage.
+ */
+function leave_can_act_on(array $user, string $status, string $action): bool
+{
+    $stageRoles = leave_stage_roles($status);
+    if ($stageRoles === []) {
+        return false;
+    }
+
+    if (!leave_role_has_action($user, $action)) {
+        return false;
+    }
+
+    $roleKey = leave_role_key($user);
+    if ($roleKey === 'planningofficer' && leave_is_division_desk($user)) {
+        $roleKey = 'chief';
+    }
+
+    return $roleKey === 'admin' || in_array($roleKey, $stageRoles, true);
+}
+
+function leave_stage_role_label(string $status): string
+{
+    return match (strtolower($status)) {
+        'submitted' => 'HR Staff for leave balance verification',
+        'pending' => 'HR Staff for leave balance verification',
+        'endorsed' => 'HR Head',
+        'reviewed' => 'Division Chief',
+        'chief_reviewed' => 'Regional Director',
+        default => 'an authorized approver',
+    };
+}
+
+/** Only the Chief assigned to the applicant's division receives the initial notification. */
+function leave_chief_user_ids_for_employee(PDO $pdo, int $employeeId): array
+{
+    ensure_role_columns($pdo);
+    $statement = $pdo->prepare(
+        'SELECT DISTINCT chief_user.id
+         FROM employees applicant
+         INNER JOIN employees chief_employee
+            ON chief_employee.division_id = applicant.division_id
+           AND chief_employee.is_archived = 0
+         INNER JOIN users chief_user
+            ON chief_user.email COLLATE utf8mb4_unicode_ci = chief_employee.email COLLATE utf8mb4_unicode_ci
+           AND chief_user.is_archived = 0
+         INNER JOIN roles chief_role ON chief_role.id = chief_user.role_id
+         WHERE applicant.id = :employee_id
+           AND applicant.is_archived = 0
+           AND LOWER(REPLACE(chief_role.name, " ", "")) <> "chiefadmin"
+           AND (
+                LOWER(REPLACE(chief_role.name, " ", "")) = "chief"
+                OR LOWER(REPLACE(COALESCE(chief_role.base_role, ""), " ", "")) = "chief"
+           )'
+    );
+    $statement->execute([':employee_id' => $employeeId]);
+
+    return array_map('intval', array_column($statement->fetchAll(), 'id'));
 }
 
 function leave_default_signatory_for_role(PDO $pdo, string $roleKey): ?array
@@ -109,12 +239,15 @@ function leave_default_signatory_for_role(PDO $pdo, string $roleKey): ?array
     $statement = $pdo->prepare(
         'SELECT
             e.id AS employeeRecordId,
-            TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName
+            TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
+            COALESCE(des.name, "") AS position,
+            e.designation
          FROM users u
          INNER JOIN roles r ON r.id = u.role_id
          INNER JOIN employees e
             ON e.email COLLATE utf8mb4_unicode_ci = u.email COLLATE utf8mb4_unicode_ci
            AND e.is_archived = 0
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE u.is_archived = 0
            AND LOWER(REPLACE(r.name, " ", "")) = :role_key
            AND LOWER(u.status) = "active"
@@ -134,108 +267,129 @@ function leave_default_signatory_for_role(PDO $pdo, string $roleKey): ?array
     $cache[$roleKey] = [
         'employeeRecordId' => (int)($signatory['employeeRecordId'] ?? 0),
         'employeeName' => leave_text($signatory['employeeName'] ?? ''),
+        // The caption under the signature: their designation, or their position without one.
+        'title' => employee_signatory_title($signatory['position'] ?? '', $signatory['designation'] ?? ''),
     ];
 
     return $cache[$roleKey];
 }
 
-function leave_roles_have_base_role_column(PDO $pdo): bool
-{
-    static $hasBaseRoleColumn = null;
-
-    if ($hasBaseRoleColumn !== null) {
-        return $hasBaseRoleColumn;
-    }
-
-    $statement = $pdo->query("SHOW COLUMNS FROM roles LIKE 'base_role'");
-    $hasBaseRoleColumn = $statement !== false && $statement->fetch() !== false;
-
-    return $hasBaseRoleColumn;
-}
-
-function leave_employee_has_role(PDO $pdo, int $employeeRecordId, string $roleKey): bool
+/** Whether this employee signs in as an HR Head -- the only desk that signs 7.A of the form. */
+function leave_employee_is_hr_head(PDO $pdo, int $employeeRecordId): bool
 {
     static $cache = [];
 
-    if ($employeeRecordId <= 0) {
-        return false;
+    if (array_key_exists($employeeRecordId, $cache)) {
+        return $cache[$employeeRecordId];
     }
 
-    $normalizedRoleKey = strtolower($roleKey);
-    $cacheKey = $employeeRecordId . ':' . $normalizedRoleKey;
-
-    if (array_key_exists($cacheKey, $cache)) {
-        return $cache[$cacheKey];
-    }
-
-    $hasBaseRoleColumn = leave_roles_have_base_role_column($pdo);
-    $baseRoleCondition = $hasBaseRoleColumn
-        ? 'OR LOWER(REPLACE(COALESCE(r.base_role, ""), " ", "")) = :base_role_key'
-        : '';
+    ensure_role_columns($pdo);
     $statement = $pdo->prepare(
         'SELECT 1
          FROM employees e
          INNER JOIN users u
             ON u.email COLLATE utf8mb4_unicode_ci = e.email COLLATE utf8mb4_unicode_ci
            AND u.is_archived = 0
-           AND LOWER(u.status) = "active"
          INNER JOIN roles r ON r.id = u.role_id
-         WHERE e.id = :employee_record_id
-           AND e.is_archived = 0
+         WHERE e.id = :employee_id
            AND (
-                LOWER(REPLACE(r.name, " ", "")) = :role_key
-                ' . $baseRoleCondition . '
+                LOWER(REPLACE(r.name, " ", "")) = "hrhead"
+                OR LOWER(REPLACE(COALESCE(r.base_role, ""), " ", "")) = "hrhead"
            )
          LIMIT 1'
     );
-    $params = [
-        ':employee_record_id' => $employeeRecordId,
-        ':role_key' => $normalizedRoleKey,
-    ];
+    $statement->execute([':employee_id' => $employeeRecordId]);
+    $cache[$employeeRecordId] = (bool)$statement->fetchColumn();
 
-    if ($hasBaseRoleColumn) {
-        $params[':base_role_key'] = $normalizedRoleKey;
+    return $cache[$employeeRecordId];
+}
+
+/** Whether the applicant holds the Division Chief role, excluding the distinct Chief Admin role. */
+function leave_employee_is_division_chief(PDO $pdo, int $employeeRecordId): bool
+{
+    static $cache = [];
+
+    if (array_key_exists($employeeRecordId, $cache)) {
+        return $cache[$employeeRecordId];
     }
 
-    $statement->execute($params);
+    ensure_role_columns($pdo);
+    $statement = $pdo->prepare(
+        'SELECT 1
+         FROM employees e
+         INNER JOIN users u
+            ON u.email COLLATE utf8mb4_unicode_ci = e.email COLLATE utf8mb4_unicode_ci
+           AND u.is_archived = 0
+         INNER JOIN roles r ON r.id = u.role_id
+         WHERE e.id = :employee_id
+           AND LOWER(REPLACE(r.name, " ", "")) <> "chiefadmin"
+           AND (
+                LOWER(REPLACE(r.name, " ", "")) = "chief"
+                OR LOWER(REPLACE(COALESCE(r.base_role, ""), " ", "")) = "chief"
+           )
+         LIMIT 1'
+    );
+    $statement->execute([':employee_id' => $employeeRecordId]);
+    $cache[$employeeRecordId] = (bool)$statement->fetchColumn();
 
-    $cache[$cacheKey] = $statement->fetchColumn() !== false;
-
-    return $cache[$cacheKey];
+    return $cache[$employeeRecordId];
 }
 
 function leave_apply_signatory_fallbacks(PDO $pdo, array $request): array
 {
     $statusKey = leave_status_to_database($request['status'] ?? '');
-    $employeeRecordId = (int)($request['employeeRecordId'] ?? 0);
-    $isHrHeadRequest = leave_employee_has_role($pdo, $employeeRecordId, 'hrhead');
-    $isSelfApprovedRequest = $statusKey === 'approved'
-        && $employeeRecordId > 0
-        && (int)($request['approvedByEmployeeRecordId'] ?? 0) > 0
-        && $employeeRecordId === (int)$request['approvedByEmployeeRecordId'];
+    $applicantIsHrHead = (int)($request['employeeRecordId'] ?? 0) > 0
+        && leave_employee_is_hr_head($pdo, (int)$request['employeeRecordId']);
 
+    /*
+     * 7.A is the HR Head's signature. Older filings saved the applicant as its reviewer, which put
+     * an HR Staff member's name, signature, and position on the HR Head's line; a saved reviewer who
+     * is not an HR Head is treated as no signature at all, so the line below falls back as usual.
+     * An HR Head applicant deliberately keeps this line unsigned because their own approval stage
+     * is skipped.
+     */
     if (
-        $isHrHeadRequest
-        && ($request['reviewedByEmployeeRecordId'] ?? null) === null
+        ($request['reviewedByEmployeeRecordId'] ?? null) !== null
+        && !leave_employee_is_hr_head($pdo, (int)$request['reviewedByEmployeeRecordId'])
     ) {
-        $request['reviewedByEmployeeRecordId'] = $employeeRecordId;
-        $request['reviewedByName'] = leave_text($request['employeeName'] ?? '');
+        $request['reviewedByEmployeeRecordId'] = null;
+        $request['reviewedByName'] = '';
+        $request['reviewedByPosition'] = '';
+        $request['reviewedAt'] = null;
     }
+    $isSelfApprovedRequest = $statusKey === 'approved'
+        && (int)($request['employeeRecordId'] ?? 0) > 0
+        && (int)($request['approvedByEmployeeRecordId'] ?? 0) > 0
+        && (int)$request['employeeRecordId'] === (int)$request['approvedByEmployeeRecordId'];
 
     if (
         !$isSelfApprovedRequest
+        && !$applicantIsHrHead
         && ($request['reviewedByEmployeeRecordId'] ?? null) === null
-        && in_array($statusKey, ['reviewed', 'approved'], true)
+        && ($request['reviewedAt'] ?? null) === null
+        && in_array($statusKey, ['reviewed', 'chief_reviewed', 'approved'], true)
     ) {
         $fallbackHrHead = leave_default_signatory_for_role($pdo, 'hrhead');
         if ($fallbackHrHead !== null && ($fallbackHrHead['employeeRecordId'] ?? 0) > 0) {
             $request['reviewedByEmployeeRecordId'] = (int)$fallbackHrHead['employeeRecordId'];
             $request['reviewedByName'] = leave_text($fallbackHrHead['employeeName'] ?? '');
+            $request['reviewedByPosition'] = leave_text($fallbackHrHead['title'] ?? '');
         }
     }
 
+    /*
+     * 7.A is signed by the HR Head, and the form captions that signature with the signer's own
+     * designation (or position, if they have none) rather than a fixed title. Until someone has
+     * signed, the blank line names the title of whoever holds the HR Head desk now.
+     */
+    $currentHrHead = leave_default_signatory_for_role($pdo, 'hrhead');
+    $request['hrHeadPosition'] = $currentHrHead !== null
+        ? leave_text($currentHrHead['title'] ?? '')
+        : '';
+
     if (
         ($request['approvedByEmployeeRecordId'] ?? null) === null
+        && ($request['approvedAt'] ?? null) === null
         && $statusKey === 'approved'
     ) {
         $fallbackRegionalDirector = leave_default_signatory_for_role($pdo, 'regionaldirector');
@@ -271,8 +425,8 @@ const LEAVE_DAY_PORTION_SHORT_LABELS = [
     'pm' => 'PM',
 ];
 
-/* The selection travels inside the reason column, so it is capped to keep that text manageable. */
-const LEAVE_MAX_DAYS = 60;
+/* Long statutory leaves can span 105 calendar days; one year remains a conservative metadata cap. */
+const LEAVE_MAX_DAYS = 366;
 
 /**
  * The day selection as this API will trust it: valid dates only, one entry per date, in date order.
@@ -330,8 +484,7 @@ function leave_days_summary(array $leaveDays): string
 }
 
 /*
- * CSC Form No. 6 asks for working days, so weekends inside the range are skipped: a leave from
- * Wednesday to the following Monday is four working days, not six.
+ * Ordinary leave skips Saturdays and Sundays inside an inclusive range.
  */
 function leave_days(string $startDate, string $endDate): float
 {
@@ -379,36 +532,183 @@ function leave_attachment_upload(): ?array
     return $file;
 }
 
+/** Restore generated IDs after an import without changing existing request/attachment links. */
+function ensure_leave_request_ids(PDO $pdo): void
+{
+    $tables = [
+        'leave_requests' => 'leave_request_id',
+        'leave_attachments' => 'leave_attachments_id',
+        'leave_types' => 'leave_type_id',
+    ];
+
+    foreach ($tables as $table => $primaryKey) {
+        $column = $pdo->query("SHOW COLUMNS FROM `$table` LIKE '$primaryKey'")->fetch();
+        if (!$column || str_contains(strtolower((string)$column['Extra']), 'auto_increment')) {
+            continue;
+        }
+
+        $type = (string)$column['Type'];
+        if ($column['Key'] !== 'PRI'
+            || !preg_match('/^(tinyint|smallint|mediumint|int|bigint)(\(\d+\))?( unsigned)?$/i', $type)) {
+            throw new RuntimeException('Invalid leave table primary key: ' . $table);
+        }
+
+        // MySQL can renumber an existing ID 0 while rebuilding an AUTO_INCREMENT column.
+        $sqlMode = (string)$pdo->query('SELECT @@SESSION.sql_mode')->fetchColumn();
+        $repairMode = $sqlMode === '' ? 'NO_AUTO_VALUE_ON_ZERO' : $sqlMode . ',NO_AUTO_VALUE_ON_ZERO';
+        $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($repairMode));
+        try {
+            $pdo->exec("ALTER TABLE `$table` MODIFY COLUMN `$primaryKey` $type NOT NULL AUTO_INCREMENT");
+        } finally {
+            $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote($sqlMode));
+        }
+    }
+}
+
 function ensure_leave_request_rejected_note_column(PDO $pdo): void
 {
     $statement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'rejected_note'");
-    if ($statement !== false && $statement->fetch() !== false) {
-        return;
+    if ($statement === false || $statement->fetch() === false) {
+        $pdo->exec('ALTER TABLE leave_requests ADD COLUMN rejected_note TEXT NULL AFTER reason');
     }
 
-    $pdo->exec('ALTER TABLE leave_requests ADD COLUMN rejected_note TEXT NULL AFTER reason');
+    $roleStatement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'rejected_by_role'");
+    if ($roleStatement === false || $roleStatement->fetch() === false) {
+        $pdo->exec('ALTER TABLE leave_requests ADD COLUMN rejected_by_role VARCHAR(80) NULL AFTER rejected_note');
+    }
 }
 
-function ensure_leave_request_reviewed_status(PDO $pdo): void
+function ensure_leave_request_workflow_statuses(PDO $pdo): void
 {
     $statement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'status'");
     $column = $statement !== false ? $statement->fetch() : false;
     $columnType = strtolower((string)($column['Type'] ?? $column['type'] ?? ''));
+    $hadSubmittedStatus = $columnType !== '' && strpos($columnType, "'submitted'") !== false;
+    $hadChiefReviewedStatus = $columnType !== '' && strpos($columnType, "'chief_reviewed'") !== false;
 
-    if ($columnType !== '' && strpos($columnType, "'reviewed'") !== false) {
-        return;
+    if ($hadSubmittedStatus || !$hadChiefReviewedStatus) {
+        $pdo->exec("ALTER TABLE leave_requests MODIFY COLUMN status VARCHAR(40) NOT NULL DEFAULT 'pending'");
+        $pdo->exec("UPDATE leave_requests SET status = 'cancelled' WHERE status = 'withdrawn'");
+        /* Existing reviewed requests had already cleared HR and were waiting for the Director. */
+        if (!$hadChiefReviewedStatus && $columnType !== '' && strpos($columnType, "'reviewed'") !== false) {
+            $pdo->exec(
+                "UPDATE leave_requests
+                 SET status = 'chief_reviewed'
+                 WHERE status = 'reviewed'"
+            );
+        }
+        /* The separate submitted stage was removed; old filings now wait directly on verification. */
+        $pdo->exec("UPDATE leave_requests SET status = 'pending' WHERE status = 'submitted'");
+        $pdo->exec(
+            "ALTER TABLE leave_requests
+             MODIFY COLUMN status ENUM('pending', 'endorsed', 'reviewed', 'chief_reviewed', 'approved', 'rejected', 'cancelled')
+             NOT NULL DEFAULT 'pending'"
+        );
     }
 
-    $pdo->exec("UPDATE leave_requests SET status = 'cancelled' WHERE status = 'withdrawn'");
+    /*
+     * Repair Chief self-filings that were already left at the now-skipped Chief stage before this
+     * rule was introduced. No Chief signature is manufactured: the status only hands the existing
+     * HR Head-approved request to the Regional Director, matching the live transition below.
+     */
+    ensure_role_columns($pdo);
     $pdo->exec(
-        "ALTER TABLE leave_requests
-         MODIFY COLUMN status ENUM('pending', 'reviewed', 'approved', 'rejected', 'cancelled')
-         NOT NULL DEFAULT 'pending'"
+        'UPDATE leave_requests lr
+         INNER JOIN employees applicant ON applicant.id = lr.employee_id
+         INNER JOIN users applicant_user
+            ON applicant_user.email COLLATE utf8mb4_unicode_ci = applicant.email COLLATE utf8mb4_unicode_ci
+           AND applicant_user.is_archived = 0
+         INNER JOIN roles applicant_role ON applicant_role.id = applicant_user.role_id
+         SET lr.status = "chief_reviewed",
+             lr.current_level = 4
+         WHERE lr.status = "reviewed"
+           AND LOWER(REPLACE(applicant_role.name, " ", "")) <> "chiefadmin"
+           AND (
+                LOWER(REPLACE(applicant_role.name, " ", "")) = "chief"
+                OR LOWER(REPLACE(COALESCE(applicant_role.base_role, ""), " ", "")) = "chief"
+           )'
+    );
+
+    /*
+     * Chief Admin inherits Chief permissions for its workspace, but it is not the Division Chief
+     * who approves its leave. Earlier routing could therefore advance an HR Head-approved Chief
+     * Admin filing without a Chief signature. Repair only those unsigned rows once; a request with
+     * a recorded Division Chief decision remains untouched.
+     */
+    $chiefAdminRouteMigrationKey = 'leave_chief_admin_division_chief_route_v1';
+    if (!get_boolean_application_setting($pdo, $chiefAdminRouteMigrationKey, false)) {
+        $pdo->exec(
+            'UPDATE leave_requests lr
+             INNER JOIN employees applicant ON applicant.id = lr.employee_id
+             INNER JOIN users applicant_user
+                ON applicant_user.email COLLATE utf8mb4_unicode_ci = applicant.email COLLATE utf8mb4_unicode_ci
+               AND applicant_user.is_archived = 0
+             INNER JOIN roles applicant_role ON applicant_role.id = applicant_user.role_id
+             SET lr.status = "reviewed",
+                 lr.current_level = 3
+             WHERE lr.status = "chief_reviewed"
+               AND LOWER(REPLACE(applicant_role.name, " ", "")) = "chiefadmin"
+               AND lr.reviewed_by_employee_id IS NOT NULL
+               AND lr.reviewed_at IS NOT NULL
+               AND lr.chief_reviewed_by_employee_id IS NULL
+               AND lr.chief_reviewed_at IS NULL'
+        );
+        store_boolean_application_setting($pdo, $chiefAdminRouteMigrationKey, true);
+    }
+
+    /*
+     * An HR Head cannot approve their own leave. Once HR Staff has verified the balance, hand any
+     * existing self-filing straight to the Division Chief, matching the live transition below.
+     */
+    $pdo->exec(
+        'UPDATE leave_requests lr
+         INNER JOIN employees applicant ON applicant.id = lr.employee_id
+         INNER JOIN users applicant_user
+            ON applicant_user.email COLLATE utf8mb4_unicode_ci = applicant.email COLLATE utf8mb4_unicode_ci
+           AND applicant_user.is_archived = 0
+         INNER JOIN roles applicant_role ON applicant_role.id = applicant_user.role_id
+         SET lr.status = "reviewed",
+             lr.current_level = 3
+         WHERE lr.status = "endorsed"
+           AND (
+                LOWER(REPLACE(applicant_role.name, " ", "")) = "hrhead"
+                OR LOWER(REPLACE(COALESCE(applicant_role.base_role, ""), " ", "")) = "hrhead"
+           )'
+    );
+
+    /* Keep the legacy level column aligned for reports or integrations that still read it. */
+    $pdo->exec(
+        "UPDATE leave_requests
+         SET current_level = CASE
+            WHEN status = 'pending' THEN 1
+            WHEN status = 'endorsed' THEN 2
+            WHEN status = 'reviewed' THEN 3
+            WHEN status = 'chief_reviewed' THEN 4
+            WHEN status = 'approved' THEN 5
+            ELSE current_level
+         END
+         WHERE status IN ('pending', 'endorsed', 'reviewed', 'chief_reviewed', 'approved')
+           AND current_level <> CASE
+              WHEN status = 'pending' THEN 1
+              WHEN status = 'endorsed' THEN 2
+              WHEN status = 'reviewed' THEN 3
+              WHEN status = 'chief_reviewed' THEN 4
+              WHEN status = 'approved' THEN 5
+              ELSE current_level
+           END"
     );
 }
 
 function ensure_leave_request_action_actor_columns(PDO $pdo): void
 {
+    $endorsedByStatement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'endorsed_by_employee_id'");
+    if ($endorsedByStatement !== false && $endorsedByStatement->fetch() === false) {
+        $pdo->exec(
+            'ALTER TABLE leave_requests
+             ADD COLUMN endorsed_by_employee_id INT UNSIGNED NULL AFTER rejected_note'
+        );
+    }
+
     $reviewedByStatement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'reviewed_by_employee_id'");
     if ($reviewedByStatement !== false && $reviewedByStatement->fetch() === false) {
         $pdo->exec(
@@ -423,6 +723,70 @@ function ensure_leave_request_action_actor_columns(PDO $pdo): void
             'ALTER TABLE leave_requests
              ADD COLUMN approved_by_employee_id INT UNSIGNED NULL AFTER reviewed_by_employee_id'
         );
+    }
+
+    $chiefReviewedByStatement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE 'chief_reviewed_by_employee_id'");
+    if ($chiefReviewedByStatement !== false && $chiefReviewedByStatement->fetch() === false) {
+        $pdo->exec(
+            'ALTER TABLE leave_requests
+             ADD COLUMN chief_reviewed_by_employee_id INT UNSIGNED NULL AFTER reviewed_by_employee_id'
+        );
+    }
+
+    $chiefReviewedIndexStatement = $pdo->query("SHOW INDEX FROM leave_requests WHERE Key_name = 'fk_req_chief_reviewed_by_employee'");
+    if ($chiefReviewedIndexStatement !== false && $chiefReviewedIndexStatement->fetch() === false) {
+        $pdo->exec('ALTER TABLE leave_requests ADD KEY fk_req_chief_reviewed_by_employee (chief_reviewed_by_employee_id)');
+    }
+
+    $chiefReviewedConstraintStatement = $pdo->prepare(
+        'SELECT CONSTRAINT_NAME
+         FROM information_schema.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = "leave_requests"
+           AND COLUMN_NAME = "chief_reviewed_by_employee_id"
+           AND REFERENCED_TABLE_NAME = "employees"
+         LIMIT 1'
+    );
+    $chiefReviewedConstraintStatement->execute();
+    if ($chiefReviewedConstraintStatement->fetch() === false) {
+        $pdo->exec(
+            'ALTER TABLE leave_requests
+             ADD CONSTRAINT fk_req_chief_reviewed_by_employee
+             FOREIGN KEY (chief_reviewed_by_employee_id) REFERENCES employees (id)'
+        );
+    }
+
+    $endorsedIndexStatement = $pdo->query("SHOW INDEX FROM leave_requests WHERE Key_name = 'fk_req_endorsed_by_employee'");
+    if ($endorsedIndexStatement !== false && $endorsedIndexStatement->fetch() === false) {
+        $pdo->exec('ALTER TABLE leave_requests ADD KEY fk_req_endorsed_by_employee (endorsed_by_employee_id)');
+    }
+
+    $endorsedConstraintStatement = $pdo->prepare(
+        'SELECT CONSTRAINT_NAME
+         FROM information_schema.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = "leave_requests"
+           AND COLUMN_NAME = "endorsed_by_employee_id"
+           AND REFERENCED_TABLE_NAME = "employees"
+         LIMIT 1'
+    );
+    $endorsedConstraintStatement->execute();
+    if ($endorsedConstraintStatement->fetch() === false) {
+        $pdo->exec(
+            'ALTER TABLE leave_requests
+             ADD CONSTRAINT fk_req_endorsed_by_employee
+             FOREIGN KEY (endorsed_by_employee_id) REFERENCES employees (id)'
+        );
+    }
+}
+
+function ensure_leave_request_action_timestamp_columns(PDO $pdo): void
+{
+    foreach (['endorsed_at', 'reviewed_at', 'chief_reviewed_at', 'approved_at'] as $column) {
+        $statement = $pdo->query("SHOW COLUMNS FROM leave_requests LIKE '" . $column . "'");
+        if ($statement !== false && $statement->fetch() === false) {
+            $pdo->exec('ALTER TABLE leave_requests ADD COLUMN ' . $column . ' TIMESTAMP NULL DEFAULT NULL');
+        }
     }
 }
 
@@ -477,7 +841,12 @@ function store_leave_attachment(array $attachmentUpload): array
     ];
 }
 
-function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?array
+function fetch_leave_request(
+    PDO $pdo,
+    int $id,
+    ?int $employeeScopeId = null,
+    ?int $divisionScopeId = null
+): ?array
 {
     $sql = 'SELECT
             lr.leave_request_id AS id,
@@ -487,6 +856,7 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
             e.profile_image AS profileImage,
             lt.name AS leaveType,
             d.name AS division,
+            ' . employee_role_name_subselect() . ' AS employeeRole,
             des.name AS position,
             e.basic_salary AS basicSalary,
             e.salary_rate AS salaryRate,
@@ -497,11 +867,24 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
             lr.unpaid_days AS unpaidDays,
             lr.reason,
             COALESCE(lr.rejected_note, "") AS rejectedNote,
+            COALESCE(lr.rejected_by_role, "") AS rejectedByRole,
+            lr.endorsed_by_employee_id AS endorsedByEmployeeRecordId,
+            COALESCE(NULLIF(TRIM(CONCAT(endorsed_employee.first_name, " ", COALESCE(endorsed_employee.middle_name, ""), " ", endorsed_employee.last_name)), ""), "") AS endorsedByName,
+            lr.endorsed_at AS endorsedAt,
             lr.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
             COALESCE(NULLIF(TRIM(CONCAT(reviewed_employee.first_name, " ", COALESCE(reviewed_employee.middle_name, ""), " ", reviewed_employee.last_name)), ""), "") AS reviewedByName,
+            COALESCE(NULLIF(TRIM(reviewed_employee.designation), ""), reviewed_designation.name, "") AS reviewedByPosition,
+            lr.reviewed_at AS reviewedAt,
+            lr.chief_reviewed_by_employee_id AS chiefReviewedByEmployeeRecordId,
+            COALESCE(NULLIF(TRIM(CONCAT(chief_reviewed_employee.first_name, " ", COALESCE(chief_reviewed_employee.middle_name, ""), " ", chief_reviewed_employee.last_name)), ""), "") AS chiefReviewedByName,
+            COALESCE(NULLIF(TRIM(chief_reviewed_employee.designation), ""), chief_reviewed_designation.name, "") AS chiefReviewedByPosition,
+            COALESCE(chief_reviewed_division.code, "") AS chiefReviewedByDivisionCode,
+            lr.chief_reviewed_at AS chiefReviewedAt,
             lr.approved_by_employee_id AS approvedByEmployeeRecordId,
             COALESCE(NULLIF(TRIM(CONCAT(approved_employee.first_name, " ", COALESCE(approved_employee.middle_name, ""), " ", approved_employee.last_name)), ""), "") AS approvedByName,
+            lr.approved_at AS approvedAt,
             lr.status,
+            lr.archived_by_user_id AS archivedByUserId,
             DATE(lr.requested_at) AS dateFiled,
             lr.requested_at AS requestedAt,
             lr.updated_at AS updatedAt,
@@ -509,16 +892,25 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
             COALESCE(la.file_path, "") AS attachmentPath
          FROM leave_requests lr
          INNER JOIN employees e ON e.id = lr.employee_id
-         INNER JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN divisions d ON d.id = e.division_id
          INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
          LEFT JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN employees endorsed_employee ON endorsed_employee.id = lr.endorsed_by_employee_id
          LEFT JOIN employees reviewed_employee ON reviewed_employee.id = lr.reviewed_by_employee_id
+         LEFT JOIN designations reviewed_designation ON reviewed_designation.id = reviewed_employee.designation_id
+         LEFT JOIN employees chief_reviewed_employee ON chief_reviewed_employee.id = lr.chief_reviewed_by_employee_id
+         LEFT JOIN designations chief_reviewed_designation ON chief_reviewed_designation.id = chief_reviewed_employee.designation_id
+         LEFT JOIN divisions chief_reviewed_division ON chief_reviewed_division.id = chief_reviewed_employee.division_id
          LEFT JOIN employees approved_employee ON approved_employee.id = lr.approved_by_employee_id
          LEFT JOIN leave_attachments la ON la.leave_request_id = lr.leave_request_id
          WHERE lr.leave_request_id = :id';
 
     if ($employeeScopeId !== null) {
         $sql .= ' AND lr.employee_id = :employee_scope_id';
+    }
+
+    if ($divisionScopeId !== null) {
+        $sql .= ' AND e.division_id = :division_scope_id';
     }
 
     $sql .= ' ORDER BY la.leave_attachments_id DESC
@@ -528,6 +920,9 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
     $params = [':id' => $id];
     if ($employeeScopeId !== null) {
         $params[':employee_scope_id'] = $employeeScopeId;
+    }
+    if ($divisionScopeId !== null) {
+        $params[':division_scope_id'] = $divisionScopeId;
     }
     $statement->execute($params);
     $request = $statement->fetch();
@@ -545,16 +940,32 @@ function fetch_leave_request(PDO $pdo, int $id, ?int $employeeScopeId = null): ?
         : $request['numberOfDays'];
     $request['unpaidDays'] = $request['unpaidDays'] !== null ? (float)$request['unpaidDays'] : 0.0;
     $request['position'] = leave_text($request['position'] ?? '');
+    $request['employeeRole'] = leave_text($request['employeeRole'] ?? '');
     $request['salaryRate'] = leave_text($request['salaryRate'] ?? '');
     $request['rejectedNote'] = leave_text($request['rejectedNote'] ?? '');
+    $request['rejectedByRole'] = leave_text($request['rejectedByRole'] ?? '');
+    $request['endorsedByEmployeeRecordId'] = $request['endorsedByEmployeeRecordId'] !== null
+        ? (int)$request['endorsedByEmployeeRecordId']
+        : null;
+    $request['endorsedByName'] = leave_text($request['endorsedByName'] ?? '');
     $request['reviewedByEmployeeRecordId'] = $request['reviewedByEmployeeRecordId'] !== null
         ? (int)$request['reviewedByEmployeeRecordId']
         : null;
     $request['reviewedByName'] = leave_text($request['reviewedByName'] ?? '');
+    $request['reviewedByPosition'] = leave_text($request['reviewedByPosition'] ?? '');
+    $request['chiefReviewedByEmployeeRecordId'] = $request['chiefReviewedByEmployeeRecordId'] !== null
+        ? (int)$request['chiefReviewedByEmployeeRecordId']
+        : null;
+    $request['chiefReviewedByName'] = leave_text($request['chiefReviewedByName'] ?? '');
+    $request['chiefReviewedByPosition'] = leave_text($request['chiefReviewedByPosition'] ?? '');
+    $request['chiefReviewedByDivisionCode'] = leave_text($request['chiefReviewedByDivisionCode'] ?? '');
     $request['approvedByEmployeeRecordId'] = $request['approvedByEmployeeRecordId'] !== null
         ? (int)$request['approvedByEmployeeRecordId']
         : null;
     $request['approvedByName'] = leave_text($request['approvedByName'] ?? '');
+    $request['archivedByUserId'] = $request['archivedByUserId'] !== null
+        ? (int)$request['archivedByUserId']
+        : null;
     $request['status'] = leave_status_to_client((string)$request['status']);
     $request = leave_apply_signatory_fallbacks($pdo, $request);
 
@@ -583,6 +994,92 @@ function leave_unpack_reason(mixed $reason): array
         'visibleReason' => trim(substr($rawReason, 0, $markerIndex)),
         'details' => is_array($details) ? $details : [],
     ];
+}
+
+/**
+ * Return the dates in a new filing that are already covered by one of the employee's live leave
+ * requests. Rejected and cancelled requests no longer reserve their dates, but archiving a record
+ * is only a records-management action and therefore does not make an approved date available again.
+ *
+ * Newer requests carry their exact selected dates in the reason metadata. Older callers may only
+ * have stored a start/end range, so all four exact-date/range combinations are handled here rather
+ * than relying on a broad SQL range overlap alone.
+ */
+function leave_duplicate_filing_dates(
+    PDO $pdo,
+    int $employeeId,
+    string $startDate,
+    string $endDate,
+    array $leaveDays
+): array {
+    $statement = $pdo->prepare(
+        'SELECT leave_request_id, start_date, end_date, reason
+         FROM leave_requests
+         WHERE employee_id = :employee_id
+           AND status NOT IN ("rejected", "cancelled")
+           AND start_date <= :end_date
+           AND end_date >= :start_date'
+    );
+    $statement->execute([
+        ':employee_id' => $employeeId,
+        ':start_date' => $startDate,
+        ':end_date' => $endDate,
+    ]);
+
+    $candidateDates = array_column($leaveDays, 'date');
+    $duplicates = [];
+
+    foreach ($statement->fetchAll() as $existingRequest) {
+        $existingStart = leave_text($existingRequest['start_date'] ?? '');
+        $existingEnd = leave_text($existingRequest['end_date'] ?? '');
+        $existingReason = leave_unpack_reason($existingRequest['reason'] ?? '');
+        $existingDates = array_column(
+            leave_normalize_days($existingReason['details']['leaveDays'] ?? null),
+            'date'
+        );
+
+        if ($candidateDates !== [] && $existingDates !== []) {
+            $duplicates = array_merge($duplicates, array_intersect($candidateDates, $existingDates));
+            continue;
+        }
+
+        if ($candidateDates !== []) {
+            foreach ($candidateDates as $date) {
+                if ($date >= $existingStart && $date <= $existingEnd) {
+                    $duplicates[] = $date;
+                }
+            }
+            continue;
+        }
+
+        if ($existingDates !== []) {
+            foreach ($existingDates as $date) {
+                if ($date >= $startDate && $date <= $endDate) {
+                    $duplicates[] = $date;
+                }
+            }
+            continue;
+        }
+
+        /* Both filings are legacy ranges. Find the first working day in their shared span. */
+        $overlapStart = max($startDate, $existingStart);
+        $overlapEnd = min($endDate, $existingEnd);
+        for (
+            $cursor = new DateTimeImmutable($overlapStart);
+            $cursor->format('Y-m-d') <= $overlapEnd;
+            $cursor = $cursor->modify('+1 day')
+        ) {
+            if (!leave_is_weekend($cursor->format('Y-m-d'))) {
+                $duplicates[] = $cursor->format('Y-m-d');
+                break;
+            }
+        }
+    }
+
+    $duplicates = array_values(array_unique($duplicates));
+    sort($duplicates);
+
+    return $duplicates;
 }
 
 /**
@@ -635,10 +1132,11 @@ function fetch_leave_request_notification_context(PDO $pdo, int $id): ?array
             lr.end_date AS endDate,
             lr.total_days AS numberOfDays,
             COALESCE(lr.reason, "") AS reason,
-            COALESCE(lr.rejected_note, "") AS rejectedNote
+            COALESCE(lr.rejected_note, "") AS rejectedNote,
+            COALESCE(lr.rejected_by_role, "") AS rejectedByRole
          FROM leave_requests lr
          INNER JOIN employees e ON e.id = lr.employee_id
-         INNER JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN divisions d ON d.id = e.division_id
          INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
          WHERE lr.leave_request_id = :id
          LIMIT 1'
@@ -658,6 +1156,7 @@ function fetch_leave_request_notification_context(PDO $pdo, int $id): ?array
     $request['endDate'] = leave_text($request['endDate'] ?? '');
     $request['numberOfDays'] = rtrim(rtrim(number_format((float)($request['numberOfDays'] ?? 0), 2, '.', ''), '0'), '.');
     $request['rejectedNote'] = leave_text($request['rejectedNote'] ?? '');
+    $request['rejectedByRole'] = leave_text($request['rejectedByRole'] ?? '');
 
     $unpackedReason = leave_unpack_reason($request['reason'] ?? '');
     $request['reason'] = $unpackedReason['visibleReason'];
@@ -675,13 +1174,13 @@ function send_leave_rejection_notification(PDO $pdo, int $id): ?string
     $request = fetch_leave_request_notification_context($pdo, $id);
 
     if ($request === null) {
-        return 'Leave request rejected, but employee details could not be loaded for email notification.';
+        return 'Leave request disapproved, but employee details could not be loaded for email notification.';
     }
 
     $employeeEmail = leave_text($request['employeeEmail'] ?? '');
 
     if ($employeeEmail === '' || filter_var($employeeEmail, FILTER_VALIDATE_EMAIL) === false) {
-        return 'Leave request rejected, but no valid employee email address is available.';
+        return 'Leave request disapproved, but no valid employee email address is available.';
     }
 
     try {
@@ -700,15 +1199,65 @@ function send_leave_rejection_notification(PDO $pdo, int $id): ?string
         );
     } catch (Throwable $exception) {
         error_log('Leave rejection email error: ' . $exception->getMessage());
-        return 'Leave request rejected, but the rejection email could not be sent.';
+        return 'Leave request disapproved, but the disapproval email could not be sent.';
     }
 
     return null;
 }
 
+function leave_read_scopes(PDO $pdo, array $sessionUser): array
+{
+    // A Chief is the first-stage desk for their own division only: the list, single fetch, review,
+    // approval, rejection and archive actions all stay inside that division. A Planning Officer
+    // granted approve/reject in RBAC works that same desk (leave_is_division_desk()).
+    if (leave_is_division_desk($sessionUser)) {
+        return [
+            'employeeId' => null,
+            'divisionId' => leave_session_division_id($pdo, $sessionUser),
+        ];
+    }
+
+    return match (leave_role_key($sessionUser)) {
+        // Planning Officers and Cashiers use Leave Management for their own filings. Their role
+        // work in other modules does not grant access to another employee's personal leave record.
+        'employee', 'planningofficer', 'cashier' => [
+            'employeeId' => resolve_leave_session_employee_id($pdo, $sessionUser),
+            'divisionId' => null,
+        ],
+        // HR and the Regional Director are organization-wide approval desks.
+        default => ['employeeId' => null, 'divisionId' => null],
+    };
+}
+
+/** The division of the signed-in user's employee record, for division-scoped desks. */
+function leave_session_division_id(PDO $pdo, array $sessionUser): int
+{
+    $employeeId = resolve_leave_session_employee_id($pdo, $sessionUser);
+    $statement = $pdo->prepare(
+        'SELECT division_id
+         FROM employees
+         WHERE id = :id
+           AND is_archived = 0
+         LIMIT 1'
+    );
+    $statement->execute([':id' => $employeeId]);
+    $divisionId = (int)$statement->fetchColumn();
+
+    if ($divisionId <= 0) {
+        json_response([
+            'success' => false,
+            'message' => 'Your employee record is not assigned to a division.',
+        ], 422);
+    }
+
+    return $divisionId;
+}
+
 function list_leave_requests(PDO $pdo, array $sessionUser): void
 {
-    $employeeScopeId = leave_can_view_all($sessionUser) ? null : resolve_leave_session_employee_id($pdo, $sessionUser);
+    $scopes = leave_read_scopes($pdo, $sessionUser);
+    $employeeScopeId = $scopes['employeeId'];
+    $divisionScopeId = $scopes['divisionId'];
 
     $sql = 'SELECT
             lr.leave_request_id AS id,
@@ -718,6 +1267,7 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
             e.profile_image AS profileImage,
             lt.name AS leaveType,
             d.name AS division,
+            ' . employee_role_name_subselect() . ' AS employeeRole,
             des.name AS position,
             e.basic_salary AS basicSalary,
             e.salary_rate AS salaryRate,
@@ -728,11 +1278,24 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
             lr.unpaid_days AS unpaidDays,
             lr.reason,
             COALESCE(lr.rejected_note, "") AS rejectedNote,
+            COALESCE(lr.rejected_by_role, "") AS rejectedByRole,
+            lr.endorsed_by_employee_id AS endorsedByEmployeeRecordId,
+            COALESCE(NULLIF(TRIM(CONCAT(endorsed_employee.first_name, " ", COALESCE(endorsed_employee.middle_name, ""), " ", endorsed_employee.last_name)), ""), "") AS endorsedByName,
+            lr.endorsed_at AS endorsedAt,
             lr.reviewed_by_employee_id AS reviewedByEmployeeRecordId,
             COALESCE(NULLIF(TRIM(CONCAT(reviewed_employee.first_name, " ", COALESCE(reviewed_employee.middle_name, ""), " ", reviewed_employee.last_name)), ""), "") AS reviewedByName,
+            COALESCE(NULLIF(TRIM(reviewed_employee.designation), ""), reviewed_designation.name, "") AS reviewedByPosition,
+            lr.reviewed_at AS reviewedAt,
+            lr.chief_reviewed_by_employee_id AS chiefReviewedByEmployeeRecordId,
+            COALESCE(NULLIF(TRIM(CONCAT(chief_reviewed_employee.first_name, " ", COALESCE(chief_reviewed_employee.middle_name, ""), " ", chief_reviewed_employee.last_name)), ""), "") AS chiefReviewedByName,
+            COALESCE(NULLIF(TRIM(chief_reviewed_employee.designation), ""), chief_reviewed_designation.name, "") AS chiefReviewedByPosition,
+            COALESCE(chief_reviewed_division.code, "") AS chiefReviewedByDivisionCode,
+            lr.chief_reviewed_at AS chiefReviewedAt,
             lr.approved_by_employee_id AS approvedByEmployeeRecordId,
             COALESCE(NULLIF(TRIM(CONCAT(approved_employee.first_name, " ", COALESCE(approved_employee.middle_name, ""), " ", approved_employee.last_name)), ""), "") AS approvedByName,
+            lr.approved_at AS approvedAt,
             lr.status,
+            lr.archived_by_user_id AS archivedByUserId,
             DATE(lr.requested_at) AS dateFiled,
             lr.requested_at AS requestedAt,
             lr.updated_at AS updatedAt,
@@ -740,10 +1303,15 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
             COALESCE(attachments.file_path, "") AS attachmentPath
          FROM leave_requests lr
          INNER JOIN employees e ON e.id = lr.employee_id
-         INNER JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN divisions d ON d.id = e.division_id
          INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
          LEFT JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN employees endorsed_employee ON endorsed_employee.id = lr.endorsed_by_employee_id
          LEFT JOIN employees reviewed_employee ON reviewed_employee.id = lr.reviewed_by_employee_id
+         LEFT JOIN designations reviewed_designation ON reviewed_designation.id = reviewed_employee.designation_id
+         LEFT JOIN employees chief_reviewed_employee ON chief_reviewed_employee.id = lr.chief_reviewed_by_employee_id
+         LEFT JOIN designations chief_reviewed_designation ON chief_reviewed_designation.id = chief_reviewed_employee.designation_id
+         LEFT JOIN divisions chief_reviewed_division ON chief_reviewed_division.id = chief_reviewed_employee.division_id
          LEFT JOIN employees approved_employee ON approved_employee.id = lr.approved_by_employee_id
          LEFT JOIN (
             SELECT la1.leave_request_id, la1.file_name, la1.file_path
@@ -760,6 +1328,10 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
     if ($employeeScopeId !== null) {
         $sql .= ' AND lr.employee_id = :employee_scope_id';
         $params[':employee_scope_id'] = $employeeScopeId;
+    }
+    if ($divisionScopeId !== null) {
+        $sql .= ' AND e.division_id = :division_scope_id';
+        $params[':division_scope_id'] = $divisionScopeId;
     }
 
     $sql .= ' ORDER BY lr.requested_at DESC, lr.leave_request_id DESC';
@@ -778,16 +1350,32 @@ function list_leave_requests(PDO $pdo, array $sessionUser): void
             : $request['numberOfDays'];
         $request['unpaidDays'] = $request['unpaidDays'] !== null ? (float)$request['unpaidDays'] : 0.0;
         $request['position'] = leave_text($request['position'] ?? '');
+        $request['employeeRole'] = leave_text($request['employeeRole'] ?? '');
         $request['salaryRate'] = leave_text($request['salaryRate'] ?? '');
         $request['rejectedNote'] = leave_text($request['rejectedNote'] ?? '');
+        $request['rejectedByRole'] = leave_text($request['rejectedByRole'] ?? '');
+        $request['endorsedByEmployeeRecordId'] = $request['endorsedByEmployeeRecordId'] !== null
+            ? (int)$request['endorsedByEmployeeRecordId']
+            : null;
+        $request['endorsedByName'] = leave_text($request['endorsedByName'] ?? '');
         $request['reviewedByEmployeeRecordId'] = $request['reviewedByEmployeeRecordId'] !== null
             ? (int)$request['reviewedByEmployeeRecordId']
             : null;
         $request['reviewedByName'] = leave_text($request['reviewedByName'] ?? '');
+        $request['reviewedByPosition'] = leave_text($request['reviewedByPosition'] ?? '');
+        $request['chiefReviewedByEmployeeRecordId'] = $request['chiefReviewedByEmployeeRecordId'] !== null
+            ? (int)$request['chiefReviewedByEmployeeRecordId']
+            : null;
+        $request['chiefReviewedByName'] = leave_text($request['chiefReviewedByName'] ?? '');
+        $request['chiefReviewedByPosition'] = leave_text($request['chiefReviewedByPosition'] ?? '');
+        $request['chiefReviewedByDivisionCode'] = leave_text($request['chiefReviewedByDivisionCode'] ?? '');
         $request['approvedByEmployeeRecordId'] = $request['approvedByEmployeeRecordId'] !== null
             ? (int)$request['approvedByEmployeeRecordId']
             : null;
         $request['approvedByName'] = leave_text($request['approvedByName'] ?? '');
+        $request['archivedByUserId'] = $request['archivedByUserId'] !== null
+            ? (int)$request['archivedByUserId']
+            : null;
         $request['status'] = leave_status_to_client((string)$request['status']);
         $request = leave_apply_signatory_fallbacks($pdo, $request);
     }
@@ -835,8 +1423,8 @@ function get_leave_request(PDO $pdo, array $sessionUser): void
         ], 422);
     }
 
-    $employeeScopeId = leave_can_view_all($sessionUser) ? null : resolve_leave_session_employee_id($pdo, $sessionUser);
-    $request = fetch_leave_request($pdo, $id, $employeeScopeId);
+    $scopes = leave_read_scopes($pdo, $sessionUser);
+    $request = fetch_leave_request($pdo, $id, $scopes['employeeId'], $scopes['divisionId']);
 
     if ($request === null) {
         json_response([
@@ -919,59 +1507,24 @@ function resolve_leave_type_id(PDO $pdo, string $leaveType): int
         'SELECT leave_type_id FROM leave_types WHERE name = :name AND is_active = 1 LIMIT 1'
     );
     $statement->execute([':name' => $leaveType]);
-    $id = (int)$statement->fetchColumn();
+    $id = $statement->fetchColumn();
 
-    if ($id <= 0) {
-        $baseCode = strtoupper(preg_replace('/[^A-Z0-9]/', '', implode('', array_map(
-            static fn (string $word): string => $word[0] ?? '',
-            preg_split('/\s+/', $leaveType) ?: []
-        ))));
-        $baseCode = $baseCode !== '' ? substr($baseCode, 0, 12) : 'LT';
-        $code = $baseCode;
-        $suffix = 1;
-
-        while (true) {
-            $codeCheck = $pdo->prepare('SELECT COUNT(*) FROM leave_types WHERE code = :code');
-            $codeCheck->execute([':code' => $code]);
-            if ((int)$codeCheck->fetchColumn() === 0) {
-                break;
-            }
-            $code = substr($baseCode, 0, 10) . $suffix;
-            $suffix++;
-        }
-
-        $insert = $pdo->prepare(
-            'INSERT INTO leave_types (name, code, is_with_pay, requires_approval, requires_attachment, is_active)
-             VALUES (:name, :code, 1, 1, 0, 1)'
-        );
-        $insert->execute([
-            ':name' => $leaveType,
-            ':code' => $code,
-        ]);
-
-        return (int)$pdo->lastInsertId();
+    // A stale form must not recreate a type that an administrator has deactivated.
+    if ($id === false) {
+        json_response([
+            'success' => false,
+            'message' => 'Selected leave type is inactive or unavailable. Please choose an active leave type.',
+        ], 422);
     }
 
-    return $id;
-}
-
-/**
- * The bucket a filing is counted against for the `leaveRequest` limit: the account doing the filing,
- * or the caller's address in the impossible case of a session without a user id. Keyed by account
- * rather than by the employee named on the form, because the quota exists to cap what one signed-in
- * person can push into the approval queue.
- */
-function leave_rate_limit_identifier(array $sessionUser): string
-{
-    $userId = (int)($sessionUser['id'] ?? 0);
-
-    return $userId > 0 ? 'user:' . $userId : 'ip:' . rate_limit_client_ip();
+    return (int)$id;
 }
 
 function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array $attachmentUpload = null): void
 {
     $employeeId = resolve_employee_id($pdo, $body, $sessionUser);
     $leaveType = leave_text($body['leaveType'] ?? '');
+    $isMaternityLeave = strtolower(trim($leaveType)) === 'maternity leave';
     $startDate = leave_date_or_null($body['startDate'] ?? null);
     $endDate = leave_date_or_null($body['endDate'] ?? null);
     $reason = leave_text($body['reason'] ?? '');
@@ -990,13 +1543,17 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
     /*
      * The form's calendar already refuses these days, but that only constrains the picker -- a
      * crafted request still reaches here, so the rules are enforced again rather than trusted. They
-     * apply to every role: no account may back-date a filing, and leave is counted in working days.
+     * apply to every role: no account may back-date a filing. Ordinary leave is counted in working
+     * working days, while maternity leave keeps its statutory calendar-day span.
      * Compared as 'Y-m-d' text, which both sides guarantee.
      */
     $today = date('Y-m-d');
     $errors = [];
     if ($leaveType === '') {
         $errors[] = 'Leave type is required.';
+    }
+    if (leave_unpack_reason($reason)['visibleReason'] === '') {
+        $errors[] = 'Reason / Supporting Details is required.';
     }
 
     if ($leaveDays !== []) {
@@ -1006,7 +1563,7 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
         }
 
         $weekendDates = array_filter($leaveDays, static fn (array $day): bool => leave_is_weekend($day['date']));
-        if ($weekendDates !== []) {
+        if (!$isMaternityLeave && $weekendDates !== []) {
             $errors[] = 'Leave dates must be working days (Monday to Friday).';
         }
     } else {
@@ -1022,10 +1579,10 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
         if ($endDate !== null && $endDate < $today) {
             $errors[] = 'End date cannot be in the past. Choose today or a later date.';
         }
-        if ($startDate !== null && leave_is_weekend($startDate)) {
+        if (!$isMaternityLeave && $startDate !== null && leave_is_weekend($startDate)) {
             $errors[] = 'Start date must be a working day (Monday to Friday).';
         }
-        if ($endDate !== null && leave_is_weekend($endDate)) {
+        if (!$isMaternityLeave && $endDate !== null && leave_is_weekend($endDate)) {
             $errors[] = 'End date must be a working day (Monday to Friday).';
         }
         if ($errors === [] && $startDate !== null && $endDate !== null && leave_days($startDate, $endDate) <= 0) {
@@ -1048,6 +1605,30 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
     $numberOfDays = $leaveDays !== []
         ? leave_days_total($leaveDays)
         : leave_days((string)$startDate, (string)$endDate);
+
+    $duplicateDates = leave_duplicate_filing_dates(
+        $pdo,
+        $employeeId,
+        (string)$startDate,
+        (string)$endDate,
+        $leaveDays
+    );
+
+    if ($duplicateDates !== []) {
+        $firstDuplicateDate = (new DateTimeImmutable($duplicateDates[0]))->format('F j, Y');
+        json_response([
+            'success' => false,
+            'code' => 'duplicate_leave_date',
+            'message' => count($duplicateDates) === 1
+                ? sprintf("You can't file leave again for %s.", $firstDuplicateDate)
+                : sprintf(
+                    "You can't file leave again because %s and %d other selected date(s) are already covered by an existing leave request.",
+                    $firstDuplicateDate,
+                    count($duplicateDates) - 1
+                ),
+            'duplicateDates' => $duplicateDates,
+        ], 409);
+    }
 
     /*
      * Filing is allowed to exceed the remaining credits, but only once the applicant has been told
@@ -1076,22 +1657,39 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
         ], 422);
     }
 
+    /*
+     * The Regional Director is the final approving authority in this workflow. When the person
+     * holding that role files their own leave, there is no higher leave desk to send it to, so the
+     * request is final on submission. Saving the applicant as the final approver also gives the CSC
+     * form the exact employee record from which to load their name and e-signature.
+     *
+     * An HR Staff member filing their own request already occupies the balance-verification desk,
+     * so the request begins at HR Head approval and records that staff member as the verifier. Every
+     * other role begins with the ordinary HR Staff -> HR Head route. A Division Chief's own request
+     * skips the redundant Division Chief stage after HR Head approval and goes directly to the
+     * Regional Director; all other applicants continue through the full approval chain.
+     */
     $sessionEmployeeId = session_employee_record_id($pdo, $sessionUser);
-    $isRegionalDirectorOwnLeave = leave_is_regional_director($sessionUser)
+    $isRegionalDirectorSelfFiling = leave_is_regional_director($sessionUser)
         && $sessionEmployeeId !== null
-        && $employeeId === $sessionEmployeeId;
-    $isHrHeadOwnLeave = leave_can_mark_reviewed($sessionUser)
+        && $sessionEmployeeId === $employeeId;
+    $isHrStaffSelfFiling = leave_role_key($sessionUser) === 'hrstaff'
         && $sessionEmployeeId !== null
-        && $employeeId === $sessionEmployeeId;
-    $initialStatus = $isRegionalDirectorOwnLeave
+        && $sessionEmployeeId === $employeeId;
+    $initialStatus = $isRegionalDirectorSelfFiling
         ? 'approved'
-        : ($isHrHeadOwnLeave ? 'reviewed' : 'pending');
-    $reviewedByEmployeeId = $isHrHeadOwnLeave ? $sessionEmployeeId : null;
-    $approvedByEmployeeId = $isRegionalDirectorOwnLeave ? $sessionEmployeeId : null;
-
-    if ($isRegionalDirectorOwnLeave) {
-        validate_leave_credit_approval($pdo, $employeeId, $leaveTypeId, (float)$paySplit['paidDays'], $startDate);
-    }
+        : ($isHrStaffSelfFiling ? 'endorsed' : 'pending');
+    $initialCurrentLevel = $isRegionalDirectorSelfFiling
+        ? 5
+        : ($isHrStaffSelfFiling ? 2 : 1);
+    $initialEndorsedByEmployeeId = $isHrStaffSelfFiling ? $employeeId : null;
+    $initialEndorsedAt = $isHrStaffSelfFiling ? date('Y-m-d H:i:s') : null;
+    $initialReviewedByEmployeeId = null;
+    $initialReviewedAt = null;
+    $initialChiefReviewedByEmployeeId = null;
+    $initialChiefReviewedAt = null;
+    $initialApprovedByEmployeeId = $isRegionalDirectorSelfFiling ? $employeeId : null;
+    $initialApprovedAt = $isRegionalDirectorSelfFiling ? date('Y-m-d H:i:s') : null;
 
     /*
      * The filing quota from Settings > Rate Limiting, counted here rather than at the top of the POST
@@ -1103,7 +1701,7 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
      * upload behind, and before the transaction opens, because the limiter declines to count anything
      * while one is in progress.
      */
-    throttle_leave_request($pdo, $sessionUser, leave_rate_limit_identifier($sessionUser));
+    throttle_filing_request($pdo, $sessionUser);
 
     $attachmentName = leave_text($body['attachmentName'] ?? '');
     $attachmentPath = leave_text($body['attachmentPath'] ?? $attachmentName);
@@ -1130,9 +1728,15 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
     try {
         $statement = $pdo->prepare(
             'INSERT INTO leave_requests
-                (employee_id, leave_type_id, start_date, end_date, total_days, paid_days, unpaid_days, reason, status, reviewed_by_employee_id, approved_by_employee_id)
+                (employee_id, leave_type_id, start_date, end_date, total_days, paid_days, unpaid_days, reason,
+                 status, current_level, endorsed_by_employee_id, endorsed_at,
+                 reviewed_by_employee_id, reviewed_at, chief_reviewed_by_employee_id, chief_reviewed_at,
+                 approved_by_employee_id, approved_at)
              VALUES
-                (:employee_id, :leave_type_id, :start_date, :end_date, :total_days, :paid_days, :unpaid_days, :reason, :status, :reviewed_by_employee_id, :approved_by_employee_id)'
+                (:employee_id, :leave_type_id, :start_date, :end_date, :total_days, :paid_days, :unpaid_days, :reason,
+                 :status, :current_level, :endorsed_by_employee_id, :endorsed_at,
+                 :reviewed_by_employee_id, :reviewed_at, :chief_reviewed_by_employee_id, :chief_reviewed_at,
+                 :approved_by_employee_id, :approved_at)'
         );
         $statement->execute([
             ':employee_id' => $employeeId,
@@ -1144,8 +1748,15 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
             ':unpaid_days' => $paySplit['unpaidDays'],
             ':reason' => $reason,
             ':status' => $initialStatus,
-            ':reviewed_by_employee_id' => $reviewedByEmployeeId,
-            ':approved_by_employee_id' => $approvedByEmployeeId,
+            ':current_level' => $initialCurrentLevel,
+            ':endorsed_by_employee_id' => $initialEndorsedByEmployeeId,
+            ':endorsed_at' => $initialEndorsedAt,
+            ':reviewed_by_employee_id' => $initialReviewedByEmployeeId,
+            ':reviewed_at' => $initialReviewedAt,
+            ':chief_reviewed_by_employee_id' => $initialChiefReviewedByEmployeeId,
+            ':chief_reviewed_at' => $initialChiefReviewedAt,
+            ':approved_by_employee_id' => $initialApprovedByEmployeeId,
+            ':approved_at' => $initialApprovedAt,
         ]);
 
         $requestId = (int)$pdo->lastInsertId();
@@ -1163,7 +1774,7 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
             ]);
         }
 
-        if ($isRegionalDirectorOwnLeave) {
+        if ($isRegionalDirectorSelfFiling) {
             recalculate_employee_leave_credit_usage(
                 $pdo,
                 $employeeId,
@@ -1182,37 +1793,65 @@ function create_leave_request(PDO $pdo, array $body, array $sessionUser, ?array 
 
     try {
         $notificationRequest = fetch_leave_request($pdo, $requestId, null);
-        $notificationType = $isRegionalDirectorOwnLeave ? 'leave_request_approved' : 'leave_request_submitted';
-        $notificationTitle = $isRegionalDirectorOwnLeave ? 'Leave Request Approved' : 'Leave Request Submitted';
-        $notificationMessage = $isRegionalDirectorOwnLeave
-            ? sprintf(
-                '%s self-approved a leave request for %s to %s.',
-                (string)($notificationRequest['employeeName'] ?? 'A Regional Director'),
-                (string)($notificationRequest['startDate'] ?? $startDate ?? ''),
-                (string)($notificationRequest['endDate'] ?? $endDate ?? '')
-            )
-            : sprintf(
-                '%s submitted a leave request for %s to %s.',
+        if ($isRegionalDirectorSelfFiling) {
+            notify_employee(
+                $pdo,
+                $employeeId,
+                'Leave Request Approved',
+                sprintf(
+                    'Your %s leave request for %s to %s was approved automatically.',
+                    (string)($notificationRequest['leaveType'] ?? 'leave'),
+                    (string)($notificationRequest['startDate'] ?? $startDate ?? ''),
+                    (string)($notificationRequest['endDate'] ?? $endDate ?? '')
+                ),
+                'leave_request_approved',
+                (string)$requestId
+            );
+        } elseif ($isHrStaffSelfFiling) {
+            notify_roles(
+                $pdo,
+                ['admin', 'hrhead'],
+                'Leave Request Pending HR Head Approval',
+                sprintf(
+                    '%s submitted a leave request for %s to %s. It is pending HR Head approval.',
+                    (string)($notificationRequest['employeeName'] ?? 'An HR Staff member'),
+                    (string)($notificationRequest['startDate'] ?? $startDate ?? ''),
+                    (string)($notificationRequest['endDate'] ?? $endDate ?? '')
+                ),
+                'leave_request_submitted',
+                (string)$requestId
+            );
+        } else {
+            $notificationTitle = 'Leave Request Submitted';
+            $notificationMessage = sprintf(
+                '%s submitted a leave request for %s to %s. It is pending leave balance verification.',
                 (string)($notificationRequest['employeeName'] ?? 'An employee'),
                 (string)($notificationRequest['startDate'] ?? $startDate ?? ''),
                 (string)($notificationRequest['endDate'] ?? $endDate ?? '')
             );
-        $targetRoles = $isRegionalDirectorOwnLeave
-            ? ['admin', 'hrhead', 'hrstaff']
-            : ['admin', 'hrhead', 'hrstaff', 'regionaldirector'];
 
-        notify_roles($pdo, $targetRoles, $notificationTitle, $notificationMessage, $notificationType, (string)$requestId);
+            notify_roles(
+                $pdo,
+                ['admin', 'hrstaff'],
+                $notificationTitle,
+                $notificationMessage,
+                'leave_request_submitted',
+                (string)$requestId
+            );
+        }
     } catch (Throwable $notificationException) {
         error_log('Leave creation notification error: ' . $notificationException->getMessage());
     }
 
-    $employeeScopeId = leave_can_view_all($sessionUser) ? null : $employeeId;
+    $scopes = leave_read_scopes($pdo, $sessionUser);
     json_response([
         'success' => true,
-        'request' => fetch_leave_request($pdo, $requestId, $employeeScopeId),
-        'message' => $isRegionalDirectorOwnLeave
-            ? 'Regional Director leave request filed and approved.'
-            : 'Leave request submitted successfully.',
+        'request' => fetch_leave_request($pdo, $requestId, $scopes['employeeId'], $scopes['divisionId']),
+        'message' => $isRegionalDirectorSelfFiling
+            ? 'Leave request filed and approved automatically.'
+            : ($isHrStaffSelfFiling
+                ? 'Leave request submitted directly to the HR Head for approval.'
+                : 'Leave request submitted and sent for leave balance verification.'),
     ], 201);
 }
 
@@ -1230,10 +1869,15 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
     }
 
     $currentStatusStatement = $pdo->prepare(
-        'SELECT employee_id, leave_type_id, start_date, total_days, paid_days, status,
-                reviewed_by_employee_id, approved_by_employee_id
-         FROM leave_requests
-         WHERE leave_request_id = :id
+        'SELECT lr.employee_id, lr.leave_type_id, lr.start_date, lr.total_days,
+                lr.paid_days, lr.status,
+                lr.endorsed_by_employee_id, lr.endorsed_at,
+                lr.reviewed_by_employee_id, lr.reviewed_at,
+                lr.chief_reviewed_by_employee_id, lr.chief_reviewed_at,
+                lr.approved_by_employee_id, lr.approved_at
+         FROM leave_requests lr
+         WHERE lr.leave_request_id = :id
+           AND lr.is_archived = 0
          LIMIT 1'
     );
     $currentStatusStatement->execute([':id' => $id]);
@@ -1246,10 +1890,29 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
         ], 404);
     }
 
+    /* A division desk acts only on its own division's requests; anything else is invisible to it. */
+    if (
+        leave_is_division_desk($sessionUser)
+        && fetch_leave_request($pdo, $id, null, leave_session_division_id($pdo, $sessionUser)) === null
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'Leave request not found.',
+        ], 404);
+    }
+
     $sessionEmployeeId = session_employee_record_id($pdo, $sessionUser);
-    $currentStatus = (string)($currentRequest['status'] ?? '');
+    $isAdmin = leave_role_key($sessionUser) === 'admin';
+    $currentStatus = leave_status_to_database($currentRequest['status'] ?? '');
     $isOwnRequest = $sessionEmployeeId !== null && (int)($currentRequest['employee_id'] ?? 0) === $sessionEmployeeId;
     $isOwnCancellation = $isOwnRequest && $status === 'cancelled';
+    $isApproval = in_array($status, ['pending', 'endorsed', 'reviewed', 'chief_reviewed', 'approved'], true);
+    $skipsHrHeadApproval = $isApproval
+        && in_array($currentStatus, ['submitted', 'pending'], true)
+        && leave_employee_is_hr_head($pdo, (int)($currentRequest['employee_id'] ?? 0));
+    $skipsDivisionChiefReview = $isApproval
+        && $currentStatus === 'endorsed'
+        && leave_employee_is_division_chief($pdo, (int)($currentRequest['employee_id'] ?? 0));
 
     if (!leave_can_manage($sessionUser) && !$isOwnCancellation) {
         json_response([
@@ -1265,69 +1928,91 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
         ], 403);
     }
 
+    $currentEndorsedByEmployeeId = (int)($currentRequest['endorsed_by_employee_id'] ?? 0);
     $currentReviewedByEmployeeId = (int)($currentRequest['reviewed_by_employee_id'] ?? 0);
+    $currentChiefReviewedByEmployeeId = (int)($currentRequest['chief_reviewed_by_employee_id'] ?? 0);
     $currentApprovedByEmployeeId = (int)($currentRequest['approved_by_employee_id'] ?? 0);
+    $currentEndorsedAt = $currentRequest['endorsed_at'] ?? null;
+    $currentReviewedAt = $currentRequest['reviewed_at'] ?? null;
+    $currentChiefReviewedAt = $currentRequest['chief_reviewed_at'] ?? null;
+    $currentApprovedAt = $currentRequest['approved_at'] ?? null;
 
-    if ($isOwnCancellation && $currentStatus !== 'pending') {
+    if (
+        $isOwnCancellation
+        && !in_array($currentStatus, ['submitted', 'pending'], true)
+    ) {
         json_response([
             'success' => false,
-            'message' => 'Only pending leave requests can be cancelled.',
-        ], 422);
-    }
-
-    if ((string)$currentStatus === 'approved' && $status === 'cancelled') {
-        json_response([
-            'success' => false,
-            'message' => 'Approved leave requests cannot be cancelled.',
+            'message' => 'This leave request can no longer be cancelled.',
         ], 422);
     }
 
     if ($status === 'rejected' && $rejectedNote === '') {
         json_response([
             'success' => false,
-            'message' => 'Rejected note is required.',
-        ], 422);
-    }
-
-    if ($status === 'reviewed' && !leave_can_mark_reviewed($sessionUser)) {
-        json_response([
-            'success' => false,
-            'message' => 'Only HR Head can mark leave requests as reviewed.',
-        ], 403);
-    }
-
-    if ($status === 'reviewed' && $currentStatus !== 'pending') {
-        json_response([
-            'success' => false,
-            'message' => 'Only pending leave requests can be marked as reviewed.',
-        ], 422);
-    }
-
-    if (leave_can_mark_reviewed($sessionUser) && $status === 'approved') {
-        json_response([
-            'success' => false,
-            'message' => 'HR Head approval marks the leave request as reviewed. Regional Director must give the final approval.',
+            'message' => 'Disapproval note is required.',
         ], 422);
     }
 
     /*
-     * The Regional Director may act on a request that is still pending as well as one HR Head has
-     * reviewed, so a request is never stuck waiting on a review that may never come. What stays
-     * barred is acting on a request that has already been settled.
+     * A manager can reject the request at their assigned stage or approve it exactly one stage. The
+     * requested approval status is deliberately ignored in favour of the stage's next status, so a
+     * crafted client cannot jump from Chief review straight to final approval.
      */
-    if (
-        !$isOwnCancellation
-        && leave_is_regional_director($sessionUser)
-        && in_array($status, ['approved', 'rejected', 'cancelled'], true)
-        && !in_array($currentStatus, ['pending', 'reviewed'], true)
-    ) {
+    $isManagerCancellation = !$isOwnCancellation
+        && $status === 'cancelled'
+        && leave_role_key($sessionUser) === 'admin';
+    $isAdminApprovalOverride = false;
+    if (!$isOwnCancellation && !$isManagerCancellation && !$isApproval && $status !== 'rejected') {
         json_response([
             'success' => false,
-            'message' => 'Only pending or reviewed leave requests can be acted on.',
+            'message' => 'Leave requests may only be approved or rejected by an approver.',
         ], 422);
     }
 
-    if ($status === 'approved' && $currentStatus !== 'approved') {
+    if (!$isOwnCancellation) {
+        $chainAction = $status === 'rejected' ? 'reject' : 'approve';
+        /* Admin may cancel on the applicant's behalf at any open desk; every other move is a chain decision. */
+        $allowed = $isManagerCancellation
+            ? leave_stage_roles($currentStatus) !== []
+            : leave_can_act_on($sessionUser, $currentStatus, $chainAction);
+
+        if (!$allowed) {
+            json_response([
+                'success' => false,
+                'message' => leave_stage_roles($currentStatus) === []
+                    ? 'This leave request has already been ' . $currentStatus . '.'
+                    : (leave_role_has_action($sessionUser, $chainAction)
+                        ? 'This leave request is waiting on ' . leave_stage_role_label($currentStatus) . '.'
+                        : 'Your role is not allowed to ' . $chainAction . ' leave requests.'),
+            ], 403);
+        }
+    }
+
+    if ($isApproval) {
+        $status = $skipsHrHeadApproval
+            ? 'reviewed'
+            : ($skipsDivisionChiefReview
+                ? 'chief_reviewed'
+                : (leave_stage_next_status($currentStatus) ?? $status));
+        $isAdminApprovalOverride = $isAdmin
+            && ($sessionEmployeeId === null || $sessionEmployeeId <= 0);
+
+        /*
+         * Admin is explicitly allowed to stand in at any open desk. An Admin account is commonly
+         * system-only and therefore has no employee record or employee signature. Let that account
+         * advance the workflow as an unsigned administrative override; role-holder approvals still
+         * require the linked employee record used for their CSC form signature.
+         */
+        if (($sessionEmployeeId === null || $sessionEmployeeId <= 0) && !$isAdmin) {
+            json_response([
+                'success' => false,
+                'message' => 'Your account is not linked to an employee record, so your approval cannot be signed.',
+            ], 422);
+        }
+    }
+
+    if ($status === 'approved') {
         /* Only the with pay portion is charged to credits; the rest was filed as Leave Without Pay. */
         $chargeableDays = ($currentRequest['paid_days'] ?? null) !== null
             ? (float)$currentRequest['paid_days']
@@ -1343,34 +2028,79 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
     }
 
     /*
-     * Signing off a leave request -- HR Head reviewing it or the Regional Director approving it --
-     * carries a solved captcha. Rejecting and cancelling do not: see the approval_workflow entry in
-     * captcha-utils.php for why only the one-way half of the workflow is gated.
+     * Each one-way approval -- Chief, HR, and Regional Director -- carries a solved captcha.
+     * Rejecting and cancelling do not.
      *
      * Last of the gates on purpose. Every permission and stage check above has already run, so a
      * caller who was never allowed to approve this request is turned away without being handed a
      * sum to solve, and the credit check has passed too, so a challenge is never spent on an
      * approval that was going to be refused for want of credits anyway.
      */
-    if (in_array($status, ['reviewed', 'approved'], true)) {
-        require_approval_captcha($body);
+    if (in_array($status, ['endorsed', 'reviewed', 'chief_reviewed', 'approved'], true)) {
+        require_approval_captcha($body, 'leave', $id);
     }
 
+    $signerEmployeeId = $sessionEmployeeId !== null && $sessionEmployeeId > 0 ? $sessionEmployeeId : null;
+    $signedAt = date('Y-m-d H:i:s');
+    $nextEndorsedByEmployeeId = $currentEndorsedByEmployeeId > 0 ? $currentEndorsedByEmployeeId : null;
     $nextReviewedByEmployeeId = $currentReviewedByEmployeeId > 0 ? $currentReviewedByEmployeeId : null;
+    $nextChiefReviewedByEmployeeId = $currentChiefReviewedByEmployeeId > 0 ? $currentChiefReviewedByEmployeeId : null;
     $nextApprovedByEmployeeId = $currentApprovedByEmployeeId > 0 ? $currentApprovedByEmployeeId : null;
+    $nextEndorsedAt = $nextEndorsedByEmployeeId !== null ? $currentEndorsedAt : null;
+    $nextReviewedAt = $nextReviewedByEmployeeId !== null ? $currentReviewedAt : null;
+    $nextChiefReviewedAt = $nextChiefReviewedByEmployeeId !== null ? $currentChiefReviewedAt : null;
+    $nextApprovedAt = $nextApprovedByEmployeeId !== null ? $currentApprovedAt : null;
 
-    if ($status === 'reviewed') {
-        $nextReviewedByEmployeeId = $sessionEmployeeId > 0 ? $sessionEmployeeId : null;
+    if ($isApproval && in_array($currentStatus, ['submitted', 'pending'], true)) {
+        $nextEndorsedByEmployeeId = $signerEmployeeId;
+        $nextEndorsedAt = $signedAt;
+        $nextReviewedByEmployeeId = null;
+        $nextReviewedAt = null;
+        $nextChiefReviewedByEmployeeId = null;
+        $nextChiefReviewedAt = null;
         $nextApprovedByEmployeeId = null;
+        $nextApprovedAt = null;
+    } elseif ($isApproval && $currentStatus === 'endorsed') {
+        $nextReviewedByEmployeeId = $signerEmployeeId;
+        $nextReviewedAt = $signedAt;
+        $nextChiefReviewedByEmployeeId = null;
+        $nextChiefReviewedAt = null;
+        $nextApprovedByEmployeeId = null;
+        $nextApprovedAt = null;
+    } elseif ($isApproval && $currentStatus === 'reviewed') {
+        $nextChiefReviewedByEmployeeId = $signerEmployeeId;
+        $nextChiefReviewedAt = $signedAt;
+        $nextApprovedByEmployeeId = null;
+        $nextApprovedAt = null;
+    } elseif ($isApproval && $currentStatus === 'chief_reviewed') {
+        $nextApprovedByEmployeeId = $signerEmployeeId;
+        $nextApprovedAt = $signedAt;
     }
 
-    if ($status === 'approved') {
-        $nextApprovedByEmployeeId = $sessionEmployeeId > 0 ? $sessionEmployeeId : null;
+    if ($status === 'rejected' && $signerEmployeeId !== null) {
+        if ($currentStatus === 'pending') {
+            $nextEndorsedByEmployeeId = $signerEmployeeId;
+            $nextEndorsedAt = $signedAt;
+        } elseif ($currentStatus === 'endorsed') {
+            $nextReviewedByEmployeeId = $signerEmployeeId;
+            $nextReviewedAt = $signedAt;
+        } elseif ($currentStatus === 'reviewed') {
+            $nextChiefReviewedByEmployeeId = $signerEmployeeId;
+            $nextChiefReviewedAt = $signedAt;
+        } elseif ($currentStatus === 'chief_reviewed') {
+            $nextApprovedByEmployeeId = $signerEmployeeId;
+            $nextApprovedAt = $signedAt;
+        }
     }
 
-    if ($status === 'rejected' && leave_is_regional_director($sessionUser)) {
-        $nextApprovedByEmployeeId = $sessionEmployeeId > 0 ? $sessionEmployeeId : null;
-    }
+    $currentLevel = match ($status) {
+        'pending' => 1,
+        'endorsed' => 2,
+        'reviewed' => 3,
+        'chief_reviewed' => 4,
+        'approved' => 5,
+        default => max(1, (int)array_search($currentStatus, ['pending', 'endorsed', 'reviewed', 'chief_reviewed'], true) + 1),
+    };
 
     $pdo->beginTransaction();
 
@@ -1378,17 +2108,36 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
         $statement = $pdo->prepare(
             'UPDATE leave_requests
              SET status = :status,
+                 current_level = :current_level,
                  rejected_note = :rejected_note,
+                 rejected_by_role = :rejected_by_role,
+                 endorsed_by_employee_id = :endorsed_by_employee_id,
+                 endorsed_at = :endorsed_at,
                  reviewed_by_employee_id = :reviewed_by_employee_id,
-                 approved_by_employee_id = :approved_by_employee_id
-             WHERE leave_request_id = :id'
+                 reviewed_at = :reviewed_at,
+                 chief_reviewed_by_employee_id = :chief_reviewed_by_employee_id,
+                 chief_reviewed_at = :chief_reviewed_at,
+                 approved_by_employee_id = :approved_by_employee_id,
+                 approved_at = :approved_at
+             WHERE leave_request_id = :id
+               AND status = :current_status
+               AND is_archived = 0'
         );
         $statement->execute([
             ':status' => $status,
+            ':current_level' => $currentLevel,
             ':rejected_note' => $status === 'rejected' ? $rejectedNote : null,
+            ':rejected_by_role' => $status === 'rejected' ? leave_role_key($sessionUser) : null,
+            ':endorsed_by_employee_id' => $nextEndorsedByEmployeeId,
+            ':endorsed_at' => $nextEndorsedAt,
             ':reviewed_by_employee_id' => $nextReviewedByEmployeeId,
+            ':reviewed_at' => $nextReviewedAt,
+            ':chief_reviewed_by_employee_id' => $nextChiefReviewedByEmployeeId,
+            ':chief_reviewed_at' => $nextChiefReviewedAt,
             ':approved_by_employee_id' => $nextApprovedByEmployeeId,
+            ':approved_at' => $nextApprovedAt,
             ':id' => $id,
+            ':current_status' => $currentStatus,
         ]);
 
         if ($statement->rowCount() === 0) {
@@ -1400,6 +2149,12 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
                     'message' => 'Leave request not found.',
                 ], 404);
             }
+
+            $pdo->rollBack();
+            json_response([
+                'success' => false,
+                'message' => 'This leave request was updated by another approver. Refresh the list before acting again.',
+            ], 409);
         }
 
         recalculate_employee_leave_credit_usage(
@@ -1418,20 +2173,36 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
     }
 
     try {
-        $notificationRequest = fetch_leave_request($pdo, $id, null);
+        $notificationRequest = fetch_leave_request($pdo, $id, null, null);
         if ($notificationRequest !== null) {
             $notificationType = match ($status) {
                 'approved' => 'leave_request_approved',
                 'rejected' => 'leave_request_rejected',
+                'pending', 'endorsed', 'reviewed', 'chief_reviewed' => 'leave_request_submitted',
                 default => 'system_alert',
             };
             $notificationTitle = match ($status) {
+                'pending' => 'Leave Balance Verification Started',
+                'endorsed' => 'Leave Balance Verified',
+                'reviewed' => $skipsHrHeadApproval
+                    ? 'Leave Balance Verified'
+                    : 'Leave Request Approved by HR Head',
+                'chief_reviewed' => $skipsDivisionChiefReview
+                    ? 'Leave Request Approved by HR Head'
+                    : 'Leave Request Reviewed by Division Chief',
                 'approved' => 'Leave Request Approved',
                 'rejected' => 'Leave Request Rejected',
-                'reviewed' => 'Leave Request Reviewed',
                 default => 'Leave Request Updated',
             };
             $notificationMessage = match ($status) {
+                'pending' => sprintf('Your %s leave request is pending leave balance verification.', (string)($notificationRequest['leaveType'] ?? 'leave')),
+                'endorsed' => sprintf('Your %s leave balance was verified. The request is pending HR Head approval.', (string)($notificationRequest['leaveType'] ?? 'leave')),
+                'reviewed' => $skipsHrHeadApproval
+                    ? sprintf('Your %s leave balance was verified. The request is pending Division Chief review.', (string)($notificationRequest['leaveType'] ?? 'leave'))
+                    : sprintf('Your %s leave request was approved by the HR Head and is pending Division Chief review.', (string)($notificationRequest['leaveType'] ?? 'leave')),
+                'chief_reviewed' => $skipsDivisionChiefReview
+                    ? sprintf('Your %s leave request was approved by the HR Head and is pending Regional Director approval.', (string)($notificationRequest['leaveType'] ?? 'leave'))
+                    : sprintf('Your %s leave request was reviewed by the Division Chief and is pending Regional Director approval.', (string)($notificationRequest['leaveType'] ?? 'leave')),
                 'approved' => sprintf(
                     'Your %s leave request for %s to %s has been approved.',
                     (string)($notificationRequest['leaveType'] ?? 'leave'),
@@ -1445,21 +2216,38 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
                     (string)($notificationRequest['endDate'] ?? ''),
                     $rejectedNote !== '' ? $rejectedNote : 'Please review the rejection details.'
                 ),
-                'reviewed' => sprintf(
-                    'Your %s leave request for %s to %s was reviewed and forwarded for final approval.',
-                    (string)($notificationRequest['leaveType'] ?? 'leave'),
-                    (string)($notificationRequest['startDate'] ?? ''),
-                    (string)($notificationRequest['endDate'] ?? '')
-                ),
-                default => sprintf(
-                    'Your %s leave request for %s to %s has been updated.',
-                    (string)($notificationRequest['leaveType'] ?? 'leave'),
-                    (string)($notificationRequest['startDate'] ?? ''),
-                    (string)($notificationRequest['endDate'] ?? '')
-                ),
+                default => sprintf('Your %s leave request has been updated.', (string)($notificationRequest['leaveType'] ?? 'leave')),
             };
 
             notify_employee($pdo, (int)($currentRequest['employee_id'] ?? 0), $notificationTitle, $notificationMessage, $notificationType, (string)$id);
+
+            if ($status === 'endorsed') {
+                notify_roles(
+                    $pdo,
+                    ['admin', 'hrhead'],
+                    'Leave Request Pending HR Head Approval',
+                    (string)($notificationRequest['employeeName'] ?? 'An employee') . ' has a leave request with a verified balance pending HR Head approval.',
+                    'leave_request_submitted',
+                    (string)$id
+                );
+            } elseif ($status === 'reviewed') {
+                $divisionChiefMessage = (string)($notificationRequest['employeeName'] ?? 'An employee') . ($skipsHrHeadApproval
+                    ? ' has an HR Staff-verified leave request pending Division Chief review.'
+                    : ' has an HR Head-approved leave request pending Division Chief review.');
+                notify_roles($pdo, ['admin'], 'Leave Request Pending Division Chief Review', $divisionChiefMessage, 'leave_request_submitted', (string)$id);
+                notify_users($pdo, leave_chief_user_ids_for_employee($pdo, (int)($currentRequest['employee_id'] ?? 0)), 'Leave Request Pending Division Chief Review', $divisionChiefMessage, 'leave_request_submitted', (string)$id);
+            } elseif ($status === 'chief_reviewed') {
+                notify_roles(
+                    $pdo,
+                    ['admin', 'regionaldirector'],
+                    'Leave Request Pending Regional Director Approval',
+                    (string)($notificationRequest['employeeName'] ?? 'An employee') . ($skipsDivisionChiefReview
+                        ? ' has an HR Head-approved leave request pending Regional Director approval.'
+                        : ' has a Division Chief-reviewed leave request pending Regional Director approval.'),
+                    'leave_request_submitted',
+                    (string)$id
+                );
+            }
         }
     } catch (Throwable $notificationException) {
         error_log('Leave update notification error: ' . $notificationException->getMessage());
@@ -1471,21 +2259,30 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
         $notificationWarning = send_leave_rejection_notification($pdo, $id);
     }
 
+    $responseScopes = leave_read_scopes($pdo, $sessionUser);
     json_response([
         'success' => true,
-        'request' => fetch_leave_request($pdo, $id),
+        'request' => fetch_leave_request($pdo, $id, $responseScopes['employeeId'], $responseScopes['divisionId']),
         'emailNotification' => $status === 'rejected'
             ? ($notificationWarning === null ? 'sent' : 'warning')
             : 'not_applicable',
         'message' => $status === 'rejected'
-            ? ($notificationWarning ?? 'Leave request rejected and the employee was notified by email.')
-            : ($status === 'reviewed'
-                ? 'Leave request reviewed and forwarded to Regional Director for final approval.'
-                : ($status === 'approved'
-                    ? 'Leave request approved.'
-                    : ($status === 'cancelled'
-                        ? 'Leave request cancelled.'
-                        : 'Leave request updated.'))),
+            ? ($notificationWarning ?? 'Leave request disapproved and the employee was notified by email.')
+            : match ($status) {
+                'pending' => 'Leave request moved to leave balance verification.',
+                'endorsed' => 'Leave balance verified. The request is pending HR Head approval.',
+                'reviewed' => $skipsHrHeadApproval
+                    ? 'Leave balance verified. The request was sent directly to the Division Chief.'
+                    : 'Leave request approved by the HR Head and sent for Division Chief review.',
+                'chief_reviewed' => $skipsDivisionChiefReview
+                    ? 'Leave request approved by the HR Head and sent directly to the Regional Director.'
+                    : 'Leave request reviewed by the Division Chief and sent to the Regional Director.',
+                'approved' => $isAdminApprovalOverride
+                    ? 'Leave request received final approval through an Admin override.'
+                    : 'Leave request received final approval from the Regional Director.',
+                'cancelled' => 'Leave request cancelled.',
+                default => 'Leave request updated.',
+            },
     ]);
 }
 
@@ -1496,20 +2293,55 @@ function update_leave_request_status(PDO $pdo, array $body, array $sessionUser):
  */
 function archive_leave_request(PDO $pdo, array $body, array $sessionUser, bool $archived): void
 {
-    if (!leave_can_manage($sessionUser)) {
+    if (!leave_can_archive($sessionUser)) {
         json_response([
             'success' => false,
             'message' => 'You are not allowed to archive leave requests.',
         ], 403);
     }
 
-    $id = (int)($body['id'] ?? $body['requestId'] ?? 0);
+    if (leave_is_chief($sessionUser) && !$archived) {
+        json_response([
+            'success' => false,
+            'message' => 'Chief accounts may archive leave requests but may not restore them.',
+        ], 403);
+    }
 
-    if ($id <= 0 || fetch_leave_request($pdo, $id) === null) {
+    $id = (int)($body['id'] ?? $body['requestId'] ?? 0);
+    $scopes = leave_read_scopes($pdo, $sessionUser);
+    $actionDivisionScopeId = $scopes['divisionId'];
+    $request = $id > 0
+        ? fetch_leave_request($pdo, $id, $scopes['employeeId'], $actionDivisionScopeId)
+        : null;
+
+    if ($request === null) {
         json_response([
             'success' => false,
             'message' => 'Leave request not found.',
         ], 404);
+    }
+
+    if (
+        $archived
+        && leave_is_self_service_role($sessionUser)
+        && leave_role_key($sessionUser) !== 'employee'
+        && !in_array(strtolower((string)($request['status'] ?? '')), ['approved', 'rejected', 'cancelled'], true)
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'Only approved, rejected, or cancelled leave requests can be archived.',
+        ], 422);
+    }
+
+    if (
+        !$archived
+        && leave_is_self_service_role($sessionUser)
+        && (int)($request['archivedByUserId'] ?? 0) !== (int)($sessionUser['id'] ?? 0)
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'You may restore only leave requests that you archived yourself.',
+        ], 403);
     }
 
     set_record_archived(
@@ -1525,15 +2357,195 @@ function archive_leave_request(PDO $pdo, array $body, array $sessionUser, bool $
     json_response([
         'success' => true,
         'message' => $archived ? 'Leave request archived.' : 'Leave request restored.',
-        'request' => fetch_leave_request($pdo, $id),
+        'request' => fetch_leave_request($pdo, $id, $scopes['employeeId'], $scopes['divisionId']),
+    ]);
+}
+
+/** Employees attach their medical certificate to their own existing sick-leave request. */
+function upload_leave_medical_certificate(PDO $pdo, array $body, array $sessionUser, ?array $attachmentUpload): void
+{
+    $id = (int)($body['id'] ?? 0);
+    $employeeId = session_employee_record_id($pdo, $sessionUser);
+    if ($id <= 0 || !$employeeId) {
+        json_response(['success' => false, 'message' => 'Sick-leave request not found.'], 404);
+    }
+    if ($attachmentUpload === null) {
+        json_response(['success' => false, 'message' => 'Select a medical certificate to upload.'], 422);
+    }
+
+    $storedAttachment = null;
+    $pdo->beginTransaction();
+    try {
+        // Use the same request lock as the reminder so an upload and a notification cannot race.
+        $statement = $pdo->prepare(
+            'SELECT lr.leave_request_id, lr.status, lr.is_archived, lt.name AS leave_type
+             FROM leave_requests lr
+             INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
+             WHERE lr.leave_request_id = :id AND lr.employee_id = :employee_id
+             FOR UPDATE'
+        );
+        $statement->execute([':id' => $id, ':employee_id' => $employeeId]);
+        $request = $statement->fetch();
+        $errorStatus = 422;
+        $errorMessage = '';
+        if (!$request) {
+            $errorStatus = 404;
+            $errorMessage = 'Sick-leave request not found.';
+        } elseif (strtolower(trim((string)$request['leave_type'])) !== 'sick leave') {
+            $errorMessage = 'Medical certificates can only be uploaded for sick leave.';
+        } elseif ((int)$request['is_archived'] === 1
+            || in_array(strtolower((string)$request['status']), ['rejected', 'cancelled', 'canceled', 'withdrawn'], true)) {
+            $errorMessage = 'Attachments cannot be uploaded to archived, rejected, or cancelled requests.';
+        }
+        if ($errorMessage !== '') {
+            $pdo->rollBack();
+        } else {
+            $storedAttachment = store_leave_attachment($attachmentUpload);
+            $insert = $pdo->prepare(
+                'INSERT INTO leave_attachments (leave_request_id, file_name, file_path, file_size)
+                 VALUES (:id, :file_name, :file_path, :file_size)'
+            );
+            $insert->execute([
+                ':id' => $id,
+                ':file_name' => $storedAttachment['fileName'],
+                ':file_path' => $storedAttachment['filePath'],
+                ':file_size' => $storedAttachment['fileSize'],
+            ]);
+            $update = $pdo->prepare('UPDATE leave_requests SET updated_at = NOW() WHERE leave_request_id = :id');
+            $update->execute([':id' => $id]);
+            $read = $pdo->prepare(
+                'UPDATE notifications SET is_read = 1
+                 WHERE user_id = :user_id AND type = "leave_medical_certificate_reminder" AND reference_id = :id'
+            );
+            $read->execute([':user_id' => (int)$sessionUser['id'], ':id' => (string)$id]);
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if ($storedAttachment !== null && is_file($storedAttachment['absolutePath'])) {
+            unlink($storedAttachment['absolutePath']);
+        }
+        if ($exception instanceof RuntimeException && !$exception instanceof PDOException) {
+            json_response(['success' => false, 'message' => $exception->getMessage()], 422);
+        }
+        throw $exception;
+    }
+
+    if ($errorMessage !== '') {
+        json_response(['success' => false, 'message' => $errorMessage], $errorStatus);
+    }
+    json_response([
+        'success' => true,
+        'message' => 'Medical certificate uploaded successfully.',
+        'request' => fetch_leave_request($pdo, $id, $employeeId),
+    ]);
+}
+
+/** Only delete files stored inside the leave attachment directory. */
+function remove_leave_attachment_file(string $storedPath): void
+{
+    if (preg_match('#^uploads/leave-attachments/[A-Za-z0-9._-]+\.(?:pdf|png|jpe?g|gif|webp|bmp)$#i', $storedPath) !== 1) {
+        return;
+    }
+
+    $baseDirectory = realpath(dirname(__DIR__) . '/uploads/leave-attachments');
+    $absolutePath = realpath(dirname(__DIR__) . '/' . $storedPath);
+    if ($baseDirectory === false || $absolutePath === false
+        || !str_starts_with($absolutePath, $baseDirectory . DIRECTORY_SEPARATOR)
+        || !is_file($absolutePath)) {
+        return;
+    }
+
+    if (!@unlink($absolutePath)) {
+        error_log('Unable to delete removed leave attachment: ' . $storedPath);
+    }
+}
+
+/** Applicants may cancel their certificate upload and then attach a replacement. */
+function remove_leave_medical_certificate(PDO $pdo, array $body, array $sessionUser): void
+{
+    $id = (int)($body['id'] ?? 0);
+    $employeeId = session_employee_record_id($pdo, $sessionUser);
+    if ($id <= 0 || !$employeeId) {
+        json_response(['success' => false, 'message' => 'Sick-leave request not found.'], 404);
+    }
+
+    $attachmentPath = trim((string)($body['attachmentPath'] ?? ''));
+    $paths = [];
+    $errorStatus = 422;
+    $errorMessage = '';
+    $pdo->beginTransaction();
+    try {
+        // Share the upload lock so an older preview cannot remove a replacement certificate.
+        $statement = $pdo->prepare(
+            'SELECT lr.leave_request_id, lr.status, lr.is_archived, lt.name AS leave_type
+             FROM leave_requests lr
+             INNER JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
+             WHERE lr.leave_request_id = :id AND lr.employee_id = :employee_id
+             FOR UPDATE'
+        );
+        $statement->execute([':id' => $id, ':employee_id' => $employeeId]);
+        $request = $statement->fetch();
+        if (!$request) {
+            $errorStatus = 404;
+            $errorMessage = 'Sick-leave request not found.';
+        } elseif (strtolower(trim((string)$request['leave_type'])) !== 'sick leave') {
+            $errorMessage = 'Medical certificates can only be removed from sick leave.';
+        } elseif ((int)$request['is_archived'] === 1
+            || in_array(strtolower((string)$request['status']), ['rejected', 'cancelled', 'canceled', 'withdrawn'], true)) {
+            $errorMessage = 'Attachments cannot be removed from archived, rejected, or cancelled requests.';
+        } else {
+            $attachments = $pdo->prepare(
+                'SELECT file_path FROM leave_attachments WHERE leave_request_id = :id
+                 ORDER BY leave_attachments_id DESC FOR UPDATE'
+            );
+            $attachments->execute([':id' => $id]);
+            $paths = $attachments->fetchAll(PDO::FETCH_COLUMN);
+            if ($attachmentPath === '' || !$paths || $paths[0] !== $attachmentPath) {
+                $errorStatus = 409;
+                $errorMessage = 'The certificate has changed. Refresh this request before cancelling the upload.';
+            }
+        }
+
+        if ($errorMessage !== '') {
+            $pdo->rollBack();
+        } else {
+            // Clear previous versions too, so an older certificate does not become visible again.
+            $delete = $pdo->prepare('DELETE FROM leave_attachments WHERE leave_request_id = :id');
+            $delete->execute([':id' => $id]);
+            $update = $pdo->prepare('UPDATE leave_requests SET updated_at = NOW() WHERE leave_request_id = :id');
+            $update->execute([':id' => $id]);
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    if ($errorMessage !== '') {
+        json_response(['success' => false, 'message' => $errorMessage], $errorStatus);
+    }
+    foreach (array_unique($paths) as $path) {
+        remove_leave_attachment_file((string)$path);
+    }
+    json_response([
+        'success' => true,
+        'message' => 'Medical certificate removed. You can upload a replacement.',
+        'request' => fetch_leave_request($pdo, $id, $employeeId),
     ]);
 }
 
 try {
+    ensure_leave_request_ids($pdo);
     ensure_leave_request_rejected_note_column($pdo);
     ensure_leave_request_pay_split_columns($pdo);
-    ensure_leave_request_reviewed_status($pdo);
     ensure_leave_request_action_actor_columns($pdo);
+    ensure_leave_request_action_timestamp_columns($pdo);
+    ensure_leave_request_workflow_statuses($pdo);
     ensure_archive_columns($pdo, 'leave_requests');
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -1551,7 +2563,14 @@ try {
     }
 
     if ($method === 'POST') {
-        create_leave_request($pdo, leave_request_body(), $sessionUser, leave_attachment_upload());
+        $body = leave_request_body();
+        if (strtolower(leave_text($body['action'] ?? '')) === 'remove_medical_certificate') {
+            remove_leave_medical_certificate($pdo, $body, $sessionUser);
+        }
+        if (strtolower(leave_text($body['action'] ?? '')) === 'upload_medical_certificate') {
+            upload_leave_medical_certificate($pdo, $body, $sessionUser, leave_attachment_upload());
+        }
+        create_leave_request($pdo, $body, $sessionUser, leave_attachment_upload());
     }
 
     if ($method === 'PUT') {

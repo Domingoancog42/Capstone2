@@ -46,6 +46,17 @@ function backup_resolve_directory(string $path): string
         return backup_default_directory();
     }
 
+    /*
+     * A drive-letter path saved on XAMPP (the stored default is C:\xampp\...\backups) names nothing
+     * on a Linux host such as InfinityFree. Left alone it would become "C:/xampp/..." relative to the
+     * working directory -- inside backend/api, where .sql files are not denied. The default folder,
+     * with its own .htaccess, is the safe reading. On Windows DIRECTORY_SEPARATOR is "\" and this
+     * never applies.
+     */
+    if (DIRECTORY_SEPARATOR === '/' && preg_match('/^[A-Za-z]:[\\\\\\/]/', $path) === 1) {
+        return backup_default_directory();
+    }
+
     if (!backup_is_absolute_path($path)) {
         $path = dirname(__DIR__) . DIRECTORY_SEPARATOR . $path;
     }
@@ -229,95 +240,81 @@ function backup_write_database_sql(PDO $pdo, mixed $handle): void
     backup_write_line($handle, '-- End of HRIS database backup');
 }
 
-function backup_insert_history(PDO $pdo, array $record): int
+function backup_file_record_id(string $filePath): int
 {
-    $statement = $pdo->prepare(
-        'INSERT INTO backup_history
-            (backup_type, file_name, file_path, file_size, status, error_message, created_by_user_id, created_at)
-         VALUES
-            (:backup_type, :file_name, :file_path, :file_size, :status, :error_message, :created_by_user_id, :created_at)'
-    );
-    $statement->execute([
-        ':backup_type' => $record['backupType'],
-        ':file_name' => $record['fileName'],
-        ':file_path' => $record['filePath'],
-        ':file_size' => (int)($record['fileSize'] ?? 0),
-        ':status' => $record['status'],
-        ':error_message' => $record['errorMessage'] ?? null,
-        ':created_by_user_id' => $record['createdByUserId'] ?? null,
-        ':created_at' => $record['createdAt'] ?? date('Y-m-d H:i:s'),
-    ]);
+    $normalizedPath = strtolower(str_replace('\\', '/', $filePath));
 
-    return (int)$pdo->lastInsertId();
+    return (int)sprintf('%u', crc32($normalizedPath));
 }
 
-function backup_fetch_record(PDO $pdo, int $id): ?array
+function backup_file_record(string $filePath): ?array
 {
-    $statement = $pdo->prepare(
-        'SELECT
-            bh.id,
-            bh.backup_type AS backupType,
-            bh.created_at AS backupDateTime,
-            bh.file_name AS fileName,
-            bh.file_path AS filePath,
-            bh.file_size AS fileSize,
-            bh.status,
-            bh.error_message AS errorMessage,
-            bh.created_by_user_id AS createdByUserId,
-            COALESCE(u.username, "") AS createdBy,
-            bh.deleted_at AS deletedAt,
-            bh.updated_at AS updatedAt
-         FROM backup_history bh
-         LEFT JOIN users u ON u.id = bh.created_by_user_id
-         WHERE bh.id = :id
-         LIMIT 1'
-    );
-    $statement->execute([':id' => $id]);
-    $record = $statement->fetch();
-
-    if (!$record) {
+    if (!is_file($filePath) || strtolower((string)pathinfo($filePath, PATHINFO_EXTENSION)) !== 'sql') {
         return null;
     }
 
-    $record['id'] = (int)$record['id'];
-    $record['fileSize'] = (int)$record['fileSize'];
-    $record['createdByUserId'] = $record['createdByUserId'] !== null ? (int)$record['createdByUserId'] : null;
+    $fileName = basename($filePath);
+    $modifiedAt = filemtime($filePath);
+    $modifiedAt = $modifiedAt !== false ? $modifiedAt : time();
 
-    return $record;
+    return [
+        'id' => backup_file_record_id($filePath),
+        'backupType' => str_contains(strtolower($fileName), '-automatic-') ? 'Automatic' : 'Manual',
+        'backupDateTime' => date('Y-m-d H:i:s', $modifiedAt),
+        'fileName' => $fileName,
+        'filePath' => $filePath,
+        'fileSize' => (int)(filesize($filePath) ?: 0),
+        'status' => 'Completed',
+        'errorMessage' => null,
+        'createdByUserId' => null,
+        'createdBy' => '',
+        'deletedAt' => null,
+        'updatedAt' => date('Y-m-d H:i:s', $modifiedAt),
+    ];
 }
 
 function backup_list_history(PDO $pdo): array
 {
-    $statement = $pdo->query(
-        'SELECT
-            bh.id,
-            bh.backup_type AS backupType,
-            bh.created_at AS backupDateTime,
-            bh.file_name AS fileName,
-            bh.file_path AS filePath,
-            bh.file_size AS fileSize,
-            bh.status,
-            bh.error_message AS errorMessage,
-            bh.created_by_user_id AS createdByUserId,
-            COALESCE(u.username, "") AS createdBy,
-            bh.deleted_at AS deletedAt,
-            bh.updated_at AS updatedAt
-         FROM backup_history bh
-         LEFT JOIN users u ON u.id = bh.created_by_user_id
-         ORDER BY bh.created_at DESC, bh.id DESC
-         LIMIT 200'
+    $directory = (string)(backup_settings($pdo)['backupPath'] ?? backup_default_directory());
+
+    if (!is_dir($directory)) {
+        return [];
+    }
+
+    $files = glob($directory . DIRECTORY_SEPARATOR . 'hris-backup-*.sql') ?: [];
+    $records = [];
+
+    foreach ($files as $filePath) {
+        $record = backup_file_record($filePath);
+        if ($record !== null) {
+            $records[] = $record;
+        }
+    }
+
+    usort(
+        $records,
+        static fn (array $left, array $right): int => strcmp(
+            (string)($right['backupDateTime'] ?? ''),
+            (string)($left['backupDateTime'] ?? '')
+        )
     );
 
-    $records = $statement->fetchAll();
+    return array_slice($records, 0, 200);
+}
 
-    foreach ($records as &$record) {
-        $record['id'] = (int)$record['id'];
-        $record['fileSize'] = (int)$record['fileSize'];
-        $record['createdByUserId'] = $record['createdByUserId'] !== null ? (int)$record['createdByUserId'] : null;
+function backup_fetch_record(PDO $pdo, int $id): ?array
+{
+    if ($id <= 0) {
+        return null;
     }
-    unset($record);
 
-    return $records;
+    foreach (backup_list_history($pdo) as $record) {
+        if ((int)($record['id'] ?? 0) === $id) {
+            return $record;
+        }
+    }
+
+    return null;
 }
 
 function backup_create_record(PDO $pdo, string $type, string $directory, ?array $user, string $backupDateTime = ''): array
@@ -348,32 +345,20 @@ function backup_create_record(PDO $pdo, string $type, string $directory, ?array 
             fclose($handle);
         }
 
-        $fileSize = is_file($filePath) ? (int)filesize($filePath) : 0;
-        $recordId = backup_insert_history($pdo, [
-            'backupType' => $type,
-            'fileName' => $fileName,
-            'filePath' => $filePath,
-            'fileSize' => $fileSize,
-            'status' => 'Completed',
-            'createdByUserId' => $createdByUserId,
-            'createdAt' => $createdAt,
-        ]);
+        $createdTimestamp = strtotime($createdAt);
+        if ($createdTimestamp !== false) {
+            @touch($filePath, $createdTimestamp);
+        }
 
-        return backup_fetch_record($pdo, $recordId) ?? [];
+        $record = backup_file_record($filePath) ?? [];
+        $record['createdByUserId'] = $createdByUserId;
+        $record['createdBy'] = backup_text($user['username'] ?? '');
+
+        return $record;
     } catch (Throwable $exception) {
-        $recordId = backup_insert_history($pdo, [
-            'backupType' => $type,
-            'fileName' => $fileName,
-            'filePath' => $filePath,
-            'fileSize' => 0,
-            'status' => 'Failed',
-            'errorMessage' => $exception->getMessage(),
-            'createdByUserId' => $createdByUserId,
-            'createdAt' => $createdAt,
-        ]);
-
-        $record = backup_fetch_record($pdo, $recordId) ?? [];
-        $record['errorMessage'] = $exception->getMessage();
+        if (is_file($filePath)) {
+            @unlink($filePath);
+        }
 
         throw new RuntimeException('Unable to create database backup.', 0, $exception);
     }
@@ -602,17 +587,18 @@ if ($method === 'DELETE') {
         ], 404);
     }
 
-    if (($record['status'] ?? '') !== 'Deleted' && is_file((string)$record['filePath'])) {
-        @unlink((string)$record['filePath']);
+    if (is_file((string)$record['filePath']) && !@unlink((string)$record['filePath'])) {
+        json_response([
+            'success' => false,
+            'message' => 'Unable to delete the backup file.',
+        ], 500);
     }
 
-    $statement = $pdo->prepare(
-        'UPDATE backup_history
-         SET status = "Deleted",
-             deleted_at = NOW()
-         WHERE id = :id'
-    );
-    $statement->execute([':id' => $recordId]);
+    $deletedRecord = [
+        ...$record,
+        'status' => 'Deleted',
+        'deletedAt' => date('Y-m-d H:i:s'),
+    ];
     write_auth_audit($pdo, $sessionUser, 'backup.deleted', 'A database backup file was deleted.', [
         'backupId' => $recordId,
         'fileName' => $record['fileName'] ?? null,
@@ -621,7 +607,7 @@ if ($method === 'DELETE') {
     json_response([
         'success' => true,
         'message' => 'Backup deleted successfully.',
-        'record' => backup_fetch_record($pdo, $recordId),
+        'record' => $deletedRecord,
         'history' => backup_list_history($pdo),
         'settings' => backup_settings($pdo),
     ]);

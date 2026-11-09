@@ -147,9 +147,8 @@ function deduction_ensure_definition_tables(PDO $pdo): void
 /**
  * The groups Settings shows.
  *
- * These used to be four hard-coded entries, one per table — GSIS, PHIC, HDMF, Other. They are now
- * read from `deduction_categories`, so every category is manageable and adding one needs no code
- * change. The shape is kept (`key`, `label`, `categoryName`) so the existing callers still fit.
+ * These groups come directly from the existing deduction-family catalog. The response shape is
+ * kept (`key`, `label`, `categoryName`) so existing callers continue to fit.
  */
 function deduction_definition_groups(?PDO $pdo = null): array
 {
@@ -199,11 +198,7 @@ function ensure_deduction_schema(PDO $pdo): void
 {
     // Categories and types now come from the shared catalog; this file no longer defines them.
     deduction_ensure_definition_tables($pdo);
-
-    if (!deduction_column_exists($pdo, 'PayrollDeduction', 'amount')) {
-        $pdo->exec('ALTER TABLE PayrollDeduction ADD COLUMN amount DECIMAL(10,2) NULL AFTER deduction_type_id');
-    }
-
+    ensure_payroll_embedded_detail_columns($pdo);
 }
 
 function deduction_seed_defaults(PDO $pdo): void
@@ -213,6 +208,11 @@ function deduction_seed_defaults(PDO $pdo): void
      * previously read "Government Contributions" and "Loan Deductions", names no family matches, so
      * every one of them fell through to `other` — and the seeder created a second GSIS, HDMF, PHIC,
      * PhilHealth, Pag-IBIG and Withholding Tax there alongside the rows payroll actually charges.
+     *
+     * Loan products are listed under the family that collects them. They used to sit under Other
+     * Deductions, which gave Settings a second "Policy Loan" / "Emergency Loan" / "Housing Loan" /
+     * "Calamity Loan" beside the GSIS and Pag-IBIG rows, plus long-form GFAL and MPL next to the
+     * short-named ones.
      */
     $defaults = [
         'Withholding Tax' => [
@@ -220,14 +220,17 @@ function deduction_seed_defaults(PDO $pdo): void
         ],
         'GSIS' => [
             'GSIS',
+            'Emergency Loan',
+            'Policy Loan',
         ],
         'Pag-IBIG' => [
             'HDMF',
             'Pag-IBIG',
+            'Housing Loan',
+            'Calamity Loan',
         ],
         'PHIC' => [
             'PHIC',
-            'PhilHealth',
         ],
         'Attendance Deductions' => [
             'Late Deduction',
@@ -235,24 +238,23 @@ function deduction_seed_defaults(PDO $pdo): void
             'Undertime Deduction',
         ],
         'Other Deductions' => [
-            'SSS',
             'Manual Cash Advance Adjustment',
             'Laptop Loan',
             'Other Deductions',
-            'Emergency Loan',
-            'Policy Loan',
             'Consolidated Loan',
             'Salary Loan',
-            'Housing Loan',
             'Pension Loan',
-            'GSIS Financial Assistance Loan (GFAL)',
-            'Multi-Purpose Loan (MPL)',
-            'Calamity Loan',
         ],
     ];
 
     foreach ($defaults as $categoryName => $deductionNames) {
         foreach ($deductionNames as $deductionName) {
+            // A name any family already carries is left where the admin has it: seeding it again
+            // under this family is exactly how the duplicates above came about.
+            if (deduction_catalog_category_for_name($pdo, $deductionName) !== null) {
+                continue;
+            }
+
             deduction_resolve_type($pdo, $categoryName, $deductionName, 0.0);
         }
     }
@@ -323,9 +325,11 @@ function deduction_resolve_type(PDO $pdo, string $categoryName, string $deductio
 
     if ($defaultAmount > 0 && $table !== null) {
         // Only seeds an amount that has not been set; never overwrites what an admin configured.
+        $amountColumn = $table === DEDUCTION_FAMILIES['other']['table']
+            ? deduction_catalog_other_amount_column($pdo) : 'default_amount';
         $update = $pdo->prepare(
-            "UPDATE `{$table}` SET default_amount = :default_amount
-             WHERE id = :id AND COALESCE(default_amount, 0.00) = 0.00"
+            "UPDATE `{$table}` SET `{$amountColumn}` = :default_amount
+             WHERE id = :id AND COALESCE(`{$amountColumn}`, 0.00) = 0.00"
         );
         $update->execute([
             ':default_amount' => deduction_decimal_string($defaultAmount),
@@ -343,11 +347,11 @@ function deduction_type_exists(PDO $pdo, int $deductionTypeId): bool
 
 function deduction_fetch_payroll(PDO $pdo, int $payrollId): ?array
 {
-    if (!deduction_table_exists($pdo, 'Payroll')) {
+    if (!deduction_table_exists($pdo, 'payroll')) {
         return null;
     }
 
-    $statement = $pdo->prepare('SELECT * FROM Payroll WHERE payroll_id = :payroll_id LIMIT 1');
+    $statement = $pdo->prepare('SELECT * FROM payroll WHERE payroll_id = :payroll_id LIMIT 1');
     $statement->execute([':payroll_id' => $payrollId]);
     $payroll = $statement->fetch();
 
@@ -377,32 +381,50 @@ function deduction_require_editable_payroll(PDO $pdo, int $payrollId): array
 
 function deduction_recalculate_payroll(PDO $pdo, int $payrollId): void
 {
-    $amountExpression = deduction_column_exists($pdo, 'PayrollDeduction', 'amount')
-        ? 'COALESCE(pd.amount, dt.default_amount, 0.00)'
-        : 'COALESCE(dt.default_amount, 0.00)';
+    $items = deduction_catalog_payroll_items($pdo, $payrollId);
+    $amounts = [];
+    $totalDeduction = 0.0;
 
-    $typeUnion = deduction_catalog_type_union_sql();
-    $statement = $pdo->prepare(
-        "SELECT COALESCE(SUM({$amountExpression}), 0.00)
-         FROM PayrollDeduction pd
-         INNER JOIN {$typeUnion} dt ON dt.deduction_type_id = pd.deduction_type_id
-         WHERE pd.payroll_id = :payroll_id"
-    );
-    $statement->execute([':payroll_id' => $payrollId]);
-    $totalDeduction = deduction_decimal($statement->fetchColumn());
+    foreach ($items as $item) {
+        $typeId = (int)($item['deductionTypeId'] ?? 0);
+        $amount = deduction_decimal($item['amount'] ?? 0);
+        $totalDeduction += $amount;
+        $amounts[$typeId] = ($amounts[$typeId] ?? 0.0) + $amount;
+    }
 
-    // Native prepares are on, so the same placeholder cannot fill two markers — bind one per marker.
-    $update = $pdo->prepare(
-        'UPDATE Payroll
-         SET total_deduction = :total_deduction,
-             net_pay = COALESCE(gross_pay, 0.00) + COALESCE(total_allowance, 0.00) - :net_deduction
-         WHERE payroll_id = :payroll_id'
-    );
-    $update->execute([
+    $assignments = [
+        'total_deduction = :total_deduction',
+        'net_pay = COALESCE(gross_pay, 0.00) + COALESCE(total_allowance, 0.00) - :net_deduction',
+    ];
+    $params = [
         ':total_deduction' => deduction_decimal_string($totalDeduction),
         ':net_deduction' => deduction_decimal_string($totalDeduction),
         ':payroll_id' => $payrollId,
-    ]);
+    ];
+
+    $existingColumns = [];
+    foreach ($pdo->query('SHOW COLUMNS FROM payroll') as $column) {
+        $existingColumns[strtolower((string)$column['Field'])] = true;
+    }
+
+    foreach (deduction_catalog_types($pdo, ['payrollOnly' => true]) as $type) {
+        $column = strtolower((string)($type['payrollColumn'] ?? ''));
+        if ($column === '' || !isset($existingColumns[$column])) {
+            continue;
+        }
+
+        $placeholder = ':deduction_' . (int)$type['id'];
+        $assignments[] = "`{$column}` = {$placeholder}";
+        $params[$placeholder] = deduction_decimal_string((float)($amounts[(int)$type['id']] ?? 0));
+    }
+
+    // Native prepares are on, so the same placeholder cannot fill two markers — bind one per marker.
+    $update = $pdo->prepare(
+        'UPDATE payroll
+         SET ' . implode(', ', $assignments) . '
+         WHERE payroll_id = :payroll_id'
+    );
+    $update->execute($params);
 }
 
 function deduction_list_categories(PDO $pdo): array
@@ -462,11 +484,9 @@ function deduction_list_types(PDO $pdo, ?int $categoryId = null): array
             d.is_recurring AS isRecurring,
             d.is_active AS isActive,
             d.show_in_payroll AS showInPayroll,
-            COUNT(pd.payroll_deduction_id) AS usageCount
-         FROM ' . deduction_catalog_union_sql() . ' d
-         LEFT JOIN payrolldeduction pd ON pd.deduction_type_id = d.id
+            0 AS usageCount
+         FROM ' . deduction_catalog_union_sql($pdo) . ' d
          ' . $where . '
-         GROUP BY d.id
          ORDER BY d.id'
     );
     $statement->execute($params);
@@ -475,11 +495,13 @@ function deduction_list_types(PDO $pdo, ?int $categoryId = null): array
     foreach (deduction_catalog_categories($pdo) as $category) {
         $labels[$category['code']] = ['name' => $category['name'], 'id' => $category['id']];
     }
+    $usageCounts = deduction_catalog_payroll_usage_counts($pdo);
 
-    return array_map(static function (array $row) use ($labels): array {
+    return array_map(static function (array $row) use ($labels, $usageCounts): array {
         $family = $labels[$row['categoryCode']] ?? null;
         $row['categoryName'] = $family['name'] ?? $row['categoryCode'];
         $row['categoryId'] = $family['id'] ?? 0;
+        $row['usageCount'] = $usageCounts[(int)$row['deductionTypeId']] ?? 0;
 
         return $row;
     }, $statement->fetchAll());
@@ -488,8 +510,8 @@ function deduction_list_types(PDO $pdo, ?int $categoryId = null): array
 /**
  * Every deduction Settings can edit, in the flat shape the screen already renders.
  *
- * The four per-category tables this used to walk are gone; the rows now come from `deduction_types`
- * and the group is the row's category. Field names are preserved so the frontend keeps working:
+ * Rows come from the existing deduction-family tables and the group is each row's family. Field
+ * names are preserved so the frontend keeps working:
  * `threshold_mode` is the catalog's `calculation_type`, and `is_percentage` is derived from it
  * rather than stored twice.
  */
@@ -526,15 +548,27 @@ function deduction_list_definition_types(PDO $pdo, string $groupKey = ''): array
             'categoryId' => $type['categoryId'],
             'definitionKey' => $type['categoryCode'] . ':' . $type['id'],
         ],
-        deduction_catalog_types($pdo, $filters)
+        array_values(array_filter(
+            deduction_catalog_types($pdo, $filters),
+            // Retired PHIC alternatives remain resolvable in historical snapshots.
+            static fn (array $type): bool => !(
+                ($type['categoryCode'] === 'phic' && in_array($type['code'], ['philhealth', 'philhealth_differential'], true))
+                || ($type['categoryCode'] === 'other' && $type['code'] === 'sss')
+            )
+        ))
     );
 }
 
-function deduction_definition_payload(array $body): array
+function deduction_definition_payload(array $body, bool $amountOnly = false): array
 {
+    if ($amountOnly) {
+        $body = array_intersect_key($body, array_flip([
+            'type_name', 'typeName', 'deductionName', 'name', 'description', 'default_amount', 'defaultAmount', 'amount',
+        ]));
+    }
     $typeName = deduction_text($body['type_name'] ?? $body['typeName'] ?? $body['deductionName'] ?? $body['name'] ?? '');
     $description = deduction_text($body['description'] ?? '');
-    $defaultAmount = deduction_decimal($body['default_amount'] ?? $body['defaultAmount'] ?? 0, 'Default amount');
+    $defaultAmount = deduction_decimal($body['default_amount'] ?? $body['defaultAmount'] ?? $body['amount'] ?? 0, 'Amount');
     $thresholdAmount = deduction_decimal($body['threshold_amount'] ?? $body['thresholdAmount'] ?? 0, 'Threshold amount');
     $thresholdMode = strtolower(deduction_text($body['threshold_mode'] ?? $body['thresholdMode'] ?? 'fixed'));
     $thresholdRules = deduction_text($body['threshold_rules'] ?? $body['thresholdRules'] ?? '');
@@ -612,7 +646,7 @@ function deduction_definition_payload(array $body): array
 function deduction_create_definition_type(PDO $pdo, array $body): void
 {
     $group = deduction_definition_group((string)($body['groupKey'] ?? $body['group_key'] ?? ''));
-    $payload = deduction_definition_payload($body);
+    $payload = deduction_definition_payload($body, $group['key'] === 'other');
 
     // `deduction_catalog_resolve_type` is find-or-create, so editing an existing deduction and
     // adding a new one both land here and neither can produce a duplicate.
@@ -627,32 +661,17 @@ function deduction_create_definition_type(PDO $pdo, array $body): void
         ], 500);
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$table}`
-         SET description = :description,
-             calculation_type = :calculation_type,
-             default_amount = :default_amount,
-             default_rate = :default_rate,
-             threshold_amount = :threshold_amount,
-             threshold_rules = :threshold_rules,
-             base_floor = :base_floor,
-             base_cap = :base_cap,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-
-    $statement->execute([
-        ':description' => $payload['description'] !== '' ? $payload['description'] : null,
+    deduction_catalog_update_fields($pdo, $table, $typeId, [
+        'description' => $payload['description'] !== '' ? $payload['description'] : null,
         // `is_percentage` was a second source of truth for the same fact. The mode decides.
-        ':calculation_type' => $payload['thresholdMode'],
-        ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-        ':default_rate' => deduction_rate_string($payload['defaultRate']),
-        ':threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
-        ':threshold_rules' => $payload['thresholdRules'],
-        ':base_floor' => deduction_decimal_string($payload['baseFloor']),
-        ':base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
-        ':is_active' => $payload['isActive'] ? 1 : 0,
-        ':id' => $typeId,
+        'calculation_type' => $payload['thresholdMode'],
+        'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+        'default_rate' => deduction_rate_string($payload['defaultRate']),
+        'threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
+        'threshold_rules' => $payload['thresholdRules'],
+        'base_floor' => deduction_decimal_string($payload['baseFloor']),
+        'base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
+        ...($table === DEDUCTION_FAMILIES['other']['table'] ? [] : ['is_active' => $payload['isActive'] ? 1 : 0]),
     ]);
 
     json_response([
@@ -683,7 +702,7 @@ function deduction_update_definition_type(PDO $pdo, array $body): void
         ], 404);
     }
 
-    $payload = deduction_definition_payload($body);
+    $payload = deduction_definition_payload($body, $table === DEDUCTION_FAMILIES['other']['table']);
 
     if ($payload['typeName'] === '') {
         json_response([
@@ -703,33 +722,17 @@ function deduction_update_definition_type(PDO $pdo, array $body): void
         ], 422);
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$table}`
-         SET name = :name,
-             description = :description,
-             calculation_type = :calculation_type,
-             default_amount = :default_amount,
-             default_rate = :default_rate,
-             threshold_amount = :threshold_amount,
-             threshold_rules = :threshold_rules,
-             base_floor = :base_floor,
-             base_cap = :base_cap,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-
-    $statement->execute([
-        ':name' => $payload['typeName'],
-        ':description' => $payload['description'] !== '' ? $payload['description'] : null,
-        ':calculation_type' => $payload['thresholdMode'],
-        ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-        ':default_rate' => deduction_rate_string($payload['defaultRate']),
-        ':threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
-        ':threshold_rules' => $payload['thresholdRules'],
-        ':base_floor' => deduction_decimal_string($payload['baseFloor']),
-        ':base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
-        ':is_active' => $payload['isActive'] ? 1 : 0,
-        ':id' => $typeId,
+    deduction_catalog_update_fields($pdo, $table, $typeId, [
+        'name' => $payload['typeName'],
+        'description' => $payload['description'] !== '' ? $payload['description'] : null,
+        'calculation_type' => $payload['thresholdMode'],
+        'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+        'default_rate' => deduction_rate_string($payload['defaultRate']),
+        'threshold_amount' => deduction_decimal_string($payload['thresholdAmount']),
+        'threshold_rules' => $payload['thresholdRules'],
+        'base_floor' => deduction_decimal_string($payload['baseFloor']),
+        'base_cap' => $payload['baseCap'] === null ? null : deduction_decimal_string($payload['baseCap']),
+        ...($table === DEDUCTION_FAMILIES['other']['table'] ? [] : ['is_active' => $payload['isActive'] ? 1 : 0]),
     ]);
 
     json_response([
@@ -747,7 +750,7 @@ function deduction_update_definition_type(PDO $pdo, array $body): void
  */
 function deduction_list_allowances(PDO $pdo): array
 {
-    if (!deduction_table_exists($pdo, 'Allowance')) {
+    if (!deduction_table_exists($pdo, 'allowance')) {
         return [];
     }
 
@@ -757,47 +760,76 @@ function deduction_list_allowances(PDO $pdo): array
             'allowanceName' => (string)$row['allowance_name'],
             'amount' => (float)$row['amount'],
         ],
-        $pdo->query('SELECT allowance_id, allowance_name, amount FROM Allowance ORDER BY allowance_name')->fetchAll()
+        $pdo->query('SELECT allowance_id, allowance_name, amount FROM allowance ORDER BY allowance_name')->fetchAll()
     );
 }
 
 function deduction_list_payroll_deductions(PDO $pdo, int $payrollId): array
 {
-    $amountExpression = deduction_column_exists($pdo, 'PayrollDeduction', 'amount')
-        ? 'COALESCE(pd.amount, dt.default_amount, 0.00)'
-        : 'COALESCE(dt.default_amount, 0.00)';
-    $typeUnion = deduction_catalog_type_union_sql();
-
-    $statement = $pdo->prepare(
-        "SELECT
-            pd.payroll_deduction_id AS payrollDeductionId,
-            pd.payroll_id AS payrollId,
-            pd.deduction_type_id AS deductionTypeId,
-            dt.deduction_name AS deductionName,
-            dt.category_name AS categoryName,
-            {$amountExpression} AS amount
-         FROM PayrollDeduction pd
-         INNER JOIN {$typeUnion} dt ON dt.deduction_type_id = pd.deduction_type_id
-         WHERE pd.payroll_id = :payroll_id
-         ORDER BY pd.payroll_deduction_id ASC"
-    );
-    $statement->execute([':payroll_id' => $payrollId]);
-
     return array_map(
         static fn (array $row): array => array_merge($row, [
             'categoryId' => deduction_category_id_from_name((string)($row['categoryName'] ?? '')),
         ]),
-        $statement->fetchAll()
+        deduction_catalog_payroll_items($pdo, $payrollId)
     );
 }
 
 function deduction_find_payroll_deduction(PDO $pdo, int $payrollDeductionId): ?array
 {
-    $statement = $pdo->prepare('SELECT * FROM PayrollDeduction WHERE payroll_deduction_id = :id LIMIT 1');
-    $statement->execute([':id' => $payrollDeductionId]);
-    $row = $statement->fetch();
+    if ($payrollDeductionId <= 0) {
+        return null;
+    }
 
-    return $row ?: null;
+    $statement = $pdo->query(
+        'SELECT payroll_id, deduction_items_json
+         FROM payroll
+         WHERE deduction_items_json IS NOT NULL AND TRIM(deduction_items_json) <> ""'
+    );
+
+    foreach ($statement as $payroll) {
+        $payrollId = (int)($payroll['payroll_id'] ?? 0);
+        foreach (payroll_decode_embedded_json_list($payroll['deduction_items_json'] ?? null) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $itemId = (int)($item['payrollDeductionId'] ?? $item['id'] ?? 0);
+            if ($itemId === $payrollDeductionId) {
+                return deduction_catalog_normalize_payroll_items($pdo, [$item], $payrollId)[0] ?? null;
+            }
+        }
+    }
+
+    return null;
+}
+
+function deduction_store_payroll_deductions(PDO $pdo, int $payrollId, array $items): void
+{
+    $stored = [];
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $id = (int)($item['payrollDeductionId'] ?? $item['id'] ?? 0);
+        $typeId = (int)($item['deductionTypeId'] ?? $item['deduction_type_id'] ?? 0);
+        if ($id <= 0 || $typeId <= 0) {
+            continue;
+        }
+
+        $stored[] = [
+            'id' => $id,
+            'payrollDeductionId' => $id,
+            'payrollId' => $payrollId,
+            'deductionTypeId' => $typeId,
+            'name' => deduction_text($item['deductionName'] ?? $item['name'] ?? ''),
+            'category' => deduction_text($item['categoryName'] ?? $item['category'] ?? ''),
+            'amount' => deduction_decimal($item['amount'] ?? 0),
+        ];
+    }
+
+    payroll_write_embedded_json_list($pdo, $payrollId, 'deduction_items_json', $stored);
 }
 
 function deduction_payload_type(PDO $pdo, array $body): array
@@ -894,24 +926,13 @@ function deduction_create_type(PDO $pdo, array $body): void
         ], 500);
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$table}`
-         SET default_amount = :default_amount,
-             calculation_type = :calculation_type,
-             default_rate = :default_rate,
-             basis = :basis,
-             is_recurring = :is_recurring,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-    $statement->execute([
-        ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-        ':calculation_type' => $payload['calculationType'],
-        ':default_rate' => deduction_rate_string($payload['defaultRate']),
-        ':basis' => $payload['basis'],
-        ':is_recurring' => $payload['isRecurring'] ? 1 : 0,
-        ':is_active' => $payload['isActive'] ? 1 : 0,
-        ':id' => $deductionTypeId,
+    deduction_catalog_update_fields($pdo, $table, $deductionTypeId, [
+        'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+        'calculation_type' => $payload['calculationType'],
+        'default_rate' => deduction_rate_string($payload['defaultRate']),
+        'basis' => $payload['basis'],
+        'is_recurring' => $payload['isRecurring'] ? 1 : 0,
+        'is_active' => $payload['isActive'] ? 1 : 0,
     ]);
 
     json_response([
@@ -951,10 +972,8 @@ function deduction_update_type(PDO $pdo, array $body): void
      * but past runs would silently start reporting under a different family.
      */
     if ($currentTable !== $targetTable) {
-        $used = $pdo->prepare('SELECT COUNT(*) FROM payrolldeduction WHERE deduction_type_id = :id');
-        $used->execute([':id' => $deductionTypeId]);
-
-        if ((int)$used->fetchColumn() > 0) {
+        $usageCounts = deduction_catalog_payroll_usage_counts($pdo);
+        if (($usageCounts[$deductionTypeId] ?? 0) > 0) {
             json_response([
                 'success' => false,
                 'message' => 'This deduction already appears on payroll records and cannot be moved to another category.',
@@ -962,28 +981,15 @@ function deduction_update_type(PDO $pdo, array $body): void
         }
     }
 
-    $statement = $pdo->prepare(
-        "UPDATE `{$currentTable}`
-         SET name = :name,
-             default_amount = :default_amount,
-             calculation_type = :calculation_type,
-             default_rate = :default_rate,
-             basis = :basis,
-             is_recurring = :is_recurring,
-             is_active = :is_active
-         WHERE id = :id"
-    );
-
     try {
-        $statement->execute([
-            ':name' => $payload['deductionName'],
-            ':default_amount' => deduction_decimal_string($payload['defaultAmount']),
-            ':calculation_type' => $payload['calculationType'],
-            ':default_rate' => deduction_rate_string($payload['defaultRate']),
-            ':basis' => $payload['basis'],
-            ':is_recurring' => $payload['isRecurring'] ? 1 : 0,
-            ':is_active' => $payload['isActive'] ? 1 : 0,
-            ':id' => $deductionTypeId,
+        deduction_catalog_update_fields($pdo, $currentTable, $deductionTypeId, [
+            'name' => $payload['deductionName'],
+            'default_amount' => deduction_decimal_string($payload['defaultAmount']),
+            'calculation_type' => $payload['calculationType'],
+            'default_rate' => deduction_rate_string($payload['defaultRate']),
+            'basis' => $payload['basis'],
+            'is_recurring' => $payload['isRecurring'] ? 1 : 0,
+            'is_active' => $payload['isActive'] ? 1 : 0,
         ]);
     } catch (PDOException $exception) {
         if ($exception->getCode() === '23000') {
@@ -1020,23 +1026,27 @@ function deduction_create_payroll_deduction(PDO $pdo, array $body): void
     }
 
     $amount = deduction_decimal($body['amount'] ?? $body['defaultAmount'] ?? 0);
-
-    $statement = $pdo->prepare(
-        'INSERT INTO PayrollDeduction (payroll_id, deduction_type_id, amount)
-         VALUES (:payroll_id, :deduction_type_id, :amount)'
-    );
-    $statement->execute([
-        ':payroll_id' => $payrollId,
-        ':deduction_type_id' => $deductionTypeId,
-        ':amount' => deduction_decimal_string($amount),
-    ]);
+    $types = deduction_catalog_type_map($pdo);
+    $type = $types[$deductionTypeId] ?? [];
+    $payrollDeductionId = payroll_next_embedded_item_id($pdo, 'deduction_items_json');
+    $items = deduction_catalog_payroll_items($pdo, $payrollId);
+    $items[] = [
+        'id' => $payrollDeductionId,
+        'payrollDeductionId' => $payrollDeductionId,
+        'payrollId' => $payrollId,
+        'deductionTypeId' => $deductionTypeId,
+        'deductionName' => deduction_text($type['name'] ?? ''),
+        'categoryName' => deduction_text($type['categoryName'] ?? ''),
+        'amount' => $amount,
+    ];
+    deduction_store_payroll_deductions($pdo, $payrollId, $items);
 
     deduction_recalculate_payroll($pdo, $payrollId);
 
     json_response([
         'success' => true,
         'message' => 'Payroll deduction added.',
-        'payrollDeductionId' => (int)$pdo->lastInsertId(),
+        'payrollDeductionId' => $payrollDeductionId,
         'payrollDeductions' => deduction_list_payroll_deductions($pdo, $payrollId),
     ], 201);
 }
@@ -1065,18 +1075,27 @@ function deduction_update_payroll_deduction(PDO $pdo, array $body): void
     }
 
     $amount = deduction_decimal($body['amount'] ?? $existing['amount'] ?? 0);
+    $types = deduction_catalog_type_map($pdo);
+    $type = $types[$deductionTypeId] ?? [];
+    $items = deduction_catalog_payroll_items($pdo, $payrollId);
 
-    $statement = $pdo->prepare(
-        'UPDATE PayrollDeduction
-         SET deduction_type_id = :deduction_type_id,
-             amount = :amount
-         WHERE payroll_deduction_id = :payroll_deduction_id'
-    );
-    $statement->execute([
-        ':deduction_type_id' => $deductionTypeId,
-        ':amount' => deduction_decimal_string($amount),
-        ':payroll_deduction_id' => $payrollDeductionId,
-    ]);
+    foreach ($items as &$item) {
+        if ((int)($item['payrollDeductionId'] ?? 0) !== $payrollDeductionId) {
+            continue;
+        }
+
+        $item['deductionTypeId'] = $deductionTypeId;
+        $item['deduction_type_id'] = $deductionTypeId;
+        $item['deductionName'] = deduction_text($type['name'] ?? '');
+        $item['name'] = $item['deductionName'];
+        $item['categoryName'] = deduction_text($type['categoryName'] ?? '');
+        $item['category'] = $item['categoryName'];
+        $item['amount'] = $amount;
+        break;
+    }
+    unset($item);
+
+    deduction_store_payroll_deductions($pdo, $payrollId, $items);
 
     deduction_recalculate_payroll($pdo, $payrollId);
 
@@ -1110,27 +1129,23 @@ function deduction_delete_type(PDO $pdo, int $deductionTypeId): void
         ], 404);
     }
 
-    $statement = $pdo->prepare('SELECT COUNT(*) FROM PayrollDeduction WHERE deduction_type_id = :deduction_type_id');
-    $statement->execute([':deduction_type_id' => $deductionTypeId]);
-    if ((int)$statement->fetchColumn() > 0) {
+    $usageCounts = deduction_catalog_payroll_usage_counts($pdo);
+    if (($usageCounts[$deductionTypeId] ?? 0) > 0) {
         json_response([
             'success' => false,
             'message' => 'Deduction type cannot be deleted while payroll records use it.',
         ], 422);
     }
 
-    /*
-     * `payrolldeduction` has no foreign key to fall back on now, so this check is the only thing
-     * standing between a delete and an orphaned payroll reference. It runs above.
-     */
+    // Embedded history has no foreign key, so the usage check above prevents orphaned references.
     $table = deduction_catalog_table_for_id($pdo, $deductionTypeId);
     $delete = $pdo->prepare("DELETE FROM `{$table}` WHERE id = :id");
     $delete->execute([':id' => $deductionTypeId]);
 
     /*
      * The deduction's column on `payroll` is deliberately left in place. Dropping it would discard
-     * whatever past runs charged under this deduction, and the check above only proves no
-     * `payrolldeduction` row still points here — not that no payroll ever did.
+     * whatever past runs charged under this deduction, and the check above only proves no embedded
+     * item still points here — not that no payroll ever did.
      */
 
     json_response([
@@ -1153,8 +1168,11 @@ function deduction_delete_payroll_deduction(PDO $pdo, int $payrollDeductionId): 
     $payrollId = (int)($existing['payroll_id'] ?? 0);
     deduction_require_editable_payroll($pdo, $payrollId);
 
-    $delete = $pdo->prepare('DELETE FROM PayrollDeduction WHERE payroll_deduction_id = :payroll_deduction_id');
-    $delete->execute([':payroll_deduction_id' => $payrollDeductionId]);
+    $items = array_values(array_filter(
+        deduction_catalog_payroll_items($pdo, $payrollId),
+        static fn (array $item): bool => (int)($item['payrollDeductionId'] ?? 0) !== $payrollDeductionId
+    ));
+    deduction_store_payroll_deductions($pdo, $payrollId, $items);
 
     deduction_recalculate_payroll($pdo, $payrollId);
 
@@ -1305,4 +1323,3 @@ try {
         'message' => 'Unable to process deduction request.',
     ], 500);
 }
-

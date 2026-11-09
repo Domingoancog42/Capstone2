@@ -11,9 +11,16 @@ require_once __DIR__ . '/payroll-export.php';
 $sessionUser = require_session_user();
 $roleKey = user_role_key($sessionUser);
 $exactRoleKey = user_exact_role_key($sessionUser);
-$workflowRoleKey = $exactRoleKey === 'finance' ? 'finance' : $roleKey;
+$workflowRoleKey = payroll_workflow_role_key($sessionUser);
+$isFadDivisionChief = payroll_is_fad_division_chief($sessionUser);
 
-if (!in_array($roleKey, ['admin', 'hrhead', 'hrstaff', 'chief', 'regionaldirector', 'employee', 'cashier'], true) && $exactRoleKey !== 'finance') {
+/*
+ * Payroll's second approval belongs only to the built-in Division Chief assigned to FAD/FAM. The
+ * Chief role is otherwise refused, as are Chief Admin and Planning Officer; personal payslips still
+ * come from payslip.php.
+ */
+if (!in_array($workflowRoleKey, ['admin', 'hrhead', 'hrstaff', 'chief', 'regionaldirector', 'employee', 'cashier', 'finance'], true)
+    || ($workflowRoleKey === 'chief' && !$isFadDivisionChief)) {
     json_response([
         'success' => false,
         'message' => 'You are not allowed to access payroll records.',
@@ -61,16 +68,27 @@ const PAYROLL_STAFF_ROLES = ['admin', 'hrhead', 'hrstaff', 'regionaldirector'];
  * inherit the right to move money -- see how $exactRoleKey is passed to the require_* calls below.
  */
 const PAYROLL_PAYOUT_ROLES = ['admin', 'finance', 'cashier'];
-const PAYROLL_ARCHIVE_ROLES = ['admin', 'hrhead', 'hrstaff'];
+/*
+ * Every desk the register passes through may file a settled batch away and bring it back: HR
+ * prepares it, the FAD Division Chief and the Regional Director sign it, and the payout desk
+ * releases it. Exporting stays with HR: archiving is housekeeping on a register these desks already
+ * handled, not a new way to take its contents out of the system.
+ */
+const PAYROLL_ARCHIVE_ROLES = ['admin', 'hrhead', 'hrstaff', 'chief', 'regionaldirector', 'cashier', 'finance'];
+/*
+ * The FAD Chief approves one organization-wide register, so no payroll desk is division-scoped.
+ * Mirrors DIVISION_SCOPED_PAYROLL_ROLE_KEYS in PayrollManagementWorkspace.jsx.
+ */
+const PAYROLL_DIVISION_SCOPED_ROLES = [];
 const PAYROLL_EDITABLE_STATUSES = ['Draft', 'Rejected'];
 
 /*
- * A submitted payroll climbs three desks before the money moves: HR Head, then the Chief of
- * Division, then the Regional Director who gives final approval. Each rung is its own status so a
- * role only ever sees -- and can only ever act on -- the batches actually sitting with it.
+ * A submitted payroll climbs three desks before the money moves: HR Head, then the FAD Division
+ * Chief, then the Regional Director who gives final approval. Each rung is its own status so a role only
+ * ever sees -- and can only ever act on -- the batches actually sitting with it.
  *
- * `payroll.status` is a varchar(20), which is why these read "Pending Chief" rather than the longer
- * "Pending Chief Approval"; the frontend spells the full label out for display.
+ * `payroll.status` is a varchar(20), which is why these are abbreviated. The second rung keeps the
+ * stored value "Pending Chief" for compatibility with existing rows and approval history.
  */
 const PAYROLL_HR_HEAD_STATUS = 'Pending Approval';
 const PAYROLL_CHIEF_STATUS = 'Pending Chief';
@@ -201,6 +219,56 @@ const PAYROLL_DEDUCTION_FIELD_ALIASES = [
     'otherdeductions' => 'otherDeductions',
 ];
 
+/** Whether a division identifier names the Finance and Administrative Division/Management. */
+function payroll_is_fad_division(mixed $code, mixed $name = null): bool
+{
+    $divisionCode = strtoupper(trim((string)($code ?? '')));
+    $divisionName = preg_replace('/[^a-z]/', '', strtolower((string)($name ?? $code ?? ''))) ?? '';
+
+    return in_array($divisionCode, ['FAD', 'FAM'], true)
+        || in_array($divisionName, [
+            'financeadministrativedivision',
+            'financeandadministrativedivision',
+            'financeadministrativemanagement',
+            'financeandadministrativemanagement',
+            'financialandadministrativedivision',
+        ], true);
+}
+
+/** The built-in Chief assigned to FAD/FAM is the sole Division Chief with a payroll desk. */
+function payroll_is_fad_division_chief(array $user): bool
+{
+    return user_exact_role_key($user) === 'chief'
+        && payroll_is_fad_division($user['division'] ?? '', $user['division'] ?? '');
+}
+
+/** Active user accounts for the FAD/FAM Division Chief role, used for targeted payroll notices. */
+function payroll_fad_division_chief_user_ids(PDO $pdo): array
+{
+    ensure_role_columns($pdo);
+    $statement = $pdo->query(
+        'SELECT DISTINCT u.id, COALESCE(d.code, "") AS division_code, COALESCE(d.name, "") AS division_name
+         FROM users u
+         INNER JOIN roles r ON r.id = u.role_id
+         INNER JOIN employees e
+            ON e.email COLLATE utf8mb4_unicode_ci = u.email COLLATE utf8mb4_unicode_ci
+           AND e.is_archived = 0
+         INNER JOIN divisions d ON d.id = e.division_id AND d.is_archived = 0
+         WHERE u.is_archived = 0
+           AND LOWER(REPLACE(r.name, " ", "")) = "chief"
+         ORDER BY u.id ASC'
+    );
+
+    $userIds = [];
+    foreach ($statement->fetchAll() as $row) {
+        if (payroll_is_fad_division($row['division_code'] ?? '', $row['division_name'] ?? '')) {
+            $userIds[] = (int)$row['id'];
+        }
+    }
+
+    return array_values(array_unique(array_filter($userIds, static fn (int $id): bool => $id > 0)));
+}
+
 function payroll_normalize_status(mixed $value): string
 {
     $text = trim((string)($value ?? ''));
@@ -208,7 +276,8 @@ function payroll_normalize_status(mixed $value): string
 
     return match ($token) {
         'pending', 'pendingapproval', 'pendinghrhead', 'pendinghrheadapproval' => PAYROLL_HR_HEAD_STATUS,
-        'pendingchief', 'pendingchiefapproval' => PAYROLL_CHIEF_STATUS,
+        'pendingchief', 'pendingchiefapproval', 'pendingchiefadmin', 'pendingchiefadminapproval',
+        'pendingdivisionchief', 'pendingdivisionchiefapproval', 'pendingfadchief', 'pendingfaddivisionchief' => PAYROLL_CHIEF_STATUS,
         'pendingdirector', 'pendingregionaldirector', 'pendingfinalapproval' => PAYROLL_DIRECTOR_STATUS,
         'approved' => 'Approved',
         'rejected' => 'Rejected',
@@ -221,16 +290,28 @@ function payroll_normalize_status(mixed $value): string
 
 /**
  * The full wording of a status, for messages. The stored values are abbreviated to fit
- * `payroll.status`, so "Pending Chief" has to read back as "Pending Chief Approval".
+ * `payroll.status`, so "Pending Chief" has to read back as "Pending FAD Division Chief Approval".
  */
 function payroll_status_label(string $status): string
 {
     return match (payroll_normalize_status($status)) {
         PAYROLL_HR_HEAD_STATUS => 'Pending HR Head Approval',
-        PAYROLL_CHIEF_STATUS => 'Pending Chief Approval',
+        PAYROLL_CHIEF_STATUS => 'Pending FAD Division Chief Approval',
         PAYROLL_DIRECTOR_STATUS => 'Pending Regional Director Approval',
         default => payroll_normalize_status($status),
     };
+}
+
+/**
+ * The desk `$user` works in the payroll chain: their base role, except Finance, which is built on HR
+ * Head but works the payout desk. Chief Admin deliberately resolves to its exact, non-chain key so it
+ * cannot inherit the FAD Chief stage. Mirrors workflowRoleKey in PayrollManagementWorkspace.jsx.
+ */
+function payroll_workflow_role_key(array $user): string
+{
+    $exactRoleKey = user_exact_role_key($user);
+
+    return in_array($exactRoleKey, ['finance', 'chiefadmin'], true) ? $exactRoleKey : user_role_key($user);
 }
 
 /**
@@ -304,7 +385,7 @@ function payroll_require_approval_role(string $roleKey): void
     if (!payroll_is_approval_role($roleKey)) {
         json_response([
             'success' => false,
-            'message' => 'Only administrators, HR Head, Chief, and Regional Director can approve or return payroll records.',
+            'message' => 'Only administrators, HR Head, the FAD Division Chief, and Regional Director can approve or return payroll records.',
         ], 403);
     }
 }
@@ -352,8 +433,8 @@ function payroll_require_workflow_captcha(array $body): void
 }
 
 /**
- * Step one of the two-step check on submitting and approving: spend a solved sum to have a code
- * emailed to the acting user.
+ * Step one of the two-step check on submitting, approving, and releasing payslips: spend a solved
+ * sum to have a code emailed to the acting user.
  *
  * The sum above proves someone meant to do this. It cannot prove it is the person whose session
  * this is, because anything holding the session cookie can read the sum and type it. So these two
@@ -374,7 +455,8 @@ function payroll_request_workflow_otp(
     PDO $pdo,
     array $body,
     array $sessionUser,
-    string $workflowRoleKey
+    string $workflowRoleKey,
+    string $exactRoleKey
 ): void {
     $action = strtolower(payroll_text($body['otpAction'] ?? ''));
 
@@ -387,8 +469,24 @@ function payroll_request_workflow_otp(
 
     if ($action === 'submit') {
         payroll_require_staff_role($workflowRoleKey);
-    } else {
+    } elseif ($action === 'approve') {
         payroll_require_approval_role($workflowRoleKey);
+    } else {
+        payroll_require_payout_role($exactRoleKey);
+    }
+
+    // Disabling payroll email OTP never removes the math security check. The request still spends
+    // the submitted challenge, then tells the client to proceed without opening the email-code step.
+    if (!payroll_workflow_otp_enabled($pdo)) {
+        payroll_require_workflow_captcha($body);
+        payroll_workflow_otp_session_reopen();
+        payroll_workflow_otp_forget();
+
+        json_response([
+            'success' => true,
+            'otpRequired' => false,
+            'message' => 'Payroll email OTP verification is disabled.',
+        ]);
     }
 
     /*
@@ -430,6 +528,7 @@ function payroll_request_workflow_otp(
 
     json_response([
         'success' => true,
+        'otpRequired' => true,
         'message' => 'An authorization code was sent to your registered email address.',
     ] + $payload);
 }
@@ -439,7 +538,7 @@ function payroll_require_archive_role(string $roleKey): void
     if (!in_array($roleKey, PAYROLL_ARCHIVE_ROLES, true)) {
         json_response([
             'success' => false,
-            'message' => 'Only administrators, HR Head, and HR Staff can archive or restore payroll records.',
+            'message' => 'Your role cannot archive or restore payroll records.',
         ], 403);
     }
 }
@@ -475,6 +574,13 @@ function payroll_normalize_type(mixed $value): string
     }
 
     return $text;
+}
+
+function payroll_pera_amount(mixed $payrollType, mixed $amount): float
+{
+    return in_array(payroll_normalize_type($payrollType), [
+        'Mid-Year Bonus', 'Year-End Bonus', 'Performance-Based Bonus (PBB)',
+    ], true) ? 0.0 : payroll_decimal($amount);
 }
 
 function payroll_type_allows_employment_type(string $payrollType, string $employmentType): bool
@@ -517,6 +623,59 @@ function payroll_database_table_exists(PDO $pdo, string $table): bool
     return (int)$statement->fetchColumn() > 0;
 }
 
+function payroll_ensure_loan_tracking_schema(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured || !payroll_database_table_exists($pdo, 'loan_records')) {
+        return;
+    }
+
+    $columns = [
+        'annual_interest_rate' => 'DECIMAL(7,4) NOT NULL DEFAULT 0.0000 AFTER repayment_terms',
+        'disbursed_at' => 'DATE NULL AFTER date_filed',
+    ];
+
+    foreach ($columns as $column => $definition) {
+        if (!database_column_exists($pdo, 'loan_records', $column)) {
+            $pdo->exec("ALTER TABLE loan_records ADD COLUMN {$column} {$definition}");
+        }
+    }
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS loan_payments (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            loan_record_id INT UNSIGNED NOT NULL,
+            installment_number INT UNSIGNED NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            paid_at DATE NOT NULL,
+            payment_reference VARCHAR(180) NULL,
+            notes VARCHAR(500) NULL,
+            source VARCHAR(30) NOT NULL DEFAULT "manual",
+            payroll_id INT UNSIGNED NULL,
+            recorded_by_user_id INT UNSIGNED NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_loan_payment_installment (loan_record_id, installment_number),
+            UNIQUE KEY uq_loan_payment_payroll (loan_record_id, payroll_id),
+            KEY idx_loan_payments_paid_at (paid_at),
+            CONSTRAINT fk_payroll_loan_payments_loan FOREIGN KEY (loan_record_id) REFERENCES loan_records(id)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+
+    $ensured = true;
+}
+
+function payroll_loan_monthly_amount(float $principal, float $annualRate, int $months): float
+{
+    if ($principal <= 0 || $months <= 0) {
+        return 0.0;
+    }
+
+    return round(($principal + ($principal * ($annualRate / 100) * ($months / 12))) / $months, 2);
+}
+
 function payroll_log_deduction_debug(string $message, array $context = []): void
 {
     $encodedContext = $context !== []
@@ -543,13 +702,7 @@ function payroll_category_id_from_name(string $categoryName): int
     return (int)(sprintf('%u', crc32($normalized !== '' ? $normalized : 'otherdeductions')) % 2147483646) + 1;
 }
 
-/**
- * GSIS, PHIC, HDMF and other deductions used to live in four structurally identical tables, one per
- * category, created here on every request. They are now rows in `deduction_types` under a
- * `deduction_categories` row, so provisioning is a single shared step.
- *
- * @see backend/database/normalize_deductions.sql
- */
+/** Keeps the existing deduction-family catalog ready for payroll calculations. */
 function payroll_ensure_deduction_definition_tables(PDO $pdo): void
 {
     deduction_catalog_ensure_schema($pdo);
@@ -564,29 +717,7 @@ function payroll_ensure_deduction_engine_schema(PDO $pdo): void
     }
 
     payroll_ensure_deduction_definition_tables($pdo);
-
-    if (!database_column_exists($pdo, 'PayrollDeduction', 'amount')) {
-        $pdo->exec('ALTER TABLE PayrollDeduction ADD COLUMN amount DECIMAL(10,2) NULL AFTER deduction_type_id');
-    }
-
-    $employeeDeductionColumns = [
-        'amount' => 'DECIMAL(12,2) NULL AFTER deduction_type_id',
-        'rate' => 'DECIMAL(9,4) NULL AFTER amount',
-        'calculation_type' => 'VARCHAR(20) NOT NULL DEFAULT "fixed" AFTER rate',
-        'basis' => 'VARCHAR(40) NOT NULL DEFAULT "basic_salary" AFTER calculation_type',
-        'frequency' => 'VARCHAR(30) NOT NULL DEFAULT "monthly" AFTER basis',
-        'effective_start' => 'DATE NULL AFTER frequency',
-        'effective_end' => 'DATE NULL AFTER effective_start',
-        'is_recurring' => 'TINYINT(1) NOT NULL DEFAULT 1 AFTER effective_end',
-        'is_active' => 'TINYINT(1) NOT NULL DEFAULT 1 AFTER is_recurring',
-        'remarks' => 'TEXT NULL AFTER is_active',
-    ];
-
-    foreach ($employeeDeductionColumns as $column => $definition) {
-        if (!database_column_exists($pdo, 'EmployeeDeduction', $column)) {
-            $pdo->exec("ALTER TABLE EmployeeDeduction ADD COLUMN {$column} {$definition}");
-        }
-    }
+    ensure_payroll_embedded_detail_columns($pdo);
 
     payroll_seed_deduction_engine_defaults($pdo);
     $ensured = true;
@@ -608,7 +739,6 @@ function payroll_seed_deduction_engine_defaults(PDO $pdo): void
         ['Pag-IBIG', 'HDMF', 'fixed', 200.00, 0.0000, 'basic_salary', 1, 1],
         ['Pag-IBIG', 'Pag-IBIG', 'fixed', 200.00, 0.0000, 'basic_salary', 1, 0],
         ['PHIC', 'PHIC', 'percentage', 0.00, 2.5000, 'basic_salary', 1, 1],
-        ['PHIC', 'PhilHealth', 'percentage', 0.00, 2.5000, 'basic_salary', 1, 0],
         ['Attendance Deductions', 'Late Deduction', 'fixed', 0.00, 0.0000, 'basic_salary', 0, 1],
         ['Attendance Deductions', 'Absence Deduction', 'fixed', 0.00, 0.0000, 'basic_salary', 0, 1],
         ['Attendance Deductions', 'Undertime Deduction', 'fixed', 0.00, 0.0000, 'basic_salary', 0, 1],
@@ -655,6 +785,15 @@ function payroll_seed_deduction_engine_defaults(PDO $pdo): void
         $table = deduction_catalog_table_for_id($pdo, $deductionTypeId);
 
         if ($table === null) {
+            continue;
+        }
+
+        if ($table === DEDUCTION_FAMILIES['other']['table']) {
+            // Other deductions have a fixed amount and retain their existing payroll metadata.
+            deduction_catalog_update_fields($pdo, $table, $deductionTypeId, [
+                'is_recurring' => (int)$isRecurring,
+                'is_active' => (int)$isActive,
+            ]);
             continue;
         }
 
@@ -816,15 +955,32 @@ function payroll_approved_overtime_hours(PDO $pdo, int $employeeRecordId, ?strin
     return payroll_decimal($statement->fetchColumn());
 }
 
+/**
+ * The SQL condition limiting a pass slip query to trips that actually happened.
+ *
+ * Filing a pass slip is a request now, and a request can be rejected, cancelled, or approved and
+ * never used. None of those is time out of the office, so none of them belongs in payroll. What
+ * marks a real trip is a scanned departure: `time_out_at` is written by the QR scan at the gate and
+ * by nothing else, which makes it the one honest test of whether the person left.
+ *
+ * Returns an empty string on a database that predates the QR columns, where every row was a typed,
+ * completed slip and the old "count them all" rule was already right.
+ */
+function payroll_pass_slip_used_condition(PDO $pdo): string
+{
+    return database_column_exists($pdo, 'pass_slip', 'time_out_at')
+        ? ' AND time_out_at IS NOT NULL'
+        : '';
+}
+
 /*
  * Hours an employee was out of the office on a pass slip, which stand in for undertime when there is
  * no attendance data for the period (see payroll_apply_automatic_calculations).
  *
- * This used to count only slips whose status was 'approved'. Pass slips have no status any more, so
- * every filed slip counts -- which is what the surrounding code always meant by the number. Worth
- * knowing: nothing in the app ever set that status, so in practice this returned 0.0 for everyone
- * and pass slips never touched anyone's pay. They do now. To go back to pass slips not affecting
- * payroll at all, return 0.0 from here.
+ * This used to count only slips whose status was 'approved'. Pass slips went through a spell of
+ * having no status at all, and then got a real one back with the QR workflow -- so the rule here is
+ * neither "approved" nor "every row" but "actually scanned out", which is what the surrounding code
+ * always meant by the number. To go back to pass slips not affecting payroll at all, return 0.0.
  */
 function payroll_filed_pass_slip_hours(PDO $pdo, int $employeeRecordId, ?string $startDate, ?string $endDate): float
 {
@@ -840,11 +996,22 @@ function payroll_filed_pass_slip_hours(PDO $pdo, int $employeeRecordId, ?string 
         return 0.0;
     }
 
+    /*
+     * `duration_minutes` is preferred where it exists because it is computed from the two DATETIME
+     * stamps, so an absence that crosses midnight measures as the hour it was rather than as a
+     * negative TIMEDIFF that GREATEST() then flattens to zero. A slip that is still out contributes
+     * nothing either way: its return has not been scanned, so there is no duration yet to deduct.
+     */
+    $span = database_column_exists($pdo, 'pass_slip', 'duration_minutes')
+        ? 'GREATEST(COALESCE(duration_minutes, 0), 0) * 60'
+        : 'GREATEST(TIME_TO_SEC(TIMEDIFF(time_returned, departure_time)), 0)';
+
     $statement = $pdo->prepare(
-        "SELECT COALESCE(SUM(GREATEST(TIME_TO_SEC(TIMEDIFF(time_returned, departure_time)), 0) / 3600), 0)
+        "SELECT COALESCE(SUM({$span}) / 3600, 0)
          FROM pass_slip
          WHERE employee_id = :employee_id
            AND pass_date BETWEEN :start_date AND :end_date"
+        . payroll_pass_slip_used_condition($pdo)
     );
     $statement->execute([
         ':employee_id' => $employeeRecordId,
@@ -853,6 +1020,39 @@ function payroll_filed_pass_slip_hours(PDO $pdo, int $employeeRecordId, ?string 
     ]);
 
     return payroll_decimal($statement->fetchColumn());
+}
+
+/*
+ * How many pass slips an employee used in the period. Shown on the payslip next to the attendance
+ * figures; it does not feed any deduction. Same rule as the hours above: a slip counts once it has
+ * been scanned out, not when it was filed.
+ */
+function payroll_filed_pass_slip_count(PDO $pdo, int $employeeRecordId, ?string $startDate, ?string $endDate): int
+{
+    if (
+        $employeeRecordId <= 0
+        || $startDate === null
+        || $endDate === null
+        || !payroll_database_table_exists($pdo, 'pass_slip')
+        || !database_column_exists($pdo, 'pass_slip', 'pass_date')
+    ) {
+        return 0;
+    }
+
+    $statement = $pdo->prepare(
+        "SELECT COUNT(*)
+         FROM pass_slip
+         WHERE employee_id = :employee_id
+           AND pass_date BETWEEN :start_date AND :end_date"
+        . payroll_pass_slip_used_condition($pdo)
+    );
+    $statement->execute([
+        ':employee_id' => $employeeRecordId,
+        ':start_date' => $startDate,
+        ':end_date' => $endDate,
+    ]);
+
+    return (int)$statement->fetchColumn();
 }
 
 function payroll_deduction_frequency_factor(string $frequency, string $payPeriod): float
@@ -955,55 +1155,6 @@ function payroll_calculated_deduction_amount(
     return round(((float)$amount) * $factor, 2);
 }
 
-function payroll_fetch_employee_deduction_rows(PDO $pdo, int $employeeRecordId, ?string $startDate, ?string $endDate): array
-{
-    if (
-        $employeeRecordId <= 0
-        || $startDate === null
-        || $endDate === null
-        || !payroll_database_table_exists($pdo, 'EmployeeDeduction')
-    ) {
-        return [];
-    }
-
-    $statement = $pdo->prepare(
-        'SELECT
-            ed.employee_deduction_id AS employeeDeductionId,
-            ed.employee_id AS employeeRecordId,
-            ed.deduction_type_id AS deductionTypeId,
-            dt.deduction_name AS deductionName,
-            dt.category_name AS categoryName,
-            COALESCE(ed.amount, dt.default_amount) AS amount,
-            COALESCE(ed.rate, dt.default_rate) AS rate,
-            COALESCE(NULLIF(ed.calculation_type, ""), dt.calculation_type, "fixed") AS calculationType,
-            COALESCE(NULLIF(ed.basis, ""), dt.basis, "basic_salary") AS basis,
-            dt.base_floor AS baseFloor,
-            dt.base_cap AS baseCap,
-            dt.threshold_rules AS thresholdRules,
-            COALESCE(NULLIF(ed.frequency, ""), "monthly") AS frequency,
-            ed.effective_start AS effectiveStart,
-            ed.effective_end AS effectiveEnd,
-            "employee" AS source
-         FROM EmployeeDeduction ed
-         INNER JOIN ' . deduction_catalog_type_union_sql() . ' dt
-                 ON dt.deduction_type_id = ed.deduction_type_id
-         WHERE ed.employee_id = :employee_id
-           AND ed.is_active = 1
-           AND ed.is_recurring = 1
-           AND COALESCE(dt.is_active, 1) = 1
-           AND (ed.effective_start IS NULL OR ed.effective_start <= :end_date)
-           AND (ed.effective_end IS NULL OR ed.effective_end >= :start_date)
-         ORDER BY ed.employee_deduction_id ASC'
-    );
-    $statement->execute([
-        ':employee_id' => $employeeRecordId,
-        ':start_date' => $startDate,
-        ':end_date' => $endDate,
-    ]);
-
-    return $statement->fetchAll();
-}
-
 function payroll_fetch_global_recurring_deduction_rows(PDO $pdo, array $excludedKeys = []): array
 {
     $statement = $pdo->query(
@@ -1020,7 +1171,7 @@ function payroll_fetch_global_recurring_deduction_rows(PDO $pdo, array $excluded
             dt.threshold_rules AS thresholdRules,
             "monthly" AS frequency,
             "global" AS source
-         FROM ' . deduction_catalog_type_union_sql() . ' dt
+         FROM ' . deduction_catalog_type_union_sql($pdo) . ' dt
          WHERE COALESCE(dt.is_active, 1) = 1
            AND COALESCE(dt.is_recurring, 0) = 1
          ORDER BY dt.deduction_type_id ASC'
@@ -1070,6 +1221,8 @@ function payroll_fetch_approved_loan_deduction_items(
     string $payPeriod,
     mixed $employmentStatus = null
 ): array {
+    payroll_ensure_loan_tracking_schema($pdo);
+
     if (
         $employeeRecordId <= 0
         || $endDate === null
@@ -1088,13 +1241,27 @@ function payroll_fetch_approved_loan_deduction_items(
     }
 
     $statement = $pdo->prepare(
-        'SELECT id, loan_type AS loanType, loan_amount AS loanAmount, repayment_terms AS repaymentTerms, date_filed AS dateFiled
-         FROM loan_records
-         WHERE employee_id = :employee_id
-           AND status = "Approved"
-           AND is_archived = 0
-           AND date_filed <= :end_date
-         ORDER BY date_filed ASC, id ASC'
+        'SELECT
+            lr.id,
+            lr.loan_type AS loanType,
+            lr.loan_amount AS loanAmount,
+            lr.repayment_terms AS repaymentTerms,
+            lr.annual_interest_rate AS annualInterestRate,
+            lr.date_filed AS dateFiled,
+            lr.disbursed_at AS disbursedAt,
+            COALESCE(payment_summary.paidAmount, 0) AS paidAmount
+         FROM loan_records lr
+         LEFT JOIN (
+             SELECT loan_record_id, SUM(amount) AS paidAmount
+             FROM loan_payments
+             GROUP BY loan_record_id
+         ) payment_summary ON payment_summary.loan_record_id = lr.id
+         WHERE lr.employee_id = :employee_id
+           AND lr.status = "Approved"
+           AND lr.is_archived = 0
+           AND lr.disbursed_at IS NOT NULL
+           AND lr.disbursed_at <= :end_date
+         ORDER BY lr.disbursed_at ASC, lr.id ASC'
     );
     $statement->execute([
         ':employee_id' => $employeeRecordId,
@@ -1113,19 +1280,36 @@ function payroll_fetch_approved_loan_deduction_items(
             continue;
         }
 
-        $monthlyAmount = payroll_decimal($loan['loanAmount'] ?? 0) / $months;
-        $amount = round($monthlyAmount * payroll_deduction_frequency_factor('monthly', $payPeriod), 2);
+        $principal = payroll_decimal($loan['loanAmount'] ?? 0);
+        $annualRate = payroll_decimal($loan['annualInterestRate'] ?? 0);
+        $monthlyAmount = payroll_loan_monthly_amount($principal, $annualRate, $months);
+        $totalPayable = round($monthlyAmount * $months, 2);
+        $paidAmount = payroll_decimal($loan['paidAmount'] ?? 0);
+        $outstanding = max(0.0, $totalPayable - $paidAmount);
+        $amount = min(
+            $outstanding,
+            round($monthlyAmount * payroll_deduction_frequency_factor('monthly', $payPeriod), 2)
+        );
         if ($amount <= 0) {
             continue;
         }
 
+        $loanType = payroll_text($loan['loanType'] ?? 'Loan Deduction') ?: 'Loan Deduction';
+
         $items[] = [
-            'name' => payroll_text($loan['loanType'] ?? 'Loan Deduction') ?: 'Loan Deduction',
-            // Loans live in the `other_deductions` family; "Loan Deductions" matches none.
-            'category' => 'Other Deductions',
+            'name' => $loanType,
+            /*
+             * Charged under the family that already lists the product (GSIS "Policy Loan", Pag-IBIG
+             * "Housing Loan"); only a product no family carries falls back to Other Deductions.
+             * Hard-coding Other here made payroll_sync_deductions() create a second row for every
+             * loan there, which is what Deduction Setup showed as duplicates.
+             */
+            'category' => deduction_catalog_category_for_name($pdo, $loanType) ?? 'Other Deductions',
             'amount' => $amount,
             'source' => 'approved_loan',
             'referenceId' => (int)($loan['id'] ?? 0),
+            'monthlyAmount' => $monthlyAmount,
+            'paidAmountBeforePayroll' => $paidAmount,
         ];
     }
 
@@ -1163,6 +1347,10 @@ function payroll_apply_resolved_deduction_items(array $payload, array $items): a
             'name' => $name,
             'category' => payroll_text($item['category'] ?? $item['categoryName'] ?? '') ?: 'Other Deductions',
             'amount' => $amount,
+            'source' => payroll_text($item['source'] ?? ''),
+            'referenceId' => (int)($item['referenceId'] ?? 0),
+            'monthlyAmount' => payroll_decimal($item['monthlyAmount'] ?? 0),
+            'paidAmountBeforePayroll' => payroll_decimal($item['paidAmountBeforePayroll'] ?? 0),
         ];
     }
 
@@ -1258,9 +1446,9 @@ function payroll_apply_recurring_deductions(PDO $pdo, array $payload, array $emp
 
     $employeeRecordId = (int)($employee['id'] ?? $payload['employeeRecordId'] ?? 0);
     $grossPreview = round(
-        $basicSalary
+        payroll_period_basic_salary($basicSalary, $payload['payPeriod'] ?? 'Monthly', $payload['payrollType'] ?? 'Salary')
         + $payload['overtimePay']
-        + $payload['pera']
+        + payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])
         + $payload['travelAllowance']
         + $payload['salaryAdjustment']
         + $payload['otherAllowances']
@@ -1268,17 +1456,11 @@ function payroll_apply_recurring_deductions(PDO $pdo, array $payload, array $emp
         2
     );
     $taxableIncome = payroll_decimal($payload['withholdingTaxBase'] ?? $basicSalary);
-    $employeeRows = payroll_fetch_employee_deduction_rows($pdo, $employeeRecordId, $payload['startDate'], $payload['endDate']);
-    $employeeKeys = [];
-    foreach ($employeeRows as $row) {
-        $employeeKeys[payroll_normalize_deduction_key((string)($row['deductionName'] ?? ''))] = true;
-    }
-
-    $globalRows = payroll_fetch_global_recurring_deduction_rows($pdo, $employeeKeys);
+    $globalRows = payroll_fetch_global_recurring_deduction_rows($pdo);
     $resolvedItems = [];
     $diagnostics = [];
 
-    foreach ([...$employeeRows, ...$globalRows] as $row) {
+    foreach ($globalRows as $row) {
         $amount = payroll_calculated_deduction_amount(
             $row,
             $basicSalary,
@@ -1312,13 +1494,6 @@ function payroll_apply_recurring_deductions(PDO $pdo, array $payload, array $emp
         $employee['employmentType'] ?? null
     );
     $resolvedItems = [...$resolvedItems, ...$loanItems];
-
-    if ($employeeRows === []) {
-        $diagnostics[] = [
-            'employeeRecordId' => $employeeRecordId,
-            'message' => 'No employee-specific recurring deductions were found; global recurring defaults were used where available.',
-        ];
-    }
 
     $payload = payroll_apply_resolved_deduction_items($payload, $resolvedItems);
     $payload['deductionDiagnostics'] = $diagnostics;
@@ -1610,7 +1785,7 @@ function payroll_lookup_allowance_amount(PDO $pdo, string $allowanceName, float 
 {
     $statement = $pdo->prepare(
         'SELECT amount
-         FROM Allowance
+         FROM allowance
          WHERE allowance_name = :allowance_name
          ORDER BY allowance_id DESC
          LIMIT 1'
@@ -1669,7 +1844,7 @@ function payroll_payload(PDO $pdo, array $body): array
         'overtimeHours' => $overtimeHours,
         'overtimeRate' => $overtimeRate,
         'overtimePay' => $overtimePay,
-        'pera' => payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT),
+        'pera' => payroll_pera_amount($body['payrollType'] ?? '', payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT)),
         'travelAllowance' => payroll_decimal($body['travelAllowance'] ?? 0),
         'salaryAdjustment' => payroll_decimal($body['salaryAdjustment'] ?? 0),
         'otherAllowances' => payroll_decimal($body['otherAllowances'] ?? 0),
@@ -1700,15 +1875,19 @@ function payroll_fetch_employee_snapshot(PDO $pdo, int $employeeRecordId): ?arra
             e.id,
             e.employee_id AS employeeId,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
-            des.name AS designation,
+            e.last_name AS lastName,
+            e.first_name AS firstName,
+            e.middle_name AS middleName,
+            des.name AS position,
+            e.division_id AS divisionId,
             d.name AS division,
             e.employment_status AS employmentType,
             e.basic_salary AS basicSalary,
             e.salary_rate AS salaryRate,
             e.profile_image AS profileImage
          FROM employees e
-         INNER JOIN divisions d ON d.id = e.division_id
-         INNER JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE e.id = :id
            AND e.is_archived = 0
          LIMIT 1'
@@ -1786,12 +1965,26 @@ function payroll_validate_payload(PDO $pdo, array $payload, bool $allowArchivedS
     return $employee;
 }
 
+function payroll_period_basic_salary(float $monthlySalary, string $payPeriod, string $payrollType): float
+{
+    if (payroll_normalize_type($payrollType) === 'Salary' && in_array($payPeriod, ['1st Half', '2nd Half'], true)) {
+        $firstHalf = round($monthlySalary / 2, 2);
+        return $payPeriod === '1st Half' ? $firstHalf : round($monthlySalary - $firstHalf, 2);
+    }
+
+    return round($monthlySalary, 2);
+}
+
 function payroll_calculate_totals(array $payload, array $employee): array
 {
-    $basicSalary = payroll_decimal($employee['basicSalary'] ?? 0);
+    $basicSalary = payroll_period_basic_salary(
+        payroll_decimal($employee['basicSalary'] ?? 0),
+        $payload['payPeriod'] ?? 'Monthly',
+        $payload['payrollType'] ?? 'Salary'
+    );
     $totalAllowance = round(
         $payload['overtimePay']
-        + $payload['pera']
+        + payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])
         + $payload['travelAllowance']
         + $payload['salaryAdjustment']
         + $payload['otherAllowances']
@@ -1827,6 +2020,7 @@ function payroll_calculate_totals(array $payload, array $employee): array
 
 function payroll_apply_automatic_calculations(PDO $pdo, array $payload, array $employee): array
 {
+    $payload['pera'] = payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'] ?? 0);
     $basicSalary = payroll_decimal($employee['basicSalary'] ?? 0);
     $employeeRecordId = (int)($employee['id'] ?? $payload['employeeRecordId'] ?? 0);
     $hourlyRate = payroll_monthly_hourly_rate($basicSalary);
@@ -1838,6 +2032,12 @@ function payroll_apply_automatic_calculations(PDO $pdo, array $payload, array $e
     );
     $overtimeRate = $hourlyRate * PAYROLL_REGULAR_OVERTIME_MULTIPLIER;
     $passSlipHours = payroll_filed_pass_slip_hours(
+        $pdo,
+        $employeeRecordId,
+        $payload['startDate'],
+        $payload['endDate']
+    );
+    $passSlipCount = payroll_filed_pass_slip_count(
         $pdo,
         $employeeRecordId,
         $payload['startDate'],
@@ -1856,6 +2056,7 @@ function payroll_apply_automatic_calculations(PDO $pdo, array $payload, array $e
     $payload['overtimeRate'] = payroll_decimal($overtimeRate);
     $payload['overtimePay'] = round($overtimeHours * $overtimeRate, 2);
     $payload['passSlipHours'] = $passSlipHours;
+    $payload['passSlipCount'] = $passSlipCount;
     $payload['attendanceRenderedMinutes'] = $attendanceDeductions['renderedMinutes'];
     $payload['attendanceLateMinutes'] = $attendanceDeductions['lateMinutes'];
     $payload['attendanceUndertimeMinutes'] = $attendanceDeductions['undertimeMinutes'];
@@ -1896,12 +2097,12 @@ function payroll_with_legacy_fk_bypass(PDO $pdo, callable $callback): mixed
 
 function payroll_store_meta(PDO $pdo, int $payrollId, array $meta): void
 {
-    ensure_payroll_meta_table($pdo);
+    ensure_payroll_meta_column($pdo);
 
     $statement = $pdo->prepare(
-        'INSERT INTO PayrollMeta (payroll_id, meta_json)
-         VALUES (:payroll_id, :meta_json)
-         ON DUPLICATE KEY UPDATE meta_json = VALUES(meta_json)'
+        'UPDATE payroll
+         SET meta_json = :meta_json
+         WHERE payroll_id = :payroll_id'
     );
     $statement->execute([
         ':payroll_id' => $payrollId,
@@ -1911,11 +2112,11 @@ function payroll_store_meta(PDO $pdo, int $payrollId, array $meta): void
 
 function payroll_fetch_meta(PDO $pdo, int $payrollId): array
 {
-    ensure_payroll_meta_table($pdo);
+    ensure_payroll_meta_column($pdo);
 
     $statement = $pdo->prepare(
         'SELECT meta_json
-         FROM PayrollMeta
+         FROM payroll
          WHERE payroll_id = :payroll_id
          LIMIT 1'
     );
@@ -1932,26 +2133,7 @@ function payroll_fetch_meta(PDO $pdo, int $payrollId): array
 
 function payroll_ensure_approval_schema(PDO $pdo): void
 {
-    static $ensured = false;
-
-    if ($ensured) {
-        return;
-    }
-
-    if (!database_column_exists($pdo, 'PayrollApproval', 'approver_employee_id')) {
-        $pdo->exec('ALTER TABLE PayrollApproval ADD COLUMN approver_employee_id INT UNSIGNED NULL AFTER approver_user_id');
-        $pdo->exec('ALTER TABLE PayrollApproval ADD KEY idx_payroll_approval_employee (approver_employee_id)');
-    }
-
-    if (!database_column_exists($pdo, 'PayrollApproval', 'from_status')) {
-        $pdo->exec('ALTER TABLE PayrollApproval ADD COLUMN from_status VARCHAR(20) NULL AFTER action');
-    }
-
-    if (!database_column_exists($pdo, 'PayrollApproval', 'to_status')) {
-        $pdo->exec('ALTER TABLE PayrollApproval ADD COLUMN to_status VARCHAR(20) NULL AFTER from_status');
-    }
-
-    $ensured = true;
+    ensure_payroll_embedded_detail_columns($pdo);
 }
 
 function payroll_actor_display_name(array $user): string
@@ -1991,22 +2173,85 @@ function payroll_record_approval_action(
     }
 
     $employeeRecordId = session_employee_record_id($pdo, $actorUser);
+    $history = payroll_read_embedded_json_list($pdo, $payrollId, 'approval_history_json');
+    $nextId = 1;
+
+    foreach ($history as $entry) {
+        if (is_array($entry)) {
+            $nextId = max($nextId, (int)($entry['id'] ?? 0) + 1);
+        }
+    }
+
+    $history[] = [
+        'id' => $nextId,
+        'payrollId' => $payrollId,
+        'approverUserId' => $userId,
+        'approverEmployeeRecordId' => $employeeRecordId,
+        'action' => payroll_text($action),
+        'fromStatus' => $fromStatus !== null ? payroll_normalize_status($fromStatus) : null,
+        'toStatus' => $toStatus !== null ? payroll_normalize_status($toStatus) : null,
+        'actionDate' => date('Y-m-d H:i:s'),
+        'comments' => payroll_nullable_text($comments),
+    ];
+
+    payroll_write_embedded_json_list($pdo, $payrollId, 'approval_history_json', $history);
+}
+
+function payroll_approval_actor_details(PDO $pdo, int $userId, int $employeeRecordId): array
+{
+    static $cache = [];
+    $cacheKey = $userId . ':' . $employeeRecordId;
+
+    if (isset($cache[$cacheKey])) {
+        return $cache[$cacheKey];
+    }
+
+    if ($userId <= 0) {
+        return $cache[$cacheKey] = [
+            'approverEmployeeRecordId' => $employeeRecordId,
+            'approverName' => 'System User',
+            'approverRole' => '',
+            'signatureDataUrl' => '',
+        ];
+    }
 
     $statement = $pdo->prepare(
-        'INSERT INTO PayrollApproval
-            (payroll_id, approver_user_id, approver_employee_id, action, from_status, to_status, comments)
-         VALUES
-            (:payroll_id, :approver_user_id, :approver_employee_id, :action, :from_status, :to_status, :comments)'
+        'SELECT
+            COALESCE(e.id, :fallback_employee_id) AS approverEmployeeRecordId,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(e.first_name, ""), " ", COALESCE(e.middle_name, ""), " ", COALESCE(e.last_name, ""))), ""),
+                u.username,
+                "System User"
+            ) AS approverName,
+            COALESCE(r.name, "") AS approverRole,
+            COALESCE(e.e_signature, "") AS signatureDataUrl
+         FROM users u
+         LEFT JOIN roles r ON r.id = u.role_id
+         LEFT JOIN employees e
+            ON (
+                e.id = :employee_id
+                OR (:use_email_match = 1 AND e.email COLLATE utf8mb4_unicode_ci = u.email COLLATE utf8mb4_unicode_ci)
+            )
+           AND e.is_archived = 0
+         WHERE u.id = :user_id
+         ORDER BY (e.id = :preferred_employee_id) DESC
+         LIMIT 1'
     );
     $statement->execute([
-        ':payroll_id' => $payrollId,
-        ':approver_user_id' => $userId,
-        ':approver_employee_id' => $employeeRecordId,
-        ':action' => payroll_text($action),
-        ':from_status' => $fromStatus !== null ? payroll_normalize_status($fromStatus) : null,
-        ':to_status' => $toStatus !== null ? payroll_normalize_status($toStatus) : null,
-        ':comments' => payroll_nullable_text($comments),
+        ':fallback_employee_id' => $employeeRecordId,
+        ':employee_id' => $employeeRecordId,
+        ':use_email_match' => $employeeRecordId > 0 ? 0 : 1,
+        ':user_id' => $userId,
+        ':preferred_employee_id' => $employeeRecordId,
     ]);
+    $row = $statement->fetch() ?: [];
+
+    return $cache[$cacheKey] = [
+        'approverEmployeeRecordId' => (int)($row['approverEmployeeRecordId'] ?? $employeeRecordId),
+        'approverName' => payroll_text($row['approverName'] ?? 'System User') ?: 'System User',
+        'approverRole' => payroll_text($row['approverRole'] ?? ''),
+        'signatureDataUrl' => payroll_text($row['signatureDataUrl'] ?? ''),
+    ];
 }
 
 function payroll_fetch_approval_history(PDO $pdo, int $payrollId): array
@@ -2016,67 +2261,45 @@ function payroll_fetch_approval_history(PDO $pdo, int $payrollId): array
     }
 
     payroll_ensure_approval_schema($pdo);
+    $history = [];
 
-    $statement = $pdo->prepare(
-        'SELECT
-            pa.approval_id AS id,
-            pa.payroll_id AS payrollId,
-            pa.approver_user_id AS approverUserId,
-            COALESCE(pa.approver_employee_id, e.id) AS approverEmployeeRecordId,
-            pa.action,
-            pa.from_status AS fromStatus,
-            pa.to_status AS toStatus,
-            pa.action_date AS actionDate,
-            pa.comments,
-            u.username,
-            r.name AS approverRole,
-            e.e_signature AS signatureDataUrl,
-            COALESCE(
-                NULLIF(TRIM(CONCAT(COALESCE(e.first_name, ""), " ", COALESCE(e.middle_name, ""), " ", COALESCE(e.last_name, ""))), ""),
-                u.username,
-                "System User"
-            ) AS approverName
-         FROM PayrollApproval pa
-         LEFT JOIN users u ON u.id = pa.approver_user_id
-         LEFT JOIN roles r ON r.id = u.role_id
-         LEFT JOIN employees e
-            ON (
-                e.id = pa.approver_employee_id
-                OR (
-                    pa.approver_employee_id IS NULL
-                    AND e.email COLLATE utf8mb4_unicode_ci = u.email COLLATE utf8mb4_unicode_ci
-                )
-            )
-           AND e.is_archived = 0
-         WHERE pa.payroll_id = :payroll_id
-         ORDER BY pa.action_date ASC, pa.approval_id ASC'
-    );
-    $statement->execute([':payroll_id' => $payrollId]);
+    foreach (payroll_read_embedded_json_list($pdo, $payrollId, 'approval_history_json') as $entry) {
+        if (!is_array($entry)) {
+            continue;
+        }
 
-    return array_map(
-        static fn (array $row): array => [
-            'id' => (int)($row['id'] ?? 0),
-            'payrollId' => (int)($row['payrollId'] ?? 0),
-            'approverUserId' => (int)($row['approverUserId'] ?? 0),
-            'approverEmployeeRecordId' => (int)($row['approverEmployeeRecordId'] ?? 0),
-            'approverName' => payroll_text($row['approverName'] ?? $row['username'] ?? 'System User'),
-            'approverRole' => payroll_text($row['approverRole'] ?? ''),
-            'action' => payroll_text($row['action'] ?? ''),
-            'fromStatus' => payroll_text($row['fromStatus'] ?? ''),
-            'toStatus' => payroll_text($row['toStatus'] ?? ''),
-            'actionDate' => $row['actionDate'] ?? null,
-            'comments' => payroll_nullable_text($row['comments'] ?? null),
-            'signatureDataUrl' => payroll_text($row['signatureDataUrl'] ?? ''),
-        ],
-        $statement->fetchAll()
-    );
+        $userId = (int)($entry['approverUserId'] ?? $entry['approver_user_id'] ?? 0);
+        $employeeRecordId = (int)($entry['approverEmployeeRecordId'] ?? $entry['approver_employee_id'] ?? 0);
+        $actor = payroll_approval_actor_details($pdo, $userId, $employeeRecordId);
+        $history[] = [
+            'id' => (int)($entry['id'] ?? 0),
+            'payrollId' => $payrollId,
+            'approverUserId' => $userId,
+            'approverEmployeeRecordId' => $actor['approverEmployeeRecordId'],
+            'approverName' => $actor['approverName'],
+            'approverRole' => $actor['approverRole'],
+            'action' => payroll_text($entry['action'] ?? ''),
+            'fromStatus' => payroll_text($entry['fromStatus'] ?? $entry['from_status'] ?? ''),
+            'toStatus' => payroll_text($entry['toStatus'] ?? $entry['to_status'] ?? ''),
+            'actionDate' => $entry['actionDate'] ?? $entry['action_date'] ?? null,
+            'comments' => payroll_nullable_text($entry['comments'] ?? null),
+            'signatureDataUrl' => $actor['signatureDataUrl'],
+        ];
+    }
+
+    usort($history, static function (array $left, array $right): int {
+        $dateOrder = strcmp((string)($left['actionDate'] ?? ''), (string)($right['actionDate'] ?? ''));
+        return $dateOrder !== 0 ? $dateOrder : ((int)$left['id'] <=> (int)$right['id']);
+    });
+
+    return $history;
 }
 
 function payroll_allowance_items(array $payload): array
 {
     return [
         ['name' => 'Overtime Pay', 'amount' => $payload['overtimePay']],
-        ['name' => 'PERA', 'amount' => $payload['pera']],
+        ['name' => 'PERA', 'amount' => payroll_pera_amount($payload['payrollType'] ?? '', $payload['pera'])],
         ['name' => 'Travel Allowance', 'amount' => $payload['travelAllowance']],
         ['name' => 'Salary Adjustment', 'amount' => $payload['salaryAdjustment']],
         ['name' => 'Other Allowances', 'amount' => $payload['otherAllowances']],
@@ -2106,7 +2329,7 @@ function payroll_resolve_allowance_snapshot(PDO $pdo, string $name, float $amoun
 {
     $statement = $pdo->prepare(
         'SELECT allowance_id
-         FROM Allowance
+         FROM allowance
          WHERE allowance_name = :allowance_name
            AND amount = :amount
          ORDER BY allowance_id DESC
@@ -2123,7 +2346,7 @@ function payroll_resolve_allowance_snapshot(PDO $pdo, string $name, float $amoun
     }
 
     $insert = $pdo->prepare(
-        'INSERT INTO Allowance (allowance_name, amount)
+        'INSERT INTO allowance (allowance_name, amount)
          VALUES (:allowance_name, :amount)'
     );
     $insert->execute([
@@ -2140,31 +2363,9 @@ function payroll_resolve_deduction_category(PDO $pdo, string $categoryName): int
 }
 
 /**
- * `deduction_types` always carries `default_amount`, so this is now constant. Kept because the
- * payslip-style query below still branches on it, and its old job — probing a schema that may or
- * may not have been migrated — no longer exists.
- */
-function payroll_deduction_type_has_default_amount(PDO $pdo): bool
-{
-    return true;
-}
-
-function payroll_deduction_has_amount(PDO $pdo): bool
-{
-    static $hasColumn = null;
-
-    if ($hasColumn === null) {
-        $hasColumn = database_column_exists($pdo, 'PayrollDeduction', 'amount');
-    }
-
-    return $hasColumn;
-}
-
-/**
  * Resolves a deduction to its catalog id, creating the type if the payroll run names a new one.
  *
- * The lookup and insert now go through `deduction_types`. `deductiontype` still exists as a
- * read-only compatibility view for the report and payslip queries, so writing here would fail.
+ * The lookup and insert use the same existing family tables that Deduction Setup edits.
  */
 function payroll_resolve_deduction_type(PDO $pdo, string $categoryName, string $deductionName): int
 {
@@ -2184,29 +2385,22 @@ function payroll_sync_allowances(PDO $pdo, int $payrollId, array $items): void
 }
 
 /**
- * Writes the itemised `PayrollDeduction` rows, then mirrors them into the deduction columns on
- * `payroll`.
+ * Writes the itemised deduction snapshot on its parent payroll row, then mirrors it into the
+ * register's deduction columns.
  *
- * The columns are the register's storage — one per deduction, the way the schema lays out
- * `sss_contribution` and friends — but the itemised rows remain the record of truth. Both are
- * written here so they cannot drift; payroll_rebuild_deduction_columns() reconstructs the columns
- * from the rows if they ever do.
+ * The JSON list keeps names and categories for historical display while type ids keep catalog usage
+ * checks reliable. payroll_rebuild_deduction_columns() can reconstruct every amount column from it.
  */
 function payroll_sync_deductions(PDO $pdo, int $payrollId, array $items): void
 {
-    $delete = $pdo->prepare('DELETE FROM PayrollDeduction WHERE payroll_id = :payroll_id');
-    $delete->execute([':payroll_id' => $payrollId]);
+    $existingIds = [];
+    foreach (deduction_catalog_payroll_items($pdo, $payrollId) as $existing) {
+        $typeId = (int)($existing['deductionTypeId'] ?? 0);
+        $existingIds[$typeId][] = (int)($existing['payrollDeductionId'] ?? 0);
+    }
 
-    $hasAmountColumn = payroll_deduction_has_amount($pdo);
-    $insert = $hasAmountColumn
-        ? $pdo->prepare(
-            'INSERT INTO PayrollDeduction (payroll_id, deduction_type_id, amount)
-             VALUES (:payroll_id, :deduction_type_id, :amount)'
-        )
-        : $pdo->prepare(
-            'INSERT INTO PayrollDeduction (payroll_id, deduction_type_id)
-             VALUES (:payroll_id, :deduction_type_id)'
-        );
+    $nextId = payroll_next_embedded_item_id($pdo, 'deduction_items_json');
+    $stored = [];
 
     foreach ($items as $item) {
         $amount = payroll_decimal($item['amount'] ?? 0);
@@ -2218,23 +2412,93 @@ function payroll_sync_deductions(PDO $pdo, int $payrollId, array $items): void
         $categoryName = payroll_text($item['category'] ?? '') ?: (PAYROLL_DEDUCTION_CATEGORY_MAP[$name] ?? 'Other Deductions');
         $deductionTypeId = payroll_resolve_deduction_type($pdo, $categoryName, $name);
 
-        $params = [
-            ':payroll_id' => $payrollId,
-            ':deduction_type_id' => $deductionTypeId,
-        ];
-
-        if ($hasAmountColumn) {
-            $params[':amount'] = payroll_decimal_string($amount);
+        $itemId = !empty($existingIds[$deductionTypeId])
+            ? (int)array_shift($existingIds[$deductionTypeId])
+            : 0;
+        if ($itemId <= 0) {
+            $itemId = $nextId++;
         }
 
-        $insert->execute($params);
+        $stored[] = [
+            'id' => $itemId,
+            'payrollDeductionId' => $itemId,
+            'payrollId' => $payrollId,
+            'deductionTypeId' => $deductionTypeId,
+            'name' => $name,
+            'category' => $categoryName,
+            'amount' => payroll_decimal($amount),
+            'source' => payroll_text($item['source'] ?? ''),
+            'referenceId' => (int)($item['referenceId'] ?? 0),
+            'monthlyAmount' => payroll_decimal($item['monthlyAmount'] ?? 0),
+            'paidAmountBeforePayroll' => payroll_decimal($item['paidAmountBeforePayroll'] ?? 0),
+        ];
     }
 
+    payroll_write_embedded_json_list($pdo, $payrollId, 'deduction_items_json', $stored);
     payroll_rebuild_deduction_columns($pdo, $payrollId);
 }
 
+function payroll_record_paid_loan_deductions(PDO $pdo, int $payrollId, array $deductionItems, ?string $paidAt): void
+{
+    payroll_ensure_loan_tracking_schema($pdo);
+
+    $loanItems = array_values(array_filter(
+        $deductionItems,
+        static fn (array $item): bool => payroll_text($item['source'] ?? '') === 'approved_loan'
+            && (int)($item['referenceId'] ?? 0) > 0
+            && payroll_decimal($item['amount'] ?? 0) > 0
+    ));
+
+    if (
+        $payrollId <= 0
+        || $paidAt === null
+        || $loanItems === []
+        || !payroll_database_table_exists($pdo, 'loan_payments')
+    ) {
+        return;
+    }
+
+    $statement = $pdo->prepare(
+        'INSERT INTO loan_payments
+            (loan_record_id, installment_number, amount, paid_at, payment_reference, notes, source, payroll_id)
+         VALUES
+            (:loan_record_id, :installment_number, :amount, :paid_at, :payment_reference, :notes, "payroll", :payroll_id)
+         ON DUPLICATE KEY UPDATE
+            installment_number = VALUES(installment_number),
+            amount = VALUES(amount),
+            paid_at = VALUES(paid_at),
+            payment_reference = VALUES(payment_reference),
+            notes = VALUES(notes)'
+    );
+
+    foreach ($loanItems as $item) {
+        $loanRequestId = (int)($item['referenceId'] ?? 0);
+        $amount = payroll_decimal($item['amount'] ?? 0);
+        $monthlyAmount = payroll_decimal($item['monthlyAmount'] ?? 0);
+        $paidBefore = payroll_decimal($item['paidAmountBeforePayroll'] ?? 0);
+
+        if ($loanRequestId <= 0 || $amount <= 0) {
+            continue;
+        }
+
+        $installmentNumber = $monthlyAmount > 0
+            ? max(1, (int)floor(($paidBefore + 0.01) / $monthlyAmount) + 1)
+            : 1;
+
+        $statement->execute([
+            ':loan_record_id' => $loanRequestId,
+            ':installment_number' => $installmentNumber,
+            ':amount' => payroll_decimal_string($amount),
+            ':paid_at' => $paidAt,
+            ':payment_reference' => 'PAYROLL-' . $payrollId,
+            ':notes' => 'Automatically recorded when payroll was marked paid.',
+            ':payroll_id' => $payrollId,
+        ]);
+    }
+}
+
 /**
- * Reloads every deduction column on a payroll row from its `PayrollDeduction` items.
+ * Reloads every deduction column on a payroll row from its embedded itemised snapshot.
  *
  * Deductions the run did not charge are written back to 0.00 rather than left alone, so a deduction
  * removed from a payroll run clears its column instead of keeping the previous run's figure.
@@ -2251,24 +2515,19 @@ function payroll_rebuild_deduction_columns(PDO $pdo, int $payrollId): void
         return;
     }
 
-    $statement = $pdo->prepare(
-        'SELECT pd.deduction_type_id AS id, SUM(pd.amount) AS amount
-         FROM PayrollDeduction pd
-         WHERE pd.payroll_id = :payroll_id
-         GROUP BY pd.deduction_type_id'
-    );
-    $statement->execute([':payroll_id' => $payrollId]);
-
     $amounts = [];
-    foreach ($statement->fetchAll() as $row) {
-        $amounts[(int)$row['id']] = payroll_decimal($row['amount'] ?? 0);
+    foreach (deduction_catalog_payroll_items($pdo, $payrollId) as $item) {
+        $typeId = (int)($item['deductionTypeId'] ?? 0);
+        $amounts[$typeId] = payroll_decimal(($amounts[$typeId] ?? 0) + payroll_decimal($item['amount'] ?? 0));
     }
 
     $assignments = [];
     $params = [':payroll_id' => $payrollId];
 
     foreach ($columns as $column => $deductionId) {
-        $placeholder = ':amount_' . $deductionId;
+        // Several legacy columns can map to one deduction type. Native PDO requires
+        // a distinct placeholder for every assignment, even when amounts are equal.
+        $placeholder = ':amount_' . count($assignments);
         $assignments[] = sprintf('`%s` = %s', $column, $placeholder);
         $params[$placeholder] = payroll_decimal_string($amounts[$deductionId] ?? 0.0);
     }
@@ -2343,13 +2602,17 @@ function payroll_base_query(): string
             p.total_deduction AS totalDeduction,
             p.net_pay AS netPay,
             e.employee_id AS employeeId,
+            e.division_id AS divisionId,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
-            des.name AS designation,
+            e.last_name AS lastName,
+            e.first_name AS firstName,
+            e.middle_name AS middleName,
+            des.name AS position,
             d.name AS division,
             e.employment_status AS currentEmploymentType,
             e.basic_salary AS currentBasicSalary,
             e.profile_image AS profileImage
-         FROM Payroll p
+         FROM payroll p
          LEFT JOIN employees e ON e.id = p.employee_id
          LEFT JOIN divisions d ON d.id = e.division_id
          LEFT JOIN designations des ON des.id = e.designation_id';
@@ -2377,7 +2640,7 @@ function payroll_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
     $statement = $pdo->prepare(
         'SELECT a.allowance_name AS name, a.amount
          FROM PayrollAllowance pa
-         INNER JOIN Allowance a ON a.allowance_id = pa.allowance_id
+         INNER JOIN allowance a ON a.allowance_id = pa.allowance_id
          WHERE pa.payroll_id = :payroll_id
          ORDER BY pa.payroll_allowance_id ASC'
     );
@@ -2388,20 +2651,88 @@ function payroll_fetch_allowances(PDO $pdo, int $payrollId, array $meta = []): a
 
 function payroll_fetch_deductions(PDO $pdo, int $payrollId): array
 {
-    $amountExpression = payroll_deduction_has_amount($pdo)
-        ? 'COALESCE(pd.amount, dt.default_amount, 0.00)'
-        : (payroll_deduction_type_has_default_amount($pdo) ? 'dt.default_amount' : '0.00');
-    $typeUnion = deduction_catalog_type_union_sql();
-    $statement = $pdo->prepare(
-        "SELECT dt.deduction_name AS name, dt.category_name AS category, {$amountExpression} AS amount
-         FROM PayrollDeduction pd
-         INNER JOIN {$typeUnion} dt ON dt.deduction_type_id = pd.deduction_type_id
-         WHERE pd.payroll_id = :payroll_id
-         ORDER BY pd.payroll_deduction_id ASC"
+    return array_map(
+        static fn (array $item): array => [
+            'name' => (string)($item['name'] ?? ''),
+            'category' => (string)($item['category'] ?? ''),
+            'amount' => payroll_decimal($item['amount'] ?? 0),
+            'source' => payroll_text($item['source'] ?? ''),
+            'referenceId' => (int)($item['referenceId'] ?? 0),
+            'monthlyAmount' => payroll_decimal($item['monthlyAmount'] ?? 0),
+            'paidAmountBeforePayroll' => payroll_decimal($item['paidAmountBeforePayroll'] ?? 0),
+        ],
+        deduction_catalog_payroll_items($pdo, $payrollId)
     );
-    $statement->execute([':payroll_id' => $payrollId]);
+}
 
-    return $statement->fetchAll();
+/**
+ * The employee's name in parts, which the register needs to list people surname-first.
+ *
+ * Read from the snapshot when the record has one, so a register keeps the name it was prepared
+ * under, as `employeeName` does. Records generated before the snapshot carried the parts fall back
+ * to the employee's current name.
+ */
+function payroll_record_name_parts(array $meta, array $baseRow): array
+{
+    $source = array_key_exists('lastName', $meta) ? $meta : $baseRow;
+
+    return [
+        'lastName' => payroll_text($source['lastName'] ?? ''),
+        'firstName' => payroll_text($source['firstName'] ?? ''),
+        'middleName' => payroll_text($source['middleName'] ?? ''),
+    ];
+}
+
+/**
+ * The salary step (1-8) the employee's service record has in force on `$asOf` -- the pay period's
+ * end date -- for the register's Step Increment column. It is the step number, not an amount: the
+ * step is already priced into the basic salary.
+ *
+ * Read from the newest service record entry dated on or before that day, the same entry
+ * service_record_current_steps() treats as current. Null when there is none or it carries no step
+ * (Contract of Service entries have none). Memoised per employee and date because a batch lists
+ * many records for the same period.
+ */
+function payroll_service_record_step(PDO $pdo, int $employeeRecordId, ?string $asOf): ?int
+{
+    static $steps = [];
+
+    if ($employeeRecordId <= 0) {
+        return null;
+    }
+
+    $asOfDate = $asOf !== null && preg_match('/^\d{4}-\d{2}-\d{2}/', $asOf) === 1
+        ? substr($asOf, 0, 10)
+        : date('Y-m-d');
+    $cacheKey = $employeeRecordId . '|' . $asOfDate;
+
+    if (array_key_exists($cacheKey, $steps)) {
+        return $steps[$cacheKey];
+    }
+
+    try {
+        $statement = $pdo->prepare(
+            'SELECT step_increment
+             FROM service_records
+             WHERE employee_record_id = :employee_record_id
+               AND is_archived = 0
+               AND service_from <= :as_of
+             ORDER BY service_from DESC, id DESC
+             LIMIT 1'
+        );
+        $statement->execute([
+            ':employee_record_id' => $employeeRecordId,
+            ':as_of' => $asOfDate,
+        ]);
+        $value = payroll_text($statement->fetchColumn() ?: '');
+    } catch (Throwable $exception) {
+        // An install without service records yet: the column stays blank rather than failing the list.
+        $value = '';
+    }
+
+    $step = ctype_digit($value) ? (int)$value : 0;
+
+    return $steps[$cacheKey] = $step >= 1 && $step <= 8 ? $step : null;
 }
 
 function payroll_expand_record(PDO $pdo, array $baseRow): array
@@ -2431,7 +2762,13 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
 
     $employeeId = payroll_text($meta['employeeId'] ?? $baseRow['employeeId'] ?? '');
     $employeeName = payroll_text($meta['employeeName'] ?? $baseRow['employeeName'] ?? '');
-    $designation = payroll_text($meta['designation'] ?? $baseRow['designation'] ?? '');
+    $nameParts = payroll_record_name_parts($meta, $baseRow);
+    // Snapshots saved before positions and designations were separate hold the position under 'designation'.
+    $position = payroll_text(
+        array_key_exists('position', $meta)
+            ? ($meta['position'] ?? $baseRow['position'] ?? '')
+            : ($meta['designation'] ?? $baseRow['position'] ?? '')
+    );
     $division = payroll_text($meta['division'] ?? $baseRow['division'] ?? '');
     $employmentType = payroll_text($meta['employmentType'] ?? $baseRow['currentEmploymentType'] ?? '');
     $profileImage = payroll_text($meta['profileImage'] ?? $baseRow['profileImage'] ?? '');
@@ -2464,6 +2801,15 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
 
     $grossPay = payroll_decimal($baseRow['grossPay'] ?? 0);
     $totalAllowance = payroll_decimal($baseRow['totalAllowance'] ?? 0);
+    // Older bonus records included PERA. Exclude it consistently when reading their totals.
+    $storedPera = payroll_decimal($allowanceFieldValues['pera'] ?? 0);
+    $allowanceFieldValues['pera'] = payroll_pera_amount($payrollType, $storedPera);
+    $excludedPera = round($storedPera - $allowanceFieldValues['pera'], 2);
+    $grossPay = round($grossPay - $excludedPera, 2);
+    $totalAllowance = round($totalAllowance - $excludedPera, 2);
+    if ($excludedPera != 0.0) {
+        $allowances = array_values(array_filter($allowances, static fn (array $item): bool => ($item['name'] ?? '') !== 'PERA'));
+    }
     $additionalDeductionTotal = 0.0;
     foreach ($deductions as $deduction) {
         $name = (string)($deduction['name'] ?? '');
@@ -2492,12 +2838,16 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
         : payroll_decimal($baseRow['totalDeduction'] ?? $computedTotalDeduction);
     $netPay = $hasAttendanceCoverage
         ? round($grossPay - $totalDeduction, 2)
-        : payroll_decimal($baseRow['netPay'] ?? ($grossPay - $totalDeduction));
+        : round(payroll_decimal($baseRow['netPay'] ?? ($grossPay + $excludedPera - $totalDeduction)) - $excludedPera, 2);
     $deductionItems = array_map(
         static fn (array $item): array => [
             'name' => $item['name'],
             'category' => $item['category'],
             'amount' => payroll_decimal($item['amount'] ?? 0),
+            'source' => payroll_text($item['source'] ?? ''),
+            'referenceId' => (int)($item['referenceId'] ?? 0),
+            'monthlyAmount' => payroll_decimal($item['monthlyAmount'] ?? 0),
+            'paidAmountBeforePayroll' => payroll_decimal($item['paidAmountBeforePayroll'] ?? 0),
         ],
         $deductions
     );
@@ -2534,13 +2884,23 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
     return [
         'id' => $payrollId,
         'employeeRecordId' => (int)($baseRow['employeeRecordId'] ?? 0),
+        'divisionId' => (int)($baseRow['divisionId'] ?? 0),
         'employeeId' => $employeeId,
         'employeeName' => $employeeName,
-        'designation' => $designation,
+        'lastName' => $nameParts['lastName'],
+        'firstName' => $nameParts['firstName'],
+        'middleName' => $nameParts['middleName'],
+        'position' => $position,
         'division' => $division,
         'employmentType' => $employmentType,
         'profileImage' => $profileImage,
         'basicSalary' => $basicSalary,
+        'periodBasicSalary' => payroll_decimal($meta['periodBasicSalary'] ?? ($grossPay - $totalAllowance)),
+        'stepIncrement' => payroll_service_record_step(
+            $pdo,
+            (int)($baseRow['employeeRecordId'] ?? 0),
+            $endDate ?? payroll_nullable_text($baseRow['payrollDate'] ?? null)
+        ),
         'payrollType' => $payrollType,
         'payPeriod' => $payPeriod,
         'startDate' => $startDate,
@@ -2553,6 +2913,7 @@ function payroll_expand_record(PDO $pdo, array $baseRow): array
         'overtimeRate' => payroll_decimal($meta['overtimeRate'] ?? 0),
         'hourlyRate' => $hourlyRate,
         'passSlipHours' => payroll_decimal($meta['passSlipHours'] ?? 0),
+        'passSlipCount' => (int)($meta['passSlipCount'] ?? 0),
         'undertimeHours' => $hasAttendanceCoverage
             ? payroll_decimal($attendanceDeductions['undertimeHours'] ?? 0)
             : payroll_decimal($meta['undertimeHours'] ?? 0),
@@ -2625,14 +2986,79 @@ function payroll_fetch_record(PDO $pdo, int $payrollId): ?array
     return $row ? payroll_expand_record($pdo, $row) : null;
 }
 
-function payroll_list_records(PDO $pdo, ?int $employeeRecordId = null): void
+/**
+ * Which division a caller's payroll view is confined to.
+ *
+ * Every payroll workflow desk is organization-wide. In particular, the FAD Chief approves the
+ * complete registry generated across all divisions rather than only the FAD employee rows.
+ * All management, approval, and payout desks therefore return null here.
+ * Employees are still restricted to their
+ * own payroll through `$employeeRecordId` in the GET handler, so this scope never broadens payslip
+ * access.
+ *
+ * A scoped desk with no resolvable division gets 0, which the list query turns into `1 = 0` -- an
+ * empty registry rather than everybody's.
+ */
+function payroll_division_scope_id(PDO $pdo, array $user, string $roleKey): ?int
 {
-    if ($employeeRecordId !== null && $employeeRecordId > 0) {
-        $statement = $pdo->prepare(payroll_base_query() . ' WHERE p.employee_id = :employee_id ORDER BY p.payroll_date DESC, p.payroll_id DESC');
-        $statement->execute([':employee_id' => $employeeRecordId]);
-    } else {
-        $statement = $pdo->query(payroll_base_query() . ' ORDER BY p.payroll_date DESC, p.payroll_id DESC');
+    if (!in_array($roleKey, PAYROLL_DIVISION_SCOPED_ROLES, true)) {
+        return null;
     }
+
+    $division = trimmed_text($user['division'] ?? '');
+
+    if ($division === '') {
+        return 0;
+    }
+
+    // Native prepares are on, so a placeholder cannot be reused across two markers.
+    $statement = $pdo->prepare(
+        'SELECT id
+         FROM divisions
+         WHERE is_archived = 0
+           AND (name COLLATE utf8mb4_unicode_ci = :division_name OR code COLLATE utf8mb4_unicode_ci = :division_code)
+         LIMIT 1'
+    );
+    $statement->execute([
+        ':division_name' => $division,
+        ':division_code' => $division,
+    ]);
+    $divisionId = (int)$statement->fetchColumn();
+
+    return $divisionId > 0 ? $divisionId : 0;
+}
+
+function payroll_record_matches_division_scope(array $record, ?int $divisionScopeId): bool
+{
+    return $divisionScopeId === null
+        || ($divisionScopeId > 0 && (int)($record['divisionId'] ?? 0) === $divisionScopeId);
+}
+
+function payroll_list_records(
+    PDO $pdo,
+    ?int $employeeRecordId = null,
+    ?int $divisionScopeId = null
+): void {
+    $conditions = [];
+    $params = [];
+
+    if ($employeeRecordId !== null && $employeeRecordId > 0) {
+        $conditions[] = 'p.employee_id = :employee_id';
+        $params[':employee_id'] = $employeeRecordId;
+    }
+
+    if ($divisionScopeId !== null) {
+        $conditions[] = $divisionScopeId > 0 ? 'e.division_id = :division_scope_id' : '1 = 0';
+        if ($divisionScopeId > 0) {
+            $params[':division_scope_id'] = $divisionScopeId;
+        }
+    }
+
+    $sql = payroll_base_query()
+        . ($conditions !== [] ? ' WHERE ' . implode(' AND ', $conditions) : '')
+        . ' ORDER BY p.payroll_date DESC, p.payroll_id DESC';
+    $statement = $pdo->prepare($sql);
+    $statement->execute($params);
 
     $records = [];
 
@@ -2652,11 +3078,16 @@ function payroll_meta_payload(array $payload, array $employee, array $totals): a
     return [
         'employeeId' => $employee['employeeId'] ?? null,
         'employeeName' => $employee['employeeName'] ?? null,
-        'designation' => $employee['designation'] ?? null,
+        // The parts too, so the register can list the name surname-first as it read at generation.
+        'lastName' => $employee['lastName'] ?? null,
+        'firstName' => $employee['firstName'] ?? null,
+        'middleName' => $employee['middleName'] ?? null,
+        'position' => $employee['position'] ?? null,
         'division' => $employee['division'] ?? null,
         'employmentType' => $employee['employmentType'] ?? null,
         'profileImage' => $employee['profileImage'] ?? null,
         'basicSalary' => payroll_decimal($employee['basicSalary'] ?? 0),
+        'periodBasicSalary' => $totals['basicSalary'],
         'salaryRate' => $employee['salaryRate'] ?? null,
         'payrollType' => payroll_normalize_type($payload['payrollType'] ?? ''),
         'payPeriod' => $payload['payPeriod'],
@@ -2666,6 +3097,7 @@ function payroll_meta_payload(array $payload, array $employee, array $totals): a
         'overtimeRate' => $payload['overtimeRate'],
         'hourlyRate' => $payload['hourlyRate'] ?? 0,
         'passSlipHours' => $payload['passSlipHours'] ?? 0,
+        'passSlipCount' => (int)($payload['passSlipCount'] ?? 0),
         'undertimeHours' => $payload['undertimeHours'] ?? 0,
         'lateHours' => $payload['lateHours'] ?? 0,
         'absenceDays' => $payload['absenceDays'] ?? 0,
@@ -2739,30 +3171,35 @@ function payroll_stage_notice(string $status): array
             'summary' => 'is awaiting HR Head approval',
             'approvers' => ['admin', 'hrhead'],
             'observers' => ['hrstaff'],
+            'notifyFadChief' => false,
         ],
         PAYROLL_CHIEF_STATUS => [
-            'title' => 'Payroll Awaiting Chief Approval',
-            'summary' => 'was approved by the HR Head and is awaiting Chief approval',
-            'approvers' => ['chief'],
+            'title' => 'Payroll Awaiting FAD Division Chief Approval',
+            'summary' => 'was approved by the HR Head and is awaiting FAD Division Chief approval',
+            'approvers' => [],
             'observers' => ['admin', 'hrhead', 'hrstaff'],
+            'notifyFadChief' => true,
         ],
         PAYROLL_DIRECTOR_STATUS => [
             'title' => 'Payroll Awaiting Final Approval',
-            'summary' => 'was approved by the Chief and is awaiting Regional Director final approval',
+            'summary' => 'was approved by the FAD Division Chief and is awaiting Regional Director final approval',
             'approvers' => ['regionaldirector'],
-            'observers' => ['admin', 'hrhead', 'hrstaff', 'chief'],
+            'observers' => ['admin', 'hrhead', 'hrstaff'],
+            'notifyFadChief' => true,
         ],
         'Approved' => [
             'title' => 'Payroll Approved',
             'summary' => 'has received final approval from the Regional Director',
             'approvers' => ['admin', 'finance', 'cashier'],
-            'observers' => ['chief', 'regionaldirector'],
+            'observers' => ['regionaldirector'],
+            'notifyFadChief' => true,
         ],
         default => [
             'title' => 'Payroll Updated',
             'summary' => 'was updated',
             'approvers' => ['admin', 'hrhead', 'hrstaff'],
             'observers' => [],
+            'notifyFadChief' => false,
         ],
     };
 }
@@ -2777,11 +3214,36 @@ function payroll_is_chain_action(string $action): bool
     return in_array($action, ['Submitted', 'Approved'], true);
 }
 
+/**
+ * The one payroll notice an employee receives: their pay has gone out. The approval chain
+ * (submitted, awaiting the FAD Chief, final approval, approved) is HR's business and stays with the
+ * roles in payroll_stage_notice(); the employee only needs to know when the money is there.
+ */
+function payroll_notify_employee_paid(PDO $pdo, array $record): void
+{
+    $employeeRecordId = (int)($record['employeeRecordId'] ?? 0);
+    if ($employeeRecordId <= 0) {
+        return;
+    }
+
+    $periodText = payroll_period_text($record);
+    $periodSuffix = $periodText !== '' ? ' for ' . $periodText : '';
+    $netPay = number_format(payroll_decimal($record['netPay'] ?? 0), 2);
+
+    notify_employee(
+        $pdo,
+        $employeeRecordId,
+        'Payroll Paid',
+        "Your payroll{$periodSuffix} has been paid. Net pay: PHP {$netPay}. Open your payslip to see the breakdown.",
+        'payroll_paid',
+        (string)($record['id'] ?? '')
+    );
+}
+
 function payroll_notify_status_change(PDO $pdo, array $record, string $action, ?string $comments = null, bool $notifyRoles = true): void
 {
     try {
         $payrollId = (int)($record['id'] ?? 0);
-        $employeeRecordId = (int)($record['employeeRecordId'] ?? 0);
         $employeeName = payroll_text($record['employeeName'] ?? 'the employee') ?: 'the employee';
         $periodText = payroll_period_text($record);
         $periodSuffix = $periodText !== '' ? ' for ' . $periodText : '';
@@ -2823,12 +3285,18 @@ function payroll_notify_status_change(PDO $pdo, array $record, string $action, ?
                 if ($stage['observers'] !== []) {
                     notify_roles($pdo, $stage['observers'], $title, $message, $type, (string)$payrollId);
                 }
+
+                if ($stage['notifyFadChief'] ?? false) {
+                    notify_users($pdo, payroll_fad_division_chief_user_ids($pdo), $title, $message, $type, (string)$payrollId);
+                }
             } else {
                 notify_roles($pdo, ['admin', 'hrhead', 'hrstaff'], $title, $message, $type, (string)$payrollId);
             }
         }
 
-        notify_employee($pdo, $employeeRecordId, $title, $message, $type, (string)$payrollId);
+        if ($action === 'Paid') {
+            payroll_notify_employee_paid($pdo, $record);
+        }
     } catch (Throwable $notificationException) {
         error_log('Payroll status notification error: ' . $notificationException->getMessage());
     }
@@ -2945,6 +3413,10 @@ function payroll_notify_bulk_status_change(PDO $pdo, array $records, string $act
             if ($stage['observers'] !== []) {
                 notify_roles($pdo, $stage['observers'], $title, $message, $type, $registryId);
             }
+
+            if ($stage['notifyFadChief'] ?? false) {
+                notify_users($pdo, payroll_fad_division_chief_user_ids($pdo), $title, $message, $type, $registryId);
+            }
         } else {
             notify_roles($pdo, ['admin', 'hrhead', 'hrstaff'], $title, $message, $type, $registryId);
         }
@@ -2988,12 +3460,21 @@ function payroll_transition_status(
         ];
     }
 
+    $divisionScopeId = payroll_division_scope_id($pdo, $actorUser, payroll_workflow_role_key($actorUser));
+    if (!payroll_record_matches_division_scope($record, $divisionScopeId)) {
+        return [
+            'success' => false,
+            'statusCode' => 403,
+            'message' => 'You can only act on payroll records for your division.',
+        ];
+    }
+
     $currentStatus = payroll_normalize_status($record['status'] ?? '');
     $allowedStatuses = array_map('payroll_normalize_status', $allowedCurrentStatuses);
 
     if (!in_array($currentStatus, $allowedStatuses, true)) {
         // Naming the status the record is actually in, rather than the ones this actor handles:
-        // an approver told "payroll must be Pending Chief Approval" cannot tell whether the batch
+        // an approver told "payroll must be Pending FAD Division Chief Approval" cannot tell whether the batch
         // has not reached them yet or has already moved past them.
         return [
             'success' => false,
@@ -3025,20 +3506,51 @@ function payroll_transition_status(
 
     $targetStatus = payroll_normalize_status($targetStatus);
 
+    if ($targetStatus === 'Paid') {
+        // Schema work must happen before the transaction because MySQL commits around DDL.
+        payroll_ensure_loan_tracking_schema($pdo);
+    }
+
+    /*
+     * Marking paid is the Cashier's release, so the row keeps the moment and the desk that made it:
+     * the Released Payroll report (reports.php) lists a batch by the day the money went out, not by
+     * the pay period it covered. Restoring an archived Paid batch lands on the same status through
+     * the `Restored` action and leaves the original stamp alone.
+     */
+    $isRelease = $targetStatus === 'Paid' && $action === 'Paid';
+
     try {
         $pdo->beginTransaction();
 
         $statement = $pdo->prepare(
-            'UPDATE Payroll
-             SET status = :status
-             WHERE payroll_id = :payroll_id'
+            'UPDATE payroll
+             SET status = :status'
+            . ($isRelease ? ', released_at = :released_at, released_by = :released_by' : '')
+            . ' WHERE payroll_id = :payroll_id'
         );
-        $statement->execute([
-            ':status' => $targetStatus,
-            ':payroll_id' => $payrollId,
-        ]);
+        $statement->execute(array_merge(
+            [
+                ':status' => $targetStatus,
+                ':payroll_id' => $payrollId,
+            ],
+            $isRelease
+                ? [
+                    ':released_at' => date('Y-m-d H:i:s'),
+                    ':released_by' => (int)($actorUser['id'] ?? 0) > 0 ? (int)$actorUser['id'] : null,
+                ]
+                : []
+        ));
 
         payroll_record_approval_action($pdo, $payrollId, $actorUser, $action, $comments, $currentStatus, $targetStatus);
+
+        if ($targetStatus === 'Paid') {
+            payroll_record_paid_loan_deductions(
+                $pdo,
+                $payrollId,
+                is_array($record['deductionItems'] ?? null) ? $record['deductionItems'] : [],
+                payroll_date_or_null($record['endDate'] ?? $record['payrollDate'] ?? date('Y-m-d'))
+            );
+        }
 
         $pdo->commit();
     } catch (Throwable $exception) {
@@ -3059,7 +3571,7 @@ function payroll_transition_status(
         'message' => match (true) {
             $action === 'Submitted' => 'Payroll submitted to the HR Head for approval.',
             $action === 'Approved' => match ($targetStatus) {
-                PAYROLL_CHIEF_STATUS => 'Payroll approved and forwarded to the Chief of Division.',
+                PAYROLL_CHIEF_STATUS => 'Payroll approved and forwarded to the FAD Division Chief.',
                 PAYROLL_DIRECTOR_STATUS => 'Payroll approved and forwarded to the Regional Director for final approval.',
                 default => 'Payroll approved successfully.',
             },
@@ -3119,15 +3631,21 @@ function payroll_registry_export_allowed(array $records): bool
     return $records !== [];
 }
 
-function payroll_export_registry(PDO $pdo, array $ids): void
+function payroll_export_registry(PDO $pdo, array $ids, array $actorUser): void
 {
     $records = [];
+    $divisionScopeId = payroll_division_scope_id($pdo, $actorUser, payroll_workflow_role_key($actorUser));
 
     foreach ($ids as $payrollId) {
         $record = payroll_fetch_record($pdo, $payrollId);
 
-        if ($record !== null) {
+        if ($record !== null && payroll_record_matches_division_scope($record, $divisionScopeId)) {
             $records[] = $record;
+        } elseif ($record !== null && $divisionScopeId !== null) {
+            json_response([
+                'success' => false,
+                'message' => 'You can only export payroll records for your division.',
+            ], 403);
         }
     }
 
@@ -3204,6 +3722,11 @@ function payroll_export_registry(PDO $pdo, array $ids): void
     }
 
     $filename = 'payroll-register-' . strtolower($registryId) . '.xlsx';
+
+    write_auth_audit($pdo, $actorUser, 'payroll.registry_exported', 'A payroll registry was exported.', [
+        'registryId' => $registryId,
+        'recordCount' => count($records),
+    ]);
 
     if (session_status() === PHP_SESSION_ACTIVE) {
         session_write_close();
@@ -3426,11 +3949,21 @@ function payroll_bulk_restore(PDO $pdo, array $body, array $actorUser): void
     ]);
 }
 
-function payroll_create(PDO $pdo, array $body): void
+function payroll_create(PDO $pdo, array $body, ?int $divisionScopeId = null): void
 {
     $payload = payroll_payload($pdo, $body);
     $payload['status'] = 'Draft';
     $employee = payroll_validate_payload($pdo, $payload);
+
+    // A division-scoped desk may only generate payroll for its own division. The Generate form
+    // already confines the employee list, so this only catches a request built by hand.
+    if (!payroll_record_matches_division_scope($employee, $divisionScopeId)) {
+        json_response([
+            'success' => false,
+            'message' => 'You can only generate payroll for employees in your division.',
+        ], 403);
+    }
+
     $payload = payroll_apply_automatic_calculations($pdo, $payload, $employee);
     $totals = payroll_calculate_totals($payload, $employee);
     // Outside the transaction: a deduction this run names for the first time needs a catalog row
@@ -3442,7 +3975,7 @@ function payroll_create(PDO $pdo, array $body): void
 
         $payrollId = payroll_with_legacy_fk_bypass($pdo, static function () use ($pdo, $payload, $employee, $totals): int {
             $statement = $pdo->prepare(
-                'INSERT INTO Payroll
+                'INSERT INTO payroll
                     (employee_id, payroll_date, status, gross_pay, total_allowance, total_deduction, net_pay)
                  VALUES
                     (:employee_id, :payroll_date, :status, :gross_pay, :total_allowance, :total_deduction, :net_pay)'
@@ -3488,16 +4021,12 @@ function payroll_create(PDO $pdo, array $body): void
                 $payPeriod = trim($startDate . ($endDate !== '' ? ' to ' . $endDate : ''));
             }
 
-            $notificationMessage = sprintf(
-                'Payroll for %s is ready%s.',
-                (string)($record['employeeName'] ?? 'the employee'),
-                $payPeriod !== '' ? ' (' . $payPeriod . ')' : ''
-            );
-
             // Payroll is generated one employee at a time, so notify staff roles with a
             // generic message keyed to the pay period. The 5-minute de-duplication in
             // notification_insert() collapses the whole batch into a single staff
-            // notification instead of one per employee. Employees still get their own.
+            // notification instead of one per employee. The employee is not told: a draft
+            // is an HR working document, and they hear from payroll_notify_employee_paid()
+            // once it is actually paid.
             $rolePeriodLabel = $payPeriod !== '' ? $payPeriod : 'the current pay period';
             notify_roles(
                 $pdo,
@@ -3506,15 +4035,6 @@ function payroll_create(PDO $pdo, array $body): void
                 sprintf('New payroll records for %s have been generated and are ready for review.', $rolePeriodLabel),
                 'payroll_generated',
                 'generated:' . $rolePeriodLabel
-            );
-
-            notify_employee(
-                $pdo,
-                (int)($record['employeeRecordId'] ?? 0),
-                'Payroll Generated',
-                $notificationMessage,
-                'payroll_generated',
-                (string)$payrollId
             );
         }
     } catch (Throwable $notificationException) {
@@ -3586,7 +4106,7 @@ function payroll_update(PDO $pdo, array $body, string $roleKey = ''): void
 
         payroll_with_legacy_fk_bypass($pdo, static function () use ($pdo, $payrollId, $payload, $employee, $totals): void {
             $statement = $pdo->prepare(
-                'UPDATE Payroll
+                'UPDATE payroll
                  SET employee_id = :employee_id,
                      payroll_date = :payroll_date,
                      status = :status,
@@ -3637,18 +4157,11 @@ function payroll_update(PDO $pdo, array $body, string $roleKey = ''): void
                 $payPeriod !== '' ? ' (' . $payPeriod . ')' : ''
             );
 
+            // HR-only, like generation: the employee sees the final figures on their payslip
+            // once the record is paid, not every edit on the way there.
             notify_roles(
                 $pdo,
                 ['admin', 'hrhead', 'hrstaff'],
-                'Payroll Updated',
-                $notificationMessage,
-                'system_alert',
-                (string)$payrollId
-            );
-
-            notify_employee(
-                $pdo,
-                (int)($record['employeeRecordId'] ?? 0),
                 'Payroll Updated',
                 $notificationMessage,
                 'system_alert',
@@ -3730,7 +4243,7 @@ function payroll_mark_paid(PDO $pdo, int $payrollId): void
 
         payroll_with_legacy_fk_bypass($pdo, static function () use ($pdo, $payrollId, $payload, $employee, $totals): void {
             $statement = $pdo->prepare(
-                'UPDATE Payroll
+                'UPDATE payroll
                  SET employee_id = :employee_id,
                      payroll_date = :payroll_date,
                      status = :status,
@@ -3790,14 +4303,7 @@ function payroll_mark_paid(PDO $pdo, int $payrollId): void
                 (string)$payrollId
             );
 
-            notify_employee(
-                $pdo,
-                (int)($record['employeeRecordId'] ?? 0),
-                'Payroll Paid',
-                $notificationMessage,
-                'system_alert',
-                (string)$payrollId
-            );
+            payroll_notify_employee_paid($pdo, $record);
         }
     } catch (Throwable $notificationException) {
         error_log('Payroll paid notification error: ' . $notificationException->getMessage());
@@ -3825,39 +4331,27 @@ function payroll_archive(PDO $pdo, int $payrollId, array $actorUser): void
 function payroll_restore_target_status(PDO $pdo, int $payrollId): string
 {
     payroll_ensure_approval_schema($pdo);
+    $history = array_reverse(payroll_fetch_approval_history($pdo, $payrollId));
 
-    $statement = $pdo->prepare(
-        'SELECT from_status
-         FROM PayrollApproval
-         WHERE payroll_id = :payroll_id
-           AND action = "Archived"
-           AND to_status = "Archived"
-           AND from_status IS NOT NULL
-           AND from_status <> ""
-         ORDER BY action_date DESC, approval_id DESC
-         LIMIT 1'
-    );
-    $statement->execute([':payroll_id' => $payrollId]);
-    $status = payroll_normalize_status($statement->fetchColumn() ?: '');
-
-    if (in_array($status, PAYROLL_ACTIVE_STATUSES, true)) {
-        return $status;
+    foreach ($history as $entry) {
+        $fromStatus = payroll_normalize_status($entry['fromStatus'] ?? '');
+        if (
+            payroll_normalize_status($entry['action'] ?? '') === 'Archived'
+            && payroll_normalize_status($entry['toStatus'] ?? '') === 'Archived'
+            && in_array($fromStatus, PAYROLL_ACTIVE_STATUSES, true)
+        ) {
+            return $fromStatus;
+        }
     }
 
-    $statement = $pdo->prepare(
-        'SELECT to_status
-         FROM PayrollApproval
-         WHERE payroll_id = :payroll_id
-           AND to_status IS NOT NULL
-           AND to_status <> ""
-           AND to_status <> "Archived"
-         ORDER BY action_date DESC, approval_id DESC
-         LIMIT 1'
-    );
-    $statement->execute([':payroll_id' => $payrollId]);
-    $status = payroll_normalize_status($statement->fetchColumn() ?: '');
+    foreach ($history as $entry) {
+        $status = payroll_normalize_status($entry['toStatus'] ?? '');
+        if ($status !== 'Archived' && in_array($status, PAYROLL_ACTIVE_STATUSES, true)) {
+            return $status;
+        }
+    }
 
-    return in_array($status, PAYROLL_ACTIVE_STATUSES, true) ? $status : 'Draft';
+    return 'Draft';
 }
 
 function payroll_restore_result(PDO $pdo, int $payrollId, array $actorUser, bool $notifyRoles = true): array
@@ -3907,7 +4401,7 @@ function payroll_preview(PDO $pdo, array $body): void
             'overtimeHours' => 0.0,
             'overtimeRate' => 0.0,
             'overtimePay' => 0.0,
-            'pera' => payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT),
+            'pera' => payroll_pera_amount($body['payrollType'] ?? '', payroll_lookup_allowance_amount($pdo, 'PERA', PAYROLL_DEFAULT_PERA_AMOUNT)),
             'travelAllowance' => 0.0,
             'salaryAdjustment' => 0.0,
             'otherAllowances' => 0.0,
@@ -3940,9 +4434,10 @@ function payroll_preview(PDO $pdo, array $body): void
                 'employeeRecordId' => (int)$employee['id'],
                 'employeeId' => $employee['employeeId'] ?? null,
                 'employeeName' => $employee['employeeName'] ?? null,
-                'designation' => $employee['designation'] ?? null,
+                'position' => $employee['position'] ?? null,
                 'division' => $employee['division'] ?? null,
                 'basicSalary' => payroll_decimal($employee['basicSalary'] ?? 0),
+                'periodBasicSalary' => $totals['basicSalary'],
                 'grossPay' => $totals['grossPay'],
                 'totalDeduction' => $totals['totalDeduction'],
                 'netPay' => $totals['netPay'],
@@ -3992,12 +4487,14 @@ function payroll_preview(PDO $pdo, array $body): void
 
 payroll_ensure_deduction_engine_schema($pdo);
 payroll_ensure_approval_schema($pdo);
+ensure_payroll_embedded_detail_columns($pdo);
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($method === 'GET') {
     $payrollId = (int)($_GET['id'] ?? 0);
     $employeeRecordId = null;
+    $divisionScopeId = payroll_division_scope_id($pdo, $sessionUser, $workflowRoleKey);
 
     /*
      * Exporting the register is a payroll-management action, so it follows the same role gate as
@@ -4023,7 +4520,7 @@ if ($method === 'GET') {
             ], 422);
         }
 
-        payroll_export_registry($pdo, $exportIds);
+        payroll_export_registry($pdo, $exportIds, $sessionUser);
     }
 
     if ($roleKey === 'employee') {
@@ -4054,6 +4551,13 @@ if ($method === 'GET') {
             ], 403);
         }
 
+        if (!payroll_record_matches_division_scope($record, $divisionScopeId)) {
+            json_response([
+                'success' => false,
+                'message' => 'You can only view payroll records for your division.',
+            ], 403);
+        }
+
         json_response([
             'success' => true,
             'record' => $record,
@@ -4061,7 +4565,7 @@ if ($method === 'GET') {
         ]);
     }
 
-    payroll_list_records($pdo, $employeeRecordId);
+    payroll_list_records($pdo, $employeeRecordId, $divisionScopeId);
 }
 
 $body = read_json_body();
@@ -4074,12 +4578,12 @@ if ($method === 'POST') {
     }
 
     /*
-     * Step one of the two-step check on submitting and approving. It is a request for a code, not a
-     * transition: nothing is written, and the role gate plus the captcha behind it are what stop it
-     * being used to post mail at someone.
+     * Step one of the two-step check on submitting, approving, and releasing payslips. It is a
+     * request for a code, not a transition: nothing is written, and the role gate plus the captcha
+     * behind it are what stop it being used to post mail at someone.
      */
     if ($action === 'request_workflow_otp') {
-        payroll_request_workflow_otp($pdo, $body, $sessionUser, $workflowRoleKey);
+        payroll_request_workflow_otp($pdo, $body, $sessionUser, $workflowRoleKey, $exactRoleKey);
     }
 
     /*
@@ -4087,19 +4591,19 @@ if ($method === 'POST') {
      * allowed to approve should be told that, not handed a sum to solve first -- and a caller with no
      * business here never gets to spend a challenge or a code.
      *
-     * Submitting and approving carry the batch along the approval chain, so they ask for the emailed
-     * code, which can only exist because a sum was already solved to send it. Marking paid still asks
-     * for the sum alone.
+     * Submitting and approving carry the batch along the approval chain, while marking paid releases
+     * the payslips. All three ask for the emailed code, which can only exist because a sum was already
+     * solved to send it.
      */
     if ($action === 'submit_for_approval') {
         payroll_require_staff_role($workflowRoleKey);
-        payroll_require_workflow_otp($body, 'submit');
+        payroll_require_workflow_otp($pdo, $body, 'submit');
         payroll_submit_for_approval($pdo, $body, $sessionUser);
     }
 
     if ($action === 'approve') {
         payroll_require_approval_role($workflowRoleKey);
-        payroll_require_workflow_otp($body, 'approve');
+        payroll_require_workflow_otp($pdo, $body, 'approve');
         payroll_approve($pdo, $body, $sessionUser, $workflowRoleKey);
     }
 
@@ -4110,7 +4614,7 @@ if ($method === 'POST') {
 
     if ($action === 'mark_paid') {
         payroll_require_payout_role($exactRoleKey);
-        payroll_require_workflow_captcha($body);
+        payroll_require_workflow_otp($pdo, $body, 'paid');
         payroll_mark_paid_action($pdo, $body, $sessionUser);
     }
 
@@ -4118,13 +4622,13 @@ if ($method === 'POST') {
     // same code -- otherwise the step-up would be one toolbar button away from being skipped.
     if ($action === 'bulk_submit') {
         payroll_require_staff_role($workflowRoleKey);
-        payroll_require_workflow_otp($body, 'submit');
+        payroll_require_workflow_otp($pdo, $body, 'submit');
         payroll_bulk_transition($pdo, $body, $sessionUser, PAYROLL_HR_HEAD_STATUS, 'Submitted', ['Draft', 'Rejected']);
     }
 
     if ($action === 'bulk_approve') {
         payroll_require_approval_role($workflowRoleKey);
-        payroll_require_workflow_otp($body, 'approve');
+        payroll_require_workflow_otp($pdo, $body, 'approve');
         $approvalMap = payroll_role_approval_map($workflowRoleKey);
         payroll_bulk_transition($pdo, $body, $sessionUser, $approvalMap, 'Approved', array_keys($approvalMap));
     }
@@ -4144,7 +4648,7 @@ if ($method === 'POST') {
 
     if ($action === 'bulk_mark_paid') {
         payroll_require_payout_role($exactRoleKey);
-        payroll_require_workflow_captcha($body);
+        payroll_require_workflow_otp($pdo, $body, 'paid');
         payroll_bulk_transition($pdo, $body, $sessionUser, 'Paid', 'Paid', ['Approved']);
     }
 
@@ -4159,7 +4663,7 @@ if ($method === 'POST') {
     }
 
     payroll_require_staff_role($workflowRoleKey);
-    payroll_create($pdo, $body);
+    payroll_create($pdo, $body, payroll_division_scope_id($pdo, $sessionUser, $workflowRoleKey));
 }
 
 if ($method === 'PUT') {
@@ -4170,7 +4674,7 @@ if ($method === 'PUT') {
     // gated -- otherwise the check would be one HTTP verb away from being skipped.
     if ($action === 'mark_paid') {
         payroll_require_payout_role($exactRoleKey);
-        payroll_require_workflow_captcha($body);
+        payroll_require_workflow_otp($pdo, $body, 'paid');
         payroll_mark_paid_action($pdo, $body, $sessionUser);
     }
 

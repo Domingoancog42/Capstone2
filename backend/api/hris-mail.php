@@ -49,10 +49,16 @@ function mail_minutes_label(int $minutes): string
     return $minutes . ' minute' . ($minutes === 1 ? '' : 's');
 }
 
+/**
+ * $logoContentId is normally the content id of the embedded logo. A transport that cannot embed
+ * images (HrisBrevoMailer) passes the hosted logo's absolute URL instead.
+ */
 function mail_logo_markup(?string $logoContentId): string
 {
     if ($logoContentId !== null && $logoContentId !== '') {
-        return '<img src="cid:' . mail_escape($logoContentId) . '" alt="MGB Logo" width="60" height="60"'
+        $source = preg_match('#^https?://#i', $logoContentId) === 1 ? $logoContentId : 'cid:' . $logoContentId;
+
+        return '<img src="' . mail_escape($source) . '" alt="MGB Logo" width="60" height="60"'
             . ' style="display:block; width:60px; height:60px; border:0; border-radius:50%;" />';
     }
 

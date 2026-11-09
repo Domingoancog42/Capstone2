@@ -2,7 +2,6 @@ import React, { useEffect, useState } from "react";
 import { Activity, Gauge, Plus, Save, ShieldAlert, Trash2 } from "lucide-react";
 import Button from "../../components/UI/button";
 import {
-  SettingsNotice,
   SettingsNumberField,
   SettingsPanel,
   SettingsSection,
@@ -45,6 +44,11 @@ export const defaultRateLimitSettings = {
   trustedIps: [],
   rules: {},
 };
+
+// The general API ceiling remains enforced by the backend, but it is intentionally not an
+// administrator-editable setting. Keeping it in the draft/save payload preserves its current value
+// whenever one of the visible limits is saved.
+const HIDDEN_RATE_LIMIT_RULE_KEYS = new Set(["api"]);
 
 /**
  * Fold the stored settings into the shape the form edits: every rule the server described gets an
@@ -172,7 +176,7 @@ function QuotaRuleCard({ rule, draft, disabled, errors, onToggle, onFieldChange 
             name={`rateLimit-${rule.key}-maxRequests`}
             label="Request limit"
             suffix="requests"
-            helper={`How many may be filed before the rest are refused. ${range.min ?? 1} to ${range.max ?? 100000}.`}
+            helper={`Total filings allowed across all request modules. ${range.min ?? 1} to ${range.max ?? 100000}.`}
             error={errors.maxRequests}
             value={draft.maxRequests}
             min={range.min}
@@ -196,7 +200,7 @@ function QuotaRuleCard({ rule, draft, disabled, errors, onToggle, onFieldChange 
 
         <p className="m-0 text-xs leading-5 text-slate-500">
           {draft.enabled
-            ? `Allows ${draft.maxRequests || 0} ${quotaPeriodNoun(draft.windowSeconds)} from one account. Anything past that is refused until the allowance resets.`
+            ? `Allows ${draft.maxRequests || 0} combined requests ${quotaPeriodNoun(draft.windowSeconds)} from one account. Anything past that is refused until the allowance resets.`
             : "This group is not being counted."}
         </p>
       </div>
@@ -455,7 +459,7 @@ export default function RateLimitSettings({
             onToggle={() => updateDraft({ auditBlocked: !draft.auditBlocked })}
           />
 
-          {rules.map((rule) => {
+          {rules.filter((rule) => !HIDDEN_RATE_LIMIT_RULE_KEYS.has(rule.key)).map((rule) => {
             const Card = rule.quota ? QuotaRuleCard : RuleCard;
 
             return (
@@ -518,10 +522,6 @@ export default function RateLimitSettings({
             </div>
           </SettingsSection>
 
-          <SettingsNotice tone="info">
-            Settings, sign-out, and the security-token endpoint are never counted by the general API
-            group, so a limit set too low can always be corrected from this screen.
-          </SettingsNotice>
         </div>
       </SettingsPanel>
     </div>

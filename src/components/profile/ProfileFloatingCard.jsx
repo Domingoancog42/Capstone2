@@ -1,12 +1,17 @@
 import React, { useEffect, useId } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { X } from "lucide-react";
+import { Maximize2, Minimize2, X } from "lucide-react";
 
 /**
- * The floating panel used by the profile page for Service Record and Email & Verification.
+ * The floating panel used by the profile page for Salary Grade History and Email & Verification.
  *
  * It deliberately mirrors the auth `AuthCard` shell (accent bar, round icon badge, centred heading)
  * so a signed-in user meets the same card they already saw on the forgot-password screen.
+ *
+ * A caller that passes `onToggleMaximize` gets a maximize / restore button beside the close button:
+ * `maximized` swaps the floating card for one that fills the viewport, which is what a wall of
+ * cards (the leave balances) needs and a short form does not. On a phone the card already fills
+ * the screen, so the toggle only shows from the `sm` breakpoint up.
  */
 export default function ProfileFloatingCard({
   open,
@@ -18,9 +23,12 @@ export default function ProfileFloatingCard({
   maxWidth = "max-w-[520px]",
   bodyClassName = "px-4 pb-5 sm:px-4",
   closeLabel = "Close",
+  maximized = false,
+  onToggleMaximize,
   children,
 }) {
   const headingId = useId();
+  const MaximizeIcon = maximized ? Minimize2 : Maximize2;
 
   useEffect(() => {
     if (!open) {
@@ -48,7 +56,7 @@ export default function ProfileFloatingCard({
     <AnimatePresence>
       {open ? (
         <div
-          className="profile-floating-card fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto p-3 sm:p-4"
+          className="profile-floating-card fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto p-0 sm:p-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby={headingId}
@@ -69,21 +77,38 @@ export default function ProfileFloatingCard({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
             transition={{ duration: 0.22, ease: "easeOut" }}
-            className={`relative z-10 my-auto flex max-h-[94dvh] w-full flex-col overflow-hidden rounded-2xl border border-white/70 bg-white shadow-[0_30px_80px_rgba(2,6,23,0.45)] ${maxWidth}`.trim()}
+            className={`relative z-10 flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden border-0 bg-white shadow-[0_30px_80px_rgba(2,6,23,0.45)] sm:my-auto sm:rounded-2xl sm:border sm:border-white/70 ${
+              maximized
+                ? "sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)] sm:max-w-none"
+                : `sm:h-auto sm:max-h-[94dvh] ${maxWidth}`
+            }`.trim()}
           >
             <div className="h-1 shrink-0 bg-gradient-to-r from-[#D61E1E] via-[#d13a3a] to-[#D61E1E]" />
 
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label={closeLabel}
-              className="absolute right-3.5 top-4 z-10 grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-[#F8BFBF] hover:bg-[#FEF1F1] hover:text-[#D61E1E] focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/20"
-            >
-              <X size={15} aria-hidden="true" />
-            </button>
+            <div className="absolute right-3.5 top-4 z-10 flex items-center gap-2">
+              {onToggleMaximize ? (
+                <button
+                  type="button"
+                  onClick={onToggleMaximize}
+                  aria-label={maximized ? "Restore size" : "Maximize"}
+                  aria-pressed={maximized}
+                  className="hidden h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/20 sm:grid"
+                >
+                  <MaximizeIcon size={15} aria-hidden="true" />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label={closeLabel}
+                className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-[#F8BFBF] hover:bg-[#FEF1F1] hover:text-[#D61E1E] focus:outline-none focus:ring-2 focus:ring-[#D61E1E]/20"
+              >
+                <X size={15} aria-hidden="true" />
+              </button>
+            </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
-              <header className="px-4 pb-4 pt-5 text-center sm:px-4">
+              <header className="shrink-0 px-3 pb-3 pt-4 text-center sm:px-4 sm:pb-4 sm:pt-5">
                 {Icon ? (
                   <div className="mx-auto grid h-14 w-14 place-items-center rounded-xl border border-slate-200 bg-slate-50 text-[#D61E1E] shadow-inner">
                     <div className="relative grid h-10 w-10 place-items-center rounded-lg bg-white shadow-sm">

@@ -3,14 +3,13 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   Info,
-  LoaderCircle,
   Mail,
   MailCheck,
   PencilLine,
   RefreshCcw,
   X,
 } from "lucide-react";
-import { getAuditLogs, getEmployees } from "../../services/api";
+import { getEmployees } from "../../services/api";
 import Button from "../UI/button";
 import ProfileFloatingCard from "./ProfileFloatingCard";
 import ChangeEmailSection from "./sections/ChangeEmailSection";
@@ -21,38 +20,16 @@ import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
 /**
  * Floating account card opened from the header's Profile action.
  *
- * It carries only three account-level tabs: Profile, Password, and History. Address, Government
- * IDs, Employment Status, Emergency Contact, E-Signature, Security, and Service Record are
- * deliberately absent — those are personnel records that stay on the full profile page, not
- * settings you manage from a card. The account details are read-only apart from the email
+ * It carries only two account-level tabs: Profile and Password. Address, Government
+ * IDs, Employment Status, Emergency Contact, E-Signature, and Security are deliberately
+ * absent — those are personnel records that stay on the full profile page, not settings you
+ * manage from a card. The account details are read-only apart from the email
  * address, which opens the verification flow from a pencil beside its value.
  */
 const ACCOUNT_TABS = [
   { id: "profile", label: "Profile" },
   { id: "password", label: "Password" },
-  { id: "history", label: "History" },
 ];
-
-function formatDateTime(value) {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(String(value).replace(" ", "T"));
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-}
-
-function formatAction(value) {
-  return String(value || "")
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (match) => match.toUpperCase())
-    .trim();
-}
 
 function DetailField({ label, value, loading = false, action = null }) {
   return (
@@ -105,17 +82,6 @@ function PanelMessage({ tone = "info", title, description, action }) {
   );
 }
 
-function PanelLoader({ label }) {
-  return (
-    <div className="grid min-h-[180px] place-items-center rounded-xl border border-slate-200 bg-slate-50">
-      <div className="text-center">
-        <LoaderCircle className="mx-auto animate-spin text-[#D61E1E]" size={26} />
-        <p className="m-0 mt-3 text-sm font-semibold text-slate-600">{label}</p>
-      </div>
-    </div>
-  );
-}
-
 export default function AdminAccountCard({ open, onClose, user, onUserChange, employees = [] }) {
   const headingId = useId();
   const [activeTab, setActiveTab] = useState("profile");
@@ -123,9 +89,6 @@ export default function AdminAccountCard({ open, onClose, user, onUserChange, em
   const [employeeRecord, setEmployeeRecord] = useState(null);
   const [employeeLoading, setEmployeeLoading] = useState(true);
   const [employeeError, setEmployeeError] = useState("");
-  const [history, setHistory] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState("");
 
   const fullName = user?.full_name || user?.username || "User";
   const roleLabel = user?.roleLabel || user?.role || "User";
@@ -191,40 +154,6 @@ export default function AdminAccountCard({ open, onClose, user, onUserChange, em
     void loadEmployeeRecord();
   }, [loadEmployeeRecord, open]);
 
-  const loadHistory = useCallback(async () => {
-    setHistoryLoading(true);
-    setHistoryError("");
-
-    try {
-      const result = await getAuditLogs({
-        search: user?.email || user?.username || "",
-        range: "all",
-        perPage: 25,
-      });
-      const rows = Array.isArray(result?.auditLogs) ? result.auditLogs : [];
-      const accountId = Number(user?.id) || 0;
-      // The search is a broad LIKE across names and emails, so keep only this account's own rows.
-      const ownRows = accountId > 0 ? rows.filter((row) => Number(row.userId) === accountId) : rows;
-
-      setHistory(ownRows);
-    } catch (error) {
-      setHistory([]);
-      setHistoryError(
-        error?.response?.data?.message || error?.message || "Unable to load account history."
-      );
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [user]);
-
-  useEffect(() => {
-    if (!open || activeTab !== "history") {
-      return;
-    }
-
-    void loadHistory();
-  }, [activeTab, loadHistory, open]);
-
   const accountDetails = useMemo(
     () => [
       { label: "Full name", value: fullName },
@@ -246,7 +175,7 @@ export default function AdminAccountCard({ open, onClose, user, onUserChange, em
       },
       { label: "Phone number", value: employeeRecord?.phone },
       { label: "Division", value: user?.division || employeeRecord?.department },
-      { label: "Position", value: user?.designation || employeeRecord?.position },
+      { label: "Position", value: user?.position || employeeRecord?.position },
     ],
     [employeeRecord, fullName, roleLabel, user]
   );
@@ -282,61 +211,6 @@ export default function AdminAccountCard({ open, onClose, user, onUserChange, em
           />
         ))}
       </div>
-    </div>
-  );
-
-  const renderHistoryTab = () => (
-    <div className="space-y-5">
-      <PanelHeading
-        title="Account history"
-        description="Recent sign-ins and account changes recorded for this login."
-      />
-
-      {historyLoading ? (
-        <PanelLoader label="Loading account history..." />
-      ) : historyError ? (
-        <PanelMessage
-          tone="warning"
-          title="Unable to load account history"
-          description={historyError}
-          action={(
-            <Button variant="secondary" size="sm" icon={RefreshCcw} onClick={loadHistory}>
-              Retry
-            </Button>
-          )}
-        />
-      ) : history.length === 0 ? (
-        <PanelMessage
-          title="No activity recorded yet"
-          description="Sign-ins and account changes will appear here once they are logged."
-        />
-      ) : (
-        <ul className="m-0 list-none divide-y divide-slate-100 rounded-xl border border-slate-200 p-0">
-          {history.map((entry) => (
-            <li
-              key={entry.id}
-              className="grid gap-1 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start sm:gap-4"
-            >
-              <div className="min-w-0">
-                <p className="m-0 text-sm font-semibold text-slate-900">
-                  {formatAction(entry.action) || "Account activity"}
-                </p>
-                {entry.summary ? (
-                  <p className="m-0 mt-1 text-sm leading-6 text-slate-500">{entry.summary}</p>
-                ) : null}
-                <p className="m-0 mt-1 text-xs font-semibold text-slate-500">
-                  {[entry.ipAddress, entry.location, entry.browser || entry.device]
-                    .filter(Boolean)
-                    .join(" - ") || "Unknown device"}
-                </p>
-              </div>
-              <p className="m-0 whitespace-nowrap text-xs font-semibold text-slate-500 sm:text-right">
-                {formatDateTime(entry.createdAt)}
-              </p>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 
@@ -440,7 +314,6 @@ export default function AdminAccountCard({ open, onClose, user, onUserChange, em
             >
               {activeTab === "profile" ? renderProfileTab() : null}
               {activeTab === "password" ? <PasswordChangeSection variant="dialog" /> : null}
-              {activeTab === "history" ? renderHistoryTab() : null}
             </div>
           </motion.section>
         </div>

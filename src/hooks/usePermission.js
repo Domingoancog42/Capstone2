@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { userHasPermission } from "../utils/permissions";
 
 /**
  * Permission Hook
@@ -34,37 +35,12 @@ export function usePermission(user, permissions = null) {
         return false;
       }
 
-      // Admin has all permissions
-      if (user.roleKey === "admin" || user.role === "admin") {
-        return true;
-      }
-
       // If no permissions object provided, default to false for non-admins
       if (!effectivePermissions) {
         return false;
       }
 
-      // Check if the resource exists in permissions
-      if (!effectivePermissions[resource]) {
-        return false;
-      }
-
-      // Check if the action is allowed
-      const resourcePermissions = effectivePermissions[resource];
-      
-      if (Array.isArray(resourcePermissions)) {
-        return resourcePermissions.includes(action);
-      }
-
-      if (Array.isArray(resourcePermissions.actions)) {
-        return resourcePermissions.enabled !== false && resourcePermissions.actions.includes(action);
-      }
-
-      if (typeof resourcePermissions === "object") {
-        return resourcePermissions[action] === true;
-      }
-
-      return false;
+      return userHasPermission({ ...user, permissions: effectivePermissions }, resource, action);
     },
     [user, effectivePermissions]
   );
@@ -80,38 +56,12 @@ export function usePermission(user, permissions = null) {
         return false;
       }
 
-      // Admin can access everything
-      if (user.roleKey === "admin" || user.role === "admin") {
-        return true;
-      }
-
       // If no permissions object, check basic role-based access
       if (!effectivePermissions) {
         return false;
       }
 
-      // Check if module exists and has any permissions
-      if (!effectivePermissions[module]) {
-        return false;
-      }
-
-      const modulePermissions = effectivePermissions[module];
-
-      // If it's an array, check if there are any permissions
-      if (Array.isArray(modulePermissions)) {
-        return modulePermissions.length > 0;
-      }
-
-      if (Array.isArray(modulePermissions.actions)) {
-        return modulePermissions.enabled !== false && modulePermissions.actions.length > 0;
-      }
-
-      // If it's an object, check if there are any true values
-      if (typeof modulePermissions === "object") {
-        return Object.values(modulePermissions).some((val) => val === true);
-      }
-
-      return false;
+      return userHasPermission({ ...user, permissions: effectivePermissions }, module, "view");
     },
     [user, effectivePermissions]
   );
@@ -139,16 +89,15 @@ export function usePermission(user, permissions = null) {
         return [];
       }
 
-      // Admin has all actions
-      if (user.roleKey === "admin" || user.role === "admin") {
-        return ["view", "create", "edit", "delete", "approve", "export"];
-      }
-
       if (!effectivePermissions || !effectivePermissions[resource]) {
         return [];
       }
 
       const resourcePermissions = effectivePermissions[resource];
+
+      if (resourcePermissions.enabled === false) {
+        return [];
+      }
 
       if (Array.isArray(resourcePermissions)) {
         return resourcePermissions;
@@ -160,7 +109,7 @@ export function usePermission(user, permissions = null) {
 
       if (typeof resourcePermissions === "object") {
         return Object.entries(resourcePermissions)
-          .filter(([_, allowed]) => allowed === true)
+          .filter(([action, allowed]) => action !== "enabled" && allowed === true)
           .map(([action]) => action);
       }
 

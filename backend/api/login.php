@@ -1,10 +1,15 @@
 <?php
 declare(strict_types=1);
 
+// Logging in must not depend on a CSRF token from a possibly expired anonymous browser session.
+define('HRIS_CSRF_EXEMPT', true);
+
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/captcha-utils.php';
 require_once __DIR__ . '/email-domain-policy.php';
 require_once __DIR__ . '/two_factor.php';
+// The account query, the lock helpers and the counter reset, shared with google_login.php.
+require_once __DIR__ . '/login-utils.php';
 
 require_method('POST');
 
@@ -57,17 +62,6 @@ if (login_captcha_enabled($pdo)) {
 ensure_user_security_columns($pdo);
 ensure_two_factor_schema($pdo);
 ensure_email_verification_columns($pdo);
-
-function login_locked_until_message(mixed $lockedUntil): string
-{
-    $timestamp = datetime_timestamp($lockedUntil);
-
-    if ($timestamp === null) {
-        return 'This account is temporarily locked due to repeated failed sign-in attempts.';
-    }
-
-    return 'This account is locked until ' . date('M j, Y g:i A', $timestamp) . ' due to repeated failed sign-in attempts.';
-}
 
 /**
  * The lockout is the only moment an administrator is told that someone is grinding at an account, so
@@ -198,83 +192,7 @@ function login_record_failed_attempt(PDO $pdo, array $user): ?int
     return null;
 }
 
-/**
- * The wall-clock string in the message is only a fallback. What the browser actually renders is built
- * from these fields: an ISO timestamp carrying the UTC offset, so it can be shown in whatever zone the
- * user is sitting in, and the seconds left, so the countdown never depends on the visitor's device
- * clock being set correctly.
- *
- * `lockTriggered` separates the attempt that spent the last try from every attempt made afterwards.
- * They deserve different treatment in the UI -- being locked out is news the first time and nothing
- * but a repeat of what the screen already says every time after -- and that is a distinction only
- * this endpoint can draw, so it is stated outright rather than inferred from the message wording.
- */
-function login_lock_payload(int $lockedUntilTimestamp, bool $lockTriggered): array
-{
-    return [
-        'lockedUntil' => date('c', $lockedUntilTimestamp),
-        'secondsRemaining' => max(0, $lockedUntilTimestamp - time()),
-        'lockTriggered' => $lockTriggered,
-    ];
-}
-
-function login_clear_failed_attempts(PDO $pdo, int $userId): void
-{
-    if ($userId <= 0) {
-        return;
-    }
-
-    $statement = $pdo->prepare(
-        'UPDATE users
-         SET failed_login_attempts = 0,
-             locked_until = NULL
-         WHERE id = :id'
-    );
-    $statement->execute([':id' => $userId]);
-}
-
-$statement = $pdo->prepare(
-    'SELECT
-        u.id,
-        u.username,
-        u.email,
-        u.email_verified_at,
-        u.email_updated_at,
-        u.password_hash,
-        u.must_change_password,
-        u.password_changed_at,
-        u.failed_login_attempts,
-        u.locked_until,
-        u.two_factor_enabled,
-        u.is_archived,
-        r.name AS role,
-        u.status,
-        e.employee_id,
-        e.first_name,
-        e.middle_name,
-        e.last_name,
-        e.profile_image,
-        d.name AS division,
-        des.name AS designation
-     FROM users u
-     LEFT JOIN roles r ON r.id = u.role_id
-     LEFT JOIN employees e
-        ON e.email COLLATE utf8mb4_unicode_ci = u.email
-       AND e.is_archived = 0
-     LEFT JOIN divisions d ON d.id = e.division_id
-     LEFT JOIN designations des ON des.id = e.designation_id
-     WHERE (u.username = :username_identifier OR u.email = :email_identifier)
-     LIMIT 1'
-);
-$statement->execute([
-    ':username_identifier' => $identifier,
-    ':email_identifier' => $identifier,
-]);
-$user = $statement->fetch();
-
-if ($user) {
-    $user = enrich_user_with_employee($pdo, $user);
-}
+$user = login_find_user_by_identifier($pdo, $identifier);
 
 if (!$user) {
     write_auth_audit($pdo, null, 'login.failed', 'A login attempt failed for an unknown account.', [
@@ -366,23 +284,6 @@ if (strtolower((string)$user['status']) !== 'active') {
     ], 401);
 }
 
-/*
- * The password has already been proved, so naming this state does not reveal whether an arbitrary
- * username exists. A temporary Admin session holds the exclusive lock and the employee waits until
- * that Admin uses the persistent Return button or the temporary session expires.
- */
-if (active_account_use_lock($pdo, (int)$user['id']) !== null) {
-    write_auth_audit($pdo, $user, 'login.account_in_use', 'A login attempt was blocked because an administrator is temporarily using the account.', [
-        'username' => $user['username'],
-    ]);
-
-    json_response([
-        'success' => false,
-        'reason' => 'account_in_use_by_admin',
-        'message' => 'This account is currently being used by an administrator. Please try again later.',
-    ], 423);
-}
-
 $emailPolicyViolation = email_domain_policy_violation($pdo, (string)($user['email'] ?? ''));
 if ($emailPolicyViolation !== null) {
     write_auth_audit($pdo, $user, 'login.email_domain_blocked', 'A login attempt was blocked by the email domain policy.', [
@@ -445,19 +346,6 @@ if (two_factor_required($pdo, $user)) {
         'message' => 'Verification code sent.',
         'twoFactor' => $twoFactorChallenge,
     ]);
-}
-
-// Close the small race in which an Admin reserves the account after the first lock check above.
-if (active_account_use_lock($pdo, (int)$user['id']) !== null) {
-    write_auth_audit($pdo, $user, 'login.account_in_use', 'A login attempt was blocked because an administrator is temporarily using the account.', [
-        'username' => $user['username'],
-    ]);
-
-    json_response([
-        'success' => false,
-        'reason' => 'account_in_use_by_admin',
-        'message' => 'This account is currently being used by an administrator. Please try again later.',
-    ], 423);
 }
 
 $sessionUser = format_user($user);

@@ -1,12 +1,20 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarDays, FileUp, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AlertTriangle, CalendarDays, X } from "lucide-react";
+import { toast } from "react-hot-toast";
 import EmployeeSearchSelect from "./EmployeeSearchSelect";
 import LeaveMonetizationFields from "./LeaveMonetizationFields";
+import FloatingSelect from "../UI/FloatingSelect";
 import MultiDatePicker from "../UI/MultiDatePicker";
 import { LEAVE_MONETIZATION_TYPE, isLeaveMonetizationType } from "../../data/leaveTypes";
+import { fetchLeaveTypes } from "../../services/leaveService";
 import {
+  LEAVE_ADVANCE_NOTICE_DAYS,
+  LEAVE_ADVANCE_NOTICE_ERROR,
+  LEAVE_TYPE_REQUIRED_BEFORE_DATES_ERROR,
+  isLeaveStartDateTooSoon,
+  isLeaveAdvanceNoticeExempt,
   isPastDate,
-  isWeekendDate,
   resolveRoleKey,
   todayDateInputValue,
 } from "../../utils/leaveHelpers";
@@ -42,6 +50,8 @@ const STUDY_LEAVE_DETAIL_OPTIONS = [
   { label: "BAR/Board Examination Review", value: "bar_review" },
 ];
 
+const MATERNITY_LEAVE_CALENDAR_DAYS = 105;
+
 function normalizeLeaveType(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -49,6 +59,38 @@ function normalizeLeaveType(value) {
 function isVacationOrSpecialPrivilegeLeave(leaveType) {
   const normalizedLeaveType = normalizeLeaveType(leaveType);
   return normalizedLeaveType === "vacation leave" || normalizedLeaveType === "special privilege leave";
+}
+
+function isMaternityLeave(leaveType) {
+  return normalizeLeaveType(leaveType) === "maternity leave";
+}
+
+function buildCalendarDaySelection(startDate, numberOfDays) {
+  const cursor = new Date(`${startDate}T00:00:00`);
+  if (Number.isNaN(cursor.getTime()) || numberOfDays <= 0) {
+    return [];
+  }
+
+  return Array.from({ length: numberOfDays }, () => {
+    const date = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-${String(cursor.getDate()).padStart(2, "0")}`;
+    cursor.setDate(cursor.getDate() + 1);
+    return { date, portion: "whole" };
+  });
+}
+
+function leaveTypeMatchesEmployeeGender(leaveType, gender) {
+  const normalizedType = normalizeLeaveType(leaveType);
+  const normalizedGender = String(gender || "").trim().toLowerCase();
+
+  if (normalizedType === "maternity leave") {
+    return normalizedGender === "female";
+  }
+
+  if (normalizedType === "paternity leave") {
+    return normalizedGender === "male";
+  }
+
+  return true;
 }
 
 function buildInitialForm(user) {
@@ -60,7 +102,6 @@ function buildInitialForm(user) {
     /* The days applied for, each with its own whole/AM/PM portion. See LeaveDatePicker. */
     leaveDays: [],
     reason: "",
-    attachment: null,
     /*
      * Only read when the type selected is the monetization filing, which draws days from a credit
      * instead of spending them on dates away. `VL` is the credit most filings monetize.
@@ -75,7 +116,6 @@ function buildInitialForm(user) {
 export default function LeaveRequestModal({
   open = false,
   user,
-  leaveTypes = [],
   employees = [],
   leaveCredits = [],
   isSubmitting = false,
@@ -86,9 +126,14 @@ export default function LeaveRequestModal({
   const [visible, setVisible] = useState(false);
   const [form, setForm] = useState(() => buildInitialForm(user));
   const [errors, setErrors] = useState({});
+  const [leaveTypes, setLeaveTypes] = useState([]);
+  const [leaveTypesLoading, setLeaveTypesLoading] = useState(false);
+  const [leaveTypesError, setLeaveTypesError] = useState("");
   /* The monetizable credits, daily rate and CSC ceilings the monetization fields fetched. */
   const [monetizationSummary, setMonetizationSummary] = useState(null);
   const canSelectEmployee = resolveRoleKey(user) === "admin";
+  const normalizedLeaveType = normalizeLeaveType(form.leaveType);
+  const isMaternityFiling = isMaternityLeave(normalizedLeaveType);
 
   const employeeOptions = useMemo(
     () =>
@@ -99,6 +144,7 @@ export default function LeaveRequestModal({
           employeeId: employee.employeeId,
           employeeName: employee.fullName,
           division: employee.department,
+          gender: employee.gender,
         }))
         .sort((left, right) => left.employeeName.localeCompare(right.employeeName)),
     [employees]
@@ -121,7 +167,37 @@ export default function LeaveRequestModal({
     return () => window.cancelAnimationFrame(frame);
   }, [open, user]);
 
-  const computedDays = useMemo(() => getSelectedDatesTotal(form.leaveDays), [form.leaveDays]);
+  useEffect(() => {
+    if (!open) return undefined;
+
+    let mounted = true;
+    setLeaveTypes([]);
+    setLeaveTypesLoading(true);
+    setLeaveTypesError("");
+
+    const loadLeaveTypes = async () => {
+      try {
+        const result = await fetchLeaveTypes();
+        if (mounted) {
+          setLeaveTypes((result?.leaveTypes || []).map((leaveType) => leaveType.name));
+        }
+      } catch {
+        if (mounted) {
+          setLeaveTypesError("Unable to load leave types. Reopen this form to try again.");
+        }
+      } finally {
+        if (mounted) setLeaveTypesLoading(false);
+      }
+    };
+
+    void loadLeaveTypes();
+    return () => { mounted = false; };
+  }, [open]);
+
+  const computedDays = useMemo(
+    () => getSelectedDatesTotal(form.leaveDays),
+    [form.leaveDays]
+  );
   /*
    * The record still keeps a start and an end so lists, calendars and the CSC form have a span to
    * show; the days in between that were not picked are simply not part of the request.
@@ -135,6 +211,7 @@ export default function LeaveRequestModal({
         employeeId: user?.employee_id || "",
         employeeName: form.employeeName || user?.full_name || user?.username || "",
         division: form.division || user?.division || "",
+        gender: user?.gender || "",
       };
     }
 
@@ -164,13 +241,18 @@ export default function LeaveRequestModal({
 
   /*
    * Monetization is filed from this same form, so the type selection carries it alongside the leave
-   * types. Picking it swaps the dates and the attachment for the credit to draw from and how many
+   * types. Picking it swaps the dates for the credit to draw from and how many
    * days of it, and the filing is kept by leave_monetization.php rather than as a leave request.
    */
   const isMonetizationFiling = isLeaveMonetizationType(form.leaveType);
+  const filingEmployeeGender = resolvedEmployee?.gender || "";
   const selectableLeaveTypes = useMemo(
-    () => [...leaveTypes, LEAVE_MONETIZATION_TYPE],
-    [leaveTypes]
+    () => [
+      ...leaveTypes.filter((leaveType) => !isLeaveMonetizationType(leaveType)
+        && leaveTypeMatchesEmployeeGender(leaveType, filingEmployeeGender)),
+      LEAVE_MONETIZATION_TYPE,
+    ],
+    [filingEmployeeGender, leaveTypes]
   );
   const monetizationRules = useMemo(
     () => resolveMonetizationRules(monetizationSummary),
@@ -203,16 +285,48 @@ export default function LeaveRequestModal({
   }
 
   /*
-   * Leave is applied for ahead of time, so the calendar starts today. This holds for every role,
-   * admin included -- a back-dated filing is not something any account may enter through this form.
-   *
-   * Recomputed each render rather than memoised, so a form left open past midnight still moves on.
+   * Regular leave starts at least five calendar days after today. Exempt leave types keep today's
+   * lower bound. Recompute on each render so the cutoff follows the filing date.
    */
   const today = todayDateInputValue();
+  const firstAllowedLeaveDate = new Date(`${today}T00:00:00`);
+  if (!isLeaveAdvanceNoticeExempt(form.leaveType)) {
+    firstAllowedLeaveDate.setDate(firstAllowedLeaveDate.getDate() + LEAVE_ADVANCE_NOTICE_DAYS);
+  }
+  const minimumLeaveDate = `${firstAllowedLeaveDate.getFullYear()}-${String(firstAllowedLeaveDate.getMonth() + 1).padStart(2, "0")}-${String(firstAllowedLeaveDate.getDate()).padStart(2, "0")}`;
 
   const handleLeaveDaysChange = (leaveDays) => {
+    if (!String(form.leaveType || "").trim()) {
+      setErrors((current) => ({
+        ...current,
+        leaveType: "Select a leave type before choosing leave dates.",
+        leaveDays: "",
+      }));
+      toast.error(LEAVE_TYPE_REQUIRED_BEFORE_DATES_ERROR);
+      return false;
+    }
+
+    const nextStartDate = getSelectedDatesRange(leaveDays).startDate;
+    if (isLeaveStartDateTooSoon({ leaveType: form.leaveType, startDate: nextStartDate, filingDate: today })) {
+      setErrors((current) => ({ ...current, leaveDays: "" }));
+      toast.error(LEAVE_ADVANCE_NOTICE_ERROR);
+      return false;
+    }
+
     setForm((current) => ({ ...current, leaveDays }));
     setErrors((current) => ({ ...current, leaveDays: "" }));
+    return true;
+  };
+
+  const handleSetMaternityDays = () => {
+    if (!dateRange.startDate) {
+      toast.error("Select a maternity leave start date first.");
+      return;
+    }
+
+    handleLeaveDaysChange(
+      buildCalendarDaySelection(dateRange.startDate, MATERNITY_LEAVE_CALENDAR_DAYS)
+    );
   };
 
   const handleChange = (field) => (event) => {
@@ -222,7 +336,7 @@ export default function LeaveRequestModal({
         return {
           ...current,
           leaveType: value,
-          attachment: normalizeLeaveType(value) === "sick leave" ? current.attachment : null,
+          leaveDays: isMaternityLeave(value) ? [] : current.leaveDays,
           ...DEFAULT_LEAVE_REQUEST_DETAILS,
         };
       }
@@ -251,6 +365,7 @@ export default function LeaveRequestModal({
           monetizationCreditCode: "",
           monetizationDays: "",
           monetizationDateFiled: "",
+          maternityMonth: "",
           reason: "",
         };
       }
@@ -274,17 +389,20 @@ export default function LeaveRequestModal({
     );
 
     setForm((current) => ({
-      ...current,
+      ...(leaveTypeMatchesEmployeeGender(current.leaveType, matchedEmployee?.gender)
+        ? current
+        : {
+            ...current,
+            leaveType: "",
+            leaveDays: [],
+            reason: "",
+            ...DEFAULT_LEAVE_REQUEST_DETAILS,
+          }),
       employeeId,
       employeeName: matchedEmployee?.employeeName || "",
       division: matchedEmployee?.division || current.division,
     }));
     setErrors((current) => ({ ...current, employeeName: "" }));
-  };
-
-  const handleFileChange = (event) => {
-    const file = event.target.files?.[0] || null;
-    setForm((current) => ({ ...current, attachment: file }));
   };
 
   const handleMonetizationChange = (field, value) => {
@@ -293,8 +411,8 @@ export default function LeaveRequestModal({
   };
 
   /*
-   * The monetization filing answers to the CSC ceilings instead of the dates, the credits and the
-   * attachment a leave is checked against, so it is validated on its own terms. The same ceilings
+   * The monetization filing answers to the CSC ceilings instead of the dates and the credits a
+   * leave is checked against, so it is validated on its own terms. The same ceilings
    * are enforced again by leave_monetization.php, which is the authority on them.
    */
   const validateMonetization = () => {
@@ -330,11 +448,16 @@ export default function LeaveRequestModal({
     }
 
     const nextErrors = {};
-    const normalizedLeaveType = normalizeLeaveType(form.leaveType);
 
     if (!form.employeeName.trim()) nextErrors.employeeName = "Employee name is required.";
     if (!form.leaveType) nextErrors.leaveType = "Leave type is required.";
-    if (form.leaveDays.length === 0) nextErrors.leaveDays = "Select at least one leave date.";
+    else if (!selectableLeaveTypes.includes(form.leaveType)) {
+      nextErrors.leaveType = "Select an active leave type.";
+    }
+    if (!form.reason.trim()) nextErrors.reason = "Reason / Supporting Details is required.";
+    if (form.leaveDays.length === 0) {
+      nextErrors.leaveDays = "Select at least one leave date.";
+    }
 
     /*
      * The picker already refuses these days, but a form left open past midnight can age into a past
@@ -342,9 +465,15 @@ export default function LeaveRequestModal({
      */
     if (form.leaveDays.some((day) => isPastDate(day.date))) {
       nextErrors.leaveDays = "Leave dates cannot be in the past. Choose today or a later date.";
-    } else if (form.leaveDays.some((day) => isWeekendDate(day.date))) {
-      /* Leave is counted in working days, so a Saturday or Sunday is never part of a request. */
-      nextErrors.leaveDays = "Leave dates must be working days (Monday to Friday).";
+    }
+
+    const advanceNoticeInvalid = isLeaveStartDateTooSoon({
+      leaveType: form.leaveType,
+      startDate: dateRange.startDate,
+      filingDate: today,
+    });
+    if (advanceNoticeInvalid) {
+      toast.error(LEAVE_ADVANCE_NOTICE_ERROR);
     }
 
     if (isVacationOrSpecialPrivilegeLeave(normalizedLeaveType)) {
@@ -372,7 +501,7 @@ export default function LeaveRequestModal({
     }
 
     setErrors(nextErrors);
-    return Object.keys(nextErrors).length === 0;
+    return Object.keys(nextErrors).length === 0 && !advanceNoticeInvalid;
   };
 
   const submit = async (event) => {
@@ -418,16 +547,14 @@ export default function LeaveRequestModal({
         sickLeaveMode: form.sickLeaveMode,
         sickLeaveIllness: form.sickLeaveIllness,
         studyLeavePurpose: form.studyLeavePurpose,
+        maternityMonth: "",
         leaveDays: form.leaveDays,
       }),
-      attachment: form.attachment,
-      attachmentName: form.attachment?.name || "",
     });
   };
 
-  const normalizedLeaveType = normalizeLeaveType(form.leaveType);
-
-  return (
+  // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
+  return createPortal((
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -463,9 +590,11 @@ export default function LeaveRequestModal({
               <button
                 type="button"
                 onClick={onClose}
+                aria-label="Close"
+                title="Close"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
               >
-                <X size={16} />
+                <X size={16} aria-hidden="true" />
               </button>
             ) : null}
           </div>
@@ -494,22 +623,83 @@ export default function LeaveRequestModal({
               <p className="m-0 text-xs text-rose-700 sm:col-span-2">{errors.employeeName}</p>
             ) : null}
 
-            <label className={isMonetizationFiling ? "sm:col-span-2" : undefined}>
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Leave Type</span>
-              <select
-                value={form.leaveType}
-                onChange={handleChange("leaveType")}
-                className="min-h-[46px] w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
-              >
-                <option value="">Select leave type</option>
-                {selectableLeaveTypes.map((leaveType) => (
-                  <option key={leaveType} value={leaveType}>
-                    {leaveType}
-                  </option>
-                ))}
-              </select>
-              {errors.leaveType ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.leaveType}</p> : null}
-            </label>
+            {/* Keep both primary controls in their own fixed row on every form layout. */}
+            <div className="grid grid-cols-2 gap-4 sm:col-span-2">
+              <label className={isMonetizationFiling ? "col-span-2" : undefined}>
+                <span className="mb-1.5 block text-sm font-semibold text-slate-700">Leave Type</span>
+                <FloatingSelect
+                  id="leave-request-type"
+                  ariaLabel="Leave Type"
+                  value={form.leaveType}
+                  options={selectableLeaveTypes}
+                  placeholder={leaveTypesLoading ? "Loading leave types..." : "Select Leave Type"}
+                  visibleThrough="Solo Parent Leave"
+                  onChange={(value) => handleChange("leaveType")({ target: { value } })}
+                />
+                {errors.leaveType ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.leaveType}</p> : null}
+                {leaveTypesError ? <p role="alert" className="m-0 mt-1 text-xs text-rose-700">{leaveTypesError}</p> : null}
+              </label>
+
+              {isMonetizationFiling ? null : (
+                <div>
+                  <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
+                    <span className="flex min-w-0 items-center gap-1 text-sm font-semibold text-slate-700">
+                      <CalendarDays size={15} className="shrink-0" />
+                      <span className="truncate">{isMaternityFiling ? "Inclusive Dates" : "Leave Dates"}</span>
+                    </span>
+                    {isMaternityFiling ? (
+                      <button
+                        type="button"
+                        onClick={handleSetMaternityDays}
+                        className="shrink-0 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1 text-[11px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-100"
+                      >
+                        Set 105 Days
+                      </button>
+                    ) : null}
+                  </div>
+                  {/*
+                    * Days are picked one at a time, not as a span. Filing for the 2nd, 4th and 6th
+                    * has to leave the 3rd and 5th as ordinary working days — a range would charge
+                    * five days of credit for three days of leave and mark the employee absent on two
+                    * days they were at their desk.
+                    *
+                    * Maternity is the one exception and stays a range: it is 105 continuous calendar
+                    * days by law, which is what the "Set 105 Days" button above fills in from the
+                    * start date. `closeOnSelect` goes with it — closing the calendar after every tap
+                    * is right for a two-tap range and wrong when several days are being picked.
+                    */}
+                  <MultiDatePicker
+                    value={form.leaveDays}
+                    minDate={minimumLeaveDate}
+                    allowWeekends={isMaternityFiling}
+                    placeholder={isMaternityFiling ? "Select inclusive dates" : "Select leave dates"}
+                    floating
+                    closeOnSelect={isMaternityFiling}
+                    selectionMode={isMaternityFiling ? "range" : "multiple"}
+                    showRangeDuration={isMaternityFiling}
+                    fullDayLabel="Full Day"
+                    rangeLabel="Inclusive Date Range"
+                    onChange={handleLeaveDaysChange}
+                  />
+                  {errors.leaveDays ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.leaveDays}</p> : null}
+                </div>
+              )}
+            </div>
+
+            {!isMonetizationFiling && computedDays > 0 ? (
+              <p className="m-0 text-xs text-slate-500 sm:col-span-2">
+                {isMaternityFiling ? (
+                  `${formatLeaveDays(computedDays)} calendar day${computedDays === 1 ? "" : "s"} selected.`
+                ) : (
+                  <>
+                    {formatLeaveDays(computedDays)} working day{computedDays === 1 ? "" : "s"} applied for across{" "}
+                    {form.leaveDays.length} calendar date{form.leaveDays.length === 1 ? "" : "s"}.
+                    {" "}Days in between that are not picked stay working days, and weekends cannot be picked.
+                    {" "}Morning or afternoon counts a picked date as 0.5.
+                  </>
+                )}
+              </p>
+            ) : null}
 
             {isMonetizationFiling ? (
               <LeaveMonetizationFields
@@ -623,31 +813,6 @@ export default function LeaveRequestModal({
               </div>
             ) : null}
 
-            {/* Monetization spends credits rather than days away, so it applies for no dates. */}
-            {isMonetizationFiling ? null : (
-              <div>
-                <span className="mb-1.5 flex items-center gap-1 text-sm font-semibold text-slate-700">
-                  <CalendarDays size={15} />
-                  Leave Dates
-                </span>
-                <MultiDatePicker
-                  value={form.leaveDays}
-                  minDate={today}
-                  placeholder="Select leave dates"
-                  onChange={handleLeaveDaysChange}
-                />
-                {errors.leaveDays ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.leaveDays}</p> : null}
-              </div>
-            )}
-
-            {!isMonetizationFiling && computedDays > 0 ? (
-              <p className="m-0 text-xs text-slate-500 sm:col-span-2">
-                {formatLeaveDays(computedDays)} day{computedDays === 1 ? "" : "s"} applied for across{" "}
-                {form.leaveDays.length} selected date{form.leaveDays.length === 1 ? "" : "s"}. A
-                morning or afternoon half day counts as 0.5.
-              </p>
-            ) : null}
-
             {chargesLeaveWithoutPay ? (
               <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4">
                 <p className="m-0 flex items-center gap-2 text-sm font-semibold text-amber-900">
@@ -663,37 +828,21 @@ export default function LeaveRequestModal({
             ) : null}
 
             {normalizedLeaveType === "sick leave" ? (
-              <label>
-                <span className="mb-1.5 block text-sm font-semibold text-slate-700">Attachment Upload</span>
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5">
-                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">
-                    <FileUp size={15} />
-                    Upload File
-                    <input
-                      type="file"
-                      accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp"
-                      className="hidden"
-                      onChange={handleFileChange}
-                    />
-                  </label>
-                  <p className="m-0 mt-2 truncate text-xs text-slate-500">
-                    {form.attachment?.name || "No file selected"}
-                  </p>
-                  <p className="m-0 mt-1 text-[11px] text-slate-400">
-                    Supported formats: PDF, PNG, JPG, JPEG, GIF, WEBP, BMP
-                  </p>
-                </div>
-              </label>
+              <p className="m-0 text-xs text-slate-500 sm:col-span-2">
+                After filing, upload your medical certificate using the file-upload icon in the request's
+                Actions column. You will receive a reminder three days after filing if it is still missing.
+              </p>
             ) : null}
 
             <label className="sm:col-span-2">
               <span className="mb-1.5 block text-sm font-semibold text-slate-700">
-                {isMonetizationFiling
-                  ? `Purpose${monetizationRequiresPurpose ? " *" : ""}`
-                  : "Reason / Supporting Details"}
+                {isMonetizationFiling ? "Purpose" : "Reason / Supporting Details"}
+                {!isMonetizationFiling || monetizationRequiresPurpose ? <span className="text-rose-600"> *</span> : null}
               </span>
               <textarea
                 rows={4}
+                required={!isMonetizationFiling || monetizationRequiresPurpose}
+                aria-invalid={Boolean(errors.reason)}
                 value={form.reason}
                 onChange={handleChange("reason")}
                 placeholder={
@@ -701,7 +850,7 @@ export default function LeaveRequestModal({
                     ? (monetizationRequiresPurpose
                       ? "State the valid and justifiable reason for monetizing half or more of the credits"
                       : "Reason for monetizing the leave credits")
-                    : "Provide any additional reason or supporting details."
+                    : "Enter your reason for requesting leave or supporting details."
                 }
                 className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
               />
@@ -712,13 +861,6 @@ export default function LeaveRequestModal({
 
         <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-4">
           <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-          <button
             type="submit"
             disabled={isSubmitting}
             className="inline-flex min-h-10 items-center justify-center rounded-xl bg-gradient-to-r from-teal-600 to-sky-600 px-4 text-sm font-semibold text-white shadow transition hover:from-teal-700 hover:to-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
@@ -728,5 +870,5 @@ export default function LeaveRequestModal({
         </div>
       </form>
     </div>
-  );
+  ), document.body);
 }

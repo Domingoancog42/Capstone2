@@ -1,4 +1,5 @@
 import React from "react";
+import { decorateRequiredFieldLabel } from "./RequiredFieldLabel";
 
 export default function InputField({
   id,
@@ -12,10 +13,10 @@ export default function InputField({
   const inputId = id || props.name;
 
   return (
-    <div className={`w-full ${className}`.trim()}>
+    <div className={`w-full ${className}`.trim()} data-validation-field>
       {label ? (
         <label htmlFor={inputId} className="mb-1.5 block text-sm font-semibold text-slate-700">
-          {label}
+          {decorateRequiredFieldLabel(label)}
         </label>
       ) : null}
       <div

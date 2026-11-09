@@ -1,3 +1,4 @@
+import ResponsiveContainer from "../chart/ResponsiveChartContainer";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -20,7 +21,6 @@ import {
   AreaChart,
   CartesianGrid,
   Legend,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
@@ -34,13 +34,15 @@ import Card, {
 import { DistributionPieChart, useAnalyticsTheme } from "../analytics/analyticsChartKit";
 import { SERIES_SLOT_COUNT, assignEntitySlots, normalizeEntityKey } from "../../module/reports/reportsTheme";
 import DashboardWelcomeBanner from "./DashboardWelcomeBanner";
+import DashboardLeaveManagementAnalytics from "./DashboardLeaveManagementAnalytics";
+import DashboardMonthFilter, { currentDashboardPeriod, formatDashboardPeriod } from "./DashboardMonthFilter";
 import DashboardAnalytics from "../analytics/DashboardAnalytics";
 import Modal from "../UI/modal";
 import AdminStatCard from "./AdminStatCard";
 import { fetchDashboardAnalytics } from "../../services/analyticsService";
 import { subscribeAutoRefresh } from "../auto/autorefreshconfig";
 import { resolveBackendAssetUrl } from "../../utils/backendAssetUrl";
-import { getRoleBadgeClass, getRoleLabel } from "../../utils/roleRoutes";
+import { getRoleBadgeClass, getRoleLabel, resolveUserRoleKey } from "../../utils/roleRoutes";
 import {
   formatDateDisplay,
   normalizeLeaveStatus,
@@ -66,13 +68,13 @@ const PENDING_REQUEST_TYPE_META = {
     iconTone: "border-violet-200 bg-violet-50 text-violet-700",
   },
 };
-const HEADCOUNT_MIN_YEAR = 1990;
-const HEADCOUNT_MAX_YEAR = 2100;
 const DASHBOARD_REFRESH_TOPICS = [
   "attendance",
   "compensatory",
   "employee",
+  "ipcr",
   "leave_request",
+  "opcr",
   "pass_slip",
   "payroll",
   "travel_order",
@@ -90,6 +92,8 @@ const ACTIVITY_SLOTS = {
   "Travel Order": 3,
   "Pass Slip": 4,
 };
+
+const GENERAL_REQUEST_SUMMARY_ROLE_KEYS = new Set(["hrhead", "hrstaff", "regionaldirector"]);
 
 function resolveFirstName(user) {
   const rawName = String(user?.full_name || user?.username || "Admin").trim();
@@ -131,13 +135,6 @@ function getEmployeeHeadcountDate(employee) {
     || employee?.hiredAt
     || employee?.createdAt
     || employee?.created_at
-  );
-}
-
-function resolveHeadcountYearOptions() {
-  return Array.from(
-    { length: HEADCOUNT_MAX_YEAR - HEADCOUNT_MIN_YEAR + 1 },
-    (_, index) => HEADCOUNT_MAX_YEAR - index
   );
 }
 
@@ -360,7 +357,7 @@ function EmployeeSummaryCard({ employee }) {
   const linkedUser = employee.linkedUser || null;
   const roleLabel = firstText(linkedUser?.role, employee.role, "Employee");
   const statusLabel = firstText(linkedUser?.status, employee.status, "Active");
-  const positionLabel = firstText(employee.position, employee.designation, employee.department, "N/A");
+  const positionLabel = firstText(employee.position, employee.department, "N/A");
   const salaryLabel = formatCurrencyValue(employee.basicSalary);
   const avatarUrl = resolveBackendAssetUrl(employee.profileImage);
 
@@ -447,7 +444,7 @@ function DivisionSummaryCard({ division, isSelected = false, onView }) {
 
         <div className="flex flex-col items-end gap-2">
           <span className="rounded-full bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
-            {numberFormatter.format(division.totalDesignations || 0)} designations
+            {numberFormatter.format(division.totalDesignations || 0)} positions
           </span>
           <button
             type="button"
@@ -465,7 +462,7 @@ function DivisionSummaryCard({ division, isSelected = false, onView }) {
 
 function DivisionEmployeeCard({ employee }) {
   const avatarUrl = resolveBackendAssetUrl(employee.profileImage);
-  const positionLabel = firstText(employee.position, employee.designation, employee.jobTitle, "N/A");
+  const positionLabel = firstText(employee.position, employee.jobTitle, "N/A");
   const divisionLabel = firstText(employee.department, employee.division, "Unassigned");
   const statusLabel = firstText(employee.status, "Active");
 
@@ -507,6 +504,7 @@ function DivisionEmployeeCard({ employee }) {
 function pendingStatusBadgeClass(status) {
   switch (String(status || "").trim().toLowerCase()) {
     case "reviewed":
+    case "chief_reviewed":
       return "border-sky-200 bg-sky-50 text-sky-700";
     case "pending":
       return "border-amber-200 bg-amber-50 text-amber-700";
@@ -595,7 +593,7 @@ function PendingRequestListItem({ item }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">{meta.label}</span>
             <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${pendingStatusBadgeClass(item.status)}`}>
-              {item.status}
+              {String(item.status || "").replace(/_/g, " ")}
             </span>
           </div>
           <p className="m-0 mt-1 truncate text-sm font-semibold text-slate-950">{item.employeeName}</p>
@@ -691,7 +689,13 @@ export default function AdminAnalyticsOverview({
   users = [],
   divisions = [],
   onLoadDetails,
+  canCreateCalendarEntries = true,
+  welcomeDivision = "",
+  welcomeDivisionHelper = "Your assigned division",
+  showWelcomeAssignmentCards = true,
+  showEmployeesByDivisionCard = true,
 }) {
+  const usesGeneralRequestSummaryLabels = GENERAL_REQUEST_SUMMARY_ROLE_KEYS.has(resolveUserRoleKey(user));
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [dashboardSnapshot, setDashboardSnapshot] = useState(null);
   const [analyticsError, setAnalyticsError] = useState("");
@@ -700,7 +704,14 @@ export default function AdminAnalyticsOverview({
   const [approvedSummaryOpen, setApprovedSummaryOpen] = useState(false);
   const [divisionSummaryOpen, setDivisionSummaryOpen] = useState(false);
   const [selectedDivisionId, setSelectedDivisionId] = useState("");
-  const [selectedHeadcountYear, setSelectedHeadcountYear] = useState(() => new Date().getFullYear());
+  /*
+   * The month filter above the analytics. Its month drives the leave panels' monthly figures; its
+   * year is the one analytics.php builds the headcount, payroll, and performance charts for, so
+   * picking another month of the same year does not refetch.
+   */
+  const [period, setPeriod] = useState(() => currentDashboardPeriod());
+  const periodYear = period.year;
+  const periodDate = useMemo(() => new Date(period.year, period.month, 1), [period]);
   const dashboardAnalytics = dashboardSnapshot?.analytics || null;
   const dashboardOverview = dashboardSnapshot?.overview || null;
   const totalEmployees = dashboardAnalytics
@@ -758,18 +769,9 @@ export default function AdminAnalyticsOverview({
   const displayApprovedRequests = approvedRequests;
   const approvedLeaveCount = Number(approvedRequestSummary.total || 0);
   const welcomeName = resolveFirstName(user);
-  const headcountYearOptions = useMemo(
-    () => resolveHeadcountYearOptions(),
-    []
-  );
-  useEffect(() => {
-    if (!headcountYearOptions.includes(selectedHeadcountYear)) {
-      setSelectedHeadcountYear(new Date().getFullYear());
-    }
-  }, [headcountYearOptions, selectedHeadcountYear]);
   const headcountGrowth = useMemo(
-    () => dashboardOverview?.headcount_growth || resolveHeadcountGrowth(employees, selectedHeadcountYear),
-    [dashboardOverview, employees, selectedHeadcountYear]
+    () => dashboardOverview?.headcount_growth || resolveHeadcountGrowth(employees, periodYear),
+    [dashboardOverview, employees, periodYear]
   );
   const chartTheme = useAnalyticsTheme();
   /*
@@ -886,7 +888,7 @@ export default function AdminAnalyticsOverview({
     setAnalyticsError("");
 
     try {
-      const response = await fetchDashboardAnalytics(selectedHeadcountYear);
+      const response = await fetchDashboardAnalytics(periodYear);
       if (!response?.success) {
         throw new Error(response?.message || "Unable to load dashboard analytics.");
       }
@@ -899,7 +901,7 @@ export default function AdminAnalyticsOverview({
         setAnalyticsLoading(false);
       }
     }
-  }, [selectedHeadcountYear]);
+  }, [periodYear]);
 
   useEffect(() => {
     void loadDashboardSnapshot();
@@ -931,7 +933,7 @@ export default function AdminAnalyticsOverview({
       onClick: openEmployeeSummary,
     },
     {
-      label: "Pending Leave Requests",
+      label: usesGeneralRequestSummaryLabels ? "Pending Requests" : "Pending Leave Requests",
       value: numberFormatter.format(pendingLeaveCount),
       icon: CalendarRange,
       accent: "from-amber-400 via-amber-500 to-orange-500",
@@ -940,7 +942,7 @@ export default function AdminAnalyticsOverview({
       onClick: () => setPendingRequestsOpen(true),
     },
     {
-      label: "Approved Leaves",
+      label: usesGeneralRequestSummaryLabels ? "Approved" : "Approved Leaves",
       value: numberFormatter.format(approvedLeaveCount),
       icon: BadgeCheck,
       accent: "from-emerald-500 via-emerald-600 to-lime-500",
@@ -963,10 +965,16 @@ export default function AdminAnalyticsOverview({
     <div className="w-full space-y-6">
       <DashboardWelcomeBanner
         name={welcomeName}
-        position={user?.position || user?.designation || "Not assigned"}
+        position={user?.position || "Not assigned"}
         role={getRoleLabel(user?.role || user?.roleKey || "admin")}
-        division={user?.division || user?.department || "Not assigned"}
+        division={welcomeDivision || user?.division || user?.department || "Not assigned"}
+        divisionHelper={welcomeDivisionHelper}
         imageUrl={resolveBackendAssetUrl(user?.profile_image || user?.profileImage)}
+        showCalendar
+        showPositionCard={showWelcomeAssignmentCards}
+        showDivisionCard={showWelcomeAssignmentCards}
+        canManageCalendar
+        canCreateCalendarEntries={canCreateCalendarEntries}
       />
 
       {analyticsError ? (
@@ -984,6 +992,18 @@ export default function AdminAnalyticsOverview({
           />
         ))}
       </section>
+
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="m-0 text-base font-semibold text-slate-950">Analytics</h2>
+          <p className="m-0 mt-0.5 text-xs text-slate-500">
+            Monthly figures for {formatDashboardPeriod(period)}; trends cover {periodYear}.
+          </p>
+        </div>
+        <DashboardMonthFilter value={period} onChange={setPeriod} />
+      </div>
+
+      <DashboardLeaveManagementAnalytics user={user} referenceDate={periodDate} />
 
       <Modal
         open={employeeSummaryOpen}
@@ -1154,7 +1174,7 @@ export default function AdminAnalyticsOverview({
                     {numberFormatter.format(selectedDivision.employeeCount)} employees
                   </span>
                   <span className="rounded-full bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
-                    {numberFormatter.format(selectedDivision.totalDesignations)} designations
+                    {numberFormatter.format(selectedDivision.totalDesignations)} positions
                   </span>
                   {selectedDivision.code ? (
                     <span className="rounded-full bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
@@ -1194,24 +1214,10 @@ export default function AdminAnalyticsOverview({
       </Modal>
 
       <section className="space-y-4">
-        <div className="grid items-stretch gap-4 lg:grid-cols-3">
+        <div className={`grid items-stretch gap-4 ${showEmployeesByDivisionCard ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
           <AnalyticsCard
             title="Monthly Headcount Growth"
-            description="Employees added by hire month for the selected year."
-            action={
-              <select
-                aria-label="Select headcount year"
-                value={selectedHeadcountYear}
-                onChange={(event) => setSelectedHeadcountYear(Number(event.target.value))}
-                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-              >
-                {headcountYearOptions.map((year) => (
-                  <option key={year} value={year}>
-                    {year}
-                  </option>
-                ))}
-              </select>
-            }
+            description={`Employees hired each month of ${periodYear}.`}
           >
             <div className="h-[220px]">
               <ResponsiveContainer width="100%" height="100%">
@@ -1245,28 +1251,29 @@ export default function AdminAnalyticsOverview({
             </div>
           </AnalyticsCard>
 
-          <AnalyticsCard
-            title="Employees by Division"
-            description="Active employee count in each division."
-          >
-            {divisionShareData.length === 0 ? (
-              <div className="grid h-[220px] place-items-center rounded-lg border border-dashed border-slate-200 text-center">
-                <p className="m-0 text-sm font-semibold text-slate-500">No division data available.</p>
-              </div>
-            ) : (
-              <DistributionPieChart
-                data={divisionShareData}
-                theme={chartTheme}
-                height={200}
-                valueFormatter={(value) => numberFormatter.format(value)}
-                showPercentages={false}
-              />
-            )}
-          </AnalyticsCard>
+          {showEmployeesByDivisionCard ? (
+            <AnalyticsCard
+              title="Employees by Division"
+            >
+              {divisionShareData.length === 0 ? (
+                <div className="grid h-[220px] place-items-center rounded-lg border border-dashed border-slate-200 text-center">
+                  <p className="m-0 text-sm font-semibold text-slate-500">No division data available.</p>
+                </div>
+              ) : (
+                <DistributionPieChart
+                  data={divisionShareData}
+                  theme={chartTheme}
+                  height={200}
+                  valueFormatter={(value) => numberFormatter.format(value)}
+                  showPercentages={false}
+                />
+              )}
+            </AnalyticsCard>
+          ) : null}
 
           <AnalyticsCard
             title="Payroll Expense Trend"
-            description="Processed payroll expense trend for all months this year."
+            description={`Processed payroll each month of ${periodYear}.`}
           >
             <div className="h-[220px]">
               <ResponsiveContainer width="100%" height="100%">
@@ -1317,7 +1324,6 @@ export default function AdminAnalyticsOverview({
 
           <AnalyticsCard
             title="Recent Activity"
-            description="Attendance, leave, payroll, travel order, and pass slip transactions."
           >
             <div className="max-h-[260px] flex-1 space-y-2 overflow-y-auto pr-2 [scrollbar-width:thin]">
               {analyticsLoading && recentActivity.length === 0 ? (

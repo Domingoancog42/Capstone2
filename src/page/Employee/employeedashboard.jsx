@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from "react";
 import {
   CalendarClock,
-  CalendarDays,
   Clock3,
   ClipboardList,
   FileText,
   LayoutDashboard,
   MessageCircle,
   ScrollText,
+  TrendingUp,
   Trophy,
   UserRound,
+  Vote,
 } from "lucide-react";
 import RoleWorkspacePage from "../../components/layout/RoleWorkspacePage";
 import EmployeeLeaveWorkspace from "../../module/leave/EmployeeLeaveWorkspace";
@@ -20,8 +21,11 @@ import PassSlipWorkspace from "../../module/passslip/PassSlipWorkspace";
 import CompensatoryWorkspace from "../../module/compensatory/CompensatoryWorkspace";
 import OvertimeWorkspace from "../../module/overtime/Overtime";
 import EmployeeIpcrWorkspace from "../../module/performance/EmployeeIpcrWorkspace";
-import AwardCyclesWorkspace from "../../module/rewards/AwardCyclesWorkspace";
 import ServiceRecordWorkspace from "../../module/serviceRecord/ServiceRecordWorkspace";
+import PromotionWorkspace from "../../module/promotion/PromotionWorkspace";
+import MyRewardsWorkspace from "../../module/rewards/MyRewardsWorkspace";
+import EmployeeVotingWorkspace from "../../module/rewards/EmployeeVotingWorkspace";
+import usePromotionGreeting from "../../module/promotion/usePromotionGreeting";
 import PasswordExpiryModal from "../../components/auth/PasswordExpiryModal";
 import LeaveTravelCalendarWorkspace from "../../module/calendar/LeaveTravelCalendarWorkspace";
 import EmployeeAnalyticsOverview from "../../components/dashboard/EmployeeAnalyticsOverview";
@@ -32,12 +36,23 @@ import { checkPasswordExpiry } from "../../services/api";
 /**
  * The dashboard body itself lives in `EmployeeAnalyticsOverview` — the same shape as the admin
  * dashboard's `AdminAnalyticsOverview`, scoped to the signed-in employee's own records. This
- * wrapper only owns the password-expiry prompt, which is dashboard-entry behaviour rather than
- * anything the analytics need to know about.
+ * wrapper only owns the dashboard-entry prompts — the promotion congratulations and the
+ * password-expiry warning — which are not anything the analytics need to know about.
  */
 function EmployeeDashboardOverview({ user, onNavigate }) {
   const [passwordExpiryModalOpen, setPasswordExpiryModalOpen] = useState(false);
   const [daysUntilExpiry, setDaysUntilExpiry] = useState(null);
+
+  /*
+   * A promotion the Regional Director approved since the employee last looked is celebrated the
+   * moment the dashboard opens. The password-expiry modal waits until that card is closed, so the
+   * two prompts never sit on top of each other.
+   */
+  const promotionGreetingSettled = usePromotionGreeting({
+    user,
+    onNavigate,
+    promotionsPath: "/employee/promotions",
+  });
 
   useEffect(() => {
     const checkPasswordStatus = async () => {
@@ -70,7 +85,7 @@ function EmployeeDashboardOverview({ user, onNavigate }) {
     /* w-full, not a max-width: the shell's content container already sets the page width. */
     <div className="w-full">
       <PasswordExpiryModal
-        open={passwordExpiryModalOpen}
+        open={passwordExpiryModalOpen && promotionGreetingSettled}
         daysUntilExpiry={daysUntilExpiry}
         onClose={() => setPasswordExpiryModalOpen(false)}
         onChangePassword={handleChangePassword}
@@ -82,14 +97,15 @@ function EmployeeDashboardOverview({ user, onNavigate }) {
 }
 
 const navigationItems = [
+  { type: "section", label: "Main" },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/employee/dashboard" },
   { key: "profile", label: "My Profile", icon: UserRound, path: "/employee/profile" },
-  { key: "calendar", label: "Work Calendar", icon: CalendarDays, path: "/employee/calendar" },
   { key: "messages", label: "Messages", icon: MessageCircle, path: "/employee/messages" },
-  { key: "attendance", label: "Time & Attendance", icon: Clock3, path: "/employee/attendance" },
+  { key: "notifications", label: "Notifications", path: "/employee/notifications", hidden: true },
+  { type: "section", label: "Requests" },
   {
     key: "leave",
-    label: "Leave Request",
+    label: "File Request",
     icon: CalendarClock,
     path: "/employee/leave-request",
     children: [
@@ -97,13 +113,17 @@ const navigationItems = [
       { key: "travel", label: "Travel Order", path: "/employee/travel-order" },
       { key: "passSlip", label: "Pass Slips", path: "/employee/pass-slips" },
       { key: "cto", label: "Compensatory Time Off", path: "/employee/compensatory-time-off" },
+      { key: "overtime", label: "Overtime Request", path: "/employee/overtime" },
     ],
   },
-  { key: "notifications", label: "Notifications", path: "/employee/notifications", hidden: true },
-  { key: "payslip", label: "Payslip", icon: FileText, path: "/employee/payslip" },
-  { key: "ipcr", label: "IPCR", icon: ClipboardList, path: "/employee/ipcr" },
-  { key: "serviceRecord", label: "Service Record", icon: ScrollText, path: "/employee/service-record" },
-  { key: "myNomination", label: "Nominate", icon: Trophy, path: "/employee/nominate" },
+  { type: "section", label: "My Records" },
+  { key: "attendance", label: "My DTR", icon: Clock3, path: "/employee/attendance" },
+  { key: "payslip", label: "My Payslip", icon: FileText, path: "/employee/payslip" },
+  { key: "ipcr", label: "My IPCR", icon: ClipboardList, path: "/employee/ipcr" },
+  { key: "serviceRecord", label: "My Service Record", icon: ScrollText, path: "/employee/service-record" },
+  { key: "promotions", label: "My Promotion", icon: TrendingUp, path: "/employee/promotions" },
+  { key: "myRewards", label: "My Rewards", icon: Trophy, path: "/employee/rewards" },
+  { key: "awardVoting", label: "Award Voting", icon: Vote, path: "/employee/voting" },
 ];
 
 const modules = {
@@ -156,19 +176,19 @@ const modules = {
         user={user}
         title="Travel Order Requests"
         description="Submit travel orders and monitor the status of each official trip request."
-        allowCreate={false}
+        allowCreate
       />
     ),
   },
   passSlip: {
     title: "Pass Slips",
-    description: "Submit pass slips and monitor the status of your outgoing requests.",
+    description: "Create and review your pass slips.",
     hidePageIntro: true,
     render: ({ user }) => (
       <PassSlipWorkspace
         user={user}
         title="Pass Slip Requests"
-        description="Submit pass slips and monitor the status of your outgoing requests."
+        description="Create and review your pass slips."
         submitLabel="Create Pass Slip"
         showDivisionFilter={false}
       />
@@ -219,19 +239,32 @@ const modules = {
     hidePageIntro: true,
     render: ({ user }) => <ServiceRecordWorkspace user={user} mode="employee" />,
   },
+  promotions: {
+    title: "My Promotion",
+    description: "The promotions that took effect on your appointment, with the position and salary each one moved you to.",
+    // The workspace carries its own "My Promotion" heading and description.
+    hidePageIntro: true,
+    render: ({ user }) => <PromotionWorkspace user={user} mode="employee" />,
+  },
+  myRewards: {
+    title: "My Rewards",
+    description: "The awards you have won through Rewards & Recognition, with their certificates.",
+    // The workspace carries its own "My Rewards" heading and description.
+    hidePageIntro: true,
+    render: () => <MyRewardsWorkspace />,
+  },
+  awardVoting: {
+    title: "Award Voting",
+    description: "Vote for one of the nominees HR approved for each award.",
+    // The workspace carries its own "Award Voting" heading and description.
+    hidePageIntro: true,
+    render: () => <EmployeeVotingWorkspace />,
+  },
   attendance: {
     title: "My Attendance",
     description: "View personal attendance logs, DTR forms, printable records, and daily log history.",
     hidePageIntro: true,
     render: ({ user }) => <AttendanceManagementWorkspace user={user} mode="employee" />,
-  },
-  // Voting only — creating and closing cycles stays on the HR screen. See `SELF_SERVICE_MODULES`,
-  // which gives the other roles this exact screen; Employee keeps its own module map.
-  myNomination: {
-    title: "Nominate",
-    description: "Nominate deserving colleagues for open awards and follow the results.",
-    hidePageIntro: true,
-    render: ({ user }) => <AwardCyclesWorkspace user={user} canManage={false} />,
   },
 };
 

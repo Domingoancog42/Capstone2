@@ -1,28 +1,34 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { ClipboardList, Clock3, FilePenLine, Filter, Plane, Plus, Search } from "lucide-react";
-import { faBan, faBoxArchive, faCheck, faEye, faFileLines, faPrint, faRotateLeft, faXmark } from "@fortawesome/free-solid-svg-icons";
+import { ClipboardList, Clock3, FilePenLine, Filter, Plane, Plus, Search, UserRound } from "lucide-react";
+import { faBan, faBoxArchive, faCheck, faFileArrowDown, faFileLines, faPrint, faRotateLeft, faWallet, faXmark } from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 import ActionIconButton from "../../components/UI/ActionIconButton";
+import BulkSelectionToolbar from "../../components/UI/BulkSelectionToolbar";
 import NotificationBadge from "../../components/UI/NotificationBadge";
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
+import SelectionCheckbox from "../../components/UI/SelectionCheckbox";
+import ViewFormActions from "../../components/UI/ViewFormActions";
 import LeaveCards from "../../components/leave/LeaveCards";
+import LeaveBalanceModal, { LeaveBalanceButton } from "../../components/leave/LeaveBalanceModal";
+import { LeaveCreditSnapshotModal } from "../../components/leave/LeaveCreditSnapshot";
 import LeaveFilters from "../../components/leave/LeaveFilters";
 import LeaveFormModal from "../../components/leave/LeaveForm";
 import LeaveReviewModal from "../../components/leave/LeaveReviewModal";
 import LeaveRequestModal from "../../components/leave/LeaveRequestModal";
+import LeaveAttachmentUploadButton from "../../components/leave/LeaveAttachmentUploadButton";
 import LeaveStatusBadge, { getLeaveStatusDisplayLabel } from "../../components/leave/LeaveStatusBadge";
 import LeaveTable from "../../components/leave/LeaveTable";
 import LeaveMonetizationFormModal from "../../components/payroll/LeaveMonetizationForm";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
-import { LEAVE_STATUSES, LEAVE_TYPES } from "../../data/leaveTypes";
 import PassSlipWorkspace from "../passslip/PassSlipWorkspace";
 import TravelOrderWorkspace from "../travel/TravelOrderWorkspace";
 import CompensatoryWorkspace from "../compensatory/CompensatoryWorkspace";
 import OvertimeWorkspace from "../overtime/Overtime";
 import {
+  fetchLeaveCredits,
   fetchLeaveRequests,
   fileLeaveRequest,
   updateLeaveStatus,
@@ -37,36 +43,50 @@ import {
   updateLeaveMonetizationStatus,
 } from "../../services/leaveMonetizationService";
 import {
-  canManageLeave,
+  canUploadLeaveMedicalCertificate,
+  canCancelOwnLeaveRequest,
+  canRejectLeaveForUser,
+  canManageLeaveRequests,
+  canManageLeaveRequestRow,
   canViewAllLeaves,
   countPendingRecords,
   formatDateDisplay,
-  formatDurationLabel,
   isCurrentDateWithin,
+  isLeaveDivisionDesk,
+  isLeaveStartDateTooSoon,
   isRegionalDirectorApproved,
+  LEAVE_ADVANCE_NOTICE_ERROR,
+  matchesLeaveManagementStatus,
   matchesUserRecordScope,
   normalizeLeaveStatus,
+  resolveLeaveApprovalActionForUser,
   resolveRoleKey,
 } from "../../utils/leaveHelpers";
 import { getLeaveReasonDisplay } from "../../utils/leaveRequestDetails";
+import { getRoleBadgeClass, getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
+import { formatRecordDivision } from "../../utils/divisionDisplay";
 import {
   formatMonetizationDays,
   resolveMonetizationRowActions,
   toLeaveMonetizationRow,
   toLeaveRequestRow,
 } from "../../utils/leaveMonetization";
-import { currencyFormatter } from "../../utils/format";
 import {
   confirmLeaveWithoutPay,
   extractLeaveWithoutPayPrompt,
 } from "../../utils/leaveWithoutPay";
+import { showDuplicateLeaveDateAlert } from "../../utils/duplicateLeaveDate";
 import { requestApprovalCaptcha, isCaptchaFailure } from "../../utils/approvalCaptcha";
 import {
   canArchiveModule,
   confirmArchiveRecord,
+  confirmArchiveRecords,
   confirmRestoreRecord,
 } from "../../utils/archiveActions";
 import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
+import { confirmBulkApproval } from "../../utils/bulkRequestActions";
+import useRowSelection from "../../hooks/useRowSelection";
+import { useOrganizationFilterOptions } from "../../hooks/useFilterOptions";
 
 const defaultFilterState = {
   search: "",
@@ -92,6 +112,47 @@ const initialModulePendingCounts = {
   cto: 0,
   overtime: 0,
 };
+
+const LEAVE_FILTER_STATUSES = [
+  "Pending Leave Balance Verification",
+  "Pending HR Head Approval",
+  "Pending Division Chief Review",
+  "Pending Regional Director Approval",
+  "Approved",
+  "Disapproved",
+  "Cancelled",
+];
+const MY_LEAVE_VIEW_ROLES = new Set([
+  "hrhead",
+  "hrstaff",
+  "regionaldirector",
+  "chief",
+  "planningofficer",
+  "cashier",
+]);
+
+/*
+ * The approval desks see who filed each request by role, since a Chief's, Cashier's or Planning
+ * Officer's filing enters the chain at a different stage from an Employee's. Their own "My Leave"
+ * list is all one person, so the column is left off there.
+ */
+const ROLE_COLUMN_VIEWER_ROLES = new Set(["admin", "hrhead", "hrstaff", "chief", "regionaldirector"]);
+
+function LeaveRoleBadge({ role }) {
+  const label = String(role || "").trim();
+
+  if (!label) {
+    return <span className="text-xs font-medium text-slate-400">Unassigned</span>;
+  }
+
+  return (
+    <span className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${getRoleBadgeClass(label)}`}>
+      {getRoleLabel(label)}
+    </span>
+  );
+}
+
+const leaveRowKey = (request) => request?.rowKey || `${request?.isLeaveMonetization ? "monetization" : "leave"}:${request?.id}`;
 
 function sortRequests(list, sortBy, sortDirection) {
   const direction = sortDirection === "asc" ? 1 : -1;
@@ -142,6 +203,7 @@ function normalizeDateFilterValue(value) {
 
 function LeaveRequestManagementPanel({
   filters,
+  divisions = [],
   statuses = [],
   rows = [],
   loading = false,
@@ -150,24 +212,50 @@ function LeaveRequestManagementPanel({
   totalPages = 1,
   pageSize = 10,
   canManage = false,
+  canCreate = true,
   roleKey = "",
   user,
   archiveView = false,
+  myLeaveView = false,
+  personalLeaveOnly = false,
   onToggleArchiveView,
+  onToggleMyLeaveView,
   onFilterChange,
   onPageChange,
   onCreate,
+  onViewBalances,
   onAction,
+  selection,
+  canSelectRow = () => false,
+  bulkToolbar = null,
 }) {
   const normalizedRoleKey = String(roleKey || "").trim().toLowerCase();
   const isHrHead = normalizedRoleKey === "hrhead";
   const isHrStaff = normalizedRoleKey === "hrstaff";
+  const isChief = normalizedRoleKey === "chief";
+  const showDivisionFilter = true;
+  /* A Planning Officer granted approve/reject in RBAC works the Chief's division desk. */
+  const isDivisionDesk = isChief || isLeaveDivisionDesk(user);
+  const deskDivision = isDivisionDesk ? String(user?.division || "").trim() : "";
   const isRegionalDirector = normalizedRoleKey === "regionaldirector";
+  const hasOrganizationWideView = ["hrhead", "hrstaff", "chief", "regionaldirector"].includes(normalizedRoleKey);
+  const isCashierSelfService = normalizedRoleKey === "cashier" && personalLeaveOnly;
+  const canViewMyLeave = MY_LEAVE_VIEW_ROLES.has(normalizedRoleKey) && !isCashierSelfService;
   const canArchive = canArchiveModule(normalizedRoleKey, "leave");
+  const canArchiveMonetization = canArchiveModule(normalizedRoleKey, "leaveMonetization");
   const startIndex = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const endIndex = Math.min(currentPage * pageSize, totalCount);
-  /* "Leave Dates / Credits": a monetization row has days of credit there instead of a span. */
-  const headers = ["#", "Employee", "Division", "Leave Type", "Reason", "Leave Dates / Credits", "Status", "Date Filed", "Actions"];
+  const selectableRows = selection ? rows.filter(canSelectRow) : [];
+  const showRoleColumn = ROLE_COLUMN_VIEWER_ROLES.has(normalizedRoleKey) && !myLeaveView;
+  const headers = [
+    "Employee",
+    ...(showRoleColumn ? ["Role"] : []),
+    "Division",
+    "Leave Type",
+    "Status",
+    "Date Filed",
+    "Actions",
+  ];
 
   /*
    * Which decisions a row offers depends on the viewer's role and where the request sits in the
@@ -175,50 +263,69 @@ function LeaveRequestManagementPanel({
    */
   const renderRequestActions = (request) => {
     /*
-     * A monetization filing follows leave_monetization.php's own chain — HR Head review first, then
-     * the Regional Director's final approval — so its row decides its own actions. Its form carries
-     * a Print button of its own, and the archive is the leave archive either way.
+     * HR Staff verify the filer's leave balance, so every row on their desk opens that employee's
+     * current leave credits. Their own balances already have the header button in My Leave.
+     */
+    const balancesAction = isHrStaff && !myLeaveView && request.employeeRecordId ? (
+      <ActionIconButton
+        label={`View leave balances of ${request.employeeName || "this employee"}`}
+        icon={faWallet}
+        tone="view"
+        text="View Leave Balances"
+        onClick={() => onAction?.("balances", request)}
+      />
+    ) : null;
+
+    /*
+     * Monetization follows the same approval desks as leave applications and shares the archive.
      */
     if (request.isLeaveMonetization) {
       const monetizationActions = resolveMonetizationRowActions({
-        roleKey: normalizedRoleKey,
+        roleKey: isDivisionDesk ? "chief" : normalizedRoleKey,
         record: request,
         isOwnRecord: matchesUserRecordScope(request, user),
       });
 
-      /* The sheet is only worth printing once the Regional Director has signed it. */
+      /* The sheet is only worth printing or saving once the Regional Director has signed it. */
       const showMonetizationPrintAction = isRegionalDirectorApproved(request);
 
       if (archiveView) {
         return (
-          <>
-            <ActionIconButton
-              label="View leave monetization form"
-              icon={faEye}
-              tone="view"
-              onClick={() => onAction?.("view", request)}
-            />
+          <ViewFormActions viewLabel="View leave monetization form" onView={() => onAction?.("view", request)}>
+            {balancesAction}
             {showMonetizationPrintAction ? (
+              <>
+                <ActionIconButton
+                  label="Print leave monetization form"
+                  icon={faPrint}
+                  tone="print"
+                  onClick={() => onAction?.("print", request)}
+                />
+                <ActionIconButton
+                  label="Download leave monetization form as PDF"
+                  text="Download PDF"
+                  icon={faFileArrowDown}
+                  tone="export"
+                  onClick={() => onAction?.("download", request)}
+                />
+              </>
+            ) : null}
+            {canArchiveMonetization ? (
               <ActionIconButton
-                label="Print leave monetization form"
-                icon={faPrint}
-                tone="print"
-                onClick={() => onAction?.("print", request)}
+                label="Restore leave monetization request"
+                icon={faRotateLeft}
+                tone="restore"
+                onClick={() => onAction?.("restore", request)}
               />
             ) : null}
-            <ActionIconButton
-              label="Restore leave monetization request"
-              icon={faRotateLeft}
-              tone="restore"
-              onClick={() => onAction?.("restore", request)}
-            />
-          </>
+          </ViewFormActions>
         );
       }
 
       return (
-        <>
-          {canManage && !isHrStaff && monetizationActions.showReview ? (
+        <ViewFormActions viewLabel="View leave monetization form" onView={() => onAction?.("view", request)}>
+          {balancesAction}
+          {canManage && monetizationActions.showReview ? (
             <ActionIconButton
               label="Approve leave monetization"
               icon={faCheck}
@@ -226,15 +333,15 @@ function LeaveRequestManagementPanel({
               onClick={() => onAction?.("markReviewed", request)}
             />
           ) : null}
-          {canManage && !isHrStaff && monetizationActions.showApprove ? (
+          {canManage && monetizationActions.showApprove ? (
             <ActionIconButton
-              label={isRegionalDirector ? "Final approve leave monetization" : "Approve leave monetization"}
+              label={isHrStaff ? "Verify leave credits" : (isRegionalDirector ? "Final approve leave monetization" : "Approve leave monetization")}
               icon={faCheck}
               tone="approve"
               onClick={() => onAction?.("approve", request)}
             />
           ) : null}
-          {canManage && !isHrStaff && monetizationActions.showReject ? (
+          {canManage && monetizationActions.showReject ? (
             <ActionIconButton
               label="Reject leave monetization"
               icon={faXmark}
@@ -242,7 +349,7 @@ function LeaveRequestManagementPanel({
               onClick={() => onAction?.("reject", request)}
             />
           ) : null}
-          {!isHrStaff && ((canManage && monetizationActions.showCancel) || monetizationActions.showOwnCancel) ? (
+          {((canManage && monetizationActions.showCancel) || monetizationActions.showOwnCancel) ? (
             <ActionIconButton
               label="Cancel leave monetization"
               icon={faBan}
@@ -250,21 +357,24 @@ function LeaveRequestManagementPanel({
               onClick={() => onAction?.("cancel", request)}
             />
           ) : null}
-          <ActionIconButton
-            label="View leave monetization form"
-            icon={faEye}
-            tone="view"
-            onClick={() => onAction?.("view", request)}
-          />
           {showMonetizationPrintAction ? (
-            <ActionIconButton
-              label="Print leave monetization form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => onAction?.("print", request)}
-            />
+            <>
+              <ActionIconButton
+                label="Print leave monetization form"
+                icon={faPrint}
+                tone="print"
+                onClick={() => onAction?.("print", request)}
+              />
+              <ActionIconButton
+                label="Download leave monetization form as PDF"
+                text="Download PDF"
+                icon={faFileArrowDown}
+                tone="export"
+                onClick={() => onAction?.("download", request)}
+              />
+            </>
           ) : null}
-          {canArchive ? (
+          {canArchiveMonetization ? (
             <ActionIconButton
               label="Archive leave monetization request"
               icon={faBoxArchive}
@@ -272,102 +382,107 @@ function LeaveRequestManagementPanel({
               onClick={() => onAction?.("archive", request)}
             />
           ) : null}
-        </>
+        </ViewFormActions>
       );
     }
 
     const normalizedStatus = normalizeLeaveStatus(request.status);
-    /* The form is only worth printing once the Regional Director has signed it. */
+    const showOwnCancelAction = canCancelOwnLeaveRequest(user, request);
+    /* The form is only worth printing or saving once the Regional Director has signed it; then every role may. */
     const showPrintAction = isRegionalDirectorApproved(request);
-    const allowRowManagement = !matchesUserRecordScope(request, user);
+    /* Chiefs use the same full action menu; the API only hands them their own division's requests. */
+    const allowRowManagement = canManageLeaveRequestRow(user, request);
     const showOwnRegionalDirectorFormOnly = isRegionalDirector && !allowRowManagement;
-    const isOpenStatus = normalizedStatus === "Pending" || normalizedStatus === "Reviewed";
-    const showReviewDecisionAction = allowRowManagement && isHrHead && normalizedStatus === "Pending";
-    /*
-     * The Regional Director acts on pending requests as well as reviewed ones, so a request never
-     * sits blocked waiting for an HR Head review that may not come. HR Head review remains
-     * available, it is just no longer a precondition.
-     *
-     * HR Staff sit outside that chain entirely: they open, view, print and archive filings, but the
-     * approve, reject and cancel decisions belong to the HR Head and the Regional Director.
-     */
-    const showApprovalDecisionAction = allowRowManagement
+    const approvalAction = allowRowManagement
+      ? resolveLeaveApprovalActionForUser(user, normalizedStatus)
+      : null;
+    const showRejectAction = allowRowManagement
+      && canRejectLeaveForUser(user, normalizedStatus);
+    /* Cancellation is an applicant/Admin action, not an approval-chain decision. */
+    const showCancelAction = showRejectAction
+      && !isDivisionDesk
+      && !isHrHead
       && !isHrStaff
-      && (isRegionalDirector || !isHrHead)
-      && isOpenStatus;
-    const showRejectAction = allowRowManagement && !isHrStaff && (
-      (isHrHead && normalizedStatus === "Pending")
-      || ((isRegionalDirector || !isHrHead) && isOpenStatus)
-    );
-    /*
-     * The HR head reviews a filing and may reject it, but withdrawing one is not their call — that
-     * belongs to the employee who filed it and to the desks further down the chain.
-     */
-    const showCancelAction = showRejectAction && !isHrHead;
+      && !isRegionalDirector;
 
     /* In the archive there is nothing to decide — the only moves are look and put back. */
     if (archiveView) {
       return (
-        <>
-          <ActionIconButton
-            label="View leave form"
-            icon={faEye}
-            tone="view"
-            onClick={() => onAction?.("view", request)}
-          />
+        <ViewFormActions viewLabel="View leave form" onView={() => onAction?.("view", request)}>
+          {balancesAction}
           {showPrintAction ? (
+            <>
+              <ActionIconButton
+                label="Print leave form"
+                icon={faPrint}
+                tone="print"
+                onClick={() => onAction?.("print", request)}
+              />
+              <ActionIconButton
+                label="Download leave form as PDF"
+                text="Download PDF"
+                icon={faFileArrowDown}
+                tone="export"
+                onClick={() => onAction?.("download", request)}
+              />
+            </>
+          ) : null}
+          {canArchive && !isChief ? (
             <ActionIconButton
-              label="Print leave form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => onAction?.("print", request)}
+              label="Restore leave request"
+              icon={faRotateLeft}
+              tone="restore"
+              onClick={() => onAction?.("restore", request)}
             />
           ) : null}
-          <ActionIconButton
-            label="Restore leave request"
-            icon={faRotateLeft}
-            tone="restore"
-            onClick={() => onAction?.("restore", request)}
-          />
-        </>
+        </ViewFormActions>
       );
     }
 
     return (
-      <>
+      <ViewFormActions
+        viewLabel={showOwnRegionalDirectorFormOnly ? "Leave Request Form" : "View leave form"}
+        onView={() => onAction?.("view", request)}
+        inlineActions={canUploadLeaveMedicalCertificate(user, request, archiveView) ? (
+          <LeaveAttachmentUploadButton
+            request={request}
+            onUploaded={(updatedRequest) => onAction?.("attachmentUploaded", updatedRequest)}
+          />
+        ) : null}
+      >
+        {balancesAction}
         {canManage && allowRowManagement ? (
           <ActionIconButton
-            label={isHrHead ? "Open leave request" : "Review leave request"}
+            label="Review leave request"
             icon={faFileLines}
             tone="review"
             onClick={() => onAction?.("review", request)}
           />
         ) : null}
-        {canManage && showReviewDecisionAction ? (
+        {canManage && approvalAction ? (
           <ActionIconButton
-            label="Approve leave request"
+            label={normalizedStatus === "Chief Reviewed"
+              ? "Final approve leave request"
+              : normalizedStatus === "Pending"
+                  ? "Verify leave balance"
+                  : normalizedStatus === "Reviewed"
+                    ? "Complete Division Chief review"
+                    : "Approve leave request"}
             icon={faCheck}
             tone="approve"
-            onClick={() => onAction?.("markReviewed", request)}
-          />
-        ) : null}
-        {canManage && showApprovalDecisionAction ? (
-          <ActionIconButton
-            label={isRegionalDirector ? "Final approve leave request" : "Approve leave request"}
-            icon={faCheck}
-            tone="approve"
-            onClick={() => onAction?.("approve", request)}
+            onClick={() => onAction?.(approvalAction.action, request)}
           />
         ) : null}
         {canManage && showRejectAction ? (
           <ActionIconButton
-            label="Reject leave request"
+            label="Disapprove leave request"
+            text="Disapprove"
             icon={faXmark}
             tone="reject"
             onClick={() => onAction?.("reject", request)}
           />
         ) : null}
-        {canManage && showCancelAction ? (
+        {(canManage && showCancelAction) || showOwnCancelAction ? (
           <ActionIconButton
             label="Cancel leave request"
             icon={faBan}
@@ -375,19 +490,22 @@ function LeaveRequestManagementPanel({
             onClick={() => onAction?.("cancel", request)}
           />
         ) : null}
-        <ActionIconButton
-          label={showOwnRegionalDirectorFormOnly ? "Leave Request Form" : "View leave form"}
-          icon={faEye}
-          tone="view"
-          onClick={() => onAction?.("view", request)}
-        />
         {showPrintAction ? (
-          <ActionIconButton
-            label="Print leave form"
-            icon={faPrint}
-            tone="print"
-            onClick={() => onAction?.("print", request)}
-          />
+          <>
+            <ActionIconButton
+              label="Print leave form"
+              icon={faPrint}
+              tone="print"
+              onClick={() => onAction?.("print", request)}
+            />
+            <ActionIconButton
+              label="Download leave form as PDF"
+              text="Download PDF"
+              icon={faFileArrowDown}
+              tone="export"
+              onClick={() => onAction?.("download", request)}
+            />
+          </>
         ) : null}
         {canArchive ? (
           <ActionIconButton
@@ -397,7 +515,7 @@ function LeaveRequestManagementPanel({
             onClick={() => onAction?.("archive", request)}
           />
         ) : null}
-      </>
+      </ViewFormActions>
     );
   };
 
@@ -406,17 +524,50 @@ function LeaveRequestManagementPanel({
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h3 className="m-0 text-base font-semibold text-slate-950">
-            {archiveView ? "Archived Leave Requests" : "Leave Request Management"}
+            {archiveView
+              ? "Archived Leave Requests"
+              : isCashierSelfService
+                ? "Leave Request"
+              : myLeaveView
+                ? "My Leave Requests"
+                : "Leave Request Management"}
           </h3>
           <p className="m-0 mt-1 text-sm text-slate-500">
             {archiveView
               ? "Leave requests moved to archive. Restore one to put it back in the list."
+              : isCashierSelfService
+                ? "View and monitor the leave requests filed under your employee account."
+              : myLeaveView
+                ? "View and monitor the leave requests filed under your employee account."
               : isHrHead
-                ? "Approve submitted leave requests, filter by employee or status, and update request outcomes."
-                : "Review submitted leave requests, filter by employee or status, and update request outcomes."}
+                ? "Approve employee leave requests from all divisions and filter the organization-wide list."
+                : isChief
+                  ? "Review, approve, reject, and archive leave requests from employees in your division. Pending requests can also be approved in bulk."
+                : hasOrganizationWideView
+                  ? "View employee leave requests from all divisions and filter the organization-wide list."
+                  : "Review submitted leave requests, filter by employee or status, and update request outcomes."}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          {canViewMyLeave ? (
+            <button
+              type="button"
+              aria-pressed={myLeaveView}
+              onClick={() => onToggleMyLeaveView?.(!myLeaveView)}
+              className={`inline-flex min-h-9 items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition ${
+                myLeaveView
+                  ? "border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100"
+                  : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+              }`}
+            >
+              <UserRound size={16} />
+              {myLeaveView
+                ? personalLeaveOnly
+                  ? "Back to Leave Requests"
+                  : "View All Leave Requests"
+                : "View My Leave"}
+            </button>
+          ) : null}
           {canArchive ? (
             <ArchiveViewToggle
               archiveView={archiveView}
@@ -424,7 +575,8 @@ function LeaveRequestManagementPanel({
               label="leave requests"
             />
           ) : null}
-          {archiveView ? null : (
+          {onViewBalances ? <LeaveBalanceButton onClick={onViewBalances} /> : null}
+          {archiveView || !canCreate ? null : (
             <button
               type="button"
               onClick={onCreate}
@@ -437,20 +589,50 @@ function LeaveRequestManagementPanel({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_160px_120px]">
-        <label className="relative">
-          <span className="sr-only">Search leave requests</span>
-          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input
-            value={filters.search}
-            onChange={(event) => onFilterChange?.("search", event.target.value)}
-            placeholder="Search employee, leave type, reason"
-            className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          />
+      <div className={`mt-4 grid gap-3 ${showDivisionFilter
+        ? "lg:grid-cols-[minmax(0,220px)_160px_160px_160px_120px]"
+        : "lg:grid-cols-[minmax(0,220px)_160px_160px_120px]"
+      }`}>
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-semibold text-slate-700">Search Leave Requests</span>
+          <span className="relative block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input
+              value={filters.search}
+              onChange={(event) => onFilterChange?.("search", event.target.value)}
+              placeholder="Search employee, leave type, reason"
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            />
+          </span>
         </label>
 
+        {showDivisionFilter ? (
+          <label>
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Division</span>
+            {/* A division desk only ever sees its own division (the API scopes it), so the control
+                names that division and nothing else -- there is no "All divisions" to pick. */}
+            <select
+              value={isDivisionDesk ? "" : filters.division}
+              disabled={isDivisionDesk}
+              onChange={(event) => onFilterChange?.("division", event.target.value)}
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-600"
+            >
+              {isDivisionDesk ? (
+                <option value="">{deskDivision || "No assigned division"}</option>
+              ) : (
+                <>
+                  <option value="">All divisions</option>
+                  {divisions.map((division) => (
+                    <option key={division} value={division}>{division}</option>
+                  ))}
+                </>
+              )}
+            </select>
+          </label>
+        ) : null}
+
         <label>
-          <span className="sr-only">Leave status</span>
+          <span className="mb-1.5 block text-sm font-semibold text-slate-700">Status</span>
           <select
             value={filters.status}
             onChange={(event) => onFilterChange?.("status", event.target.value)}
@@ -458,13 +640,13 @@ function LeaveRequestManagementPanel({
           >
             <option value="">All statuses</option>
             {statuses.map((status) => (
-              <option key={status} value={status}>{getLeaveStatusDisplayLabel(status, roleKey)}</option>
+              <option key={status} value={status}>{status}</option>
             ))}
           </select>
         </label>
 
         <label>
-          <span className="sr-only">Filter by date</span>
+          <span className="mb-1.5 block text-sm font-semibold text-slate-700">Leave Date</span>
           <input
             type="date"
             value={filters.date}
@@ -474,19 +656,22 @@ function LeaveRequestManagementPanel({
         </label>
 
         <label>
-          <span className="sr-only">Rows per page</span>
+          <span className="mb-1.5 block text-sm font-semibold text-slate-700">Rows Per Page</span>
           <select
             value={filters.rowsPerPage}
             onChange={(event) => onFilterChange?.("rowsPerPage", event.target.value)}
             className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
           >
-            <option value="5">5 rows</option>
             <option value="10">10 rows</option>
             <option value="20">20 rows</option>
-            <option value="25">25 rows</option>
+            <option value="50">50 rows</option>
+            <option value="100">100 rows</option>
+            <option value="200">200 rows</option>
           </select>
         </label>
       </div>
+
+      {bulkToolbar}
 
       {/* Cards below `lg`, table from `lg` up — see the note in `RecordCards`. */}
       <RecordCards
@@ -501,26 +686,30 @@ function LeaveRequestManagementPanel({
           title: "No leave requests found",
           description: "Submit a leave request or adjust the filters.",
         }}
-        renderCard={(request, index) => ({
-          eyebrow: `#${(currentPage - 1) * pageSize + index + 1}`,
+        renderCard={(request) => ({
           title: request.employeeName || "Unknown employee",
           subtitle: request.leaveType || "Leave",
-          badge: <LeaveStatusBadge status={request.status} roleKey={roleKey} />,
+          badge: (
+            <LeaveStatusBadge
+              status={request.status}
+              rejectedByRole={request.rejectedByRole}
+              isLeaveMonetization={request.isLeaveMonetization}
+              startDate={request.startDate}
+              endDate={request.endDate}
+              pendingByRole
+            />
+          ),
+          selection: selection && canSelectRow(request) ? (
+            <SelectionCheckbox
+              checked={selection.isSelected(request)}
+              onChange={() => selection.toggleRow(request)}
+              label={`Select ${request.employeeName || "leave request"}`}
+            />
+          ) : null,
           fields: [
-            { label: "Division", value: request.division || "Unassigned" },
+            ...(showRoleColumn ? [{ label: "Role", value: <LeaveRoleBadge role={request.employeeRole} /> }] : []),
+            { label: "Division", value: formatRecordDivision(request) },
             { label: "Date Filed", value: formatDateDisplay(request.dateFiled) },
-            {
-              label: request.isLeaveMonetization ? "Credits Monetized" : "Leave Dates",
-              full: true,
-              value: request.isLeaveMonetization
-                ? `${formatMonetizationDays(request.numberOfDays)} day(s) of ${request.monetizedLeaveType || "leave"} - ${currencyFormatter.format(Number(request.estimatedAmount) || 0)}`
-                : `${formatDateDisplay(request.startDate)} - ${formatDateDisplay(request.endDate)} (${formatDurationLabel(request.numberOfDays)})`,
-            },
-            {
-              label: "Reason",
-              full: true,
-              value: getLeaveReasonDisplay(request.reason, request.leaveType) || "No reason provided",
-            },
           ],
           actions: renderRequestActions(request),
         })}
@@ -528,9 +717,21 @@ function LeaveRequestManagementPanel({
 
       <div className="mt-4 hidden overflow-hidden rounded-2xl border border-slate-200 lg:block">
         <div className="overflow-x-auto">
-          <table className="min-w-[1540px] w-full border-collapse">
+          <table className="min-w-[1080px] w-full border-collapse">
             <thead className="bg-slate-50">
               <tr>
+                {selection ? (
+                  <th className="border-b border-slate-200 px-3 py-3 text-left">
+                    {selectableRows.length > 0 ? (
+                      <SelectionCheckbox
+                        checked={selection.areAllSelected(selectableRows)}
+                        indeterminate={selection.areSomeSelected(selectableRows) && !selection.areAllSelected(selectableRows)}
+                        onChange={() => selection.toggleRows(selectableRows)}
+                        label="Select all leave requests on this page"
+                      />
+                    ) : null}
+                  </th>
+                ) : null}
                 {headers.map((header) => (
                   <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
                     {header}
@@ -542,14 +743,14 @@ function LeaveRequestManagementPanel({
               {loading ? (
                 Array.from({ length: 4 }).map((_, index) => (
                   <tr key={index} className="animate-pulse border-b border-slate-100">
-                    <td colSpan={headers.length} className="px-3 py-3">
+                    <td colSpan={headers.length + (selection ? 1 : 0)} className="px-3 py-3">
                       <div className="h-5 rounded bg-slate-200" />
                     </td>
                   </tr>
                 ))
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={headers.length} className="px-4 py-12 text-center">
+                  <td colSpan={headers.length + (selection ? 1 : 0)} className="px-4 py-12 text-center">
                     <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
                       <Filter size={20} />
                     </div>
@@ -560,48 +761,45 @@ function LeaveRequestManagementPanel({
                   </td>
                 </tr>
               ) : (
-                rows.map((request, index) => {
-                  const displayReason = getLeaveReasonDisplay(request.reason, request.leaveType);
-
-                  return (
-                    <tr key={request.rowKey || request.id} className="border-b border-slate-100 transition hover:bg-slate-50">
-                      <td className="px-3 py-3 text-sm font-semibold text-slate-600">
-                        {(currentPage - 1) * pageSize + index + 1}
-                      </td>
-                      <td className="px-3 py-3 text-sm text-slate-800">
-                        <div className="font-semibold text-slate-900">{request.employeeName || "Unknown employee"}</div>
-                      </td>
-                      <td className="px-3 py-3 text-sm text-slate-600">{request.division || "Unassigned"}</td>
-                      <td className="px-3 py-3 text-sm text-slate-700">{request.leaveType || "Leave"}</td>
-                      <td className="max-w-[240px] truncate px-3 py-3 text-sm text-slate-600">
-                        {displayReason || "No reason provided"}
-                      </td>
-                      <td className="px-3 py-3 text-sm text-slate-600">
-                        {request.isLeaveMonetization ? (
-                          <>
-                            {/* No span of dates to show: the filing draws days from a credit. */}
-                            <div>{formatMonetizationDays(request.numberOfDays)} day(s) of {request.monetizedLeaveType || "leave"}</div>
-                            <div className="text-xs text-slate-500">
-                              {currencyFormatter.format(Number(request.estimatedAmount) || 0)}
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <div>{formatDateDisplay(request.startDate)} - {formatDateDisplay(request.endDate)}</div>
-                            <div className="text-xs text-slate-500">{formatDurationLabel(request.numberOfDays)}</div>
-                          </>
-                        )}
-                      </td>
+                rows.map((request) => (
+                  <tr key={request.rowKey || request.id} className="border-b border-slate-100 transition hover:bg-slate-50">
+                    {selection ? (
                       <td className="px-3 py-3">
-                        <LeaveStatusBadge status={request.status} roleKey={roleKey} />
+                        {canSelectRow(request) ? (
+                          <SelectionCheckbox
+                            checked={selection.isSelected(request)}
+                            onChange={() => selection.toggleRow(request)}
+                            label={`Select ${request.employeeName || "leave request"}`}
+                          />
+                        ) : null}
                       </td>
-                      <td className="px-3 py-3 text-sm text-slate-600">{formatDateDisplay(request.dateFiled)}</td>
+                    ) : null}
+                    <td className="px-3 py-3 text-sm text-slate-800">
+                      <div className="font-semibold text-slate-900">{request.employeeName || "Unknown employee"}</div>
+                    </td>
+                    {showRoleColumn ? (
                       <td className="px-3 py-3">
-                        <div className="flex flex-wrap gap-2">{renderRequestActions(request)}</div>
+                        <LeaveRoleBadge role={request.employeeRole} />
                       </td>
-                    </tr>
-                  );
-                })
+                    ) : null}
+                    <td className="px-3 py-3 text-sm text-slate-600">{formatRecordDivision(request)}</td>
+                    <td className="px-3 py-3 text-sm text-slate-700">{request.leaveType || "Leave"}</td>
+                    <td className="px-3 py-3">
+                      <LeaveStatusBadge
+                        status={request.status}
+                        rejectedByRole={request.rejectedByRole}
+                        isLeaveMonetization={request.isLeaveMonetization}
+                        startDate={request.startDate}
+                        endDate={request.endDate}
+                        pendingByRole
+                      />
+                    </td>
+                    <td className="px-3 py-3 text-sm text-slate-600">{formatDateDisplay(request.dateFiled)}</td>
+                    <td className="px-3 py-3">
+                      {renderRequestActions(request)}
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
@@ -635,7 +833,9 @@ function buildSummary(requests) {
   const summary = {
     total: requests.length,
     pending: 0,
+    endorsed: 0,
     reviewed: 0,
+    chiefReviewed: 0,
     approved: 0,
     rejected: 0,
     cancelled: 0,
@@ -645,7 +845,9 @@ function buildSummary(requests) {
   requests.forEach((request) => {
     const status = normalizeLeaveStatus(request.status);
     if (status === "Pending") summary.pending += 1;
+    if (status === "Endorsed") summary.endorsed += 1;
     if (status === "Reviewed") summary.reviewed += 1;
+    if (status === "Chief Reviewed") summary.chiefReviewed += 1;
     if (status === "Approved") summary.approved += 1;
     if (status === "Rejected") summary.rejected += 1;
     if (status === "Cancelled") summary.cancelled += 1;
@@ -665,8 +867,10 @@ export default function LeaveDashboard({
   leaveRequestLayout = "default",
   activeView = "leave",
   showRequestTabs = true,
+  showOnlyOwnLeaveRequests = false,
 }) {
   const normalizedActiveView = requestTabs.some((tab) => tab.key === activeView) ? activeView : "leave";
+  const defaultLeaveStatus = resolveRoleKey(user) === "hrhead" ? "Pending HR Head Approval" : defaultFilterState.status;
   const [activeTab, setActiveTab] = useState(normalizedActiveView);
   const [requests, setRequests] = useState([]);
   /*
@@ -677,21 +881,48 @@ export default function LeaveDashboard({
   const [monetizationRecords, setMonetizationRecords] = useState([]);
   const [selectedMonetization, setSelectedMonetization] = useState(null);
   const [printMonetization, setPrintMonetization] = useState(false);
+  const [downloadMonetization, setDownloadMonetization] = useState(false);
   const [modulePendingCounts, setModulePendingCounts] = useState(initialModulePendingCounts);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
-  const [filters, setFilters] = useState(defaultFilterState);
+  const [filters, setFilters] = useState(() => ({
+    ...defaultFilterState,
+    status: showOnlyOwnLeaveRequests ? "" : defaultLeaveStatus,
+  }));
   const [currentPage, setCurrentPage] = useState(1);
   const [reviewRequest, setReviewRequest] = useState(null);
   const [selectedRequest, setSelectedRequest] = useState(null);
+  const [balanceSnapshotRequest, setBalanceSnapshotRequest] = useState(null);
   const [printRequest, setPrintRequest] = useState(false);
+  const [downloadRequest, setDownloadRequest] = useState(false);
   const [leaveArchiveView, setLeaveArchiveView] = useState(false);
+  const [showMyLeaveRequests, setShowMyLeaveRequests] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  /* The signed-in user's own leave_credit.php snapshot: balances for the request form, all of it for the modal. */
+  const [leaveCreditSnapshot, setLeaveCreditSnapshot] = useState(null);
+  const leaveCredits = useMemo(
+    () => (Array.isArray(leaveCreditSnapshot?.balances) ? leaveCreditSnapshot.balances : []),
+    [leaveCreditSnapshot]
+  );
+  const [balanceOpen, setBalanceOpen] = useState(false);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [balanceError, setBalanceError] = useState("");
 
-  const managePermission = canManageLeave(user);
+  const managePermission = canManageLeaveRequests(user);
   const viewAllPermission = canViewAllLeaves(user);
   const roleKey = resolveRoleKey(user);
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  const travelRequestOnly = ["cashier", "hrhead", "hrstaff"].includes(roleKey)
+    || exactRoleKey === "chiefadmin";
   const isRegionalDirector = roleKey === "regionaldirector";
+  /*
+   * The balances button shows the signed-in user their own leave credits. The Admin account is not
+   * an employee and holds none, so Leave Management does not offer it there.
+   */
+  const showOwnBalances = roleKey !== "admin";
+  const myLeaveView = showMyLeaveRequests;
+  const scopeToOwnLeaveRequests = showOnlyOwnLeaveRequests || myLeaveView;
   const updateModulePendingCount = (moduleKey, count) => {
     setModulePendingCounts((current) =>
       current[moduleKey] === count ? current : { ...current, [moduleKey]: count }
@@ -701,6 +932,30 @@ export default function LeaveDashboard({
   useEffect(() => {
     setActiveTab(normalizedActiveView);
   }, [normalizedActiveView]);
+
+  const loadOwnLeaveCredits = useCallback(async () => {
+    setBalanceLoading(true);
+    setBalanceError("");
+
+    try {
+      const result = await fetchLeaveCredits();
+      setLeaveCreditSnapshot(result?.credits && typeof result.credits === "object" ? result.credits : null);
+    } catch (error) {
+      setLeaveCreditSnapshot(null);
+      setBalanceError(
+        error?.response?.data?.message
+          || error?.message
+          || "Your leave balances are unavailable right now."
+      );
+    } finally {
+      setBalanceLoading(false);
+    }
+  }, []);
+
+  const handleOpenBalances = () => {
+    setBalanceOpen(true);
+    void loadOwnLeaveCredits();
+  };
 
   const loadRequests = useCallback(async ({ background = false } = {}) => {
     setIsLoading(!background);
@@ -820,18 +1075,47 @@ export default function LeaveDashboard({
     [monetizationRecords, requests]
   );
 
-  const availableDivisions = useMemo(() => {
-    const fromRequests = combinedRequests.map((request) => request.division).filter(Boolean);
-    return Array.from(new Set([...databaseDivisions, ...fromRequests])).sort();
-  }, [combinedRequests, databaseDivisions]);
+  /*
+   * The division filter lists the division table, not the divisions that happen to appear on the
+   * loaded requests -- every role's dashboard, whether or not it passes `divisions` in.
+   */
+  const { divisions: organizationDivisions } = useOrganizationFilterOptions();
+  const availableDivisions = useMemo(
+    () => Array.from(new Set([...databaseDivisions, ...organizationDivisions])).sort(),
+    [databaseDivisions, organizationDivisions]
+  );
 
   const scopedRequests = useMemo(() => {
+    if (scopeToOwnLeaveRequests) {
+      return combinedRequests.filter((request) => matchesUserRecordScope(request, user));
+    }
+
     if (viewAllPermission) {
-      return combinedRequests;
+      /*
+       * The organization-wide list is for requests the viewer acts on. Their own filing goes straight
+       * to the next approver's queue and is followed (or cancelled) under View My Leave, so it never
+       * appears here. The archive keeps every record, since My Leave never shows archived rows.
+       */
+      if (leaveArchiveView) {
+        return combinedRequests;
+      }
+      return combinedRequests.filter((request) => !matchesUserRecordScope(request, user));
     }
     return combinedRequests.filter((request) => requestMatchesCurrentUser(request, user));
-  }, [combinedRequests, user, viewAllPermission]);
-  const leavePendingCount = useMemo(() => countPendingRecords(scopedRequests), [scopedRequests]);
+  }, [combinedRequests, leaveArchiveView, scopeToOwnLeaveRequests, user, viewAllPermission]);
+  const leavePendingCount = useMemo(
+    () => scopedRequests.reduce((count, request) => {
+      if (matchesUserRecordScope(request, user)) return count;
+
+      if (request.isLeaveMonetization) {
+        const actions = resolveMonetizationRowActions({ roleKey: isLeaveDivisionDesk(user) ? "chief" : roleKey, record: request, isOwnRecord: false });
+        return count + (actions.showReview || actions.showApprove ? 1 : 0);
+      }
+
+      return count + (resolveLeaveApprovalActionForUser(user, request.status) ? 1 : 0);
+    }, 0),
+    [roleKey, scopedRequests, user]
+  );
 
   const summary = useMemo(() => buildSummary(scopedRequests), [scopedRequests]);
 
@@ -848,7 +1132,9 @@ export default function LeaveDashboard({
   const statusBreakdown = useMemo(() => {
     const counter = {
       Pending: 0,
+      Endorsed: 0,
       Reviewed: 0,
+      "Chief Reviewed": 0,
       Approved: 0,
       Rejected: 0,
       Cancelled: 0,
@@ -861,11 +1147,12 @@ export default function LeaveDashboard({
       }
     });
 
+    /* A bar counts every disapproval, whoever made it, so it carries no "by <role>" suffix. */
     return Object.entries(counter).map(([label, count]) => ({
-      label: getLeaveStatusDisplayLabel(label, roleKey),
+      label: label === "Rejected" ? "Disapproved" : getLeaveStatusDisplayLabel(label),
       count,
     }));
-  }, [roleKey, scopedRequests]);
+  }, [scopedRequests]);
 
   const divisionBreakdown = useMemo(() => {
     const counter = {};
@@ -887,6 +1174,7 @@ export default function LeaveDashboard({
       const displayReason = getLeaveReasonDisplay(request.reason, request.leaveType);
       const matchesSearch = !searchValue || [
         request.employeeName,
+        request.division,
         request.leaveType,
         displayReason,
         request.rejectedNote,
@@ -895,7 +1183,12 @@ export default function LeaveDashboard({
         .some((value) => String(value).toLowerCase().includes(searchValue));
 
       const matchesDivision = !filters.division || request.division === filters.division;
-      const matchesStatus = !filters.status || normalizeLeaveStatus(request.status) === filters.status;
+      const matchesStatus = matchesLeaveManagementStatus(
+        request.status,
+        filters.status,
+        roleKey,
+        { isOwnRequest: matchesUserRecordScope(request, user) }
+      );
       const dateFilterValue = normalizeDateFilterValue(filters.date);
       const matchesDate = !dateFilterValue || [
         request.startDate,
@@ -907,7 +1200,7 @@ export default function LeaveDashboard({
     });
 
     return sortRequests(filtered, filters.sortBy, filters.sortDirection);
-  }, [filters, scopedRequests]);
+  }, [filters, roleKey, scopedRequests, user]);
 
   const rowsPerPage = Number(filters.rowsPerPage) || 10;
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / rowsPerPage));
@@ -929,6 +1222,31 @@ export default function LeaveDashboard({
     const startIndex = (safePage - 1) * rowsPerPage;
     return filteredRequests.slice(startIndex, startIndex + rowsPerPage);
   }, [filteredRequests, rowsPerPage, safePage]);
+  const selection = useRowSelection(filteredRequests, leaveRowKey);
+  const canArchiveLeave = canArchiveModule(roleKey, "leave");
+  const getBulkApprovalAction = useCallback((request) => {
+    if (!canManageLeaveRequestRow(user, request)) return null;
+
+    if (request.isLeaveMonetization) {
+      const actions = resolveMonetizationRowActions({
+        roleKey: isLeaveDivisionDesk(user) ? "chief" : roleKey,
+        record: request,
+        isOwnRecord: false,
+      });
+
+      if (actions.showReview) return { action: "markReviewed", status: "Reviewed" };
+      if (actions.showApprove) return { action: "approve", status: actions.nextStatus };
+      return null;
+    }
+
+    return resolveLeaveApprovalActionForUser(user, request.status);
+  }, [roleKey, user]);
+  const canSelectLeaveRow = useCallback((request) => (
+    !leaveArchiveView
+      && (canArchiveLeave || Boolean(getBulkApprovalAction(request)))
+  ), [canArchiveLeave, getBulkApprovalAction, leaveArchiveView]);
+  const bulkApprovableRequests = selection.selectedRows.filter((request) => Boolean(getBulkApprovalAction(request)));
+  const bulkArchivableRequests = canArchiveLeave && !leaveArchiveView ? selection.selectedRows : [];
 
   const handleFilterChange = (field, value) => {
     setFilters((current) => ({
@@ -955,7 +1273,23 @@ export default function LeaveDashboard({
   };
 
   const handleClearFilters = () => {
-    setFilters(defaultFilterState);
+    setFilters({
+      ...defaultFilterState,
+      status: scopeToOwnLeaveRequests || leaveArchiveView ? "" : defaultLeaveStatus,
+    });
+    setCurrentPage(1);
+  };
+
+  const handleToggleMyLeaveView = (next) => {
+    const shouldShowMyLeave = Boolean(next);
+
+    selection.clearSelection();
+    setShowMyLeaveRequests(shouldShowMyLeave);
+    setLeaveArchiveView(false);
+    setFilters({
+      ...defaultFilterState,
+      status: shouldShowMyLeave || showOnlyOwnLeaveRequests ? "" : defaultLeaveStatus,
+    });
     setCurrentPage(1);
   };
 
@@ -966,6 +1300,10 @@ export default function LeaveDashboard({
       toast.success(result.message || "Leave request submitted successfully.");
       setIsRequestModalOpen(false);
     } catch (error) {
+      if (showDuplicateLeaveDateAlert(error)) {
+        return;
+      }
+
       const leaveWithoutPayPrompt = extractLeaveWithoutPayPrompt(error);
 
       if (leaveWithoutPayPrompt && !payload?.acknowledgeLeaveWithoutPay) {
@@ -1008,6 +1346,14 @@ export default function LeaveDashboard({
   };
 
   const handleSubmitRequest = async (payload) => {
+    if (!payload?.isLeaveMonetization && isLeaveStartDateTooSoon({
+      leaveType: payload?.leaveType,
+      startDate: payload?.startDate,
+    })) {
+      toast.error(LEAVE_ADVANCE_NOTICE_ERROR);
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -1024,8 +1370,7 @@ export default function LeaveDashboard({
 
   /*
    * The monetization half of the row actions. It is kept apart from the leave request handler
-   * because every step of it answers to leave_monetization.php: its own approval chain, where the
-   * Regional Director signs only after the HR Head's review, and its own record to archive.
+   * because its updates and archived records are handled by leave_monetization.php.
    */
   const handleMonetizationAction = async (actionType, record) => {
     /*
@@ -1034,10 +1379,11 @@ export default function LeaveDashboard({
      * reads that field to decide which certification row the days come off.
      *
      * Print opens the same sheet, which prints itself once loaded and closes again -- the leave
-     * request form's print action works exactly this way.
+     * request form's print action works exactly this way. Download PDF does the same but saves it.
      */
-    if (actionType === "view" || actionType === "review" || actionType === "print") {
+    if (["view", "review", "print", "download"].includes(actionType)) {
       setPrintMonetization(actionType === "print");
+      setDownloadMonetization(actionType === "download");
       setSelectedMonetization({
         ...record,
         leaveType: record.monetizedLeaveType || record.leaveType,
@@ -1059,31 +1405,23 @@ export default function LeaveDashboard({
     }
 
     const isOwnRecord = matchesUserRecordScope(record, user);
-    const status = normalizeLeaveStatus(record.status);
 
     if (isOwnRecord && actionType !== "cancel") {
       toast.error("You cannot act on your own leave monetization request.");
       return;
     }
 
-    if (actionType === "approve" && isRegionalDirector && status !== "Reviewed") {
-      toast.error("Regional Director can only give final approval after HR Head review.");
-      return;
-    }
-
-    if (
-      (actionType === "reject" || actionType === "cancel")
-      && isRegionalDirector
-      && !isOwnRecord
-      && status !== "Reviewed"
-    ) {
-      toast.error("Regional Director can only act on requests after HR Head review.");
+    const actions = resolveMonetizationRowActions({ roleKey: isLeaveDivisionDesk(user) ? "chief" : roleKey, record, isOwnRecord });
+    if ((actionType === "approve" && !actions.showApprove)
+      || (actionType === "reject" && !actions.showReject)
+      || (actionType === "cancel" && !actions.showCancel && !actions.showOwnCancel)) {
+      toast.error("This request is awaiting another approval desk.");
       return;
     }
 
     const statusMap = {
       markReviewed: "Reviewed",
-      approve: "Approved",
+      approve: actions.nextStatus,
       reject: "Rejected",
       cancel: "Cancelled",
     };
@@ -1133,7 +1471,7 @@ export default function LeaveDashboard({
     const rejectedNote = isRejectAction ? String(confirmation.value || "").trim() : "";
 
     /*
-     * The two one-way steps leave_monetization.php gates. What comes back is the pair to send with
+     * Each approval step is gated by leave_monetization.php. What comes back is the pair to send with
      * the update, not a verdict -- the answer is judged there and never here. A null is a cancel or
      * an undealt challenge, and either way nothing is sent.
      */
@@ -1170,6 +1508,16 @@ export default function LeaveDashboard({
   };
 
   const handleTableAction = async (actionType, request) => {
+    if (actionType === "attachmentUploaded") {
+      setRequests((current) => current.map((row) => (row.id === request.id ? request : row)));
+      return;
+    }
+    /* The filer's leave credits, for either kind of row: both carry the employee's record id. */
+    if (actionType === "balances") {
+      setBalanceSnapshotRequest(request);
+      return;
+    }
+
     if (request?.isLeaveMonetization) {
       await handleMonetizationAction(actionType, request);
       return;
@@ -1182,13 +1530,23 @@ export default function LeaveDashboard({
 
     if (actionType === "view") {
       setPrintRequest(false);
+      setDownloadRequest(false);
       setSelectedRequest(request);
       return;
     }
 
     /* The form modal is the print source: it opens, prints itself once loaded, and closes again. */
     if (actionType === "print") {
+      setDownloadRequest(false);
       setPrintRequest(true);
+      setSelectedRequest(request);
+      return;
+    }
+
+    /* Download works like Print: the form opens, saves itself as a PDF once loaded, and closes. */
+    if (actionType === "download") {
+      setPrintRequest(false);
+      setDownloadRequest(true);
       setSelectedRequest(request);
       return;
     }
@@ -1208,15 +1566,18 @@ export default function LeaveDashboard({
       return;
     }
 
-    if (matchesUserRecordScope(request, user)) {
+    const isOwnRequest = matchesUserRecordScope(request, user);
+    if (isOwnRequest && actionType !== "cancel") {
       toast.error("You cannot update your own leave request. Please ask another authorized user to review it.");
       return;
     }
 
     const labelMap = {
+      markEndorsed: "approve",
       markReviewed: "approve",
+      markChiefReviewed: "complete the Division Chief review for",
       approve: isRegionalDirector ? "final approve" : "approve",
-      reject: "reject",
+      reject: "disapprove",
       cancel: "cancel",
     };
 
@@ -1225,45 +1586,59 @@ export default function LeaveDashboard({
     }
 
     const status = normalizeLeaveStatus(request.status);
+    if (isOwnRequest && actionType === "cancel" && !canCancelOwnLeaveRequest(user, request)) {
+      toast.error("This leave request can no longer be cancelled.");
+      return;
+    }
+
     if (actionType === "cancel" && status === "Approved") {
       toast.error("Approved leave requests cannot be cancelled.");
       return;
     }
 
-    // The Regional Director may act while a request is still pending, but not once it is settled.
-    if (
-      isRegionalDirector
-      && ["approve", "reject", "cancel"].includes(actionType)
-      && status !== "Pending"
-      && status !== "Reviewed"
-    ) {
-      toast.error("Only pending or reviewed leave requests can be acted on.");
+    const assignedApproval = resolveLeaveApprovalActionForUser(user, status);
+    if (["markEndorsed", "markReviewed", "markChiefReviewed", "approve"].includes(actionType)
+      && assignedApproval?.action !== actionType) {
+      toast.error("This leave request is waiting at a different approval stage.");
+      return;
+    }
+
+    if (actionType === "reject" && !canRejectLeaveForUser(user, status)) {
+      toast.error("This leave request is waiting at a different approval stage.");
       return;
     }
 
     const statusMap = {
+      markEndorsed: "Endorsed",
       markReviewed: "Reviewed",
+      markChiefReviewed: "Chief Reviewed",
       approve: "Approved",
       reject: "Rejected",
       cancel: "Cancelled",
     };
 
     const titleMap = {
+      markEndorsed: "Approve Leave Request?",
       markReviewed: "Approve Leave Request?",
+      markChiefReviewed: "Complete Division Chief Review?",
       approve: isRegionalDirector ? "Final Approve Leave Request?" : "Approve Leave Request?",
-      reject: "Reject Leave Request?",
+      reject: "Disapprove Leave Request?",
       cancel: "Cancel Leave Request?",
     };
 
     const confirmButtonMap = {
+      markEndorsed: "Yes, approve",
       markReviewed: "Yes, approve",
+      markChiefReviewed: "Yes, complete review",
       approve: isRegionalDirector ? "Yes, final approve" : "Yes, approve",
-      reject: "Yes, reject",
+      reject: "Yes, disapprove",
       cancel: "Yes, cancel",
     };
 
     const iconMap = {
+      markEndorsed: "success",
       markReviewed: "success",
+      markChiefReviewed: "success",
       approve: "success",
       reject: "warning",
       cancel: "warning",
@@ -1280,24 +1655,24 @@ export default function LeaveDashboard({
       text: `Are you sure you want to ${labelMap[actionType]} the leave request for ${request.employeeName}? ${request.leaveType}`,
       icon: iconMap[actionType],
       input: isRejectAction ? "textarea" : undefined,
-      inputLabel: isRejectAction ? "Rejected note" : undefined,
-      inputPlaceholder: isRejectAction ? "Explain why this leave request is being rejected." : undefined,
+      inputLabel: isRejectAction ? "Disapproval note" : undefined,
+      inputPlaceholder: isRejectAction ? "Explain why this leave request is being disapproved." : undefined,
       inputValue: isRejectAction ? String(request.rejectedNote || "") : undefined,
       inputAttributes: isRejectAction
         ? {
-          "aria-label": "Rejected note",
+          "aria-label": "Disapproval note",
           autocapitalize: "sentences",
         }
         : undefined,
       inputValidator: isRejectAction
-        ? (value) => (!String(value || "").trim() ? "Rejected note is required." : undefined)
+        ? (value) => (!String(value || "").trim() ? "Disapproval note is required." : undefined)
         : undefined,
       showCancelButton: true,
       confirmButtonText: confirmButtonMap[actionType],
       cancelButtonText: "No, keep it",
       confirmButtonColor: actionType === "approve"
         ? "#0f766e"
-        : actionType === "markReviewed"
+        : ["markReviewed", "markEndorsed", "markChiefReviewed"].includes(actionType)
           ? "#0f766e"
           : "#dc2626",
       cancelButtonColor: "#64748b",
@@ -1310,7 +1685,7 @@ export default function LeaveDashboard({
     }
 
     const rejectedNote = isRejectAction ? String(confirmation.value || "").trim() : "";
-    const requiresApprovalCaptcha = actionType === "markReviewed" || actionType === "approve";
+    const requiresApprovalCaptcha = ["markEndorsed", "markReviewed", "markChiefReviewed", "approve"].includes(actionType);
 
     let approvalCaptcha = {};
 
@@ -1341,9 +1716,7 @@ export default function LeaveDashboard({
       );
       await Swal.fire({
         title: result.emailNotification === "warning" ? "Updated with warning" : "Updated",
-        text: actionType === "markReviewed"
-          ? "Leave request approved by HR and forwarded to the Regional Director for final approval."
-          : result.message || `Leave request ${nextStatus.toLowerCase()}.`,
+        text: result.message || `Leave request ${nextStatus.toLowerCase()}.`,
         icon: result.emailNotification === "warning" ? "warning" : "success",
         confirmButtonColor: result.emailNotification === "warning" ? "#d97706" : "#0f766e",
       });
@@ -1361,6 +1734,66 @@ export default function LeaveDashboard({
       });
     }
   };
+
+  const handleBulkApprove = async () => {
+    if (bulkApprovableRequests.length === 0 || bulkBusy) return;
+
+    setBulkBusy(true);
+    try {
+      await confirmBulkApproval({
+        records: bulkApprovableRequests,
+        noun: "leave request",
+        getTarget: (request) => `${request.isLeaveMonetization ? "leavemonetization" : "leave"}:${request.id}`,
+        approveRecord: (request, captcha) => {
+          const approvalAction = getBulkApprovalAction(request);
+
+          return request.isLeaveMonetization
+            ? updateLeaveMonetizationStatus(request.id, approvalAction.status, "", captcha)
+            : updateLeaveStatus(request.id, approvalAction.status, "", captcha);
+        },
+        confirmationText: `Approve ${bulkApprovableRequests.length} selected leave request${bulkApprovableRequests.length === 1 ? "" : "s"} at the workflow stage currently assigned to you?`,
+        captchaNote: "Answer the sum below to confirm the selected leave approvals.",
+        progressText: "Approving selected leave requests...",
+        onComplete: async () => {
+          selection.clearSelection();
+          await loadRequests({ background: true });
+        },
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkArchive = async () => {
+    if (bulkArchivableRequests.length === 0 || bulkBusy) return;
+
+    setBulkBusy(true);
+    try {
+      await confirmArchiveRecords({
+        records: bulkArchivableRequests,
+        getModule: (request) => request.isLeaveMonetization ? "leaveMonetization" : "leave",
+        noun: "leave request",
+        onArchived: async () => {
+          selection.clearSelection();
+          await loadRequests({ background: true });
+        },
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkToolbar = !leaveArchiveView ? (
+    <BulkSelectionToolbar
+      selectedCount={selection.selectedCount}
+      approveCount={bulkApprovableRequests.length}
+      archiveCount={bulkArchivableRequests.length}
+      busy={bulkBusy}
+      onApprove={handleBulkApprove}
+      onArchive={handleBulkArchive}
+      onClear={selection.clearSelection}
+    />
+  ) : null;
 
   return (
     <section className="leave-management-workspace w-full space-y-5">
@@ -1413,7 +1846,8 @@ export default function LeaveDashboard({
         <>
           <LeaveRequestManagementPanel
             filters={filters}
-            statuses={LEAVE_STATUSES}
+            divisions={availableDivisions}
+            statuses={LEAVE_FILTER_STATUSES}
             rows={paginatedRequests}
             loading={isLoading}
             totalCount={filteredRequests.length}
@@ -1421,15 +1855,28 @@ export default function LeaveDashboard({
             totalPages={totalPages}
             pageSize={rowsPerPage}
             canManage={managePermission}
+            canCreate
             roleKey={roleKey}
             user={user}
             onFilterChange={handleFilterChange}
             onPageChange={(page) => setCurrentPage(Math.max(1, Math.min(page, totalPages)))}
             onCreate={() => setIsRequestModalOpen(true)}
+            onViewBalances={showOwnBalances ? handleOpenBalances : undefined}
             onAction={handleTableAction}
+            selection={leaveArchiveView ? null : selection}
+            canSelectRow={canSelectLeaveRow}
+            bulkToolbar={bulkToolbar}
             archiveView={leaveArchiveView}
+            myLeaveView={myLeaveView}
+            personalLeaveOnly={showOnlyOwnLeaveRequests}
+            onToggleMyLeaveView={handleToggleMyLeaveView}
             onToggleArchiveView={(next) => {
+              selection.clearSelection();
               setLeaveArchiveView(next);
+              setFilters((current) => ({
+                ...current,
+                status: next || myLeaveView || showOnlyOwnLeaveRequests ? "" : defaultLeaveStatus,
+              }));
               setCurrentPage(1);
             }}
           />
@@ -1440,7 +1887,9 @@ export default function LeaveDashboard({
             summary={{
               total: summary.total,
               pending: summary.pending,
+              endorsed: summary.endorsed,
               reviewed: summary.reviewed,
+              chiefReviewed: summary.chiefReviewed,
               approved: summary.approved,
               rejected: summary.rejected,
               onLeave: summary.onLeave,
@@ -1455,13 +1904,13 @@ export default function LeaveDashboard({
           <LeaveFilters
             values={filters}
             divisions={availableDivisions}
-            statuses={LEAVE_STATUSES}
-            roleKey={roleKey}
+            statuses={LEAVE_FILTER_STATUSES}
             onChange={handleFilterChange}
             onClear={handleClearFilters}
           />
 
-          <div className="flex justify-end">
+          <div className="flex flex-wrap justify-end gap-2">
+            {showOwnBalances ? <LeaveBalanceButton onClick={handleOpenBalances} /> : null}
             <button
               type="button"
               onClick={() => setIsRequestModalOpen(true)}
@@ -1472,17 +1921,21 @@ export default function LeaveDashboard({
             </button>
           </div>
 
+          {bulkToolbar}
+
           <LeaveTable
             rows={paginatedRequests}
             loading={isLoading}
             canManage={managePermission}
             roleKey={roleKey}
+            user={user}
             canManageRow={(row) => !matchesUserRecordScope(row, user)}
             sortBy={filters.sortBy}
             sortDirection={filters.sortDirection}
-            rowStart={(safePage - 1) * rowsPerPage}
             onSort={handleSortChange}
             onAction={handleTableAction}
+            selection={selection}
+            canSelectRow={canSelectLeaveRow}
           />
 
           <div className="flex flex-col gap-2 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
@@ -1507,10 +1960,11 @@ export default function LeaveDashboard({
         <TravelOrderWorkspace
           user={user}
           employees={employees}
-          title="Travel Order Management"
-          description="Review submitted travel orders, filter by employee or status, and update request outcomes."
+          title={travelRequestOnly ? "Travel Order Request" : "Travel Order Management"}
+          description={travelRequestOnly
+            ? "File and monitor travel orders under your employee account."
+            : "Review submitted travel orders, filter by employee or status, and update request outcomes."}
           submitLabel="Request Travel Order"
-          showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("travel", count)}
         />
       ) : activeTab === "passSlip" ? (
@@ -1518,20 +1972,18 @@ export default function LeaveDashboard({
           user={user}
           employees={employees}
           title="Pass Slip Management"
-          description="Create, review, approve, reject, return, and monitor employee pass slip records."
+          description="Create and review pass slips."
           submitLabel="File Pass Slip"
           showDeleteAction={false}
-          showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("passSlip", count)}
         />
       ) : activeTab === "cto" ? (
         <CompensatoryWorkspace
           user={user}
           employees={employees}
-          title="Compensatory Time Off Management"
+          title="CTO Management"
           description="Create, review, approve, reject, cancel, and monitor employee compensatory time off requests."
           submitLabel="File CTO"
-          showHeaderCloseButton={false}
           onPendingCountChange={(count) => updateModulePendingCount("cto", count)}
         />
       ) : activeTab === "overtime" ? (
@@ -1561,12 +2013,27 @@ export default function LeaveDashboard({
       <LeaveRequestModal
         open={isRequestModalOpen}
         user={user}
-        leaveTypes={LEAVE_TYPES}
+        leaveCredits={leaveCredits}
         employees={employees}
         isSubmitting={isSubmitting}
-        showHeaderCloseButton={false}
         onClose={() => setIsRequestModalOpen(false)}
         onSubmit={handleSubmitRequest}
+      />
+
+      <LeaveBalanceModal
+        open={balanceOpen}
+        onClose={() => setBalanceOpen(false)}
+        credits={leaveCreditSnapshot}
+        loading={balanceLoading}
+        error={balanceError}
+        onRetry={loadOwnLeaveCredits}
+      />
+
+      <LeaveCreditSnapshotModal
+        open={Boolean(balanceSnapshotRequest)}
+        employeeRecordId={balanceSnapshotRequest?.employeeRecordId}
+        employeeName={balanceSnapshotRequest?.employeeName}
+        onClose={() => setBalanceSnapshotRequest(null)}
       />
 
       <LeaveFormModal
@@ -1576,9 +2043,11 @@ export default function LeaveDashboard({
         reviewer={user}
         showRegionalDirectorApproverSignature={roleKey === "regionaldirector"}
         autoPrint={printRequest}
+        autoDownload={downloadRequest}
         onClose={() => {
           setSelectedRequest(null);
           setPrintRequest(false);
+          setDownloadRequest(false);
         }}
       />
 
@@ -1597,14 +2066,14 @@ export default function LeaveDashboard({
         showHrmoReviewerSignature={roleKey === "hrhead"}
         showRegionalDirectorApproverSignature={isRegionalDirector}
         autoPrint={printMonetization}
+        autoDownload={downloadMonetization}
         onClose={() => {
           setSelectedMonetization(null);
           setPrintMonetization(false);
+          setDownloadMonetization(false);
         }}
       />
 
     </section>
   );
 }
-
-

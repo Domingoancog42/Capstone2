@@ -10,6 +10,9 @@ export default function EmployeeSearchSelect({
   onClear,
   disabled = false,
   placeholder = "Search employee...",
+  showSelectedDetails = false,
+  ariaLabel = "Employee",
+  inlineMenu = false,
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -51,6 +54,9 @@ export default function EmployeeSearchSelect({
     : (selectedEmployee ? selectedEmployee.employeeName : placeholder);
 
   const hasSelection = multiple ? selectedIds.size > 0 : Boolean(selectedEmployee);
+  const selectedEmployeeDetails = !multiple && selectedEmployee
+    ? [selectedEmployee.employeeId, selectedEmployee.division].filter(Boolean).join(" · ")
+    : "";
 
   return (
     <div className="relative">
@@ -58,16 +64,30 @@ export default function EmployeeSearchSelect({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
-        className={`flex min-h-[46px] w-full items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5 text-left text-sm outline-none transition ${
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`flex w-full items-center justify-between gap-3 rounded-xl border border-slate-300 px-3.5 text-left text-sm outline-none transition ${
+          showSelectedDetails && selectedEmployee ? "min-h-14 py-2" : "min-h-[46px] py-2.5"
+        } ${
           disabled
             ? "cursor-not-allowed bg-slate-50 text-slate-500"
-            : "bg-white text-slate-900 hover:border-slate-300 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            : "bg-white text-slate-900 hover:border-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
         }`}
       >
-        <span className={hasSelection ? "text-slate-900" : "text-slate-400"}>
-          {triggerLabel}
+        <span className={`min-w-0 flex-1 ${hasSelection ? "text-slate-900" : "text-slate-400"}`}>
+          <span className="block truncate font-medium">{triggerLabel}</span>
+          {showSelectedDetails && selectedEmployeeDetails ? (
+            <span className="mt-0.5 block truncate text-xs font-normal text-slate-500">
+              {selectedEmployeeDetails}
+            </span>
+          ) : null}
         </span>
-        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        {open ? (
+          <ChevronUp size={16} className="shrink-0 text-slate-500" aria-hidden="true" />
+        ) : (
+          <ChevronDown size={16} className="shrink-0 text-slate-500" aria-hidden="true" />
+        )}
       </button>
 
       {multiple && selectedEmployees.length > 0 ? (
@@ -94,7 +114,11 @@ export default function EmployeeSearchSelect({
       ) : null}
 
       {open && !disabled ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className={`${
+          inlineMenu
+            ? "relative mt-2"
+            : "absolute left-0 right-0 top-[calc(100%+0.5rem)] z-20"
+        } overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl`}>
           <div className="border-b border-slate-200 p-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -106,7 +130,7 @@ export default function EmployeeSearchSelect({
               />
             </label>
           </div>
-          <div className="max-h-64 overflow-y-auto p-2">
+          <div className="max-h-64 overflow-y-auto p-2" role="listbox" aria-label="Employees">
             {filteredOptions.length === 0 ? (
               <p className="m-0 rounded-xl px-3 py-3 text-sm text-slate-500">No employees found.</p>
             ) : multiple ? (
@@ -133,6 +157,8 @@ export default function EmployeeSearchSelect({
               <button
                 key={employee.employeeRecordId}
                 type="button"
+                role="option"
+                aria-selected={selectedEmployee?.employeeRecordId === employee.employeeRecordId}
                 onClick={() => {
                   onSelect?.(employee);
                   setOpen(false);
@@ -140,10 +166,12 @@ export default function EmployeeSearchSelect({
                 }}
                 className="flex w-full items-start justify-between rounded-xl px-3 py-3 text-left transition hover:bg-slate-50"
               >
-                <span>
-                  <span className="block text-sm font-semibold text-slate-900">{employee.employeeName}</span>
-                  <span className="block text-xs text-slate-500">
-                    {employee.division || "No division assigned"}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold text-slate-900">{employee.employeeName}</span>
+                  <span className="block truncate text-xs text-slate-500">
+                    {showSelectedDetails
+                      ? [employee.employeeId, employee.division].filter(Boolean).join(" · ") || "No employee details"
+                      : employee.division || "No division assigned"}
                   </span>
                 </span>
                 {selectedEmployee?.employeeRecordId === employee.employeeRecordId ? (

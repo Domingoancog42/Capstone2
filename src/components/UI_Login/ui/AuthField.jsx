@@ -34,7 +34,7 @@ export function AuthField({
   const hasMessage = Boolean(error || hint);
 
   return (
-    <div className={cx("w-full", className)}>
+    <div className={cx("w-full", className)} data-validation-field>
       {label ? (
         <label className={AUTH_LABEL_CLASS} htmlFor={fieldId}>
           {label}

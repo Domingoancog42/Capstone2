@@ -6,57 +6,37 @@ require_once __DIR__ . '/password-reset-utils.php';
 
 require_method('POST');
 
-/*
- * Asking for a reset code.
- *
- * The one rule this endpoint has to keep is that its answer must not depend on whether the account
- * exists. It used to: an unknown address got 404 "This email is not registered." and a known one got
- * 200 "Code sent.", which turns the form into a free membership oracle -- feed it a staff directory
- * and it sorts the list into who has an HRIS account and who does not. Paired with a guessable code
- * that is the first half of an account takeover, and on its own it is still a disclosure: this is a
- * government payroll system, so "does this person work here" is not public information to give away.
- *
- * So every path below ends at the same 200 and the same sentence. The account not existing, the
- * account having no email on file, the mail server refusing the message -- all of them look identical
- * from outside. What differs is only what gets written to the log and the audit trail.
- */
-throttle_password_reset_request($pdo);
-
 $body = read_json_body();
 $identifier = trim((string)($body['identifier'] ?? ($body['email'] ?? '')));
 
-// Refusing an empty form is not an oracle -- it says nothing about any account -- so it stays a
-// distinct, useful error.
 if ($identifier === '') {
     json_response([
         'success' => false,
-        'message' => 'Username or email is required.',
+        'message' => 'Email is required.',
     ], 422);
 }
 
-/**
- * The one answer this endpoint gives. Worded so that it is honest whichever branch reached it:
- * it promises that *if* the account exists a code is on its way, and promises nothing otherwise.
- */
-function password_reset_uniform_response(): never
+if (filter_var($identifier, FILTER_VALIDATE_EMAIL) === false) {
+    json_response([
+        'success' => false,
+        'message' => 'Enter a valid email address.',
+    ], 422);
+}
+
+/* Each mailbox has its own resend budget, even when employees share an office IP address. */
+throttle_password_reset_request($pdo, $identifier);
+
+function password_reset_success_response(): void
 {
     json_response([
         'success' => true,
-        'message' => 'If that account exists, a reset code has been sent. Check your inbox and spam folder.',
+        'message' => 'A reset code has been sent. Check your inbox and spam folder.',
     ]);
 }
 
 $account = find_user_by_reset_identifier($pdo, $identifier);
 
 if (!$account || trim((string)($account['email'] ?? '')) === '') {
-    /*
-     * No account, or an account with nowhere to send to. Nothing is sent and nothing is stored, but
-     * the caller cannot tell that from the reply.
-     *
-     * An account that exists with no email on file is a real operational problem -- that user cannot
-     * self-serve a reset at all -- so it goes to the audit trail, where an administrator will see it.
-     * A simply unknown identifier is not worth a row; it is what a typo looks like.
-     */
     if ($account) {
         write_auth_audit(
             $pdo,
@@ -70,7 +50,10 @@ if (!$account || trim((string)($account['email'] ?? '')) === '') {
         );
     }
 
-    password_reset_uniform_response();
+    json_response([
+        'success' => false,
+        'message' => 'This email is not registered in this system.',
+    ], 404);
 }
 
 $resetCode = generate_password_reset_code();
@@ -126,7 +109,7 @@ try {
         ]
     );
 
-    password_reset_uniform_response();
+    password_reset_success_response();
 }
 
-password_reset_uniform_response();
+password_reset_success_response();

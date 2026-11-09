@@ -6,6 +6,7 @@ require_once __DIR__ . '/employee-pds-profile-utils.php';
 require_once __DIR__ . '/pds-xlsx.php';
 
 $sessionUser = require_session_user();
+ensure_employee_pds_photo_column($pdo);
 
 function pds_download_employee(PDO $pdo, int $employeeRecordId): ?array
 {
@@ -16,10 +17,11 @@ function pds_download_employee(PDO $pdo, int $employeeRecordId): ?array
                 e.spouse_occupation, e.father_name, e.mother_name, e.highest_education,
                 e.school_name, e.education_course, e.year_graduated, e.height, e.weight,
                 e.blood_type, e.emp_gsis_id_no, e.emp_pagibig_id_no, e.emp_philhealth_id_no,
-                e.tin_no, d.name AS division_name, des.name AS designation_title
+                e.tin_no, e.basic_salary, d.name AS division_name, des.name AS designation_title,
+                des.salary_grade, e.profile_image, e.include_profile_image_in_pds, e.e_signature
          FROM employees e
-         INNER JOIN divisions d ON d.id = e.division_id
-         INNER JOIN designations des ON des.id = e.designation_id
+         LEFT JOIN divisions d ON d.id = e.division_id
+         LEFT JOIN designations des ON des.id = e.designation_id
          WHERE e.id = :id
            AND e.is_archived = 0
          LIMIT 1'
@@ -34,7 +36,8 @@ function pds_download_employee(PDO $pdo, int $employeeRecordId): ?array
 function pds_download_service_records(PDO $pdo, array $employee): array
 {
     $statement = $pdo->prepare(
-        'SELECT service_from, service_to, designation_title, employment_status, station, branch
+        'SELECT service_from, service_to, designation_title, employment_status, station, branch,
+                monthly_salary, salary_grade, step_increment
          FROM service_records
          WHERE employee_record_id = :employee_record_id
            AND is_archived = 0
@@ -52,6 +55,8 @@ function pds_download_service_records(PDO $pdo, array $employee): array
             'employment_status' => $employee['employment_status'] ?? '',
             'organization' => trim('Mines and Geosciences Bureau - ' . (string)($employee['division_name'] ?? ''), ' -'),
             'government_service' => 'Y',
+            'monthly_salary' => $employee['basic_salary'] ?? null,
+            'salary_grade' => $employee['salary_grade'] ?? '',
         ]];
     }
 
@@ -122,8 +127,10 @@ try {
     $employee['family_background'] = $pdsProfile['family'];
     $employee['children'] = $pdsProfile['family']['children'] ?? [];
     $employee['education_background'] = $pdsProfile['education'];
+    $employee['civil_service_eligibility'] = $pdsProfile['eligibility'];
+    $employee['learning_development'] = $pdsProfile['training'];
     $serviceRecords = pds_download_service_records($pdo, $employee);
-    $templatePath = __DIR__ . '/../templates/Personal-Data-Sheet-CS-Form-No.-212-Revised-2025.xlsx';
+    $templatePath = __DIR__ . '/../templates/Personal-Data-Sheet-CS-Form-No.-212-Revised-2026.xlsx';
 
     if (!is_file($templatePath)) {
         throw new RuntimeException('The official PDS workbook template is unavailable.');
@@ -139,7 +146,7 @@ try {
         [
             'module' => 'profile',
             'employeeRecordId' => $employeeRecordId,
-            'form' => 'CS Form No. 212 (Revised 2025)',
+            'form' => 'CS Form No. 212 (Revised 2026)',
         ]
     );
 

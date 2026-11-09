@@ -1,37 +1,52 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   CalendarDays,
   FilePenLine,
   Filter,
   Search,
+  UserRound,
   X,
 } from "lucide-react";
-import { faBan, faBoxArchive, faCheck, faEye, faFileLines, faFileSignature, faPrint, faRotateLeft, faXmark } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBan,
+  faBoxArchive,
+  faCheck,
+  faFileArrowDown,
+  faFileSignature,
+  faPrint,
+  faRotateLeft,
+  faXmark,
+} from "@fortawesome/free-solid-svg-icons";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 import ActionIconButton from "../../components/UI/ActionIconButton";
+import ViewFormActions from "../../components/UI/ViewFormActions";
+import BulkSelectionToolbar from "../../components/UI/BulkSelectionToolbar";
 import Pagination from "../../components/UI/Pagination";
 import RecordCards from "../../components/UI/RecordCards";
-import LeaveStatusBadge from "../../components/leave/LeaveStatusBadge";
+import SelectionCheckbox from "../../components/UI/SelectionCheckbox";
+import LeaveStatusBadge, { getDisapprovedStatusLabel } from "../../components/leave/LeaveStatusBadge";
 import EmployeeSearchSelect from "../../components/leave/EmployeeSearchSelect";
 import {
-  canManageLeave,
   canViewAllLeaves,
   countPendingRecords,
   formatDateDisplay,
   isPastDate,
-  isRegionalDirectorApproved,
   matchesUserRecordScope,
   matchesUserEmployeeOption,
   normalizeLeaveStatus,
   resolveRoleKey,
   todayDateInputValue,
 } from "../../utils/leaveHelpers";
+import { getRoleBadgeClass, getRoleLabel, normalizeRole } from "../../utils/roleRoutes";
 import { formatSignatureTimestamp } from "../../utils/signatureTimestamp";
+import { formatRecordDivision } from "../../utils/divisionDisplay";
 import {
   canArchiveModule,
   confirmArchiveRecord,
+  confirmArchiveRecords,
   confirmRestoreRecord,
 } from "../../utils/archiveActions";
 import ArchiveViewToggle from "../../components/UI/ArchiveViewToggle";
@@ -46,6 +61,9 @@ import {
 } from "../../utils/dateSelection";
 import { buildTravelOrderQrPayload } from "../../utils/formQrCode";
 import useAutoPrint from "../../hooks/useAutoPrint";
+import useFilingSignatories from "../../hooks/useFilingSignatories";
+import { fitSheetToPrintArea, PRINT_AREA_WIDTH_MM, PRINT_PAGE_MARGIN_MM } from "../../utils/printSheetFit";
+import { downloadFormSheetPdf } from "../../utils/formSheetPdf";
 import { getEmployeeSignature } from "../../services/api";
 import { useAutoRefreshOnChange } from "../../components/auto/autorefreshdatalist";
 import {
@@ -55,41 +73,57 @@ import {
   updateTravelOrderStatus,
 } from "../../services/travelOrderService";
 import { requestApprovalCaptcha, isCaptchaFailure } from "../../utils/approvalCaptcha";
+import { confirmBulkApproval } from "../../utils/bulkRequestActions";
+import useRowSelection from "../../hooks/useRowSelection";
 
 // Printed in the AUTHORIZATION block of the form and shown verbatim in the acceptance dialog the
 // employee answers after the Regional Director approves -- they must be the same words.
 const TRAVEL_AUTHORIZATION_TEXT = "I hereby authorize the Accountant to deduct the corresponding amount of the unliquidated cash advance from my succeeding salary for my failure to liquidate this travel within twenty (20) days upon return to my permanent official station pursuant to Commission on Audit (COA) Circular No. 2012-004 dated November 28, 2012.";
 /*
- * The desks that read or sign a travel order but never open one. The Planning Officer belongs here
- * for the same reason the Regional Director does: they are a signatory on the form (see
- * TRAVEL_RECOMMENDER_ROLES below), so filing one would put them on both sides of it.
- */
-const TRAVEL_CREATE_RESTRICTED_ROLES = new Set([
-  "hrstaff",
-  "hrhead",
-  "regionaldirector",
-  "planningofficer",
-]);
-/*
- * A travel order is signed in two desks, mirroring travel_order.php. The Planning Officer
+ * A travel order is signed in three desks, mirroring travel_order.php. The Planning Officer
  * recommends a filed order, which fills the "Recommended by" line on the form and moves it to
- * Reviewed; the Regional Director then gives the final approval. Neither desk may act out of turn,
- * so the actions a row offers are decided by the stage it is sitting on, not by the role alone.
- * An admin sits in both so a stuck order always has a way through.
+ * Reviewed; the Division Chief of the traveller's division approves it next (Chief Reviewed); the
+ * Regional Director then gives the final approval. No desk may act out of turn, so the actions a
+ * row offers are decided by the stage it is sitting on, not by the role alone. An admin sits in
+ * all three so a stuck order always has a way through.
  */
 const TRAVEL_RECOMMENDER_ROLES = new Set(["planningofficer", "admin"]);
+const TRAVEL_CHIEF_REVIEWER_ROLES = new Set(["chief", "admin"]);
 const TRAVEL_FINAL_APPROVER_ROLES = new Set(["regionaldirector", "admin"]);
+// These request-only roles are not tied to one Chief's approval desk. Once recommended by the
+// Planning Officer, their orders appear for every ordinary Division Chief as "All Divisions".
+const TRAVEL_ALL_CHIEF_REQUESTER_ROLES = new Set(["hrhead", "hrstaff", "chiefadmin", "cashier"]);
 // The HR desk reads travel orders and archives them, but signs nothing on the form.
 const TRAVEL_REVIEW_ONLY_ROLES = new Set(["hrstaff", "hrhead"]);
 // Statuses a travel order can still be acted on from.
-const TRAVEL_OPEN_STATUSES = new Set(["Pending", "Reviewed"]);
+const TRAVEL_OPEN_STATUSES = new Set(["Pending", "Reviewed", "Chief Reviewed"]);
+const travelRowKey = (request) => request?.id;
+
+function TravelRequesterRoleBadge({ role }) {
+  const label = String(role || "").trim();
+  if (!label) return <span className="text-xs font-medium text-slate-400">Unassigned</span>;
+
+  return (
+    <span className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${getRoleBadgeClass(label)}`}>
+      {getRoleLabel(label)}
+    </span>
+  );
+}
+
+// The API resolves ownership from the signed-in account's linked employee record for every role.
+// Older responses and freshly updated rows retain the existing employee-code/name fallback.
+function isOwnTravelOrder(request, user) {
+  return typeof request?.isOwnTravelOrder === "boolean"
+    ? request.isOwnTravelOrder
+    : matchesUserRecordScope(request, user);
+}
 
 /**
  * Whether the signed-in user is the desk that filed this order.
  *
- * A chief files for the employees of their division, so they are neither the traveller nor — since
- * the Planning Officer step exists — the recommender. Calling the trip off is the one thing they
- * keep, so the filer is matched against the employee record the API records at filing time.
+ * A chief files on an employee's behalf, so they are neither the traveller nor — since the Planning
+ * Officer step exists — the recommender. Calling the trip off is always theirs, so the filer is
+ * matched against the employee record the API records at filing time.
  */
 function isRequestFiledBy(request, user) {
   if (!(Number(request?.filedByEmployeeRecordId) > 0)) {
@@ -102,14 +136,30 @@ function isRequestFiledBy(request, user) {
   }, user);
 }
 
+/*
+ * A Chief normally signs for their own division. Requests from the organization-wide request-only
+ * roles are intentionally routed to every Division Chief, matching travel_order.php. Division
+ * names are compared as the employee picker supplies them.
+ */
+function isChiefOfRequestDivision(request, user) {
+  if (TRAVEL_ALL_CHIEF_REQUESTER_ROLES.has(normalizeRole(request?.employeeRole))) {
+    return true;
+  }
+
+  const chiefDivision = String(user?.division || "").trim().toLowerCase();
+
+  return chiefDivision !== "" && String(request?.division || "").trim().toLowerCase() === chiefDivision;
+}
+
 /**
  * Which desk, if any, the signed-in role may act on this travel order from right now.
  *
- * Returns "recommend" while the order waits on the Planning Officer, "approve" once it is
- * recommended and waiting on the Regional Director, and "" when the role has nothing to sign —
- * including after the Director has signed and the order is waiting on its employee.
+ * Returns "recommend" while the order waits on the Planning Officer, "chiefReview" once it is
+ * recommended and waiting on the traveller's Division Chief, "approve" once the Chief has approved
+ * it and it waits on the Regional Director, and "" when the role has nothing to sign — including
+ * after the Director has signed and the order is waiting on its employee.
  */
-function travelDecisionStage(request, roleKey) {
+function travelDecisionStage(request, roleKey, user) {
   if (request?.awaitingAuthorization) {
     return "";
   }
@@ -120,8 +170,43 @@ function travelDecisionStage(request, roleKey) {
     return "recommend";
   }
 
-  if (status === "Reviewed" && TRAVEL_FINAL_APPROVER_ROLES.has(roleKey)) {
+  if (
+    status === "Reviewed"
+    && TRAVEL_CHIEF_REVIEWER_ROLES.has(roleKey)
+    && (roleKey !== "chief" || isChiefOfRequestDivision(request, user))
+  ) {
+    return "chiefReview";
+  }
+
+  if (status === "Chief Reviewed" && TRAVEL_FINAL_APPROVER_ROLES.has(roleKey)) {
     return "approve";
+  }
+
+  return "";
+}
+
+/**
+ * The role whose action is required at the travel order's current workflow stage. After the
+ * Director signs, that is the traveller: named by their own role (HR Staff, Chief, ...) rather
+ * than a generic "Employee", falling back to it only when the record carries no linked account.
+ */
+function getTravelPendingRoleLabel(request) {
+  if (request?.awaitingAuthorization) {
+    return `Pending by ${getRoleLabel(request?.employeeRole || "employee")}`;
+  }
+
+  const status = normalizeLeaveStatus(request?.status);
+
+  if (status === "Pending") {
+    return "Pending by Planning Officer";
+  }
+
+  if (status === "Reviewed") {
+    return "Pending by Division Chief";
+  }
+
+  if (status === "Chief Reviewed") {
+    return "Pending by Regional Director";
   }
 
   return "";
@@ -171,14 +256,14 @@ const travelFormStyles = {
   },
   header: {
     display: "grid",
-    gridTemplateColumns: "75px 1fr 75px",
+    gridTemplateColumns: "130px minmax(0, 1fr) 130px",
     alignItems: "center",
     padding: "10px 14px",
     gap: "8px",
   },
   logoImage: {
-    width: "68px",
-    height: "68px",
+    width: "130px",
+    height: "130px",
     objectFit: "contain",
     display: "block",
   },
@@ -446,6 +531,66 @@ const travelFormStyles = {
   },
 };
 
+/*
+ * Print-only tightening for the cloned order. The on-screen paper sizes itself with inline styles,
+ * so these rules need `!important` to take over; the class names are hooks only this print window
+ * styles. The printed order drops the paper's outline and shadow and spans the printable width,
+ * with the gaps and QR shrunk so it sits on one page of A4 or short bond paper.
+ */
+const TRAVEL_ORDER_PRINT_CSS = `
+  @page {
+    size: auto;
+    margin: ${PRINT_PAGE_MARGIN_MM}mm;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  body {
+    font-family: Arial, sans-serif;
+    color: #000000;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-shell {
+    width: ${PRINT_AREA_WIDTH_MM}mm;
+    margin: 0 auto;
+    overflow: hidden;
+  }
+
+  .print-shell > .travel-order-form-paper {
+    width: ${PRINT_AREA_WIDTH_MM}mm !important;
+    max-width: none !important;
+    margin: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  .travel-print-header { grid-template-columns: 120px minmax(0, 1fr) 120px !important; padding: 0 14px 6px !important; }
+  .travel-print-header img { width: 120px !important; height: 120px !important; }
+  .travel-print-title { margin: 10px 0 4px !important; }
+  .travel-print-subtitle { margin-bottom: 10px !important; }
+  .travel-print-divider { margin: 6px 20px !important; }
+  .travel-print-section { padding-top: 6px !important; }
+  .travel-print-ra-label { margin-bottom: 12px !important; }
+  .travel-print-signature { min-height: 36px !important; }
+  .travel-print-signature img { max-height: 34px !important; }
+
+  /* About 25 mm across: still well over 0.4 mm a module for the payload's QR version. */
+  .travel-print-footer { margin-top: 10px !important; padding: 6px 14px 4px !important; }
+  .travel-print-footer svg { width: 96px !important; height: 96px !important; }
+`;
+
 function formatIsoDate(value) {
   if (!value) {
     return "";
@@ -495,21 +640,31 @@ function TravelPreviewSelectionBox({ checked = false }) {
   );
 }
 
-function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
+function TravelOrderPreviewModal({ request, autoPrint = false, autoDownload = false, onClose }) {
+  const { showESignatures, showTimestamps, loading: signatorySettingsLoading } = useFilingSignatories();
   const [visible, setVisible] = useState(false);
   const [employeeSignature, setEmployeeSignature] = useState("");
   const [recommendedBySignature, setRecommendedBySignature] = useState("");
   const [approvedBySignature, setApprovedBySignature] = useState("");
   const printRef = useRef(null);
   /*
-   * Opened from the Print action in the table rather than by a reader: print the order once the
-   * signatures below have landed, then hand back to the caller so it does not linger on screen.
-   * `handlePrint` is only called from inside the frame callback, well after it is initialised.
+   * Opened from the Print or Download PDF action in the table rather than by a reader: print or
+   * save the order once the signatures below have landed, then hand back to the caller so it does
+   * not linger on screen. `handlePrint` and `handleDownloadPdf` are only called from inside the
+   * frame callback, well after they are initialised.
    */
   const trackLoad = useAutoPrint({
-    active: Boolean(request) && autoPrint,
-    onPrint: () => handlePrint(),
-    onDone: onClose,
+    active: Boolean(request) && !signatorySettingsLoading && (autoPrint || autoDownload),
+    /* The PDF is saved asynchronously, so a download closes the order only once the file is out. */
+    onPrint: () => {
+      if (autoDownload) {
+        void handleDownloadPdf().finally(() => onClose?.());
+        return;
+      }
+
+      handlePrint();
+    },
+    onDone: autoDownload ? undefined : onClose,
   });
 
   useEffect(() => {
@@ -620,7 +775,7 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
 
   const requestDate = request.dateFiled || request.startDate;
   const displayValue = (value) => String(value || "").trim();
-  const position = displayValue(request.position || request.designation);
+  const position = displayValue(request.position);
   const division = displayValue(request.division);
   const destination = displayValue(request.destination);
   const purpose = displayValue(request.purpose);
@@ -668,23 +823,12 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
       return;
     }
 
+    /*
+     * The order is styled inline throughout, so a plain clone carries its look. Freezing every
+     * computed style onto the clone would pin each box to its on-screen pixel size, leaving the
+     * print styles nothing to reflow.
+     */
     const formClone = printRef.current.cloneNode(true);
-    const sourceElements = [printRef.current, ...printRef.current.querySelectorAll("*")];
-    const clonedElements = [formClone, ...formClone.querySelectorAll("*")];
-
-    sourceElements.forEach((sourceElement, index) => {
-      const clonedElement = clonedElements[index];
-      if (!(sourceElement instanceof HTMLElement) || !(clonedElement instanceof HTMLElement)) {
-        return;
-      }
-
-      const computedStyle = window.getComputedStyle(sourceElement);
-      const inlineStyles = Array.from(computedStyle).map((property) => (
-        `${property}: ${computedStyle.getPropertyValue(property)};`
-      )).join(" ");
-
-      clonedElement.setAttribute("style", inlineStyles);
-    });
 
     const printWindow = window.open("", "_blank", "width=960,height=1200");
     if (!printWindow) {
@@ -698,43 +842,7 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <title>Travel Order Form</title>
-          <style>
-            @page {
-              size: auto;
-              margin: 10mm;
-            }
-
-            html, body {
-              margin: 0;
-              padding: 0;
-              background: #ffffff;
-            }
-
-            body {
-              font-family: Arial, sans-serif;
-              color: #000000;
-            }
-
-            *,
-            *::before,
-            *::after {
-              box-sizing: border-box;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-
-            .print-shell {
-              width: 100%;
-              max-width: 190mm;
-              margin: 0 auto;
-            }
-
-            @media print {
-              .print-shell {
-                max-width: 100%;
-              }
-            }
-          </style>
+          <style>${TRAVEL_ORDER_PRINT_CSS}</style>
         </head>
         <body>
           <div class="print-shell">${formClone.outerHTML}</div>
@@ -743,21 +851,24 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
     `);
     printWindow.document.close();
 
-    const formRoot = printWindow.document.querySelector(".print-shell > div");
-    if (formRoot) {
-      formRoot.style.width = "100%";
-      formRoot.style.maxWidth = "190mm";
-      formRoot.style.margin = "0 auto";
-      formRoot.style.boxShadow = "none";
-    }
-
+    /* Fitted once the images are in, since a signature's height is only known after it loads. */
     const finishPrint = () => {
+      fitSheetToPrintArea(printWindow.document);
       printWindow.focus();
       printWindow.print();
       printWindow.addEventListener("afterprint", () => printWindow.close(), { once: true });
     };
 
-    const images = Array.from(printWindow.document.images || []);
+    /* The QR logo is an SVG <image>, which document.images leaves out, so it loads through a stand-in. */
+    const svgImageStandIns = Array.from(printWindow.document.querySelectorAll("svg image"))
+      .map((node) => node.getAttribute("href"))
+      .filter(Boolean)
+      .map((href) => {
+        const standIn = printWindow.document.createElement("img");
+        standIn.src = href;
+        return standIn;
+      });
+    const images = [...Array.from(printWindow.document.images || []), ...svgImageStandIns];
     if (images.length === 0) {
       window.setTimeout(finishPrint, 150);
       return;
@@ -777,7 +888,27 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
     });
   };
 
-  return (
+  /* The Download PDF row action: the order Print would send to the printer, saved as a file instead. */
+  const handleDownloadPdf = async () => {
+    const toastId = toast.loading("Preparing the travel order PDF...");
+    const employeeName = String(request.employeeName || "")
+      .trim()
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+    try {
+      await downloadFormSheetPdf(printRef.current, {
+        fileName: `Travel-Order-${employeeName || "Employee"}-${travelOrderNumber}.pdf`,
+        printCss: TRAVEL_ORDER_PRINT_CSS,
+      });
+      toast.success("Travel order PDF downloaded.", { id: toastId });
+    } catch (error) {
+      toast.error(error?.message || "Unable to download the travel order PDF.", { id: toastId });
+    }
+  };
+
+  // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
+  return createPortal((
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -798,11 +929,13 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
             <h2 className="m-0 text-lg font-semibold text-slate-950">Travel Order Form</h2>
             <p className="m-0 mt-1 text-sm text-slate-500">Centered overlay preview of the submitted travel order.</p>
           </div>
-          {/* Printing is a row action in the table now, so the preview only offers Close. */}
+          {/* Print and Download PDF are row actions in the table, so the preview only offers Close. */}
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close travel order preview"
+              title="Close"
               className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
             >
               <X size={16} />
@@ -812,7 +945,7 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
 
         <div className="max-h-[calc(92vh-74px)] overflow-y-auto bg-slate-100 px-3 py-4 sm:px-4">
           <div ref={printRef} className="travel-order-form-paper" style={travelFormStyles.wrap}>
-            <div style={travelFormStyles.header}>
+            <div className="travel-print-header" style={travelFormStyles.header}>
               <img src="/mgb.png" alt="MGB Logo" style={travelFormStyles.logoImage} />
 
               <div style={travelFormStyles.headerText}>
@@ -831,8 +964,8 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
 
             <div style={travelFormStyles.bar} />
 
-            <div style={travelFormStyles.title}>T R A V E L   O R D E R</div>
-            <div style={travelFormStyles.subtitle}>
+            <div className="travel-print-title" style={travelFormStyles.title}>T R A V E L   O R D E R</div>
+            <div className="travel-print-subtitle" style={travelFormStyles.subtitle}>
               No. <span style={travelFormStyles.numberValue}>{buildTravelOrderNumber(request)}</span>
             </div>
 
@@ -908,9 +1041,9 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
               </div>
             </div>
 
-            <hr style={travelFormStyles.divider} />
+            <hr className="travel-print-divider" style={travelFormStyles.divider} />
 
-            <div style={travelFormStyles.cert}>
+            <div className="travel-print-section" style={travelFormStyles.cert}>
               <p style={travelFormStyles.certTitle}>Certifications:</p>
               <p style={travelFormStyles.certText}>
                 This is to certify that the travel is necessary and is connected with the function of the
@@ -920,20 +1053,16 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
 
             <div style={travelFormStyles.raGrid}>
               <div style={{ gridColumn: "1" }}>
-                <p style={travelFormStyles.raLabel}>Recommended by:</p>
-                <div style={travelFormStyles.raSigPreview}>
-                  {recommendedBySignature ? (
-                    <>
-                      <img
-                        src={recommendedBySignature}
-                        alt={`${recommendedBy || recommendedByRole} signature`}
-                        style={travelFormStyles.raSigImage}
-                      />
-                      {recommendedTimestampLabel ? (
-                        <div style={travelFormStyles.signatureTimestamp}>{recommendedTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : recommendedTimestampLabel ? (
+                <p className="travel-print-ra-label" style={travelFormStyles.raLabel}>Recommended by:</p>
+                <div className="travel-print-signature" style={travelFormStyles.raSigPreview}>
+                  {showESignatures && recommendedBySignature ? (
+                    <img
+                      src={recommendedBySignature}
+                      alt={`${recommendedBy || recommendedByRole} signature`}
+                      style={travelFormStyles.raSigImage}
+                    />
+                  ) : null}
+                  {showTimestamps && recommendedTimestampLabel ? (
                     <div style={travelFormStyles.signatureTimestamp}>{recommendedTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -942,20 +1071,16 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
               </div>
 
               <div style={{ gridColumn: "2" }}>
-                <p style={travelFormStyles.raLabel}>{approvalActionLabel}</p>
-                <div style={travelFormStyles.raSigPreview}>
-                  {approvedBySignature ? (
-                    <>
-                      <img
-                        src={approvedBySignature}
-                        alt={`${approvedBy || "Regional Director"} signature`}
-                        style={travelFormStyles.raSigImage}
-                      />
-                      {approvedTimestampLabel ? (
-                        <div style={travelFormStyles.signatureTimestamp}>{approvedTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : approvedTimestampLabel ? (
+                <p className="travel-print-ra-label" style={travelFormStyles.raLabel}>{approvalActionLabel}</p>
+                <div className="travel-print-signature" style={travelFormStyles.raSigPreview}>
+                  {showESignatures && approvedBySignature ? (
+                    <img
+                      src={approvedBySignature}
+                      alt={`${approvedBy || "Regional Director"} signature`}
+                      style={travelFormStyles.raSigImage}
+                    />
+                  ) : null}
+                  {showTimestamps && approvedTimestampLabel ? (
                     <div style={travelFormStyles.signatureTimestamp}>{approvedTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -964,25 +1089,21 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
               </div>
             </div>
 
-            <hr style={travelFormStyles.divider} />
+            <hr className="travel-print-divider" style={travelFormStyles.divider} />
 
-            <div style={travelFormStyles.auth}>
+            <div className="travel-print-section" style={travelFormStyles.auth}>
               <p style={travelFormStyles.authTitle}>A U T H O R I Z A T I O N</p>
               <p style={travelFormStyles.authText}>{TRAVEL_AUTHORIZATION_TEXT}</p>
               <div style={travelFormStyles.authSig}>
-                <div style={travelFormStyles.authSigPreview}>
-                  {employeeSignature ? (
-                    <>
-                      <img
-                        src={employeeSignature}
-                        alt={`${displayValue(request.employeeName) || "Official Employee"} signature`}
-                        style={travelFormStyles.authSigImage}
-                      />
-                      {applicantTimestampLabel ? (
-                        <div style={travelFormStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
-                      ) : null}
-                    </>
-                  ) : applicantTimestampLabel ? (
+                <div className="travel-print-signature" style={travelFormStyles.authSigPreview}>
+                  {showESignatures && employeeSignature ? (
+                    <img
+                      src={employeeSignature}
+                      alt={`${displayValue(request.employeeName) || "Official Employee"} signature`}
+                      style={travelFormStyles.authSigImage}
+                    />
+                  ) : null}
+                  {showTimestamps && applicantTimestampLabel ? (
                     <div style={travelFormStyles.signatureTimestamp}>{applicantTimestampLabel}</div>
                   ) : null}
                 </div>
@@ -991,16 +1112,16 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
               </div>
             </div>
 
-            <div style={travelFormStyles.footer}>
+            <div className="travel-print-footer" style={travelFormStyles.footer}>
               <div style={travelFormStyles.footerQrBlock}>
                 <FormQrCode
                   value={qrPayload}
                   size={124}
                   align="left"
-                  reference={`TO-${travelOrderNumber}`}
-                  caption="Scan to view travel details"
+                  caption=""
+                  logoSrc="/MGB-Logo-remove-background.png"
+                  logoAspectRatio={204 / 189}
                 />
-                <div style={travelFormStyles.footerCode}>MGB-X-FAD-FO-033</div>
               </div>
               <div style={travelFormStyles.footerText}>
                 "MINING SHALL BE PRO-PEOPLE AND PRO-ENVIRONMENT
@@ -1017,7 +1138,7 @@ function TravelOrderPreviewModal({ request, autoPrint = false, onClose }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 function TravelOrderFormModal({
@@ -1110,7 +1231,8 @@ function TravelOrderFormModal({
     });
   };
 
-  const inputClasses = "min-h-[46px] w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100";
+  const inputClasses = "h-[46px] w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100";
+  const fieldLabelClasses = "mb-1.5 flex min-h-5 items-center text-sm font-semibold leading-5 text-slate-700";
   const selectedEmployees = employeeOptions.filter(
     (employee) => form.employeeRecordIds.includes(String(employee.employeeRecordId))
   );
@@ -1131,7 +1253,8 @@ function TravelOrderFormModal({
     setForm((current) => ({ ...current, employeeRecordIds: [] }));
   };
 
-  return (
+  // Keep the viewport overlay outside animated workspace ancestors, whose transforms would clip it.
+  return createPortal((
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-4" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -1163,6 +1286,8 @@ function TravelOrderFormModal({
               <button
                 type="button"
                 onClick={onClose}
+                aria-label="Close travel order form"
+                title="Close"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
               >
                 <X size={16} />
@@ -1172,10 +1297,13 @@ function TravelOrderFormModal({
         </div>
 
         <div className="max-h-[72vh] overflow-y-auto px-5 py-5 sm:px-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="sm:col-span-2">
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">
+          <div className="grid gap-x-4 gap-y-4 md:grid-cols-2">
+            <div className="md:col-span-2">
+              <span className={fieldLabelClasses}>
                 {canSelectEmployee ? "Employees" : "Employee"}
+                {canSelectEmployee ? (
+                  <span className="app-required-marker ml-1 font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+                ) : null}
               </span>
               {canSelectEmployee ? (
                 <>
@@ -1202,8 +1330,10 @@ function TravelOrderFormModal({
               {errors.employeeRecordId ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.employeeRecordId}</p> : null}
             </div>
 
-            <label className="sm:col-span-2">
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Destination</span>
+            <label className="md:col-span-2">
+              <span className={fieldLabelClasses}>
+                Destination <span className="app-required-marker ml-1 font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
+              </span>
               <input
                 value={form.destination}
                 onChange={updateField("destination")}
@@ -1213,8 +1343,8 @@ function TravelOrderFormModal({
               {errors.destination ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.destination}</p> : null}
             </label>
 
-            <label className="sm:col-span-2">
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Purpose</span>
+            <label className="md:col-span-2">
+              <span className={fieldLabelClasses}>Purpose</span>
               <input
                 value={form.purpose}
                 onChange={updateField("purpose")}
@@ -1224,25 +1354,30 @@ function TravelOrderFormModal({
             </label>
 
             <div>
-              <span className="mb-1.5 flex items-center gap-1 text-sm font-semibold text-slate-700">
+              <span className={`${fieldLabelClasses} gap-1`}>
                 <CalendarDays size={15} />
                 Travel Dates
+                <span className="app-required-marker font-bold !text-[#D61E1E]" aria-hidden="true">*</span>
               </span>
               <MultiDatePicker
                 value={form.selectedDates}
                 minDate={today}
-                allowWeekends
+                allowWeekends={false}
                 placeholder="Select travel dates"
+                floating
+                closeOnSelect
+                selectionMode="range"
+                rangeLabel="Travel Date Range"
                 onChange={updateSelectedDates}
               />
               <p className="m-0 mt-1 text-xs text-slate-500">
-                Pick each day of the trip. Days in between that are not picked are not authorized.
+                Select the trip's start and end dates. Weekdays in the range are included. Saturdays and Sundays cannot be selected.
               </p>
               {errors.selectedDates ? <p className="m-0 mt-1 text-xs text-rose-700">{errors.selectedDates}</p> : null}
             </div>
 
             <label>
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Assistance or Labor Allowed</span>
+              <span className={fieldLabelClasses}>Assistance or Labor Allowed</span>
               <input
                 value={form.assistanceLabor}
                 onChange={updateField("assistanceLabor")}
@@ -1251,8 +1386,8 @@ function TravelOrderFormModal({
               />
             </label>
 
-            <label>
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Appropriations</span>
+            <label className="md:col-span-2">
+              <span className={fieldLabelClasses}>Appropriations</span>
               <input
                 value={form.appropriations}
                 onChange={updateField("appropriations")}
@@ -1261,8 +1396,8 @@ function TravelOrderFormModal({
               />
             </label>
 
-            <label className="sm:col-span-2">
-              <span className="mb-1.5 block text-sm font-semibold text-slate-700">Remarks</span>
+            <label className="md:col-span-2">
+              <span className={fieldLabelClasses}>Remarks</span>
               <textarea
                 rows={4}
                 value={form.remarks}
@@ -1276,13 +1411,6 @@ function TravelOrderFormModal({
 
         <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end sm:px-4">
           <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-          <button
             type="submit"
             disabled={submitting}
             className="inline-flex min-h-10 items-center justify-center rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
@@ -1292,7 +1420,7 @@ function TravelOrderFormModal({
         </div>
       </form>
     </div>
-  );
+  ), document.body);
 }
 
 export default function TravelOrderWorkspace({
@@ -1305,40 +1433,97 @@ export default function TravelOrderWorkspace({
   showHeaderCloseButton = true,
   onPendingCountChange,
 }) {
+  const roleKey = resolveRoleKey(user);
+  const exactRoleKey = normalizeRole(user?.roleKey || user?.role);
+  const isChiefAdmin = exactRoleKey === "chiefadmin";
+  const isSelfServiceTravelRole = ["employee", "cashier", "hrhead", "hrstaff"].includes(roleKey)
+    || isChiefAdmin;
+  /*
+   * Reviewed is an internal handoff stage rather than a user-facing filter. The Regional Director
+   * therefore opens on all statuses so orders routed from the Planning Officer remain visible.
+   */
+  const defaultStatus = isSelfServiceTravelRole || roleKey === "regionaldirector" ? "" : "Pending";
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [printRequest, setPrintRequest] = useState(false);
+  const [downloadRequest, setDownloadRequest] = useState(false);
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState(defaultStatus);
   const [dateFilter, setDateFilter] = useState("");
   const [rowsPerPage, setRowsPerPage] = useState("10");
   const [currentPage, setCurrentPage] = useState(1);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
-  const roleKey = resolveRoleKey(user);
-  const managePermission = canManageLeave(user);
-  const canArchive = canArchiveModule(roleKey, "travel");
+  // Chief Admin inherits the Chief workspace but owns this archive desk under its exact role.
+  const archiveRoleKey = exactRoleKey === "chiefadmin" ? exactRoleKey : roleKey;
+  const canArchive = canArchiveModule(archiveRoleKey, "travel");
+  /*
+   * Request-only roles may archive their own orders at any stage.
+   * Keep this aligned with travel_order.php so row and bulk archive actions are available together.
+   */
+  const canArchiveRequest = useCallback(() => canArchive, [canArchive]);
   const [archiveView, setArchiveView] = useState(false);
   const viewAllPermission = canViewAllLeaves(user);
-  // Admins file on anyone's behalf; a chief files for the employees of their division, and the
-  // filer is recorded so they can still call the trip off. The Planning Officer no longer files at
-  // all -- recommending a filed order is their whole part in this chain.
+  const showOnlyOwnTravelOrders = ["cashier", "hrhead", "hrstaff"].includes(roleKey) || isChiefAdmin;
+  // Every signed-in employee can file their own order. Admins and chiefs can additionally file on
+  // an employee's behalf, and the filer is recorded so they can still call the trip off.
   const isAdmin = roleKey === "admin";
-  const allowEmployeeSelection = isAdmin || ["chief", "planningofficer"].includes(roleKey);
-  const canCreateTravelOrder = allowCreate && !TRAVEL_CREATE_RESTRICTED_ROLES.has(roleKey);
-  const pendingCount = useMemo(() => countPendingRecords(requests), [requests]);
+  const isChief = roleKey === "chief";
+  const isDivisionChief = isChief && !isChiefAdmin;
+  const isPlanningOfficer = roleKey === "planningofficer";
+  const showRequesterRole = isPlanningOfficer || isDivisionChief || roleKey === "regionaldirector";
+  const chiefDivisionKey = isDivisionChief ? String(user?.division || "").trim().toLowerCase() : "";
+  const isVisibleToChief = useCallback((request) => {
+    if (!isDivisionChief) return true;
+
+    const wasRecommended = Number(request?.recommendedByEmployeeRecordId) > 0;
+    const isWaitingForRegionalDirector = normalizeLeaveStatus(request?.status) === "Chief Reviewed"
+      && !request?.awaitingAuthorization;
+    const routesToAllChiefs = TRAVEL_ALL_CHIEF_REQUESTER_ROLES.has(normalizeRole(request?.employeeRole));
+    const belongsToChiefDivision = routesToAllChiefs
+      || (chiefDivisionKey !== ""
+        && String(request?.division || "").trim().toLowerCase() === chiefDivisionKey);
+
+    return belongsToChiefDivision && wasRecommended && !isWaitingForRegionalDirector;
+  }, [chiefDivisionKey, isDivisionChief]);
+  const allowEmployeeSelection = isAdmin || isDivisionChief;
+  // The name the session carries; employees are matched on the same name, as TeamOverview does.
+  const canCreateTravelOrder = allowCreate;
+  /*
+   * Same split as Leave Requests and CTO. The organization-wide list is for orders the viewer acts
+   * on, so one they filed or are travelling on goes straight to the Planning Officer's queue and is
+   * followed under "View My Travel Orders" instead. Roles whose list is already only their own have
+   * nothing to toggle, and neither does HR Staff: their organization-wide list is a record screen rather than
+   * an approval queue, so their own orders simply sit in it. A Chief approves their division's
+   * orders after the Planning Officer, and the orders they file for their employees stay in their
+   * table too; "View My Travel Orders" carries only the ones they are travelling on.
+   */
+  const [myView, setMyView] = useState(false);
+  const canToggleMyView = viewAllPermission
+    && !showOnlyOwnTravelOrders
+    && !["admin", "hrstaff"].includes(roleKey);
+  const isViewerOrder = useCallback(
+    (request) => isOwnTravelOrder(request, user) || (!isChief && isRequestFiledBy(request, user)),
+    [isChief, user]
+  );
 
   const loadRequests = useCallback(async ({ background = false } = {}) => {
     setLoading(!background);
     try {
       const result = await fetchTravelOrders({ archived: archiveView });
-      const nextRequests = result.requests || [];
+      /*
+       * Pending employee filings belong exclusively to the Planning Officer, and orders the Chief
+       * approved belong to the Regional Director. The API applies both rules; this client-side guard
+       * also prevents a stale/cached response from briefly rendering a row outside the Chief's desk.
+       */
+      const nextRequests = (result.requests || []).filter(isVisibleToChief);
       setRequests(
-        viewAllPermission
-          ? nextRequests
-          : nextRequests.filter((request) => matchesUserRecordScope(request, user))
+        showOnlyOwnTravelOrders || !viewAllPermission
+          ? nextRequests.filter((request) => isOwnTravelOrder(request, user))
+          : nextRequests
       );
     } catch (error) {
       if (!background) {
@@ -1347,7 +1532,24 @@ export default function TravelOrderWorkspace({
     } finally {
       setLoading(false);
     }
-  }, [archiveView, user, viewAllPermission]);
+  }, [archiveView, isVisibleToChief, showOnlyOwnTravelOrders, user, viewAllPermission]);
+
+  /*
+   * The organization-wide list never carries the viewer's own orders; "View My Travel Orders"
+   * carries only them. The archive keeps every record, since the My view never shows archived rows.
+   */
+  const scopedRequests = useMemo(() => {
+    if (!canToggleMyView || archiveView) {
+      return requests;
+    }
+
+    return requests.filter((request) => (myView ? isViewerOrder(request) : !isViewerOrder(request)));
+  }, [archiveView, canToggleMyView, isViewerOrder, myView, requests]);
+  /* The badge counts what is waiting on this desk, so the viewer's own orders are not in it. */
+  const pendingCount = useMemo(
+    () => countPendingRecords(canToggleMyView ? requests.filter((request) => !isViewerOrder(request)) : requests),
+    [canToggleMyView, isViewerOrder, requests]
+  );
 
   // The hook reads its callback through a ref, so it will not refetch when `loadRequests` changes
   // identity — this effect does, which is what makes the archive toggle actually reload the table.
@@ -1436,7 +1638,7 @@ export default function TravelOrderWorkspace({
 
     const awaitingRequests = requests.filter((request) => (
       request.awaitingAuthorization
-      && matchesUserRecordScope(request, user)
+      && isOwnTravelOrder(request, user)
       && !deferredAuthorizationsRef.current.has(request.id)
     ));
 
@@ -1481,13 +1683,22 @@ export default function TravelOrderWorkspace({
         employeeRecordId: employee.id,
         employeeId: employee.employeeId,
         employeeName: employee.fullName,
+        divisionId: employee.divisionId,
         division: employee.department || employee.division || "",
       }))
       .filter((employee) => employee.employeeRecordId && employee.employeeName)
-      // An admin files purely on behalf of others, so drop their own record. A chief can be on the
-      // trip too and has no self-service travel page, so they stay in their own list.
-      .filter((employee) => !(isAdmin && matchesUserEmployeeOption(employee, user))),
-    [employees, isAdmin, user]
+      // A Chief requests travel only for their own division, themselves included; the API refuses
+      // anyone else. An admin files purely on behalf of others, so only the admin's own record is
+      // removed.
+      .filter((employee) => (
+        !isDivisionChief || String(employee.division || "").trim().toLowerCase() === chiefDivisionKey
+      ))
+      .filter((employee) => !(isAdmin && matchesUserEmployeeOption(employee, user)))
+      .sort((left, right) => (
+        String(left.division || "").localeCompare(String(right.division || ""))
+        || left.employeeName.localeCompare(right.employeeName)
+      )),
+    [chiefDivisionKey, employees, isAdmin, isDivisionChief, user]
   );
 
   const resolvedEmployee = useMemo(() => {
@@ -1530,7 +1741,7 @@ export default function TravelOrderWorkspace({
   const filteredRequests = useMemo(() => {
     const search = query.trim().toLowerCase();
 
-    return requests.filter((request) => {
+    return scopedRequests.filter((request) => {
       const matchesSearch = !search || [
         request.employeeName,
         request.destination,
@@ -1541,17 +1752,33 @@ export default function TravelOrderWorkspace({
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(search));
 
-      const matchesStatus = !status || normalizeLeaveStatus(request.status) === status;
+      const matchesStatus = !status || (
+        status === "Pending"
+          ? Boolean(getTravelPendingRoleLabel(request))
+          : normalizeLeaveStatus(request.status) === status
+      );
       const matchesDate = !dateFilter || [request.startDate, request.endDate, request.dateFiled].includes(dateFilter);
 
       return matchesSearch && matchesStatus && matchesDate;
     });
-  }, [dateFilter, query, requests, status]);
+  }, [dateFilter, query, scopedRequests, status]);
 
   const pageSize = Number(rowsPerPage) || 10;
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const paginatedRequests = filteredRequests.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const selection = useRowSelection(filteredRequests, travelRowKey);
+
+  const canBulkApproveRequest = useCallback((request) => (
+    !isChiefAdmin
+    && !isOwnTravelOrder(request, user)
+    && Boolean(travelDecisionStage(request, roleKey, user))
+  ), [isChiefAdmin, roleKey, user]);
+  const bulkApprovableRequests = selection.selectedRows.filter(canBulkApproveRequest);
+  const bulkArchivableRequests = canArchive && !archiveView ? selection.selectedRows.filter(canArchiveRequest) : [];
+  const selectablePageRequests = !archiveView
+    ? paginatedRequests.filter((request) => canArchiveRequest(request) || canBulkApproveRequest(request))
+    : [];
 
   useEffect(() => {
     setCurrentPage(1);
@@ -1598,7 +1825,14 @@ export default function TravelOrderWorkspace({
       }
 
       if (createdRequests.length > 0) {
-        setRequests((current) => [...createdRequests.slice().reverse(), ...current]);
+        /*
+         * A Chief's newly filed order is returned by the POST before the list endpoint is queried
+         * again. Apply the same Planning Officer gate here so it never flashes in the Chief table.
+         */
+        const visibleCreatedRequests = createdRequests.filter(isVisibleToChief);
+        if (visibleCreatedRequests.length > 0) {
+          setRequests((current) => [...visibleCreatedRequests.slice().reverse(), ...current]);
+        }
         setModalOpen(false);
         toast.success(
           createdRequests.length === 1
@@ -1622,13 +1856,18 @@ export default function TravelOrderWorkspace({
   const handleAction = async (actionType, request) => {
     if (actionType === "view" || actionType === "review") {
       setPrintRequest(false);
+      setDownloadRequest(false);
       setSelectedRequest(request);
       return;
     }
 
-    /* The preview is the print source: it opens, prints itself once loaded, and closes again. */
-    if (actionType === "print") {
-      setPrintRequest(true);
+    /*
+     * The preview is the print source: it opens, prints itself once loaded, and closes again.
+     * Download PDF works the same way, saving the order as a file instead.
+     */
+    if (actionType === "print" || actionType === "download") {
+      setPrintRequest(actionType === "print");
+      setDownloadRequest(actionType === "download");
       setSelectedRequest(request);
       return;
     }
@@ -1638,7 +1877,7 @@ export default function TravelOrderWorkspace({
      * action, so an employee who dismissed the prompt on an earlier visit can still come back to it.
      */
     if (actionType === "authorize") {
-      if (!request.awaitingAuthorization || !matchesUserRecordScope(request, user)) {
+      if (!request.awaitingAuthorization || !isOwnTravelOrder(request, user)) {
         return;
       }
 
@@ -1675,17 +1914,9 @@ export default function TravelOrderWorkspace({
     }
 
     const requestStatus = normalizeLeaveStatus(request.status);
-    const isOwnRequest = matchesUserRecordScope(request, user);
-    const decisionStage = travelDecisionStage(request, roleKey);
-    /*
-     * The Regional Director's desk keeps reject and cancel after it has signed, while the order is
-     * only waiting on the employee's authorization — a trip called off at that point still needs a
-     * way out. The desk that owns the trip loses its cancel once the Director has signed.
-     */
-    const isFinalDeskFollowUp = TRAVEL_FINAL_APPROVER_ROLES.has(roleKey)
-      && requestStatus === "Reviewed"
-      && !isOwnRequest
-      && ["reject", "cancel"].includes(actionType);
+    const isOwnRequest = isOwnTravelOrder(request, user);
+    const decisionStage = isChiefAdmin ? "" : travelDecisionStage(request, roleKey, user);
+    // The traveller or filer may cancel only before the Regional Director has signed.
     const isSelfCancellation = actionType === "cancel"
       && (isOwnRequest || isRequestFiledBy(request, user))
       && !request.awaitingAuthorization;
@@ -1702,7 +1933,7 @@ export default function TravelOrderWorkspace({
     };
 
     const nextStatus = nextStatusMap[actionType];
-    if (!nextStatus || (!decisionStage && !isSelfCancellation && !isFinalDeskFollowUp)) {
+    if (!nextStatus || (!decisionStage && !isSelfCancellation)) {
       return;
     }
 
@@ -1712,32 +1943,45 @@ export default function TravelOrderWorkspace({
     }
 
     const isRejectAction = actionType === "reject";
+    // Stored as "Rejected", but the order and its form call it a disapproval.
+    const nextStatusWord = isRejectAction ? "disapproved" : nextStatus.toLowerCase();
     // The Planning Officer authorizes an order for dispatch rather than approving it, so the
     // dialog says so -- the final approval is the Regional Director's separate signature.
     const isRecommendation = actionType === "approve" && decisionStage === "recommend";
+    const isChiefApproval = actionType === "approve" && decisionStage === "chiefReview";
     const confirmation = await Swal.fire({
-      title: isRecommendation ? "Authorize for Dispatch?" : `${nextStatus} Travel Order?`,
+      title: isRecommendation
+        ? "Authorize for Dispatch?"
+        : isRejectAction
+          ? "Disapprove Travel Order?"
+          : `${nextStatus} Travel Order?`,
       text: isSelfCancellation
         ? `Cancel the travel order to ${request.destination}?`
         : isRecommendation
-          ? `Authorize the travel order for ${request.employeeName} for dispatch and send it to the Regional Director for final approval?`
-          : `Update the travel order for ${request.employeeName} to ${nextStatus.toLowerCase()}?`,
+          ? `Authorize the travel order for ${request.employeeName} for dispatch and send it to the Division Chief for approval?`
+          : isChiefApproval
+            ? `Approve the travel order for ${request.employeeName} and send it to the Regional Director for final approval?`
+            : `Update the travel order for ${request.employeeName} to ${nextStatusWord}?`,
       icon: actionType === "approve" ? "success" : "warning",
       input: isRejectAction ? "textarea" : undefined,
-      inputLabel: isRejectAction ? "Rejected note" : undefined,
-      inputPlaceholder: isRejectAction ? "Explain why this travel order is being rejected." : undefined,
+      inputLabel: isRejectAction ? "Disapproval note" : undefined,
+      inputPlaceholder: isRejectAction ? "Explain why this travel order is being disapproved." : undefined,
       inputValue: isRejectAction ? String(request.rejectedNote || "") : undefined,
       inputAttributes: isRejectAction
         ? {
-          "aria-label": "Rejected note",
+          "aria-label": "Disapproval note",
           autocapitalize: "sentences",
         }
         : undefined,
       inputValidator: isRejectAction
-        ? (value) => (!String(value || "").trim() ? "Rejected note is required." : undefined)
+        ? (value) => (!String(value || "").trim() ? "Disapproval note is required." : undefined)
         : undefined,
       showCancelButton: true,
-      confirmButtonText: isRecommendation ? "Yes, authorize for dispatch" : `Yes, ${nextStatus.toLowerCase()}`,
+      confirmButtonText: isRecommendation
+        ? "Yes, authorize for dispatch"
+        : isRejectAction
+          ? "Yes, disapprove"
+          : `Yes, ${nextStatus.toLowerCase()}`,
       cancelButtonText: "Keep current status",
       confirmButtonColor: actionType === "approve" ? "#0f766e" : "#dc2626",
       cancelButtonColor: "#64748b",
@@ -1752,9 +1996,10 @@ export default function TravelOrderWorkspace({
     const rejectedNote = isRejectAction ? String(confirmation.value || "").trim() : "";
 
     /*
-     * Both signatures on the order are gated: the Planning Officer recommending it, which authorizes
-     * the trip for dispatch, and the Director approving it. What comes back is the pair to send with
-     * the update, not a verdict -- travel_order.php is what judges the answer.
+     * Every signature on the order is gated: the Planning Officer recommending it, which authorizes
+     * the trip for dispatch, the Division Chief approving it, and the Director approving it. What
+     * comes back is the pair to send with the update, not a verdict -- travel_order.php is what
+     * judges the answer.
      */
     let captcha = {};
 
@@ -1783,12 +2028,16 @@ export default function TravelOrderWorkspace({
       });
 
       const result = await updateTravelOrderStatus(request.id, nextStatus, rejectedNote, captcha);
-      setRequests((current) =>
-        current.map((item) => (item.id === result.request.id ? result.request : item))
-      );
+      setRequests((current) => {
+        if (!isVisibleToChief(result.request)) {
+          return current.filter((item) => item.id !== result.request.id);
+        }
+
+        return current.map((item) => (item.id === result.request.id ? result.request : item));
+      });
       await Swal.fire({
         title: result.emailNotification === "warning" ? "Updated with warning" : "Updated",
-        text: result.message || `Travel order ${nextStatus.toLowerCase()}.`,
+        text: result.message || `Travel order ${nextStatusWord}.`,
         icon: result.emailNotification === "warning" ? "warning" : "success",
         confirmButtonColor: result.emailNotification === "warning" ? "#d97706" : "#0f766e",
       });
@@ -1804,47 +2053,84 @@ export default function TravelOrderWorkspace({
     }
   };
 
+  const handleBulkApprove = async () => {
+    if (bulkApprovableRequests.length === 0 || bulkBusy) return;
+
+    setBulkBusy(true);
+    try {
+      await confirmBulkApproval({
+        records: bulkApprovableRequests,
+        noun: "travel order",
+        getTarget: (request) => `travel:${request.id}`,
+        approveRecord: (request, captcha) => updateTravelOrderStatus(request.id, "Approved", "", captcha),
+        confirmationText: isPlanningOfficer
+          ? `Authorize ${bulkApprovableRequests.length} selected travel order${bulkApprovableRequests.length === 1 ? "" : "s"} for dispatch to the Division Chief?`
+          : `Approve ${bulkApprovableRequests.length} selected travel order${bulkApprovableRequests.length === 1 ? "" : "s"} at the workflow stage currently assigned to you?`,
+        captchaNote: isPlanningOfficer
+          ? "Answer the sum below to authorize the selected travel orders for dispatch."
+          : "Answer the sum below to confirm the selected travel order approvals.",
+        progressText: isPlanningOfficer
+          ? "Authorizing selected travel orders for dispatch..."
+          : "Approving selected travel orders...",
+        onComplete: async () => {
+          selection.clearSelection();
+          await loadRequests({ background: true });
+        },
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkArchive = async () => {
+    if (bulkArchivableRequests.length === 0 || bulkBusy) return;
+
+    setBulkBusy(true);
+    try {
+      await confirmArchiveRecords({
+        records: bulkArchivableRequests,
+        getModule: () => "travel",
+        noun: "travel order",
+        onArchived: async () => {
+          selection.clearSelection();
+          await loadRequests({ background: true });
+        },
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   /*
    * The status pill and the action buttons are shared by the table and by the narrow-screen cards
    * below it, so which actions a row offers is decided in one place for both.
    */
   const renderStatusBadge = (request) => {
-    if (request.awaitingAuthorization) {
-      return (
-        <span
-          className="inline-flex min-h-7 items-center rounded-full border border-sky-200 bg-sky-50 px-2.5 text-xs font-semibold text-sky-700"
-          title="Approved by the Regional Director. Waiting for the employee to accept the travel authorization."
-        >
-          Awaiting Authorization
-        </span>
-      );
-    }
+    const pendingRoleLabel = getTravelPendingRoleLabel(request);
+    const tableLabel = isAdmin && pendingRoleLabel
+      ? "Pending"
+      : pendingRoleLabel || (normalizeLeaveStatus(request.status) === "Rejected"
+        ? getDisapprovedStatusLabel(request.rejectedByRole)
+        : "");
 
-    // `Reviewed` is the stored status; on a travel order it is the Planning Officer's
-    // recommendation waiting on the Regional Director, so the pill says what it means.
-    if (normalizeLeaveStatus(request.status) === "Reviewed") {
-      return (
-        <span
-          className="inline-flex min-h-7 items-center rounded-full border border-sky-200 bg-sky-50 px-2.5 text-xs font-semibold text-sky-700"
-          title="Recommended by the Planning Officer. Waiting for the Regional Director's final approval."
-        >
-          Recommended
-        </span>
-      );
-    }
-
-    return <LeaveStatusBadge status={request.status} />;
+    return (
+      <LeaveStatusBadge
+        status={request.status}
+        rejectedByRole={request.rejectedByRole}
+        simplified
+        labelOverride={tableLabel}
+      />
+    );
   };
 
   const renderRequestActions = (request) => {
     const requestStatus = normalizeLeaveStatus(request.status);
-    const isOwnRequest = matchesUserRecordScope(request, user);
-    const decisionStage = travelDecisionStage(request, roleKey);
+    const isOwnRequest = isOwnTravelOrder(request, user);
+    const decisionStage = isChiefAdmin ? "" : travelDecisionStage(request, roleKey, user);
     const isOpen = TRAVEL_OPEN_STATUSES.has(requestStatus);
-    const isFinalDesk = TRAVEL_FINAL_APPROVER_ROLES.has(roleKey);
     /*
-     * The desk that owns the trip may call it off: the traveller, or the chief who filed it for
-     * their division. It stops being theirs to cancel once the Regional Director has signed and the
+     * The desk that owns the trip may call it off: the traveller, or the Chief who filed it on an
+     * employee's behalf. It stops being theirs to cancel once the Regional Director has signed and the
      * order is only waiting on the employee's authorization.
      */
     const showOwnCancelAction = !TRAVEL_REVIEW_ONLY_ROLES.has(roleKey)
@@ -1855,72 +2141,49 @@ export default function TravelOrderWorkspace({
     const showApproveAction = Boolean(decisionStage) && !isOwnRequest;
     // The employee's own step: the Director has signed and the COA clause is theirs to accept.
     const showAuthorizeAction = Boolean(request.awaitingAuthorization) && isOwnRequest;
-    // Reject stays with the final desk after it signs, for a trip called off before the employee
-    // gets round to authorizing it.
-    const showFinalDeskFollowUp = isFinalDesk && requestStatus === "Reviewed" && !isOwnRequest;
-    const showRejectAction = showApproveAction || showFinalDeskFollowUp;
+    // Reject is the alternative to approving at the current desk; it is spent once approval lands.
+    const showRejectAction = showApproveAction;
     /*
-     * Withdrawing someone else's travel order is no longer the Regional Director's move — they
-     * approve it or they reject it. An admin keeps the cancel so a stuck order always has a way
-     * through, and the desk that owns the trip still calls it off through showOwnCancelAction.
+     * The completed form includes the employee's accepted COA authorization. Until that last step
+     * changes the stored status to Approved, no desk receives a Print action.
      */
-    const showFinalCancelAction = showFinalDeskFollowUp
-      && !showOwnCancelAction
-      && roleKey !== "regionaldirector";
-    const canReviewRequest = managePermission;
-    /*
-     * The order is only worth printing once the Regional Director has signed it — which, here,
-     * includes an order parked on the employee's authorization, since the Director signs first.
-     *
-     * The one exception is the employee that order is waiting on: their own copy is not printable
-     * until they have accepted the COA clause, so Print takes the place of Authorize on the row
-     * rather than sitting beside it. Every other desk may still print it while it waits.
-     */
-    const showPrintAction = isRegionalDirectorApproved(request) && !showAuthorizeAction;
+    const showPrintAction = requestStatus === "Approved" && Boolean(request.employeeAuthorizedAt);
+    // Download PDF saves the same completed order, so it is offered exactly when Print is.
+    const printActions = showPrintAction ? (
+      <>
+        <ActionIconButton
+          label="Print travel order form"
+          icon={faPrint}
+          tone="print"
+          onClick={() => handleAction("print", request)}
+        />
+        <ActionIconButton
+          label="Download travel order form as PDF"
+          text="Download PDF"
+          icon={faFileArrowDown}
+          tone="export"
+          onClick={() => handleAction("download", request)}
+        />
+      </>
+    ) : null;
 
     if (archiveView) {
       return (
-        <>
-          <ActionIconButton
-            label="View travel order form"
-            icon={faEye}
-            tone="view"
-            onClick={() => handleAction("view", request)}
-          />
-          {showPrintAction ? (
-            <ActionIconButton
-              label="Print travel order form"
-              icon={faPrint}
-              tone="print"
-              onClick={() => handleAction("print", request)}
-            />
-          ) : null}
+        <ViewFormActions viewLabel="View travel order form" onView={() => handleAction("view", request)}>
+          {printActions}
           <ActionIconButton
             label="Restore travel order"
             icon={faRotateLeft}
             tone="restore"
             onClick={() => handleAction("restore", request)}
           />
-        </>
+        </ViewFormActions>
       );
     }
 
     return (
-      <>
-        <ActionIconButton
-          label={canReviewRequest ? "Review travel order" : "View travel order form"}
-          icon={canReviewRequest ? faFileLines : faEye}
-          tone={canReviewRequest ? "review" : "view"}
-          onClick={() => handleAction(canReviewRequest ? "review" : "view", request)}
-        />
-        {showPrintAction ? (
-          <ActionIconButton
-            label="Print travel order form"
-            icon={faPrint}
-            tone="print"
-            onClick={() => handleAction("print", request)}
-          />
-        ) : null}
+      <ViewFormActions viewLabel="View travel order form" onView={() => handleAction("view", request)}>
+        {printActions}
         {showAuthorizeAction ? (
           <ActionIconButton
             label="Accept the travel authorization"
@@ -1941,18 +2204,11 @@ export default function TravelOrderWorkspace({
         ) : null}
         {showRejectAction ? (
           <ActionIconButton
-            label="Reject travel order"
+            label="Disapprove travel order"
             icon={faXmark}
             tone="reject"
+            text="Disapprove"
             onClick={() => handleAction("reject", request)}
-          />
-        ) : null}
-        {showFinalCancelAction ? (
-          <ActionIconButton
-            label="Cancel travel order"
-            icon={faBan}
-            tone="cancel"
-            onClick={() => handleAction("cancel", request)}
           />
         ) : null}
         {showOwnCancelAction ? (
@@ -1963,7 +2219,7 @@ export default function TravelOrderWorkspace({
             onClick={() => handleAction("cancel", request)}
           />
         ) : null}
-        {canArchive ? (
+        {canArchiveRequest(request) ? (
           <ActionIconButton
             label="Archive travel order"
             icon={faBoxArchive}
@@ -1971,7 +2227,7 @@ export default function TravelOrderWorkspace({
             onClick={() => handleAction("archive", request)}
           />
         ) : null}
-      </>
+      </ViewFormActions>
     );
   };
 
@@ -1982,20 +2238,52 @@ export default function TravelOrderWorkspace({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h3 className="m-0 text-base font-semibold text-slate-950">
-              {archiveView ? "Archived Travel Orders" : title}
+              {archiveView
+                ? "Archived Travel Orders"
+                : myView
+                  ? "My Travel Orders"
+                  : title}
             </h3>
             <p className="m-0 mt-1 text-sm text-slate-500">
               {archiveView
                 ? "Travel orders moved to archive. Restore one to put it back in the list."
-                : description}
+                : myView
+                  ? (isChief
+                    ? "Follow the travel orders you are travelling on, and see whose desk each one is on."
+                    : "Follow the travel orders you filed or are travelling on, and see whose desk each one is on.")
+                  : description}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            {canToggleMyView && !archiveView ? (
+              <button
+                type="button"
+                aria-pressed={myView}
+                onClick={() => {
+                  selection.clearSelection();
+                  setMyView((current) => !current);
+                  /* Own orders are followed at every stage, so the desk filter gives way to all. */
+                  setStatus(myView ? defaultStatus : "");
+                  setCurrentPage(1);
+                }}
+                className={`inline-flex min-h-9 items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition ${
+                  myView
+                    ? "border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100"
+                    : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                }`}
+              >
+                <UserRound size={16} />
+                {myView ? "View All Travel Orders" : "View My Travel Orders"}
+              </button>
+            ) : null}
             {canArchive ? (
               <ArchiveViewToggle
                 archiveView={archiveView}
                 onToggle={(next) => {
+                  selection.clearSelection();
                   setArchiveView(next);
+                  setMyView(false);
+                  setStatus(next ? "" : defaultStatus);
                   setCurrentPage(1);
                 }}
                 label="travel orders"
@@ -2014,51 +2302,75 @@ export default function TravelOrderWorkspace({
           </div>
         </div>
 
+        {!archiveView ? (
+          <BulkSelectionToolbar
+            selectedCount={selection.selectedCount}
+            approveCount={bulkApprovableRequests.length}
+            archiveCount={bulkArchivableRequests.length}
+            busy={bulkBusy}
+            approveLabel={isPlanningOfficer ? "Authorize selected for dispatch" : "Approve selected"}
+            archiveLabel="Archive selected"
+            onApprove={handleBulkApprove}
+            onArchive={handleBulkArchive}
+            onClear={selection.clearSelection}
+          />
+        ) : null}
+
         <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,220px)_160px_160px_120px]">
-          <label className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Search Travel Orders</span>
+            <span className="relative block">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={viewAllPermission ? "Search employee, destination, purpose" : "Search destination, purpose, remarks"}
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              />
+            </span>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Status</span>
+            <select
+              value={status}
+              onChange={(event) => setStatus(event.target.value)}
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            >
+              <option value="">All statuses</option>
+              <option value="Pending">{isAdmin ? "Pending" : "Pending by Role"}</option>
+              <option value="Approved">Approved</option>
+              <option value="Rejected">Disapproved</option>
+              <option value="Cancelled">Cancelled</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Travel Date</span>
             <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={viewAllPermission ? "Search employee, destination, purpose" : "Search destination, purpose, remarks"}
-              className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-8 pr-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+              type="date"
+              value={dateFilter}
+              onChange={(event) => setDateFilter(event.target.value)}
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
             />
           </label>
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          >
-            <option value="">All statuses</option>
-            <option value="Pending">Pending</option>
-            {/* `Reviewed` is the stored status; on a travel order it means the Planning Officer
-                has recommended it, so that is what the filter is called. */}
-            <option value="Reviewed">Recommended</option>
-            <option value="Approved">Approved</option>
-            <option value="Rejected">Rejected</option>
-            <option value="Cancelled">Cancelled</option>
-          </select>
-          <input
-            type="date"
-            value={dateFilter}
-            onChange={(event) => setDateFilter(event.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          />
-          <select
-            value={rowsPerPage}
-            onChange={(event) => setRowsPerPage(event.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
-          >
-            <option value="5">5 rows</option>
-            <option value="10">10 rows</option>
-            <option value="20">20 rows</option>
-          </select>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold text-slate-700">Rows Per Page</span>
+            <select
+              value={rowsPerPage}
+              onChange={(event) => setRowsPerPage(event.target.value)}
+              className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+            >
+              <option value="10">10 rows</option>
+              <option value="20">20 rows</option>
+              <option value="50">50 rows</option>
+              <option value="100">100 rows</option>
+              <option value="200">200 rows</option>
+            </select>
+          </label>
         </div>
 
         {/*
-          * Narrow screens get the same rows as cards — nine columns behind a sideways scroll is not
-          * a record you can read on a phone. The table returns at `lg`, which a zoomed-out browser
-          * reaches because zooming out widens the CSS viewport.
+          * Narrow screens get the same rows as cards. The compact record table returns at `lg`,
+          * which a zoomed-out browser reaches because zooming out widens the CSS viewport.
           */}
         <RecordCards
           className="mt-4 lg:hidden"
@@ -2070,14 +2382,21 @@ export default function TravelOrderWorkspace({
             title: "No travel orders found",
             description: "Submit a travel request or adjust the filters.",
           }}
-          renderCard={(request, index) => ({
-            eyebrow: `#${(safePage - 1) * pageSize + index + 1}`,
+          renderCard={(request) => ({
             title: request.destination,
             subtitle: formatRequestDates(request),
             badge: renderStatusBadge(request),
+            selection: !archiveView && (canArchiveRequest(request) || canBulkApproveRequest(request)) ? (
+              <SelectionCheckbox
+                checked={selection.isSelected(request)}
+                onChange={() => selection.toggleRow(request)}
+                label={`Select ${request.employeeName || "travel order"}`}
+              />
+            ) : null,
             fields: [
               { label: "Employee", value: request.employeeName },
-              { label: "Division", value: request.division || "Unassigned" },
+              ...(showRequesterRole ? [{ label: "Role", value: <TravelRequesterRoleBadge role={request.employeeRole} /> }] : []),
+              { label: "Division", value: formatRecordDivision(request) },
               { label: "Date Filed", value: formatDateDisplay(request.dateFiled) },
               { label: "Purpose", value: request.purpose || "No purpose provided", full: true },
             ],
@@ -2087,10 +2406,20 @@ export default function TravelOrderWorkspace({
 
         <div className="mt-4 hidden overflow-hidden rounded-2xl border border-slate-200 lg:block">
           <div className="overflow-x-auto">
-            <table className="min-w-[1180px] w-full border-collapse">
+            <table className="min-w-[760px] w-full border-collapse">
               <thead className="bg-slate-50">
                 <tr>
-                  {["#", "Employee", "Division", "Destination", "Purpose", "Travel Dates", "Status", "Date Filed", "Actions"].map((header) => (
+                  <th className="border-b border-slate-200 px-3 py-3 text-left">
+                    {!archiveView && selectablePageRequests.length > 0 ? (
+                      <SelectionCheckbox
+                        checked={selection.areAllSelected(selectablePageRequests)}
+                        indeterminate={selection.areSomeSelected(selectablePageRequests) && !selection.areAllSelected(selectablePageRequests)}
+                        onChange={() => selection.toggleRows(selectablePageRequests)}
+                        label="Select all travel orders on this page"
+                      />
+                    ) : null}
+                  </th>
+                  {["Employee", ...(showRequesterRole ? ["Role"] : []), "Division", "Status", "Date Filed", "Actions"].map((header) => (
                     <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase text-slate-600">
                       {header}
                     </th>
@@ -2101,14 +2430,14 @@ export default function TravelOrderWorkspace({
                 {loading ? (
                   Array.from({ length: 4 }).map((_, index) => (
                     <tr key={index} className="animate-pulse border-b border-slate-100">
-                      <td colSpan={9} className="px-3 py-3">
+                      <td colSpan={showRequesterRole ? 7 : 6} className="px-3 py-3">
                         <div className="h-5 rounded bg-slate-200" />
                       </td>
                     </tr>
                   ))
                 ) : paginatedRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-4 py-12 text-center">
+                    <td colSpan={showRequesterRole ? 7 : 6} className="px-4 py-12 text-center">
                       <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
                         <Filter size={20} />
                       </div>
@@ -2117,25 +2446,29 @@ export default function TravelOrderWorkspace({
                     </td>
                   </tr>
                 ) : (
-                  paginatedRequests.map((request, index) => {
+                  paginatedRequests.map((request) => {
                     return (
                       <tr key={request.id} className="border-b border-slate-100 transition hover:bg-slate-50">
-                        <td className="px-3 py-3 text-sm font-semibold text-slate-600">
-                          {(safePage - 1) * pageSize + index + 1}
+                        <td className="px-3 py-3">
+                          {!archiveView && (canArchiveRequest(request) || canBulkApproveRequest(request)) ? (
+                            <SelectionCheckbox
+                              checked={selection.isSelected(request)}
+                              onChange={() => selection.toggleRow(request)}
+                              label={`Select ${request.employeeName || "travel order"}`}
+                            />
+                          ) : null}
                         </td>
                         <td className="px-3 py-3 text-sm text-slate-800">
                           <div className="font-semibold text-slate-900">{request.employeeName}</div>
                         </td>
-                        <td className="px-3 py-3 text-sm text-slate-600">{request.division || "Unassigned"}</td>
-                        <td className="px-3 py-3 text-sm text-slate-700">{request.destination}</td>
-                        <td className="max-w-[220px] truncate px-3 py-3 text-sm text-slate-600">{request.purpose || "No purpose provided"}</td>
-                        <td className="max-w-[220px] px-3 py-3 text-sm text-slate-600">
-                          {formatRequestDates(request)}
-                        </td>
+                        {showRequesterRole ? (
+                          <td className="px-3 py-3 text-sm text-slate-600"><TravelRequesterRoleBadge role={request.employeeRole} /></td>
+                        ) : null}
+                        <td className="px-3 py-3 text-sm text-slate-600">{formatRecordDivision(request)}</td>
                         <td className="px-3 py-3">{renderStatusBadge(request)}</td>
                         <td className="px-3 py-3 text-sm text-slate-600">{formatDateDisplay(request.dateFiled)}</td>
                         <td className="px-3 py-3">
-                          <div className="flex flex-wrap gap-2">{renderRequestActions(request)}</div>
+                          {renderRequestActions(request)}
                         </td>
                       </tr>
                     );
@@ -2169,13 +2502,13 @@ export default function TravelOrderWorkspace({
       <TravelOrderPreviewModal
         request={selectedRequest}
         autoPrint={printRequest}
+        autoDownload={downloadRequest}
         onClose={() => {
           setSelectedRequest(null);
           setPrintRequest(false);
+          setDownloadRequest(false);
         }}
       />
     </div>
   );
 }
-
-

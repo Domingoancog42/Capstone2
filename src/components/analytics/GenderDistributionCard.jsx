@@ -1,3 +1,4 @@
+import ResponsiveContainer from "../chart/ResponsiveChartContainer";
 import React from 'react';
 import { User } from 'lucide-react';
 import {
@@ -5,7 +6,6 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
@@ -59,7 +59,6 @@ function countFromGenderRows(rows, genderName) {
  */
 const GenderDistributionCard = ({ data = [], divisionData = [], loading = false }) => {
   const theme = useAnalyticsTheme();
-  const totalEmployees = data.reduce((sum, item) => sum + parseInt(item.count || 0, 10), 0);
 
   const chartData = divisionData.length > 0
     ? divisionData.map((division) => ({
@@ -98,7 +97,6 @@ const GenderDistributionCard = ({ data = [], divisionData = [], loading = false 
       icon={User}
       accent={theme.series[0]}
       title="Gender Distribution"
-      subtitle={`${formatNumber(totalEmployees)} total employees`}
       loading={loading}
       isEmpty={!hasChartData}
       emptyMessage="No gender data available"

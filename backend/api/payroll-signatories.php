@@ -98,7 +98,7 @@ function payroll_signatory_store_selection(PDO $pdo, array $selection): array
     return $clean;
 }
 
-/** One employee's name and designation, or null when the record is gone or archived. */
+/** One employee's name, position and designation, or null when the record is gone or archived. */
 function payroll_signatory_employee(PDO $pdo, ?int $employeeRecordId): ?array
 {
     if ($employeeRecordId === null || $employeeRecordId <= 0) {
@@ -109,7 +109,8 @@ function payroll_signatory_employee(PDO $pdo, ?int $employeeRecordId): ?array
         'SELECT
             e.id,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS name,
-            des.name AS designation,
+            des.name AS position,
+            e.designation,
             d.name AS division
          FROM employees e
          LEFT JOIN designations des ON des.id = e.designation_id
@@ -127,6 +128,7 @@ function payroll_signatory_employee(PDO $pdo, ?int $employeeRecordId): ?array
     return [
         'employeeRecordId' => (int)$row['id'],
         'name' => payroll_signatory_text($row['name']),
+        'position' => payroll_signatory_text($row['position']),
         'designation' => payroll_signatory_text($row['designation']),
         'division' => payroll_signatory_text($row['division']),
     ];
@@ -144,7 +146,8 @@ function payroll_signatory_employee_for_role(PDO $pdo, string $roleName, array $
         'SELECT
             e.id,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS name,
-            des.name AS designation,
+            des.name AS position,
+            e.designation,
             d.name AS division
          FROM users u
          INNER JOIN roles r ON r.id = u.role_id
@@ -153,11 +156,15 @@ function payroll_signatory_employee_for_role(PDO $pdo, string $roleName, array $
            AND e.is_archived = 0
          LEFT JOIN designations des ON des.id = e.designation_id
          LEFT JOIN divisions d ON d.id = e.division_id
-         WHERE LOWER(r.name) = LOWER(:role)
+         WHERE (
+                LOWER(r.name) = LOWER(:role_name)
+                OR LOWER(COALESCE(r.base_role, "")) = LOWER(:base_role_name)
+           )
            AND u.is_archived = 0
          ORDER BY e.id'
     );
-    $statement->execute([':role' => $roleName]);
+    /* Native prepares (connection-pdo.php) reject a named placeholder used twice, hence two names. */
+    $statement->execute([':role_name' => $roleName, ':base_role_name' => $roleName]);
     $rows = $statement->fetchAll();
 
     if ($rows === []) {
@@ -188,6 +195,7 @@ function payroll_signatory_employee_for_role(PDO $pdo, string $roleName, array $
     return [
         'employeeRecordId' => (int)$match['id'],
         'name' => payroll_signatory_text($match['name']),
+        'position' => payroll_signatory_text($match['position']),
         'designation' => payroll_signatory_text($match['designation']),
         'division' => payroll_signatory_text($match['division']),
     ];
@@ -239,6 +247,7 @@ function payroll_signatories(PDO $pdo): array
             'employeeRecordId' => $employee['employeeRecordId'] ?? null,
             // Upper case is how the printed form sets a signatory's name.
             'name' => $employee !== null ? mb_strtoupper($employee['name'], 'UTF-8') : '',
+            'position' => $employee['position'] ?? '',
             'designation' => $employee['designation'] ?? '',
             // True when nobody picked this one and the role lookup filled it in.
             'isFallback' => $isFallback,

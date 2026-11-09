@@ -1,6 +1,7 @@
 import React from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronsUpDown } from "lucide-react";
 import RecordCards from "./RecordCards";
+import ActionsMenu from "./ActionsMenu";
 
 /**
  * The shared record table.
@@ -9,7 +10,7 @@ import RecordCards from "./RecordCards";
  * passes none of them gets exactly the table it got before, so screens can adopt skeletons and
  * sorting one at a time instead of hand-rolling them per module.
  *
- * A column is `{ key, header, render?, sortable?, headerClassName?, cellClassName? }`, plus the
+ * A column is `{ key, header, render?, sortable?, width?, headerClassName?, cellClassName? }`, plus the
  * optional card-view hints below.
  *
  * ## Card view
@@ -42,15 +43,20 @@ function HeaderCell({ column, sortBy, sortDirection, onSort, stickyHeader }) {
   const className = `border-b border-slate-200 bg-slate-50 px-3 py-3 text-left align-middle text-xs font-bold uppercase text-slate-600 ${
     stickyHeader ? "sticky top-0 z-10" : ""
   } ${column.headerClassName || ""}`.trim();
+  const style = column.width ? { width: column.width } : undefined;
 
   if (!column.sortable || !onSort) {
-    return <th className={className}>{column.header}</th>;
+    return <th className={className} style={style}>{column.header}</th>;
   }
 
   const active = sortBy === column.key;
 
   return (
-    <th className={className} aria-sort={active ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
+    <th
+      className={className}
+      style={style}
+      aria-sort={active ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+    >
       <button
         type="button"
         onClick={() => onSort(column.key)}
@@ -77,6 +83,26 @@ function SkeletonRows({ columns, rows }) {
   ));
 }
 
+function isActionsColumn(column) {
+  if (column.actionMenu === false) {
+    return false;
+  }
+
+  return column.cardRole === "actions"
+    || String(column.key || "").toLowerCase() === "actions"
+    || (typeof column.header === "string" && column.header.trim().toLowerCase() === "actions");
+}
+
+function renderColumnValue(column, row, index) {
+  const value = column.render ? column.render(row, index) : row[column.key];
+
+  if (!isActionsColumn(column) || value === null || value === undefined || value === false) {
+    return value;
+  }
+
+  return <ActionsMenu>{value}</ActionsMenu>;
+}
+
 /** Turns one row into the `RecordCards` descriptor, using each column's `cardRole`. */
 function buildCard(columns, row, index) {
   const card = { fields: [] };
@@ -86,7 +112,7 @@ function buildCard(columns, row, index) {
       return;
     }
 
-    const value = column.render ? column.render(row, index) : row[column.key];
+    const value = renderColumnValue(column, row, index);
 
     if (value === null || value === undefined || value === "") {
       return;
@@ -153,6 +179,13 @@ export default function Table({
   const table = (
     <div className={`overflow-x-auto ${className} ${tableWrapperClassName}`.replace(/\s+/g, " ").trim()}>
       <table className={`${minWidthClassName} w-full border-collapse ${tableClassName}`.trim()}>
+        {columns.some((column) => column.width) ? (
+          <colgroup>
+            {columns.map((column) => (
+              <col key={column.key} style={column.width ? { width: column.width } : undefined} />
+            ))}
+          </colgroup>
+        ) : null}
         <thead>
           <tr>
             {columns.map((column) => (
@@ -183,7 +216,7 @@ export default function Table({
                     key={column.key}
                     className={`px-3 py-3 align-middle ${column.cellClassName || ""}`.trim()}
                   >
-                    {column.render ? column.render(row, index) : row[column.key]}
+                    {renderColumnValue(column, row, index)}
                   </td>
                 ))}
               </tr>

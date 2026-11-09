@@ -2,35 +2,12 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/connection-pdo.php';
+require_once __DIR__ . '/deduction-catalog.php';
 
 $sessionUser = require_session_user();
 
 const LOAN_REQUEST_STATUSES = ['Pending', 'Approved', 'Rejected'];
-const LOAN_REQUEST_TYPES = [
-    'Emergency Loan',
-    'Policy Loan',
-    'Consolidated Loan',
-    'Salary Loan',
-    'Housing Loan',
-    'Pension Loan',
-    'GSIS Financial Assistance Loan (GFAL)',
-    'Enhanced Housing Loan',
-    'Multi-Purpose Loan (MPL)',
-    'Calamity Loan',
-];
 const LOAN_RECORDS_TABLE = 'loan_records';
-const LOAN_RECORD_AMOUNT_COLUMNS = [
-    'Emergency Loan' => 'emergency_loan',
-    'Policy Loan' => 'policy_loan',
-    'Consolidated Loan' => 'consolidated_loan',
-    'Salary Loan' => 'salary_loan',
-    'Housing Loan' => 'housing_loan',
-    'Pension Loan' => 'pension_loan',
-    'GSIS Financial Assistance Loan (GFAL)' => 'gsis_financial_assistance_loan_gfal',
-    'Enhanced Housing Loan' => 'enhanced_housing_loan',
-    'Multi-Purpose Loan (MPL)' => 'multi_purpose_loan_mpl',
-    'Calamity Loan' => 'calamity_loan',
-];
 
 function loan_text(mixed $value): string
 {
@@ -44,6 +21,36 @@ function loan_decimal(mixed $value): float
     }
 
     return round((float)$value, 2);
+}
+
+function loan_term_months(mixed $value): int
+{
+    $text = loan_text($value);
+
+    if (preg_match('/(\d+)/', $text, $matches) !== 1) {
+        return 0;
+    }
+
+    return max(0, min(360, (int)$matches[1]));
+}
+
+function loan_monthly_amortization(float $principal, float $annualRate, int $termMonths): float
+{
+    if ($principal <= 0 || $termMonths <= 0) {
+        return 0.0;
+    }
+
+    $interest = $principal * ($annualRate / 100) * ($termMonths / 12);
+    return round(($principal + $interest) / $termMonths, 2);
+}
+
+function loan_total_payable(float $principal, float $annualRate, int $termMonths): float
+{
+    if ($principal <= 0 || $termMonths <= 0) {
+        return round(max(0, $principal), 2);
+    }
+
+    return round($principal + ($principal * ($annualRate / 100) * ($termMonths / 12)), 2);
 }
 
 function loan_date_or_null(mixed $value): ?string
@@ -75,17 +82,58 @@ function loan_status(mixed $value): string
 function loan_type(mixed $value): string
 {
     $type = loan_text($value);
+    return $type !== '' && strlen($type) <= 100 ? $type : '';
+}
 
-    foreach (LOAN_REQUEST_TYPES as $allowedType) {
-        if (strcasecmp($type, $allowedType) === 0) {
-            return $allowedType;
+function loan_type_from_allowed(mixed $value, array $allowedTypes): string
+{
+    $type = loan_type($value);
+
+    foreach ($allowedTypes as $allowedType) {
+        if (strcasecmp($type, (string)$allowedType) === 0) {
+            return (string)$allowedType;
         }
     }
 
     return '';
 }
 
-function loan_amount_map(mixed $value, string $fallbackType = '', float $fallbackAmount = 0.0): array
+/**
+ * Loans filed here are MGB Coop loans. The GSIS, Pag-IBIG and bank loans in Deduction Setup are
+ * still charged by payroll, but they are not offered here: a Deduction Setup loan is a coop loan when
+ * its name or code says so.
+ */
+function loan_type_is_coop(array $type): bool
+{
+    return str_contains(strtolower($type['name'] . ' ' . $type['code']), 'coop');
+}
+
+function loan_type_definitions(PDO $pdo): array
+{
+    return array_map(
+        static fn (array $type): array => [
+            'id' => $type['id'],
+            'typeName' => $type['name'],
+            'description' => $type['description'],
+            'defaultRate' => $type['defaultRate'],
+            'categoryCode' => $type['categoryCode'],
+            'categoryLabel' => $type['categoryName'],
+        ],
+        array_values(array_filter(deduction_catalog_loan_types($pdo), 'loan_type_is_coop'))
+    );
+}
+
+function loan_request_types(PDO $pdo): array
+{
+    return array_column(loan_type_definitions($pdo), 'typeName');
+}
+
+function loan_amount_map(
+    mixed $value,
+    string $fallbackType = '',
+    float $fallbackAmount = 0.0,
+    ?array $allowedTypes = null
+): array
 {
     if (is_string($value) && loan_text($value) !== '') {
         $decoded = json_decode($value, true);
@@ -95,7 +143,9 @@ function loan_amount_map(mixed $value, string $fallbackType = '', float $fallbac
     $amounts = [];
     if (is_array($value)) {
         foreach ($value as $type => $amountValue) {
-            $normalizedType = loan_type($type);
+            $normalizedType = $allowedTypes === null
+                ? loan_type($type)
+                : loan_type_from_allowed($type, $allowedTypes);
             $amount = loan_decimal($amountValue);
 
             if ($normalizedType !== '' && $amount > 0) {
@@ -104,8 +154,12 @@ function loan_amount_map(mixed $value, string $fallbackType = '', float $fallbac
         }
     }
 
-    if ($amounts === [] && $fallbackType !== '' && $fallbackAmount > 0) {
-        $amounts[$fallbackType] = $fallbackAmount;
+    $normalizedFallback = $allowedTypes === null
+        ? loan_type($fallbackType)
+        : loan_type_from_allowed($fallbackType, $allowedTypes);
+
+    if ($amounts === [] && $normalizedFallback !== '' && $fallbackAmount > 0) {
+        $amounts[$normalizedFallback] = $fallbackAmount;
     }
 
     return $amounts;
@@ -122,72 +176,10 @@ function loan_total_amount(array $amounts): float
     return round(array_sum($amounts), 2);
 }
 
-function loan_amount_params(array $amounts): array
-{
-    $params = [];
-
-    foreach (LOAN_RECORD_AMOUNT_COLUMNS as $type => $column) {
-        $params[':' . $column] = number_format(loan_decimal($amounts[$type] ?? 0), 2, '.', '');
-    }
-
-    return $params;
-}
-
-function loan_amount_select_sql(): string
-{
-    return implode(",\n            ", array_map(
-        static fn (string $column): string => 'lr.' . $column . ' AS ' . $column,
-        LOAN_RECORD_AMOUNT_COLUMNS
-    ));
-}
-
-function loan_amount_column_list(): string
-{
-    return implode(', ', array_values(LOAN_RECORD_AMOUNT_COLUMNS));
-}
-
-function loan_amount_placeholder_list(): string
-{
-    return implode(', ', array_map(
-        static fn (string $column): string => ':' . $column,
-        array_values(LOAN_RECORD_AMOUNT_COLUMNS)
-    ));
-}
-
-function loan_amount_update_sql(): string
-{
-    return implode(",\n                 ", array_map(
-        static fn (string $column): string => $column . ' = :' . $column,
-        array_values(LOAN_RECORD_AMOUNT_COLUMNS)
-    ));
-}
-
+/** `{loan type: amount}`, the shape the loan page sends and reads back. A loan has one type. */
 function loan_amount_map_from_record(array $record): array
 {
-    $amounts = [];
-
-    foreach (LOAN_RECORD_AMOUNT_COLUMNS as $type => $column) {
-        $amount = loan_decimal($record[$column] ?? 0);
-        if ($amount > 0) {
-            $amounts[$type] = $amount;
-        }
-    }
-
-    return loan_amount_map($amounts, (string)($record['loanType'] ?? ''), loan_decimal($record['loanAmount'] ?? 0));
-}
-
-function loan_amount_search_sql(): string
-{
-    return implode(' OR ', array_map(
-        static fn (string $column): string => 'lr.' . $column . ' LIKE :search',
-        array_values(LOAN_RECORD_AMOUNT_COLUMNS)
-    ));
-}
-
-function loan_amount_nonzero_sql(string $type): string
-{
-    $column = LOAN_RECORD_AMOUNT_COLUMNS[$type] ?? '';
-    return $column !== '' ? 'lr.' . $column . ' > 0' : '';
+    return loan_amount_map([], (string)($record['loanType'] ?? ''), loan_decimal($record['loanAmount'] ?? 0));
 }
 
 function loan_role_key(array $user): string
@@ -202,12 +194,17 @@ function loan_can_file_for_others(array $user): bool
 
 function loan_can_review(array $user): bool
 {
-    return in_array(loan_role_key($user), ['admin', 'hrhead', 'hrstaff', 'regionaldirector'], true);
+    return loan_role_key($user) === 'hrhead';
 }
 
 function loan_can_manage_records(array $user): bool
 {
     return in_array(loan_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
+}
+
+function loan_can_record_payments(array $user): bool
+{
+    return in_array(loan_role_key($user), ['admin', 'hrhead', 'hrstaff', 'cashier'], true);
 }
 
 /*
@@ -238,21 +235,9 @@ function ensure_loan_request_tables(PDO $pdo): void
     }
 
     $columns = [
-        'emergency_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER loan_amount',
-        'policy_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER emergency_loan',
-        'consolidated_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER policy_loan',
-        'salary_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER consolidated_loan',
-        'housing_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER salary_loan',
-        'pension_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER housing_loan',
-        'gsis_financial_assistance_loan_gfal' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER pension_loan',
-        'enhanced_housing_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER gsis_financial_assistance_loan_gfal',
-        'multi_purpose_loan_mpl' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER enhanced_housing_loan',
-        'calamity_loan' => 'DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER multi_purpose_loan_mpl',
-        'supporting_document_name' => 'VARCHAR(255) NULL AFTER status',
-        'supporting_document_path' => 'VARCHAR(500) NULL AFTER supporting_document_name',
-        'supporting_document_size' => 'INT UNSIGNED NULL AFTER supporting_document_path',
-        'supporting_document_type' => 'VARCHAR(120) NULL AFTER supporting_document_size',
-        'approval_remarks' => 'TEXT NULL AFTER supporting_document_type',
+        'annual_interest_rate' => 'DECIMAL(7,4) NOT NULL DEFAULT 0.0000 AFTER repayment_terms',
+        'disbursed_at' => 'DATE NULL AFTER date_filed',
+        'approval_remarks' => 'TEXT NULL AFTER status',
         'approved_by_user_id' => 'INT UNSIGNED NULL AFTER approval_remarks',
         'approved_at' => 'DATETIME NULL AFTER approved_by_user_id',
         'rejected_by_user_id' => 'INT UNSIGNED NULL AFTER approved_at',
@@ -272,6 +257,28 @@ function ensure_loan_request_tables(PDO $pdo): void
         }
     }
 
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS loan_payments (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            loan_record_id INT UNSIGNED NOT NULL,
+            installment_number INT UNSIGNED NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            paid_at DATE NOT NULL,
+            payment_reference VARCHAR(180) NULL,
+            notes VARCHAR(500) NULL,
+            source VARCHAR(30) NOT NULL DEFAULT "manual",
+            payroll_id INT UNSIGNED NULL,
+            recorded_by_user_id INT UNSIGNED NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_loan_payment_installment (loan_record_id, installment_number),
+            UNIQUE KEY uq_loan_payment_payroll (loan_record_id, payroll_id),
+            KEY idx_loan_payments_paid_at (paid_at),
+            CONSTRAINT fk_loan_payments_loan FOREIGN KEY (loan_record_id) REFERENCES loan_records(id)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+
     /*
      * Called here, outside any transaction, because every write below records an audit entry
      * from inside one. MySQL implicitly commits when it sees DDL, so letting `write_auth_audit()`
@@ -280,52 +287,6 @@ function ensure_loan_request_tables(PDO $pdo): void
      * Doing it up front means the lazy path finds its work already done and issues no DDL.
      */
     ensure_audit_logs_table($pdo);
-    migrate_loan_record_amount_columns($pdo);
-}
-
-function migrate_loan_record_amount_columns(PDO $pdo): void
-{
-    $selectColumns = 'id, loan_type AS loanType, loan_amount AS loanAmount';
-    $hasLegacyJson = database_column_exists($pdo, LOAN_RECORDS_TABLE, 'loan_amounts');
-
-    if ($hasLegacyJson) {
-        $selectColumns .= ', loan_amounts AS loanAmountsJson';
-    }
-
-    foreach (LOAN_RECORD_AMOUNT_COLUMNS as $column) {
-        $selectColumns .= ', ' . $column;
-    }
-
-    $statement = $pdo->query('SELECT ' . $selectColumns . ' FROM ' . LOAN_RECORDS_TABLE);
-    $updateSql = 'UPDATE ' . LOAN_RECORDS_TABLE . '
-                  SET loan_amount = :loan_amount,
-                      loan_type = :loan_type,
-                      ' . loan_amount_update_sql() . '
-                  WHERE id = :id';
-    $updateStatement = $pdo->prepare($updateSql);
-
-    foreach ($statement->fetchAll() as $record) {
-        $currentAmounts = loan_amount_map_from_record($record);
-        $legacyAmounts = $hasLegacyJson
-            ? loan_amount_map($record['loanAmountsJson'] ?? null, (string)($record['loanType'] ?? ''), loan_decimal($record['loanAmount'] ?? 0))
-            : [];
-        $amounts = $legacyAmounts !== [] ? $legacyAmounts : $currentAmounts;
-
-        if ($amounts === []) {
-            continue;
-        }
-
-        $updateStatement->execute([
-            ':id' => (int)$record['id'],
-            ':loan_type' => loan_primary_type($amounts),
-            ':loan_amount' => number_format(loan_total_amount($amounts), 2, '.', ''),
-            ...loan_amount_params($amounts),
-        ]);
-    }
-
-    if ($hasLegacyJson) {
-        $pdo->exec('ALTER TABLE ' . LOAN_RECORDS_TABLE . ' DROP COLUMN loan_amounts');
-    }
 }
 
 function loan_session_employee_scope_id(PDO $pdo, array $sessionUser): ?int
@@ -407,73 +368,6 @@ function resolve_loan_employee_id(PDO $pdo, array $body, array $sessionUser): in
     ], 422);
 }
 
-function loan_document_upload(): ?array
-{
-    if (!isset($_FILES['supportingDocument']) || !is_array($_FILES['supportingDocument'])) {
-        return null;
-    }
-
-    $file = $_FILES['supportingDocument'];
-    $error = (int)($file['error'] ?? UPLOAD_ERR_NO_FILE);
-
-    if ($error === UPLOAD_ERR_NO_FILE) {
-        return null;
-    }
-
-    return $file;
-}
-
-function store_loan_document(array $upload): array
-{
-    $error = (int)($upload['error'] ?? UPLOAD_ERR_NO_FILE);
-    if ($error !== UPLOAD_ERR_OK) {
-        throw new RuntimeException('Unable to upload the supporting document.');
-    }
-
-    $originalName = loan_text($upload['name'] ?? '');
-    $temporaryFile = (string)($upload['tmp_name'] ?? '');
-    $fileSize = (int)($upload['size'] ?? 0);
-    $mimeType = loan_text($upload['type'] ?? '');
-    $extension = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
-    $allowedExtensions = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'doc', 'docx'];
-
-    if ($originalName === '' || $temporaryFile === '') {
-        throw new RuntimeException('Uploaded supporting document is invalid.');
-    }
-
-    if ($extension === '' || !in_array($extension, $allowedExtensions, true)) {
-        throw new RuntimeException('Unsupported document type. Upload PDF, Word, or image files only.');
-    }
-
-    if ($fileSize <= 0) {
-        throw new RuntimeException('Uploaded supporting document is empty.');
-    }
-
-    if ($fileSize > 10 * 1024 * 1024) {
-        throw new RuntimeException('Supporting document must not exceed 10 MB.');
-    }
-
-    $uploadDirectory = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'loan-documents';
-    if (!is_dir($uploadDirectory) && !mkdir($uploadDirectory, 0775, true) && !is_dir($uploadDirectory)) {
-        throw new RuntimeException('Unable to prepare the loan document folder.');
-    }
-
-    $storedFileName = sprintf('loan_%s_%s.%s', date('Ymd_His'), bin2hex(random_bytes(8)), $extension);
-    $absolutePath = $uploadDirectory . DIRECTORY_SEPARATOR . $storedFileName;
-
-    if (!move_uploaded_file($temporaryFile, $absolutePath)) {
-        throw new RuntimeException('Unable to save the uploaded supporting document.');
-    }
-
-    return [
-        'fileName' => $originalName,
-        'filePath' => 'uploads/loan-documents/' . rawurlencode($storedFileName),
-        'fileSize' => $fileSize,
-        'fileType' => $mimeType !== '' ? $mimeType : null,
-        'absolutePath' => $absolutePath,
-    ];
-}
-
 function loan_actor_name(array $user): string
 {
     return audit_user_display_name($user) ?: loan_text($user['username'] ?? 'System');
@@ -522,19 +416,21 @@ function loan_base_select(): string
             e.employee_id AS employeeId,
             TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
             d.name AS division,
-            des.name AS designation,
+            des.name AS position,
+            e.employment_status AS employmentStatus,
+            e.designation,
             lr.loan_type AS loanType,
             lr.loan_amount AS loanAmount,
-            ' . loan_amount_select_sql() . ',
             lr.repayment_terms AS repaymentTerms,
+            lr.annual_interest_rate AS annualInterestRate,
             lr.purpose,
             lr.date_filed AS dateFiled,
             DATE_FORMAT(lr.date_filed, "%M %e, %Y") AS dateFiledDisplay,
+            lr.disbursed_at AS disbursedAt,
             lr.status,
-            lr.supporting_document_name AS supportingDocumentName,
-            lr.supporting_document_path AS supportingDocumentPath,
-            lr.supporting_document_size AS supportingDocumentSize,
-            lr.supporting_document_type AS supportingDocumentType,
+            COALESCE(payment_summary.paymentCount, 0) AS paymentCount,
+            COALESCE(payment_summary.paidAmount, 0) AS paidAmount,
+            payment_summary.lastPaymentAt AS lastPaymentAt,
             lr.approval_remarks AS approvalRemarks,
             lr.approved_by_user_id AS approvedByUserId,
             lr.approved_at AS approvedAt,
@@ -566,7 +462,16 @@ function loan_base_select(): string
          LEFT JOIN employees reviewed_employee ON reviewed_employee.email COLLATE utf8mb4_unicode_ci = reviewed_user.email COLLATE utf8mb4_unicode_ci
             AND reviewed_employee.is_archived = 0
          LEFT JOIN users creator_user ON creator_user.id = lr.created_by_user_id
-         LEFT JOIN users updater_user ON updater_user.id = lr.updated_by_user_id';
+         LEFT JOIN users updater_user ON updater_user.id = lr.updated_by_user_id
+         LEFT JOIN (
+             SELECT
+                 loan_record_id,
+                 COUNT(*) AS paymentCount,
+                 SUM(amount) AS paidAmount,
+                 MAX(paid_at) AS lastPaymentAt
+             FROM loan_payments
+             GROUP BY loan_record_id
+         ) payment_summary ON payment_summary.loan_record_id = lr.id';
 }
 
 function loan_normalize_record(array $record): array
@@ -574,11 +479,22 @@ function loan_normalize_record(array $record): array
     $record['id'] = (int)$record['id'];
     $record['employeeRecordId'] = (int)$record['employeeRecordId'];
     $record['loanAmount'] = loan_decimal($record['loanAmount'] ?? 0);
+    $record['annualInterestRate'] = round((float)($record['annualInterestRate'] ?? 0), 4);
+    $record['termMonths'] = loan_term_months($record['repaymentTerms'] ?? '');
+    $record['monthlyAmortization'] = loan_monthly_amortization(
+        $record['loanAmount'],
+        $record['annualInterestRate'],
+        $record['termMonths']
+    );
+    $record['totalPayable'] = loan_total_payable(
+        $record['loanAmount'],
+        $record['annualInterestRate'],
+        $record['termMonths']
+    );
+    $record['paymentCount'] = (int)($record['paymentCount'] ?? 0);
+    $record['paidAmount'] = loan_decimal($record['paidAmount'] ?? 0);
+    $record['outstandingAmount'] = round(max(0, $record['totalPayable'] - $record['paidAmount']), 2);
     $record['loanAmounts'] = loan_amount_map_from_record($record);
-    foreach (LOAN_RECORD_AMOUNT_COLUMNS as $column) {
-        unset($record[$column]);
-    }
-    $record['supportingDocumentSize'] = $record['supportingDocumentSize'] !== null ? (int)$record['supportingDocumentSize'] : null;
     $record['approvedByUserId'] = $record['approvedByUserId'] !== null ? (int)$record['approvedByUserId'] : null;
     $record['rejectedByUserId'] = $record['rejectedByUserId'] !== null ? (int)$record['rejectedByUserId'] : null;
     $record['reviewedByUserId'] = $record['reviewedByUserId'] !== null ? (int)$record['reviewedByUserId'] : null;
@@ -587,6 +503,36 @@ function loan_normalize_record(array $record): array
     $record['isArchived'] = (bool)($record['isArchived'] ?? false);
 
     return $record;
+}
+
+function fetch_loan_payments(PDO $pdo, int $loanRequestId): array
+{
+    $statement = $pdo->prepare(
+        'SELECT
+            lp.id,
+            lp.loan_record_id AS loanRequestId,
+            lp.installment_number AS installmentNumber,
+            lp.amount,
+            lp.paid_at AS paidAt,
+            lp.payment_reference AS paymentReference,
+            lp.notes,
+            lp.source,
+            lp.payroll_id AS payrollId,
+            lp.created_at AS createdAt
+         FROM loan_payments lp
+         WHERE lp.loan_record_id = :loan_record_id
+         ORDER BY lp.installment_number ASC, lp.id ASC'
+    );
+    $statement->execute([':loan_record_id' => $loanRequestId]);
+
+    return array_map(static function (array $payment): array {
+        $payment['id'] = (int)$payment['id'];
+        $payment['loanRequestId'] = (int)$payment['loanRequestId'];
+        $payment['installmentNumber'] = (int)$payment['installmentNumber'];
+        $payment['amount'] = loan_decimal($payment['amount'] ?? 0);
+        $payment['payrollId'] = $payment['payrollId'] !== null ? (int)$payment['payrollId'] : null;
+        return $payment;
+    }, $statement->fetchAll());
 }
 
 function fetch_loan_request(PDO $pdo, int $id, ?int $employeeScopeId = null, bool $withAuditTrail = false): ?array
@@ -609,7 +555,12 @@ function fetch_loan_request(PDO $pdo, int $id, ?int $employeeScopeId = null, boo
         return null;
     }
 
-    return loan_normalize_record($record);
+    $normalized = loan_normalize_record($record);
+    if ($withAuditTrail) {
+        $normalized['payments'] = fetch_loan_payments($pdo, (int)$normalized['id']);
+    }
+
+    return $normalized;
 }
 
 function list_loan_requests(PDO $pdo, array $sessionUser): void
@@ -652,18 +603,17 @@ function list_loan_requests(PDO $pdo, array $sessionUser): void
     }
 
     if ($search !== '') {
-        $conditions[] = '(
-            e.employee_id LIKE :search
-            OR e.first_name LIKE :search
-            OR e.middle_name LIKE :search
-            OR e.last_name LIKE :search
-            OR lr.loan_type LIKE :search
-            OR ' . loan_amount_search_sql() . '
-            OR lr.repayment_terms LIKE :search
-            OR lr.purpose LIKE :search
-            OR lr.status LIKE :search
-        )';
-        $params[':search'] = '%' . $search . '%';
+        // Native prepares accept a placeholder only once, so each searched column binds its own.
+        $searchColumns = [
+            'e.employee_id', 'e.first_name', 'e.middle_name', 'e.last_name',
+            'lr.loan_type', 'lr.loan_amount', 'lr.repayment_terms', 'lr.purpose', 'lr.status',
+        ];
+        $searchParts = [];
+        foreach ($searchColumns as $index => $column) {
+            $searchParts[] = $column . ' LIKE :search_' . $index;
+            $params[':search_' . $index] = '%' . $search . '%';
+        }
+        $conditions[] = '(' . implode(' OR ', $searchParts) . ')';
     }
 
     if ($statusFilter !== '' && in_array($statusFilter, LOAN_REQUEST_STATUSES, true)) {
@@ -672,10 +622,8 @@ function list_loan_requests(PDO $pdo, array $sessionUser): void
     }
 
     if ($loanTypeFilter !== '') {
-        $loanTypeSql = loan_amount_nonzero_sql($loanTypeFilter);
-        if ($loanTypeSql !== '') {
-            $conditions[] = $loanTypeSql;
-        }
+        $conditions[] = 'lr.loan_type = :loan_type';
+        $params[':loan_type'] = $loanTypeFilter;
     }
 
     $sortColumns = [
@@ -703,15 +651,18 @@ function list_loan_requests(PDO $pdo, array $sessionUser): void
         $statement->fetchAll()
     );
 
+    $loanTypeDefinitions = loan_type_definitions($pdo);
+
     json_response([
         'success' => true,
         'records' => $records,
-        'loanTypes' => LOAN_REQUEST_TYPES,
+        'loanTypes' => array_column($loanTypeDefinitions, 'typeName'),
+        'loanTypeDefinitions' => $loanTypeDefinitions,
         'statuses' => LOAN_REQUEST_STATUSES,
     ]);
 }
 
-function validate_loan_payload(array $amounts, string $repaymentTerms, ?string $dateFiled): void
+function validate_loan_payload(array $amounts, string $repaymentTerms, ?string $dateFiled, float $annualInterestRate = 0): void
 {
     $errors = [];
 
@@ -727,6 +678,14 @@ function validate_loan_payload(array $amounts, string $repaymentTerms, ?string $
         $errors[] = 'Date filed is required.';
     }
 
+    if (loan_term_months($repaymentTerms) <= 0) {
+        $errors[] = 'Repayment term must include a valid number of months.';
+    }
+
+    if ($annualInterestRate < 0 || $annualInterestRate > 100) {
+        $errors[] = 'Annual interest rate must be between 0 and 100.';
+    }
+
     if ($errors !== []) {
         json_response([
             'success' => false,
@@ -735,62 +694,57 @@ function validate_loan_payload(array $amounts, string $repaymentTerms, ?string $
     }
 }
 
-function create_loan_request(PDO $pdo, array $body, array $sessionUser, ?array $documentUpload = null): void
+function create_loan_request(PDO $pdo, array $body, array $sessionUser): void
 {
     $employeeId = resolve_loan_employee_id($pdo, $body, $sessionUser);
+    $allowedTypes = loan_request_types($pdo);
+    $requestedType = loan_type($body['loanType'] ?? $body['loan_type'] ?? '');
+
+    if ($requestedType !== '' && loan_type_from_allowed($requestedType, $allowedTypes) === '') {
+        json_response([
+            'success' => false,
+            'message' => 'Only MGB Coop loans can be filed. Choose an MGB Coop loan type.',
+        ], 422);
+    }
+
     $amounts = loan_amount_map(
         $body['loanAmounts'] ?? $body['loan_amounts'] ?? null,
-        loan_type($body['loanType'] ?? $body['loan_type'] ?? ''),
-        loan_decimal($body['loanAmount'] ?? $body['loan_amount'] ?? 0)
+        loan_type_from_allowed($body['loanType'] ?? $body['loan_type'] ?? '', $allowedTypes),
+        loan_decimal($body['loanAmount'] ?? $body['loan_amount'] ?? 0),
+        $allowedTypes
     );
     $type = loan_primary_type($amounts);
     $amount = loan_total_amount($amounts);
     $repaymentTerms = loan_text($body['repaymentTerms'] ?? $body['repayment_terms'] ?? '');
+    $annualInterestRate = loan_decimal($body['annualInterestRate'] ?? $body['annual_interest_rate'] ?? 0);
     $purpose = loan_text($body['purpose'] ?? '');
     $dateFiled = loan_date_or_null($body['dateFiled'] ?? $body['date_filed'] ?? date('Y-m-d'));
 
-    validate_loan_payload($amounts, $repaymentTerms, $dateFiled);
+    validate_loan_payload($amounts, $repaymentTerms, $dateFiled, $annualInterestRate);
 
-    $storedDocument = null;
-    $storedDocumentAbsolutePath = null;
-
-    if ($documentUpload !== null) {
-        try {
-            $storedDocument = store_loan_document($documentUpload);
-            $storedDocumentAbsolutePath = $storedDocument['absolutePath'];
-        } catch (RuntimeException $exception) {
-            json_response([
-                'success' => false,
-                'message' => $exception->getMessage(),
-            ], 422);
-        }
-    }
+    throttle_filing_request($pdo, $sessionUser);
 
     try {
         $pdo->beginTransaction();
 
         $statement = $pdo->prepare(
             'INSERT INTO loan_records
-                (employee_id, loan_type, loan_amount, ' . loan_amount_column_list() . ', repayment_terms, purpose, date_filed, status,
-                 supporting_document_name, supporting_document_path, supporting_document_size, supporting_document_type,
+                (employee_id, loan_type, loan_amount, repayment_terms, annual_interest_rate,
+                 purpose, date_filed, status,
                  created_by_user_id, updated_by_user_id)
              VALUES
-                (:employee_id, :loan_type, :loan_amount, ' . loan_amount_placeholder_list() . ', :repayment_terms, :purpose, :date_filed, "Pending",
-                 :supporting_document_name, :supporting_document_path, :supporting_document_size, :supporting_document_type,
+                (:employee_id, :loan_type, :loan_amount, :repayment_terms, :annual_interest_rate,
+                 :purpose, :date_filed, "Pending",
                  :created_by_user_id, :updated_by_user_id)'
         );
         $statement->execute([
             ':employee_id' => $employeeId,
             ':loan_type' => $type,
             ':loan_amount' => number_format($amount, 2, '.', ''),
-            ...loan_amount_params($amounts),
             ':repayment_terms' => $repaymentTerms,
+            ':annual_interest_rate' => number_format($annualInterestRate, 4, '.', ''),
             ':purpose' => $purpose !== '' ? $purpose : null,
             ':date_filed' => $dateFiled,
-            ':supporting_document_name' => $storedDocument['fileName'] ?? null,
-            ':supporting_document_path' => $storedDocument['filePath'] ?? null,
-            ':supporting_document_size' => $storedDocument['fileSize'] ?? null,
-            ':supporting_document_type' => $storedDocument['fileType'] ?? null,
             ':created_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
             ':updated_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
         ]);
@@ -802,9 +756,6 @@ function create_loan_request(PDO $pdo, array $body, array $sessionUser, ?array $
     } catch (Throwable $exception) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
-        }
-        if ($storedDocumentAbsolutePath !== null && is_file($storedDocumentAbsolutePath)) {
-            @unlink($storedDocumentAbsolutePath);
         }
         throw $exception;
     }
@@ -818,7 +769,7 @@ function create_loan_request(PDO $pdo, array $body, array $sessionUser, ?array $
     ], 201);
 }
 
-function update_loan_request(PDO $pdo, array $body, array $sessionUser, ?array $documentUpload = null): void
+function update_loan_request(PDO $pdo, array $body, array $sessionUser): void
 {
     $id = (int)($body['id'] ?? 0);
 
@@ -851,74 +802,51 @@ function update_loan_request(PDO $pdo, array $body, array $sessionUser, ?array $
             'employeeRecordId' => $body['employeeRecordId'] ?? $existing['employeeRecordId'],
         ], $sessionUser)
         : (int)$existing['employeeRecordId'];
+    $allowedTypes = loan_request_types($pdo);
+    if (loan_type($existing['loanType']) !== '' && loan_type_from_allowed($existing['loanType'], $allowedTypes) === '') {
+        $allowedTypes[] = loan_type($existing['loanType']);
+    }
     $amounts = loan_amount_map(
         $body['loanAmounts'] ?? $body['loan_amounts'] ?? ($existing['loanAmounts'] ?? null),
-        loan_type($body['loanType'] ?? $body['loan_type'] ?? $existing['loanType']),
-        loan_decimal($body['loanAmount'] ?? $body['loan_amount'] ?? $existing['loanAmount'])
+        loan_type_from_allowed($body['loanType'] ?? $body['loan_type'] ?? $existing['loanType'], $allowedTypes),
+        loan_decimal($body['loanAmount'] ?? $body['loan_amount'] ?? $existing['loanAmount']),
+        $allowedTypes
     );
     $type = loan_primary_type($amounts);
     $amount = loan_total_amount($amounts);
     $repaymentTerms = loan_text($body['repaymentTerms'] ?? $body['repayment_terms'] ?? $existing['repaymentTerms']);
+    $annualInterestRate = loan_decimal($body['annualInterestRate'] ?? $body['annual_interest_rate'] ?? $existing['annualInterestRate']);
     $purpose = loan_text($body['purpose'] ?? $existing['purpose']);
     $dateFiled = loan_date_or_null($body['dateFiled'] ?? $body['date_filed'] ?? $existing['dateFiled']);
 
-    validate_loan_payload($amounts, $repaymentTerms, $dateFiled);
-
-    $storedDocument = null;
-    $storedDocumentAbsolutePath = null;
-    if ($documentUpload !== null) {
-        try {
-            $storedDocument = store_loan_document($documentUpload);
-            $storedDocumentAbsolutePath = $storedDocument['absolutePath'];
-        } catch (RuntimeException $exception) {
-            json_response([
-                'success' => false,
-                'message' => $exception->getMessage(),
-            ], 422);
-        }
-    }
+    validate_loan_payload($amounts, $repaymentTerms, $dateFiled, $annualInterestRate);
 
     try {
         $pdo->beginTransaction();
-
-        $documentSql = '';
-        $params = [
-            ':employee_id' => $employeeId,
-            ':loan_type' => $type,
-            ':loan_amount' => number_format($amount, 2, '.', ''),
-            ...loan_amount_params($amounts),
-            ':repayment_terms' => $repaymentTerms,
-            ':purpose' => $purpose !== '' ? $purpose : null,
-            ':date_filed' => $dateFiled,
-            ':updated_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
-            ':id' => $id,
-        ];
-
-        if ($storedDocument !== null) {
-            $documentSql = ',
-             supporting_document_name = :supporting_document_name,
-             supporting_document_path = :supporting_document_path,
-             supporting_document_size = :supporting_document_size,
-             supporting_document_type = :supporting_document_type';
-            $params[':supporting_document_name'] = $storedDocument['fileName'];
-            $params[':supporting_document_path'] = $storedDocument['filePath'];
-            $params[':supporting_document_size'] = $storedDocument['fileSize'];
-            $params[':supporting_document_type'] = $storedDocument['fileType'];
-        }
 
         $statement = $pdo->prepare(
             'UPDATE loan_records
              SET employee_id = :employee_id,
                  loan_type = :loan_type,
                  loan_amount = :loan_amount,
-                 ' . loan_amount_update_sql() . ',
                  repayment_terms = :repayment_terms,
+                 annual_interest_rate = :annual_interest_rate,
                  purpose = :purpose,
                  date_filed = :date_filed,
-                 updated_by_user_id = :updated_by_user_id' . $documentSql . '
+                 updated_by_user_id = :updated_by_user_id
              WHERE id = :id'
         );
-        $statement->execute($params);
+        $statement->execute([
+            ':employee_id' => $employeeId,
+            ':loan_type' => $type,
+            ':loan_amount' => number_format($amount, 2, '.', ''),
+            ':repayment_terms' => $repaymentTerms,
+            ':annual_interest_rate' => number_format($annualInterestRate, 4, '.', ''),
+            ':purpose' => $purpose !== '' ? $purpose : null,
+            ':date_filed' => $dateFiled,
+            ':updated_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
+            ':id' => $id,
+        ]);
 
         write_loan_audit($pdo, $sessionUser, $id, 'updated', $existing['status'], $existing['status'], 'Loan request details updated.');
 
@@ -926,9 +854,6 @@ function update_loan_request(PDO $pdo, array $body, array $sessionUser, ?array $
     } catch (Throwable $exception) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
-        }
-        if ($storedDocumentAbsolutePath !== null && is_file($storedDocumentAbsolutePath)) {
-            @unlink($storedDocumentAbsolutePath);
         }
         throw $exception;
     }
@@ -945,7 +870,7 @@ function update_loan_request_status(PDO $pdo, array $body, array $sessionUser): 
     if (!loan_can_review($sessionUser)) {
         json_response([
             'success' => false,
-            'message' => 'Only Admin, HR users, or Regional Directors can approve or reject loan applications.',
+            'message' => 'Only the HR Head can approve or reject loan applications.',
         ], 403);
     }
 
@@ -1037,6 +962,170 @@ function update_loan_request_status(PDO $pdo, array $body, array $sessionUser): 
     ]);
 }
 
+function disburse_loan_request(PDO $pdo, array $body, array $sessionUser): void
+{
+    if (!loan_can_manage_records($sessionUser)) {
+        json_response([
+            'success' => false,
+            'message' => 'You are not allowed to disburse loan records.',
+        ], 403);
+    }
+
+    $id = (int)($body['id'] ?? 0);
+    $disbursedAt = loan_date_or_null($body['disbursedAt'] ?? $body['disbursed_at'] ?? date('Y-m-d'));
+    $existing = $id > 0 ? fetch_loan_request($pdo, $id) : null;
+
+    if ($existing === null) {
+        json_response([
+            'success' => false,
+            'message' => 'Loan record not found.',
+        ], 404);
+    }
+
+    if ($existing['status'] !== 'Approved') {
+        json_response([
+            'success' => false,
+            'message' => 'Only approved loans can be disbursed.',
+        ], 422);
+    }
+
+    if ($disbursedAt === null) {
+        json_response([
+            'success' => false,
+            'message' => 'A valid disbursement date is required.',
+        ], 422);
+    }
+
+    try {
+        $pdo->beginTransaction();
+        $statement = $pdo->prepare(
+            'UPDATE loan_records
+             SET disbursed_at = :disbursed_at,
+                 updated_by_user_id = :updated_by_user_id
+             WHERE id = :id'
+        );
+        $statement->execute([
+            ':disbursed_at' => $disbursedAt,
+            ':updated_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
+            ':id' => $id,
+        ]);
+        write_loan_audit($pdo, $sessionUser, $id, 'disbursed', 'Approved', 'Approved', 'Loan disbursed on ' . $disbursedAt . '.');
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    json_response([
+        'success' => true,
+        'message' => 'Loan marked as disbursed.',
+        'record' => fetch_loan_request($pdo, $id, null, true),
+    ]);
+}
+
+function record_loan_payment(PDO $pdo, array $body, array $sessionUser): void
+{
+    if (!loan_can_record_payments($sessionUser)) {
+        json_response([
+            'success' => false,
+            'message' => 'You are not allowed to record loan payments.',
+        ], 403);
+    }
+
+    $id = (int)($body['id'] ?? 0);
+    $existing = $id > 0 ? fetch_loan_request($pdo, $id, null, true) : null;
+
+    if ($existing === null) {
+        json_response([
+            'success' => false,
+            'message' => 'Loan record not found.',
+        ], 404);
+    }
+
+    if ($existing['status'] !== 'Approved' || empty($existing['disbursedAt'])) {
+        json_response([
+            'success' => false,
+            'message' => 'The loan must be approved and disbursed before recording a payment.',
+        ], 422);
+    }
+
+    $amount = loan_decimal($body['amount'] ?? 0);
+    $paidAt = loan_date_or_null($body['paidAt'] ?? $body['paid_at'] ?? date('Y-m-d'));
+    $installmentNumber = (int)($body['installmentNumber'] ?? $body['installment_number'] ?? ((int)$existing['paymentCount'] + 1));
+    $paymentReference = loan_text($body['paymentReference'] ?? $body['payment_reference'] ?? '');
+    $notes = loan_text($body['notes'] ?? '');
+
+    $paidForInstallment = array_reduce(
+        $existing['payments'] ?? [],
+        static fn (float $sum, array $payment): float => $sum + (
+            (int)($payment['installmentNumber'] ?? 0) === $installmentNumber
+                ? loan_decimal($payment['amount'] ?? 0)
+                : 0.0
+        ),
+        0.0
+    );
+    $scheduledAmount = (float)$existing['monthlyAmortization'];
+    if ($installmentNumber === (int)$existing['termMonths']) {
+        $scheduledAmount = max(
+            0.0,
+            (float)$existing['totalPayable'] - ((float)$existing['monthlyAmortization'] * ((int)$existing['termMonths'] - 1))
+        );
+    }
+    $installmentOutstanding = max(0.0, $scheduledAmount - $paidForInstallment);
+
+    if (
+        $amount <= 0
+        || $amount > (float)$existing['outstandingAmount'] + 0.01
+        || $amount > $installmentOutstanding + 0.01
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'Payment must be greater than zero and cannot exceed the installment balance.',
+        ], 422);
+    }
+
+    if ($paidAt === null || $installmentNumber <= 0 || $installmentNumber > max(1, (int)$existing['termMonths'])) {
+        json_response([
+            'success' => false,
+            'message' => 'A valid installment number and payment date are required.',
+        ], 422);
+    }
+
+    try {
+        $pdo->beginTransaction();
+        $statement = $pdo->prepare(
+            'INSERT INTO loan_payments
+                (loan_record_id, installment_number, amount, paid_at, payment_reference, notes, source, recorded_by_user_id)
+             VALUES
+                (:loan_record_id, :installment_number, :amount, :paid_at, :payment_reference, :notes, "manual", :recorded_by_user_id)'
+        );
+        $statement->execute([
+            ':loan_record_id' => $id,
+            ':installment_number' => $installmentNumber,
+            ':amount' => number_format($amount, 2, '.', ''),
+            ':paid_at' => $paidAt,
+            ':payment_reference' => $paymentReference !== '' ? $paymentReference : null,
+            ':notes' => $notes !== '' ? $notes : null,
+            ':recorded_by_user_id' => (int)($sessionUser['id'] ?? 0) ?: null,
+        ]);
+        write_loan_audit($pdo, $sessionUser, $id, 'payment', 'Approved', 'Approved', sprintf('Payment of %.2f recorded.', $amount));
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    json_response([
+        'success' => true,
+        'message' => 'Loan payment recorded.',
+        'record' => fetch_loan_request($pdo, $id, null, true),
+    ], 201);
+}
+
 function archive_loan_request(PDO $pdo, array $body, array $sessionUser): void
 {
     if (!loan_can_manage_records($sessionUser)) {
@@ -1108,11 +1197,15 @@ try {
     $action = loan_text($body['action'] ?? '');
 
     if ($method === 'POST') {
-        if ($action === 'update') {
-            update_loan_request($pdo, $body, $sessionUser, loan_document_upload());
+        if ($action === 'payment') {
+            record_loan_payment($pdo, $body, $sessionUser);
         }
 
-        create_loan_request($pdo, $body, $sessionUser, loan_document_upload());
+        if ($action === 'update') {
+            update_loan_request($pdo, $body, $sessionUser);
+        }
+
+        create_loan_request($pdo, $body, $sessionUser);
     }
 
     if ($method === 'PUT' || $method === 'PATCH') {
@@ -1122,6 +1215,10 @@ try {
 
         if ($action === 'archive') {
             archive_loan_request($pdo, $body, $sessionUser);
+        }
+
+        if ($action === 'disburse') {
+            disburse_loan_request($pdo, $body, $sessionUser);
         }
 
         update_loan_request($pdo, $body, $sessionUser);

@@ -1,46 +1,50 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { BrowserRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
-import { Toaster, toast } from "react-hot-toast";
+import toast, { Toaster } from "react-hot-toast";
 import Login from "./components/UI_Login/login";
 import AdminDashboard from "./page/Admin/AdminDashboard";
 import CashierDashboard from "./page/Cashier/cashierdashboard";
 import ChiefDashboard from "./page/Chief/chiefdashboard";
+import ChiefAdminDashboard from "./page/chiefadmin/chiefadmindashboard";
 import EmployeeDashboard from "./page/Employee/employeedashboard";
 import HrheadDashboard from "./page/HRHead/Hrheaddashboard";
 import HrstaffDashboard from "./page/HRStaff/Hrstaffdashboard";
 import PlanningOfficerDashboard from "./page/PlanningOfficer/planningofficerdashboard";
 import RegionalDashboard from "./page/Regionaldirector/RegionalDashboard";
-import AccountUseReturnCard from "./components/auth/AccountUseReturnCard";
+import NotFoundPage from "./page/NotFoundPage";
+import PassSlipScannerPage from "./features/passSlipScanner/PassSlipScannerPage";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import {
+  APP_ROUTE_PATHS,
   getDefaultPathForRole,
   isKnownAppPath,
   isPathAllowedForRole,
   normalizePath,
-  normalizeUser,
+  PASS_SLIP_SCANNER_PATH,
   MANAGED_USER_ROLE_KEYS,
-  readStoredUser,
-  resolveBaseRole,
-  SESSION_USER_KEY,
+  resolveRoutingRole,
 } from "./utils/roleRoutes";
 import {
   AUTH_ACCOUNT_INACTIVE_REASON,
   AUTH_SESSION_EXPIRED_EVENT,
+  AUTH_SESSION_TIMEOUT_REASON,
   getPublicSettings,
   logout,
   refreshSession,
-  returnFromTemporaryAccountUse,
-  startTemporaryAccountUse,
 } from "./services/api";
 import { startLiveUpdates, stopLiveUpdates } from "./services/liveUpdatesService";
 import { useAutoRefreshOnChange } from "./components/auto/autorefreshdatalist";
-import { applyTheme, initializeTheme, isDarkThemeEnabled } from "./components/darkmode/darkmodetoggle";
+import { initializeTheme, isDarkThemeEnabled } from "./components/darkmode/darkmodetoggle";
 import {
   applyUiThemeColor,
   getActiveUiThemeColor,
   getStoredUiThemeColor,
   isUiThemeColor,
 } from "./components/theme/systemTheme";
+import useUnsafeTextValidation from "./hooks/useUnsafeTextValidation";
+import { confirmNavigation, hasNavigationGuard } from "./utils/navigationGuard";
 
 /**
  * The one and only toast outlet for the app.
@@ -52,12 +56,12 @@ import {
  * set, and the dismissal effect bails out (`if (pausedAt) return`) for every toast from then on.
  * That is the "toasts never disappear" bug. Mount this here and nowhere else.
  *
- * `top: 72` clears the fixed 64px header the dashboards render.
+ * Keep notifications close to the top edge while leaving room for header controls.
  */
 const APP_TOASTER_PROPS = {
   position: "top-right",
-  containerStyle: { top: 72, right: 24, zIndex: 99999 },
-  toastOptions: { duration: 4500 },
+  containerStyle: { top: 56, right: 24, zIndex: 99999 },
+  toastOptions: { duration: 3000, className: "app-toast" },
 };
 
 const publicUrl = process.env.PUBLIC_URL || "";
@@ -65,10 +69,21 @@ const mgbLogo = `${publicUrl}/mgb.png`;
 
 const supportedRoles = ["admin", ...MANAGED_USER_ROLE_KEYS];
 const SESSION_TIMEOUT_WARNING_SECONDS = 30;
+const SESSION_TIMEOUT_TOAST_ID = "session-timeout-inactivity";
+
+function showSessionTimeoutToast(message = "") {
+  toast.error(
+    message || "Your session expired due to inactivity. Please sign in again.",
+    {
+      id: SESSION_TIMEOUT_TOAST_ID,
+      duration: 3000,
+    }
+  );
+}
 
 function sessionTimeoutWarningHtml(seconds) {
   return `
-    <div style="display:grid; gap:14px; color:#4b5563; font-size:17px; line-height:1.5;">
+    <div class="app-swal-copy" style="display:grid; gap:14px; font-size:17px; line-height:1.5;">
       <p style="margin:0;">You have been inactive for a while.</p>
       <p style="margin:0;">Your session will end in <strong id="session-timeout-countdown">${seconds}</strong> seconds.</p>
     </div>
@@ -76,42 +91,63 @@ function sessionTimeoutWarningHtml(seconds) {
 }
 
 export default function App() {
-  const [user, setUser] = useState(readStoredUser);
-  const [sessionHydrated, setSessionHydrated] = useState(() => !readStoredUser());
-  const [currentPath, setCurrentPath] = useState(() => normalizePath(window.location.pathname));
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </BrowserRouter>
+  );
+}
+
+function AppContent() {
+  useUnsafeTextValidation();
+
+  const {
+    user,
+    isAuthLoading,
+    setAuthenticatedUser,
+    clearAuthentication,
+  } = useAuth();
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const currentPath = normalizePath(location.pathname);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
-  const [returningFromAccountUse, setReturningFromAccountUse] = useState(false);
   // Raised while the "account set to inactive" notice is on screen, so nothing else signs the user
   // out from under it. See the session-expired listener below.
   const inactiveNoticeRef = useRef(false);
   const userId = user?.id ?? null;
+  const requiresPasswordChange = Boolean(user?.must_change_password);
 
-  useEffect(() => {
-    const handlePopState = () => setCurrentPath(normalizePath(window.location.pathname));
-
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
-
+  /*
+   * A page with unsaved work (see utils/navigationGuard.js) is asked first. Only a move the person
+   * chose is held: a `replace` is the app redirecting itself -- signing out, bouncing an unknown
+   * path -- and must never wait on a dialog.
+   */
   const navigate = useCallback((path, { replace = false } = {}) => {
-    const nextPath = normalizePath(path);
+    const target = normalizePath(path);
 
-    if (window.location.pathname !== nextPath) {
-      if (replace) {
-        window.history.replaceState({}, "", nextPath);
-      } else {
-        window.history.pushState({}, "", nextPath);
-      }
+    if (replace || !hasNavigationGuard() || target === normalizePath(window.location.pathname)) {
+      routerNavigate(target, { replace });
+      return;
     }
 
-    setCurrentPath(nextPath);
-  }, []);
+    void confirmNavigation(target).then((allowed) => {
+      if (allowed) {
+        routerNavigate(target, { replace });
+      }
+    });
+  }, [routerNavigate]);
 
   const handleLogin = (nextUser) => {
-    const normalizedUser = normalizeUser(nextUser);
-    window.localStorage.setItem(SESSION_USER_KEY, JSON.stringify(normalizedUser));
+    const normalizedUser = setAuthenticatedUser(nextUser);
     initializeTheme();
-    setUser(normalizedUser);
+
+    if (normalizedUser?.must_change_password) {
+      navigate("/login", { replace: true });
+      return;
+    }
+
     navigate(
       getDefaultPathForRole(normalizedUser?.roleKey, normalizedUser?.baseRoleKey),
       { replace: true }
@@ -119,50 +155,18 @@ export default function App() {
   };
 
   const handleLogout = useCallback(() => {
-    window.localStorage.removeItem(SESSION_USER_KEY);
-    applyTheme("light");
-    setUser(null);
-    navigate("/", { replace: true });
-  }, [navigate]);
+    clearAuthentication();
 
-  useEffect(() => {
-    const storedUser = readStoredUser();
-
-    if (!storedUser) {
-      setSessionHydrated(true);
-      return undefined;
+    // If a session ends while the catch-all page is open, leave its URL in place so the page can
+    // immediately switch from the dashboard action to the login action. Normal app pages sign out
+    // to the explicit public route.
+    if (
+      normalizePath(window.location.pathname) !== PASS_SLIP_SCANNER_PATH
+      && isKnownAppPath(window.location.pathname)
+    ) {
+      navigate("/login", { replace: true });
     }
-
-    let active = true;
-
-    refreshSession()
-      .then((result) => {
-        if (!active) {
-          return;
-        }
-
-        const normalizedUser = normalizeUser(result.user);
-        window.localStorage.setItem(SESSION_USER_KEY, JSON.stringify(normalizedUser));
-        initializeTheme();
-        setUser(normalizedUser);
-      })
-      .catch(() => {
-        // The inactive notice signs the user out itself once acknowledged; logging out here as well
-        // would drop them at the login screen before they had read it.
-        if (active && !inactiveNoticeRef.current) {
-          handleLogout();
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setSessionHydrated(true);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [handleLogout]);
+  }, [clearAuthentication, navigate]);
 
   useEffect(() => {
     const handleSessionExpired = (event) => {
@@ -176,6 +180,12 @@ export default function App() {
        * the event until the user has acknowledged it.
        */
       if (inactiveNoticeRef.current) {
+        return;
+      }
+
+      if (event?.detail?.reason === AUTH_SESSION_TIMEOUT_REASON) {
+        handleLogout();
+        showSessionTimeoutToast(event?.detail?.message);
         return;
       }
 
@@ -283,8 +293,35 @@ export default function App() {
     refreshOnMount: false,
   });
 
+  // A local Settings save publishes `settings`; the server change feed publishes
+  // `security_policy` for saves made on another machine. Both paths update the timer without making
+  // the user sign out, reload, or wait for their stored user object to change.
+  const refreshSessionTimeout = useCallback(async () => {
+    if (!userId) {
+      return;
+    }
+
+    try {
+      const result = await getPublicSettings();
+      const timeout = Number(result.security?.sessionTimeoutMinutes || result.sessionTimeoutMinutes);
+
+      if (Number.isFinite(timeout) && timeout > 0) {
+        setSessionTimeoutMinutes(timeout);
+      }
+    } catch {
+      // Keep the last known policy; the next feed event, focus refresh, or reload retries it.
+    }
+  }, [userId]);
+
+  useAutoRefreshOnChange(refreshSessionTimeout, {
+    topics: ["security_policy", "settings"],
+    enabled: Boolean(userId),
+    refreshOnMount: false,
+    intervalMs: 0,
+  });
+
   useEffect(() => {
-    if (!user) {
+    if (!user || currentPath === PASS_SLIP_SCANNER_PATH) {
       return undefined;
     }
 
@@ -313,7 +350,7 @@ export default function App() {
       }
     };
 
-    const expireSession = () => {
+    const expireSession = ({ notify = true } = {}) => {
       if (expired) {
         return;
       }
@@ -324,6 +361,10 @@ export default function App() {
       logout().catch(() => {});
       if (!cleanedUp) {
         handleLogout();
+
+        if (notify) {
+          showSessionTimeoutToast();
+        }
       }
     };
 
@@ -336,7 +377,7 @@ export default function App() {
       }
 
       lastSessionRefreshAt = now;
-      refreshSession().catch(() => {});
+      refreshSession({ extend: true }).catch(() => {});
     };
 
     const scheduleWarning = () => {
@@ -390,7 +431,7 @@ export default function App() {
 
           if (result.isConfirmed) {
             try {
-              await refreshSession();
+              await refreshSession({ extend: true });
               scheduleWarning();
             } catch {
               expireSession();
@@ -398,7 +439,7 @@ export default function App() {
             return;
           }
 
-          expireSession();
+          expireSession({ notify: result.dismiss === Swal.DismissReason.timer });
         });
       }, warningDelayMs);
     };
@@ -430,84 +471,64 @@ export default function App() {
         window.removeEventListener(eventName, resetTimer);
       });
     };
-  }, [handleLogout, sessionTimeoutMinutes, user]);
+  }, [currentPath, handleLogout, sessionTimeoutMinutes, user]);
 
   const handleUserChange = useCallback((nextUser) => {
-    const normalizedUser = normalizeUser(nextUser);
-    window.localStorage.setItem(SESSION_USER_KEY, JSON.stringify(normalizedUser));
+    setAuthenticatedUser(nextUser);
     initializeTheme();
-    setUser(normalizedUser);
-  }, []);
+  }, [setAuthenticatedUser]);
 
-  const handleStartAccountUse = useCallback(async (targetUser) => {
-    const result = await startTemporaryAccountUse(targetUser?.id);
-    const normalizedUser = normalizeUser(result.user);
-
-    window.localStorage.setItem(SESSION_USER_KEY, JSON.stringify(normalizedUser));
-    setUser(normalizedUser);
-    navigate(
-      getDefaultPathForRole(normalizedUser?.roleKey, normalizedUser?.baseRoleKey),
-      { replace: true }
-    );
-
-    return result;
-  }, [navigate]);
-
-  const handleReturnFromAccountUse = useCallback(async () => {
-    if (returningFromAccountUse) {
+  useEffect(() => {
+    if (isAuthLoading) {
       return;
     }
 
-    setReturningFromAccountUse(true);
-
-    try {
-      const result = await returnFromTemporaryAccountUse();
-      const normalizedUser = normalizeUser(result.user);
-
-      window.localStorage.setItem(SESSION_USER_KEY, JSON.stringify(normalizedUser));
-      setUser(normalizedUser);
-      navigate(
-        getDefaultPathForRole(normalizedUser?.roleKey, normalizedUser?.baseRoleKey),
-        { replace: true }
-      );
-      toast.success(result.message || "Returned to your administrator account.");
-    } catch (error) {
-      toast.error(error.response?.data?.message || "Unable to return to your administrator account.");
-
-      if (error.response?.status === 401) {
-        handleLogout();
-      }
-    } finally {
-      setReturningFromAccountUse(false);
-    }
-  }, [handleLogout, navigate, returningFromAccountUse]);
-
-  useEffect(() => {
     if (!user) {
-      if (currentPath !== "/") {
-        navigate("/", { replace: true });
+      if (currentPath === PASS_SLIP_SCANNER_PATH) {
+        return;
+      }
+
+      // Unknown addresses must remain visible so the anonymous 404 action can be shown. Only known
+      // protected routes are sent to the explicit login route.
+      if (currentPath === "/" || (currentPath !== "/login" && isKnownAppPath(currentPath))) {
+        navigate("/login", { replace: true });
+      }
+      return;
+    }
+
+    // A first-login session is authenticated only far enough to replace its temporary password.
+    // Keep every reload and pasted dashboard URL on the required password-change screen.
+    if (requiresPasswordChange) {
+      if (currentPath !== "/login") {
+        navigate("/login", { replace: true });
       }
       return;
     }
 
     // A custom role is admitted through the built-in role it was based on, since that
     // is the dashboard and route prefix it actually uses.
-    const routingRole = resolveBaseRole(user.roleKey || user.role, user.baseRoleKey);
+    const routingRole = resolveRoutingRole(user.roleKey || user.role, user.baseRoleKey);
 
     if (!supportedRoles.includes(routingRole)) {
       handleLogout();
       return;
     }
 
-    if (!isKnownAppPath(currentPath)) {
+    if (currentPath === "/" || currentPath === "/login") {
       navigate(getDefaultPathForRole(user.roleKey, user.baseRoleKey), { replace: true });
+      return;
+    }
+
+    if (!isKnownAppPath(currentPath)) {
+      // The wildcard route owns unknown paths. Keeping the location intact also makes refreshes
+      // deterministic and avoids a redirect loop through the dashboard or login page.
       return;
     }
 
     if (!isPathAllowedForRole(currentPath, user.roleKey, user.baseRoleKey)) {
       navigate(getDefaultPathForRole(user.roleKey, user.baseRoleKey), { replace: true });
     }
-  }, [currentPath, handleLogout, navigate, user]);
+  }, [currentPath, handleLogout, isAuthLoading, navigate, requiresPasswordChange, user]);
 
   /*
    * The change feed only makes sense for a signed-in browser: it needs a session to authorise the
@@ -515,44 +536,35 @@ export default function App() {
    * `userId` also means signing out tears the parked request down rather than leaving it to 401.
    */
   useEffect(() => {
-    if (!userId) {
+    if (!userId || requiresPasswordChange || currentPath === PASS_SLIP_SCANNER_PATH) {
       return undefined;
     }
 
     startLiveUpdates();
 
     return () => stopLiveUpdates();
-  }, [userId]);
+  }, [currentPath, requiresPasswordChange, userId]);
 
   /*
    * Permissions are read from the session, so a revoked module only takes effect once the session is
    * re-read. Without this an admin unchecking a module changed nothing on the affected person's
    * screen until they signed out and back in.
    *
-   * The stored copy is compared before calling setUser: this runs on an auto-refresh event, and
-   * handing React a new user object when nothing actually changed would remount the workspace under
-   * whoever is using it.
+   * Compare with this tab's React state as well as storage. Another tab may already
+   * have updated shared localStorage while this tab still displays the old grants.
    */
   const refreshPermissions = useCallback(async () => {
-    if (!userId) {
+    if (!userId || requiresPasswordChange) {
       return;
     }
 
     try {
       const result = await refreshSession();
-      const normalizedUser = normalizeUser(result.user);
-      const serialized = JSON.stringify(normalizedUser);
-
-      if (serialized === window.localStorage.getItem(SESSION_USER_KEY)) {
-        return;
-      }
-
-      window.localStorage.setItem(SESSION_USER_KEY, serialized);
-      setUser(normalizedUser);
+      setAuthenticatedUser(result.user);
     } catch {
       // A failed poll changes nothing; a genuinely dead session is handled by the 401 interceptor.
     }
-  }, [userId]);
+  }, [requiresPasswordChange, setAuthenticatedUser, userId]);
 
   /*
    * `settings` is here because the admin screen saves the permission matrix through settings.php,
@@ -560,13 +572,20 @@ export default function App() {
    * permissions.php endpoint.
    */
   useAutoRefreshOnChange(refreshPermissions, {
-    topics: ["permissions", "settings"],
+    enabled: Boolean(userId) && !requiresPasswordChange && currentPath !== PASS_SLIP_SCANNER_PATH,
+    topics: ["permissions", "settings", "user", "roles"],
     refreshOnMount: false,
   });
 
   let content = null;
+  const dashboardPath = user
+    ? getDefaultPathForRole(user.roleKey, user.baseRoleKey)
+    : "/login";
+  const renderedPath = currentPath === "/dashboard" ? dashboardPath : currentPath;
 
-  if (!sessionHydrated) {
+  if (currentPath === PASS_SLIP_SCANNER_PATH) {
+    content = <PassSlipScannerPage />;
+  } else if (isAuthLoading) {
     content = (
       <div className="grid min-h-screen place-items-center bg-white px-4 text-center text-slate-900">
         <div>
@@ -580,21 +599,34 @@ export default function App() {
         </div>
       </div>
     );
+  } else if (!user && (currentPath === "/login" || currentPath === "/")) {
+    content = <Login onLogin={handleLogin} onForcePasswordSessionEnd={handleLogout} />;
   } else if (!user) {
-    content = <Login onLogin={handleLogin} />;
+    content = (
+      <div className="grid min-h-screen place-items-center bg-white px-4 text-center text-slate-900">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-slate-200 border-t-[#D61E1E]" role="status" aria-label="Opening login page" />
+      </div>
+    );
+  } else if (requiresPasswordChange) {
+    content = (
+      <Login
+        initialForcePasswordUser={user}
+        onForcePasswordSessionEnd={handleLogout}
+        onLogin={handleLogin}
+      />
+    );
   } else if (isPathAllowedForRole(currentPath, user.roleKey, user.baseRoleKey)) {
     // Custom roles render their base role's dashboard; the module checklist decides
     // what that dashboard actually shows them.
-    switch (resolveBaseRole(user.roleKey || user.role, user.baseRoleKey)) {
+    switch (resolveRoutingRole(user.roleKey || user.role, user.baseRoleKey)) {
       case "admin":
         content = (
           <AdminDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
-            onUseAccount={handleStartAccountUse}
           />
         );
         break;
@@ -603,7 +635,18 @@ export default function App() {
           <ChiefDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
+            onNavigate={navigate}
+            onUserChange={handleUserChange}
+          />
+        );
+        break;
+      case "chiefadmin":
+        content = (
+          <ChiefAdminDashboard
+            user={user}
+            onLogout={handleLogout}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
           />
@@ -614,7 +657,7 @@ export default function App() {
           <PlanningOfficerDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
           />
@@ -625,7 +668,7 @@ export default function App() {
           <CashierDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
           />
@@ -636,7 +679,7 @@ export default function App() {
           <EmployeeDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
           />
@@ -647,7 +690,7 @@ export default function App() {
           <RegionalDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
           />
@@ -658,7 +701,7 @@ export default function App() {
           <HrheadDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
           />
@@ -669,14 +712,14 @@ export default function App() {
           <HrstaffDashboard
             user={user}
             onLogout={handleLogout}
-            currentPath={currentPath}
+            currentPath={renderedPath}
             onNavigate={navigate}
             onUserChange={handleUserChange}
           />
         );
         break;
-      default:
-        content = null;
+        default:
+          content = null;
     }
   } else {
     // The route is real but is not part of this user's role. The redirect effect above sends the
@@ -687,15 +730,14 @@ export default function App() {
   return (
     <>
       <Toaster {...APP_TOASTER_PROPS} />
-      {content}
-      <AccountUseReturnCard
-        user={user}
-        returning={returningFromAccountUse}
-        onReturn={handleReturnFromAccountUse}
-      />
+      <Routes>
+        {APP_ROUTE_PATHS.map((path) => (
+          <Route key={path} path={path} caseSensitive element={content} />
+        ))}
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
     </>
   );
 }
-
 
 

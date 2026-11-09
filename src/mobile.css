@@ -290,3 +290,66 @@
     display: none;
   }
 }
+
+/* --------------------------------------------------------------------------
+ * 8. Header notifications
+ *
+ * Keep the bell popover as a compact, scrollable card instead of allowing its
+ * desktop dimensions to cover nearly the entire mobile workspace.
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 639.98px) {
+  .notification-bell-panel {
+    width: min(300px, calc(100vw - 48px));
+    max-width: calc(100vw - 48px);
+  }
+
+  .notification-bell-panel .notification-bell-list {
+    max-height: min(260px, calc(100dvh - 240px));
+  }
+
+  .notification-bell-panel .notification-bell-header {
+    padding: 0.65rem 0.75rem;
+  }
+
+  .notification-bell-panel .notification-bell-footer {
+    padding: 0.75rem;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 9. Profile workspace
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 639.98px) {
+  /* The tab row remains one swipeable line without leaving a permanent scrollbar under it. */
+  .profile-section-nav-rail {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .profile-section-nav-rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Header actions such as Request Edit should be easy to tap and never overrun the card title. */
+  .profile-section-card-actions .app-button {
+    width: 100%;
+  }
+
+  /* Three document actions share the available row; their labels carry the meaning on a phone. */
+  .profile-document-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .profile-document-actions .app-button {
+    min-width: 0;
+    padding-right: 0.35rem;
+    padding-left: 0.35rem;
+  }
+
+  .profile-document-actions .app-button > svg {
+    display: none;
+  }
+}

@@ -1,3 +1,4 @@
+import ResponsiveContainer from "../../components/chart/ResponsiveChartContainer";
 import React, { memo, useMemo, useState } from "react";
 import {
   Area,
@@ -10,7 +11,6 @@ import {
   LineChart,
   Pie,
   PieChart,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
@@ -21,8 +21,8 @@ import {
   formatCurrency,
   formatDecimal,
   formatNumber,
-  SERIES_SLOT_COUNT,
-  assignEntitySlots,
+  colorEntityRows,
+  colorOrdinalRows,
   normalizeEntityKey,
   resolveEntityColors,
   useLazyMount,
@@ -204,7 +204,7 @@ const MovementChart = memo(function MovementChart({ data, theme }) {
   );
 });
 
-const HeadcountChart = memo(function HeadcountChart({ data, theme }) {
+const MonthlyHeadcountGrowthChart = memo(function MonthlyHeadcountGrowthChart({ data, theme }) {
   return (
     <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
       <AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -215,16 +215,16 @@ const HeadcountChart = memo(function HeadcountChart({ data, theme }) {
           </linearGradient>
         </defs>
         <CartesianGrid stroke={theme.grid} vertical={false} />
-        <XAxis dataKey="shortLabel" {...categoryAxisProps(theme)} />
-        <YAxis {...valueAxisProps(theme)} allowDecimals={false} domain={["dataMin - 2", "dataMax + 2"]} />
+        <XAxis dataKey="shortLabel" {...categoryAxisProps(theme)} interval={0} />
+        <YAxis {...valueAxisProps(theme)} allowDecimals={false} domain={[0, "dataMax + 2"]} />
         <Tooltip
           cursor={{ stroke: theme.baseline, strokeWidth: 1 }}
           content={<ChartTooltip theme={theme} labelFormatter={(value) => `Month: ${value}`} />}
         />
         <Area
           type="monotone"
-          dataKey="headcount"
-          name="Headcount"
+          dataKey="hires"
+          name="Employees Hired"
           stroke={theme.series[0]}
           strokeWidth={2}
           fill="url(#reports-headcount-fill)"
@@ -348,6 +348,7 @@ const RankedBarChart = memo(function RankedBarChart({
   );
 });
 
+/** Column counterpart of `RankedBarChart`; a row's own `color` (entity hue or ordinal step) wins. */
 const ColumnChart = memo(function ColumnChart({ data, theme, valueFormatter = formatNumber, seriesLabel = "Employees", colorIndex = 0 }) {
   return (
     <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
@@ -359,7 +360,13 @@ const ColumnChart = memo(function ColumnChart({ data, theme, valueFormatter = fo
           cursor={{ fill: theme.grid, fillOpacity: 0.4 }}
           content={<ChartTooltip theme={theme} formatter={(value) => valueFormatter(value)} />}
         />
-        <Bar dataKey="value" name={seriesLabel} fill={theme.series[colorIndex]} radius={[4, 4, 0, 0]} maxBarSize={24} />
+        <Bar dataKey="value" name={seriesLabel} fill={theme.series[colorIndex]} radius={[4, 4, 0, 0]} maxBarSize={24}>
+          {data.some((row) => row.color)
+            ? data.map((row, index) => (
+                <Cell key={`${row.label}-${index}`} fill={row.color || theme.series[colorIndex]} />
+              ))
+            : null}
+        </Bar>
       </BarChart>
     </ResponsiveContainer>
   );
@@ -427,6 +434,94 @@ const MultiSeriesTrend = memo(function MultiSeriesTrend({
 /* ------------------------------------------------------------------ */
 
 const EMPTY_ARRAY = [];
+const HEADCOUNT_MONTH_LABELS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+/**
+ * The API uses daily points for short report windows because Workforce Movement benefits from that
+ * detail. Monthly headcount growth counts employees by date hired, so daily hire totals are summed
+ * into calendar months. API data that is already monthly or yearly is left at its existing scale.
+ */
+export function groupMonthlyHeadcountGrowth(rows = []) {
+  const grouped = new Map();
+
+  rows.forEach((row, index) => {
+    const period = String(row?.period || "");
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(period)) {
+      grouped.set(period || `period-${index}`, row);
+      return;
+    }
+
+    const monthPeriod = period.slice(0, 7);
+    const [year, monthText] = monthPeriod.split("-");
+    const monthName = HEADCOUNT_MONTH_LABELS[Number(monthText) - 1] || monthText;
+    const monthLabel = `${monthName} ${year}`;
+
+    const previous = grouped.get(monthPeriod);
+
+    grouped.set(monthPeriod, {
+      ...row,
+      period: monthPeriod,
+      label: monthLabel,
+      shortLabel: monthLabel,
+      granularity: "month",
+      hires: Number(previous?.hires || 0) + Number(row?.hires || 0),
+    });
+  });
+
+  const monthlyRows = Array.from(grouped.values());
+  const years = Array.from(new Set(
+    monthlyRows
+      .map((row) => String(row?.period || ""))
+      .filter((period) => /^\d{4}-\d{2}$/.test(period))
+      .map((period) => period.slice(0, 4))
+  ));
+
+  // Year-level API series cannot be expanded accurately without inventing monthly values.
+  if (monthlyRows.length === 0 || years.length === 0 || years.some((year) => !/^\d{4}$/.test(year))) {
+    return monthlyRows;
+  }
+
+  const allRowsAreMonthly = monthlyRows.every((row) => /^\d{4}-\d{2}$/.test(String(row?.period || "")));
+  if (!allRowsAreMonthly) {
+    return monthlyRows;
+  }
+
+  const showYear = years.length > 1;
+  const completed = [];
+
+  years.forEach((year) => {
+    HEADCOUNT_MONTH_LABELS.forEach((monthName, monthIndex) => {
+      const monthPeriod = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
+      const monthLabel = `${monthName} ${year}`;
+      const existing = grouped.get(monthPeriod);
+
+      completed.push({
+        ...(existing || {}),
+        period: monthPeriod,
+        label: monthLabel,
+        shortLabel: showYear ? monthLabel : monthName,
+        granularity: "month",
+        hires: Number(existing?.hires || 0),
+      });
+    });
+  });
+
+  return completed;
+}
 
 function WorkforceMovementCard({ charts, theme, loading, refreshing, className }) {
   const data = charts.employeeGrowth || EMPTY_ARRAY;
@@ -445,19 +540,22 @@ function WorkforceMovementCard({ charts, theme, loading, refreshing, className }
   );
 }
 
-function HeadcountTrendCard({ charts, theme, loading, refreshing, className }) {
-  const data = charts.employeeGrowth || EMPTY_ARRAY;
+function MonthlyHeadcountGrowthCard({ charts, theme, loading, refreshing, className }) {
+  const data = useMemo(
+    () => groupMonthlyHeadcountGrowth(charts.monthlyHeadcountGrowth || charts.employeeGrowth || EMPTY_ARRAY),
+    [charts.employeeGrowth, charts.monthlyHeadcountGrowth]
+  );
 
   return (
     <ChartCard
-      title="Headcount Trend"
-      description="Active roster at the close of each period in the selected date range, after hires and separations."
+      title="Monthly Headcount Growth"
+      description="Employees hired per month in the report year, based on their recorded date hired."
       loading={loading}
       refreshing={refreshing}
       isEmpty={data.length === 0}
       className={className}
     >
-      <HeadcountChart data={data} theme={theme} />
+      <MonthlyHeadcountGrowthChart data={data} theme={theme} />
     </ChartCard>
   );
 }
@@ -522,8 +620,9 @@ function RecordStatusCard({ charts, theme, loading, refreshing, className }) {
   );
 }
 
+/* A hue per appointment type, keyed to its name -- see `colorEntityRows`. */
 function EmploymentStatusCard({ charts, theme, loading, refreshing, className }) {
-  const data = charts.employmentStatus || EMPTY_ARRAY;
+  const data = colorEntityRows(charts.employmentStatus || EMPTY_ARRAY, theme);
 
   return (
     <ChartCard
@@ -550,22 +649,11 @@ function EmploymentStatusCard({ charts, theme, loading, refreshing, className })
  * pairlist, which the eight-slot order clears in both modes. Sorting these bars by headcount would
  * put the chart straight back on the all-pairs pairlist that the donut just failed, so the order is
  * a colour-correctness constraint here, not a display preference. Bar length still carries the
- * ranking.
+ * ranking. `colorEntityRows` does both.
  */
 function DivisionDistributionCard({ charts, theme, loading, refreshing, className }) {
   const data = charts.divisionDistribution || EMPTY_ARRAY;
-  const slots = assignEntitySlots(data.map((row) => row.label));
-  const ranked = [...data]
-    .map((row) => {
-      const slot = slots.get(normalizeEntityKey(row.label));
-
-      return {
-        ...row,
-        slot: slot === null || slot === undefined ? SERIES_SLOT_COUNT : slot,
-        color: slot === null || slot === undefined ? theme.textMuted : theme.series[slot],
-      };
-    })
-    .sort((left, right) => left.slot - right.slot || (Number(right.value) || 0) - (Number(left.value) || 0));
+  const ranked = colorEntityRows(data, theme);
 
   return (
     <ChartCard
@@ -586,7 +674,7 @@ function DesignationDistributionCard({ charts, theme, loading, refreshing, class
 
   return (
     <ChartCard
-      title="Designation Distribution"
+      title="Position Distribution"
       description="Headcount by position."
       loading={loading}
       refreshing={refreshing}
@@ -598,8 +686,17 @@ function DesignationDistributionCard({ charts, theme, loading, refreshing, class
   );
 }
 
+/*
+ * The bands reports.php buckets these three charts into, in the order they run. The API groups by the
+ * label text, so without this "3-5 yrs" would sort after "11-20 yrs" and "<20K" after "80K+"; the
+ * order is also what the ordinal ramp steps along.
+ */
+const AGE_BANDS = ["20-25", "26-30", "31-35", "36-40", "41+"];
+const SERVICE_BANDS = ["<1 yr", "1-2 yrs", "3-5 yrs", "6-10 yrs", "11-20 yrs", "21+ yrs"];
+const SALARY_BANDS = ["<20K", "20-30K", "30-40K", "40-60K", "60-80K", "80K+"];
+
 function AgeDistributionCard({ charts, theme, loading, refreshing, className }) {
-  const data = charts.ageDistribution || EMPTY_ARRAY;
+  const data = colorOrdinalRows(charts.ageDistribution || EMPTY_ARRAY, theme, AGE_BANDS);
 
   return (
     <ChartCard
@@ -610,13 +707,13 @@ function AgeDistributionCard({ charts, theme, loading, refreshing, className }) 
       isEmpty={data.length === 0}
       className={className}
     >
-      <ColumnChart data={data} theme={theme} colorIndex={2} />
+      <ColumnChart data={data} theme={theme} />
     </ChartCard>
   );
 }
 
 function YearsOfServiceCard({ charts, theme, loading, refreshing, className }) {
-  const data = charts.yearsOfService || EMPTY_ARRAY;
+  const data = colorOrdinalRows(charts.yearsOfService || EMPTY_ARRAY, theme, SERVICE_BANDS);
 
   return (
     <ChartCard
@@ -627,14 +724,14 @@ function YearsOfServiceCard({ charts, theme, loading, refreshing, className }) {
       isEmpty={data.length === 0}
       className={className}
     >
-      <ColumnChart data={data} theme={theme} colorIndex={3} />
+      <ColumnChart data={data} theme={theme} />
     </ChartCard>
   );
 }
 
 /** Read straight off the employees table, so it stands even when the payroll module has no tables. */
 function SalaryDistributionCard({ charts, theme, loading, refreshing, className }) {
-  const data = charts.salaryDistribution || EMPTY_ARRAY;
+  const data = colorOrdinalRows(charts.salaryDistribution || EMPTY_ARRAY, theme, SALARY_BANDS);
 
   return (
     <ChartCard
@@ -645,7 +742,7 @@ function SalaryDistributionCard({ charts, theme, loading, refreshing, className 
       isEmpty={data.length === 0}
       className={className}
     >
-      <ColumnChart data={data} theme={theme} colorIndex={2} />
+      <ColumnChart data={data} theme={theme} />
     </ChartCard>
   );
 }
@@ -678,8 +775,13 @@ function PayrollTrendCard({ charts, theme, loading, refreshing, className }) {
   );
 }
 
+/* Resolved against the Division Distribution names too, so a division wears one hue on both charts. */
 function PayrollByDivisionCard({ charts, theme, loading, refreshing, className }) {
-  const data = charts.payrollByDivision || EMPTY_ARRAY;
+  const payroll = charts.payrollByDivision || EMPTY_ARRAY;
+  const data = colorEntityRows(payroll, theme, [
+    ...(charts.divisionDistribution || EMPTY_ARRAY).map((row) => row.label),
+    ...payroll.map((row) => row.label),
+  ]);
 
   return (
     <ChartCard
@@ -724,7 +826,7 @@ function DeductionDistributionCard({ charts, theme, loading, refreshing, classNa
   return (
     <ChartCard
       title="Deduction Distribution"
-      description="Every deduction line the payslip prints, with the total withheld against it."
+      description="Payroll deduction totals in the same order as the Payroll Deductions report."
       loading={loading}
       refreshing={refreshing}
       isEmpty={data.length === 0}
@@ -817,7 +919,7 @@ function AttendanceSummaryCard({ charts, theme, loading, refreshing, className }
 }
 
 function AttendanceExceptionsCard({ charts, theme, loading, refreshing, className }) {
-  const data = charts.attendanceExceptions || EMPTY_ARRAY;
+  const data = colorEntityRows(charts.attendanceExceptions || EMPTY_ARRAY, theme);
 
   return (
     <ChartCard
@@ -828,23 +930,27 @@ function AttendanceExceptionsCard({ charts, theme, loading, refreshing, classNam
       isEmpty={data.every((item) => !item.value)}
       className={className}
     >
-      <ColumnChart data={data} theme={theme} seriesLabel="Records" colorIndex={1} />
+      <ColumnChart data={data} theme={theme} seriesLabel="Records" />
     </ChartCard>
   );
 }
 
 function AttendanceTrendCard({ charts, theme, loading, refreshing, className }) {
   const data = charts.attendanceTrend || EMPTY_ARRAY;
+  /*
+   * The same three slots as the dashboard's stacked Attendance Trend card, so a series keeps its
+   * hue between the two screens. Late is blue rather than amber because, stacked against orange
+   * Absent, amber falls below the palette validator's normal-vision floor.
+   */
   const series = [
     { key: "present", label: "Present", color: theme.series[2] },
     { key: "absent", label: "Absent", color: theme.series[1] },
-    { key: "late", label: "Late", color: theme.series[3] },
+    { key: "late", label: "Late", color: theme.series[0] },
   ];
 
   return (
     <ChartCard
       title="Attendance Trend"
-      description="Present, absent, and late counts per day across the selected range."
       loading={loading}
       refreshing={refreshing}
       isEmpty={data.length === 0}
@@ -920,7 +1026,7 @@ function ModuleUnavailable({ label }) {
  */
 const CHART_CARDS = {
   workforceMovement: { Card: WorkforceMovementCard },
-  headcountTrend: { Card: HeadcountTrendCard },
+  monthlyHeadcountGrowth: { Card: MonthlyHeadcountGrowthCard },
   employeeComposition: { Card: EmployeeCompositionCard },
   recordStatus: { Card: RecordStatusCard },
   employmentStatus: { Card: EmploymentStatusCard },
@@ -954,8 +1060,8 @@ const CHART_CARDS = {
  */
 const REPORT_CHARTS = {
   /* Employee */
-  "employee-list": ["headcountTrend", "divisionDistribution", "employmentStatus", "employeeComposition"],
-  "employee-active": ["recordStatus", "headcountTrend"],
+  "employee-list": ["monthlyHeadcountGrowth", "divisionDistribution", "employmentStatus", "employeeComposition"],
+  "employee-active": ["recordStatus", "monthlyHeadcountGrowth"],
   "employee-inactive": ["recordStatus", "workforceMovement"],
   "employee-male": ["employeeComposition"],
   "employee-female": ["employeeComposition"],
@@ -963,7 +1069,7 @@ const REPORT_CHARTS = {
   "employee-senior": ["ageDistribution"],
   "employee-permanent": ["employmentStatus"],
   "employee-cos": ["employmentStatus"],
-  "employee-newly-hired": ["workforceMovement", "headcountTrend"],
+  "employee-newly-hired": ["workforceMovement", "monthlyHeadcountGrowth"],
   "employee-separated": ["workforceMovement"],
   "employee-retired": ["ageDistribution", "yearsOfService"],
   "employee-birthdays": ["ageDistribution"],
@@ -977,8 +1083,8 @@ const REPORT_CHARTS = {
   "department-division-report": ["divisionDistribution"],
 
   /* Payroll */
-  "payroll-report": ["payrollTrend", "payrollStatus"],
   "payroll-released": ["payrollTrend", "payrollStatus"],
+  "payroll-report": ["payrollTrend", "payrollStatus"],
   "payroll-pending": ["payrollStatus"],
   "payroll-by-division": ["payrollByDivision"],
   "payroll-by-employee": ["salaryDistribution"],
@@ -1023,7 +1129,7 @@ const REPORT_CHARTS = {
 
 /** Only reached by a report key the map above has not been taught yet, so a new report is never blank. */
 const CATEGORY_FALLBACK_CHARTS = {
-  employee: ["headcountTrend", "divisionDistribution"],
+  employee: ["monthlyHeadcountGrowth", "divisionDistribution"],
   payroll: ["payrollTrend", "payrollStatus"],
   leave: ["leaveStatus", "leaveTrend"],
   attendance: ["attendanceSummary", "attendanceTrend"],

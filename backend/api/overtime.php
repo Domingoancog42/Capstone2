@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/connection-pdo.php';
 require_once __DIR__ . '/password-reset-utils.php';
 require_once __DIR__ . '/captcha-utils.php';
+require_once __DIR__ . '/overtime-accomplishment-utils.php';
 
 $sessionUser = require_session_user();
 
@@ -79,30 +80,40 @@ function overtime_can_view_all(array $user): bool
 }
 
 /*
- * Overtime is authorized in two desks, the same chain leave already uses. A chief files for the
- * employees of the division and may still correct or withdraw the filing, but signs off on nothing;
- * HR marks it Reviewed; the Regional Director gives the final Approved. Only that last signature
- * turns the filing into a compensatory overtime credit, which is why the credit page counts
- * Approved rows and ignores Reviewed ones.
- *
- * A planning officer works the same division desk, so it files the same way -- neither role adds a
- * signature to the chain.
+ * Archiving is tidying, not deciding, so the applicant may do it too -- but only once the request
+ * is settled, so a filing still moving through HR and the Regional Director cannot be hidden from
+ * them. Mirrors the `overtime` entry of ARCHIVE_MANAGER_ROLES in frontend/src/utils/archiveActions.js,
+ * which only decides whether the button is drawn; this is what refuses the request.
  */
-function overtime_is_chief(array $user): bool
+function overtime_is_self_service_role(array $user): bool
 {
-    return in_array(overtime_role_key($user), ['chief', 'planningofficer'], true);
+    return overtime_role_key($user) === 'employee';
 }
 
-/** The HR desk: may mark a pending filing Reviewed, never give the final approval. */
-function overtime_can_review(array $user): bool
+function overtime_can_archive(array $user): bool
 {
-    return in_array(overtime_role_key($user), ['admin', 'hrhead', 'hrstaff'], true);
+    return overtime_can_manage($user) || overtime_is_self_service_role($user);
+}
+
+/*
+ * Overtime is authorized in two desks. The Chief Admin gives the first approval, stored as
+ * Reviewed for compatibility with existing rows, and the Regional Director gives the final
+ * Approved. Only that last signature turns the filing into a compensatory overtime credit, which
+ * is why the credit page counts Approved rows and ignores Reviewed ones.
+ *
+ * Division Chiefs and planning officers may help file requests, but they are not approvers in
+ * this workflow.
+ */
+function overtime_can_chief_admin_approve(array $user): bool
+{
+    /* Chief Admin is based on Chief, so overtime_role_key() says `chief`; the stage needs the exact role. */
+    return user_exact_role_key($user) === 'chiefadmin';
 }
 
 /** The Regional Director's desk: the only one whose approval creates the credit. */
 function overtime_can_give_final_approval(array $user): bool
 {
-    return in_array(overtime_role_key($user), ['admin', 'regionaldirector'], true);
+    return overtime_role_key($user) === 'regionaldirector';
 }
 
 function overtime_status_to_database(mixed $status): string
@@ -118,6 +129,10 @@ function overtime_status_to_database(mixed $status): string
 
 function ensure_overtime_table(PDO $pdo): void
 {
+    // An incomplete SQL import can omit AUTO_INCREMENT and create request ID 0.
+    // Every request action requires a positive ID; keep new filings addressable.
+    restore_auto_increment_primary_key($pdo, 'overtime', 'overtime_id');
+
     if (!database_column_exists($pdo, 'overtime', 'work_date')) {
         $pdo->exec('ALTER TABLE overtime ADD COLUMN work_date DATE NULL AFTER employee_id');
 
@@ -172,6 +187,43 @@ function ensure_overtime_table(PDO $pdo): void
 
     if (!database_column_exists($pdo, 'overtime', 'source')) {
         $pdo->exec("ALTER TABLE overtime ADD COLUMN source VARCHAR(40) NOT NULL DEFAULT 'request' AFTER duration");
+    }
+
+    /*
+     * The accomplishment report's details are taken when the overtime is filed -- the window it is
+     * rendered in, where, and the output expected -- so the memo comes pre-filled once the hours are
+     * rendered. Nullable: filings made before this have none, and their memo is filled in by hand.
+     */
+    if (!database_column_exists($pdo, 'overtime', 'time_start')) {
+        $pdo->exec('ALTER TABLE overtime ADD COLUMN time_start TIME NULL DEFAULT NULL AFTER hour_requested');
+    }
+
+    if (!database_column_exists($pdo, 'overtime', 'time_end')) {
+        $pdo->exec('ALTER TABLE overtime ADD COLUMN time_end TIME NULL DEFAULT NULL AFTER time_start');
+    }
+
+    if (!database_column_exists($pdo, 'overtime', 'location')) {
+        $pdo->exec('ALTER TABLE overtime ADD COLUMN location VARCHAR(120) NULL DEFAULT NULL AFTER time_end');
+    }
+
+    if (!database_column_exists($pdo, 'overtime', 'expected_outputs')) {
+        $pdo->exec('ALTER TABLE overtime ADD COLUMN expected_outputs TEXT NULL DEFAULT NULL AFTER reason');
+    }
+
+    /*
+     * The reason is now the task list, one task per line, which outgrows a VARCHAR(255) -- and this
+     * server is not in strict mode, so a longer one would be cut short without an error.
+     */
+    $reasonType = $pdo->query(
+        'SELECT DATA_TYPE
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = "overtime"
+           AND COLUMN_NAME = "reason"'
+    )->fetchColumn();
+
+    if (strtolower((string)$reasonType) === 'varchar') {
+        $pdo->exec('ALTER TABLE overtime MODIFY reason TEXT NULL');
     }
 
     $pdo->exec(
@@ -359,6 +411,67 @@ function calculate_hours_worked(?string $timeIn, ?string $timeOut): ?float
     return round(($end - $start) / 3600, 2);
 }
 
+/**
+ * The accomplishment-report details a filing carries: the window the overtime is rendered in, where,
+ * and the output expected (the reason holds the tasks). When a window is given the hours are counted
+ * from it rather than taken from the form, so the two cannot disagree. A filing without one -- an
+ * older client that only sends hours -- still goes through, and `provided` says whether to touch the
+ * stored details at all on an edit.
+ */
+function read_overtime_plan(array $body): array
+{
+    $startText = overtime_text($body['timeStart'] ?? $body['time_start'] ?? '');
+    $endText = overtime_text($body['timeEnd'] ?? $body['time_end'] ?? '');
+    $timeStart = overtime_accomplishment_time_or_null($startText);
+    $timeEnd = overtime_accomplishment_time_or_null($endText);
+    $location = overtime_text($body['location'] ?? '');
+    $expectedOutputs = overtime_text($body['expectedOutputs'] ?? $body['expected_outputs'] ?? '');
+
+    $errors = [];
+    $hours = null;
+    $windowGiven = $startText !== '' || $endText !== '';
+
+    if ($windowGiven) {
+        if ($timeStart === null || $timeEnd === null) {
+            $errors[] = 'Enter the time the overtime starts and ends.';
+        } elseif ($timeStart < '17:00:00' || $timeStart > '21:00:00'
+            || $timeEnd < '17:00:00' || $timeEnd > '21:00:00') {
+            $errors[] = 'Overtime must be between 5:00 PM and 9:00 PM.';
+        } elseif ($timeEnd <= $timeStart) {
+            /* Same rule as the memo, which has no way to write a window that runs past midnight. */
+            $errors[] = 'The end time must be later than the start time.';
+        } else {
+            $hours = calculate_hours_worked($timeStart, $timeEnd);
+        }
+    }
+
+    if (mb_strlen($location) > 120) {
+        $errors[] = 'Location must be 120 characters or fewer.';
+    }
+
+    if (mb_strlen($expectedOutputs) > 2000) {
+        $errors[] = 'Expected output must be 2,000 characters or fewer.';
+    }
+
+    $provided = false;
+    foreach (['timeStart', 'time_start', 'timeEnd', 'time_end', 'location', 'expectedOutputs', 'expected_outputs'] as $key) {
+        $provided = $provided || array_key_exists($key, $body);
+    }
+
+    return [
+        'provided' => $provided,
+        'windowGiven' => $windowGiven,
+        'errors' => $errors,
+        'hours' => $hours,
+        'columns' => [
+            'time_start' => $hours !== null ? $timeStart : null,
+            'time_end' => $hours !== null ? $timeEnd : null,
+            'location' => $location !== '' ? $location : null,
+            'expected_outputs' => $expectedOutputs !== '' ? $expectedOutputs : null,
+        ],
+    ];
+}
+
 function fetch_overtime(PDO $pdo, int $id, ?int $employeeScopeId = null): ?array
 {
     $sql = 'SELECT
@@ -367,15 +480,20 @@ function fetch_overtime(PDO $pdo, int $id, ?int $employeeScopeId = null): ?array
                 e.employee_id AS employeeId,
                 TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
                 d.name AS division,
+                ' . employee_role_name_subselect() . ' AS employeeRole,
                 o.work_date AS workDate,
                 o.work_date AS overtimeDate,
                 o.hour_requested AS hourRequested,
                 o.hour_requested AS hoursWorked,
                 o.hour_requested AS overtimeHours,
+                TIME_FORMAT(o.time_start, "%H:%i") AS timeStart,
+                TIME_FORMAT(o.time_end, "%H:%i") AS timeEnd,
+                o.location,
                 o.request_date AS requestDate,
                 DATE_FORMAT(o.request_date, "%c/%e/%Y, %l:%i:%s %p") AS requestDateDisplay,
                 o.duration,
                 o.reason,
+                o.expected_outputs AS expectedOutputs,
                 o.status,
                 COALESCE(NULLIF(o.source, ""), "request") AS source,
                 o.reviewed_by AS reviewedByEmployeeRecordId,
@@ -423,9 +541,14 @@ function fetch_overtime(PDO $pdo, int $id, ?int $employeeScopeId = null): ?array
     $record['overtimeHours'] = (float)$record['overtimeHours'];
     $record['duration'] = (float)$record['duration'];
     $record['reason'] = overtime_text($record['reason'] ?? '');
+    $record['location'] = overtime_text($record['location'] ?? '');
+    $record['expectedOutputs'] = overtime_text($record['expectedOutputs'] ?? '');
     $record['source'] = overtime_text($record['source'] ?? 'request') ?: 'request';
 
-    return $record;
+    $records = [$record];
+    attach_overtime_accomplishment_summaries($pdo, $records);
+
+    return $records[0];
 }
 
 function list_overtime(PDO $pdo, array $sessionUser): void
@@ -438,15 +561,20 @@ function list_overtime(PDO $pdo, array $sessionUser): void
                 e.employee_id AS employeeId,
                 TRIM(CONCAT(e.first_name, " ", COALESCE(e.middle_name, ""), " ", e.last_name)) AS employeeName,
                 d.name AS division,
+                ' . employee_role_name_subselect() . ' AS employeeRole,
                 o.work_date AS workDate,
                 o.work_date AS overtimeDate,
                 o.hour_requested AS hourRequested,
                 o.hour_requested AS hoursWorked,
                 o.hour_requested AS overtimeHours,
+                TIME_FORMAT(o.time_start, "%H:%i") AS timeStart,
+                TIME_FORMAT(o.time_end, "%H:%i") AS timeEnd,
+                o.location,
                 o.request_date AS requestDate,
                 DATE_FORMAT(o.request_date, "%c/%e/%Y, %l:%i:%s %p") AS requestDateDisplay,
                 o.duration,
                 o.reason,
+                o.expected_outputs AS expectedOutputs,
                 o.status,
                 COALESCE(NULLIF(o.source, ""), "request") AS source,
                 o.reviewed_by AS reviewedByEmployeeRecordId,
@@ -501,9 +629,13 @@ function list_overtime(PDO $pdo, array $sessionUser): void
         $record['overtimeHours'] = (float)$record['overtimeHours'];
         $record['duration'] = (float)$record['duration'];
         $record['reason'] = overtime_text($record['reason'] ?? '');
+        $record['location'] = overtime_text($record['location'] ?? '');
+        $record['expectedOutputs'] = overtime_text($record['expectedOutputs'] ?? '');
         $record['source'] = overtime_text($record['source'] ?? 'request') ?: 'request';
     }
     unset($record);
+
+    attach_overtime_accomplishment_summaries($pdo, $records);
 
     json_response([
         'success' => true,
@@ -526,6 +658,12 @@ function create_overtime(PDO $pdo, array $body, array $sessionUser): void
     );
     $duration = overtime_decimal_or_null($body['duration'] ?? null);
     $reason = overtime_text($body['reason'] ?? '');
+    $plan = read_overtime_plan($body);
+
+    if ($plan['hours'] !== null) {
+        $hourRequested = $plan['hours'];
+        $duration = $plan['hours'];
+    }
 
     $duration = $duration ?? $hourRequested;
 
@@ -541,11 +679,21 @@ function create_overtime(PDO $pdo, array $body, array $sessionUser): void
     if ($workDate !== null && $workDate < date('Y-m-d')) {
         $errors[] = 'Work date cannot be in the past. Choose today or a later date.';
     }
-    if ($hourRequested === null || $hourRequested <= 0) {
-        $errors[] = 'Hours requested must be greater than 0.';
+    if ($workDate !== null && substr($workDate, 0, 7) !== date('Y-m')) {
+        $errors[] = 'Choose a work date in the current month.';
     }
-    if ($duration === null || $duration <= 0) {
-        $errors[] = 'Duration must be greater than 0.';
+    array_push($errors, ...$plan['errors']);
+    /* A window that does not add up has already said so; the hours it could not give are not repeated. */
+    if (!$plan['windowGiven'] || $plan['hours'] !== null) {
+        if ($hourRequested === null || $hourRequested <= 0) {
+            $errors[] = 'Hours requested must be greater than 0.';
+        }
+        if ($duration === null || $duration <= 0) {
+            $errors[] = 'Duration must be greater than 0.';
+        }
+    }
+    if (mb_strlen($reason) > 2000) {
+        $errors[] = 'Tasks to perform must be 2,000 characters or fewer.';
     }
 
     if ($errors !== []) {
@@ -556,6 +704,7 @@ function create_overtime(PDO $pdo, array $body, array $sessionUser): void
     }
 
     $columns = overtime_table_columns($pdo);
+    /* The window, location and expected output ride along for the accomplishment report. */
     $insert = [
         'employee_id' => 0,
         'work_date' => $workDate,
@@ -570,7 +719,7 @@ function create_overtime(PDO $pdo, array $body, array $sessionUser): void
         'approved_by' => null,
         'approved_at' => null,
         'created_by' => (int)($sessionUser['id'] ?? 0) ?: null,
-    ];
+    ] + $plan['columns'];
 
     if (isset($columns['overtime_date'])) {
         $insert['overtime_date'] = $workDate;
@@ -603,6 +752,7 @@ function create_overtime(PDO $pdo, array $body, array $sessionUser): void
     $records = [];
 
     /* One filing, one row per employee — all of them land or none do. */
+    throttle_filing_request($pdo, $sessionUser);
     $pdo->beginTransaction();
 
     try {
@@ -950,6 +1100,12 @@ function update_overtime_request(PDO $pdo, array $body, array $sessionUser): voi
     );
     $duration = overtime_decimal_or_null($body['duration'] ?? null) ?? $hourRequested;
     $reason = overtime_text($body['reason'] ?? '');
+    $plan = read_overtime_plan($body);
+
+    if ($plan['hours'] !== null) {
+        $hourRequested = $plan['hours'];
+        $duration = $plan['hours'];
+    }
 
     $errors = [];
     if ($workDate === null) {
@@ -958,11 +1114,20 @@ function update_overtime_request(PDO $pdo, array $body, array $sessionUser): voi
     if ($workDate !== null && $workDate < date('Y-m-d')) {
         $errors[] = 'Work date cannot be in the past. Choose today or a later date.';
     }
-    if ($hourRequested === null || $hourRequested <= 0) {
-        $errors[] = 'Hours requested must be greater than 0.';
+    if ($workDate !== null && substr($workDate, 0, 7) !== date('Y-m')) {
+        $errors[] = 'Choose a work date in the current month.';
     }
-    if ($duration === null || $duration <= 0) {
-        $errors[] = 'Duration must be greater than 0.';
+    array_push($errors, ...$plan['errors']);
+    if (!$plan['windowGiven'] || $plan['hours'] !== null) {
+        if ($hourRequested === null || $hourRequested <= 0) {
+            $errors[] = 'Hours requested must be greater than 0.';
+        }
+        if ($duration === null || $duration <= 0) {
+            $errors[] = 'Duration must be greater than 0.';
+        }
+    }
+    if (mb_strlen($reason) > 2000) {
+        $errors[] = 'Tasks to perform must be 2,000 characters or fewer.';
     }
 
     if ($errors !== []) {
@@ -979,6 +1144,11 @@ function update_overtime_request(PDO $pdo, array $body, array $sessionUser): voi
         'duration' => number_format((float)$duration, 2, '.', ''),
         'reason' => $reason !== '' ? $reason : null,
     ];
+
+    /* Only an edit that sent the accomplishment-report details rewrites them; an older client leaves them be. */
+    if ($plan['provided']) {
+        $update += $plan['columns'];
+    }
 
     if (isset($columns['overtime_date'])) {
         $update['overtime_date'] = $workDate;
@@ -1065,30 +1235,30 @@ function update_overtime_status(PDO $pdo, array $body, array $sessionUser): void
     }
 
     if ($status === 'Reviewed') {
-        if (!overtime_can_review($sessionUser)) {
+        if (!overtime_can_chief_admin_approve($sessionUser)) {
             json_response([
                 'success' => false,
-                'message' => 'Only HR can review overtime requests.',
+                'message' => 'Only the Chief Admin can give the first approval on overtime requests.',
             ], 403);
         }
 
         if ($currentStatus !== 'pending') {
             json_response([
                 'success' => false,
-                'message' => 'Only pending overtime requests can be reviewed.',
+                'message' => 'Only pending overtime requests can receive the Chief Admin\'s approval.',
             ], 422);
         }
     }
 
     if ($status === 'Approved') {
         /*
-         * HR's sign-off stops at Reviewed. Letting it write Approved here would mint the
-         * compensatory credit a stage early, before the Regional Director ever sees the filing.
+         * The Chief Admin's sign-off stops at Reviewed. Letting it write Approved here would mint the
+         * compensatory credit before the Regional Director gives the final approval.
          */
-        if (overtime_can_review($sessionUser) && !overtime_can_give_final_approval($sessionUser)) {
+        if (overtime_can_chief_admin_approve($sessionUser)) {
             json_response([
                 'success' => false,
-                'message' => 'HR approval marks the overtime request as reviewed. The Regional Director gives the final approval.',
+                'message' => 'The Chief Admin\'s approval sends the overtime request to the Regional Director for final approval.',
             ], 422);
         }
 
@@ -1099,20 +1269,26 @@ function update_overtime_status(PDO $pdo, array $body, array $sessionUser): void
             ], 403);
         }
 
-        /* The chain is HR first: an admin may still act on either stage. */
-        if ($currentStatus !== 'reviewed' && overtime_role_key($sessionUser) !== 'admin') {
+        if ($currentStatus !== 'reviewed') {
             json_response([
                 'success' => false,
-                'message' => 'This overtime request is still waiting for HR review.',
+                'message' => 'This overtime request is still waiting for the Chief Admin\'s approval.',
             ], 422);
         }
     }
 
-    if (in_array($status, ['Reviewed', 'Approved', 'Rejected'], true) && overtime_is_chief($sessionUser)) {
-        json_response([
-            'success' => false,
-            'message' => 'A chief may file, edit, or cancel overtime requests, but approval rests with HR and the Regional Director.',
-        ], 403);
+    if ($status === 'Rejected') {
+        $canRejectAtCurrentStage = ($currentStatus === 'pending' && overtime_can_chief_admin_approve($sessionUser))
+            || ($currentStatus === 'reviewed' && overtime_can_give_final_approval($sessionUser));
+
+        if (!$canRejectAtCurrentStage) {
+            json_response([
+                'success' => false,
+                'message' => $currentStatus === 'reviewed'
+                    ? 'Only the Regional Director can disapprove an overtime request after the Chief Admin\'s approval.'
+                    : 'Only the Chief Admin can disapprove a pending overtime request.',
+            ], 403);
+        }
     }
 
     if ($status === 'Pending') {
@@ -1123,7 +1299,7 @@ function update_overtime_status(PDO $pdo, array $body, array $sessionUser): void
     }
 
     /*
-     * Both signatures on an overtime filing carry a solved captcha: HR's review and the Regional
+     * Both signatures on an overtime filing carry a solved captcha: the Chief Admin's first approval and
      * Director's final approval. Rejecting and cancelling do not — see the approval_workflow entry
      * in captcha-utils.php for why the reversible moves are deliberately left ungated.
      *
@@ -1132,12 +1308,12 @@ function update_overtime_status(PDO $pdo, array $body, array $sessionUser): void
      * challenge first and burning one of its three attempts on an approval that could not happen.
      */
     if (in_array($status, ['Reviewed', 'Approved'], true)) {
-        require_approval_captcha($body);
+        require_approval_captcha($body, 'overtime', $id);
     }
 
     /*
-     * The HR signature stays on the row once written — a later approval, rejection or cancellation
-     * records its own outcome without erasing who reviewed it.
+     * The Chief Admin's signature stays on the row once written — a later approval, rejection or
+     * cancellation records its own outcome without erasing who gave the Chief Admin approval.
      */
     $now = date('Y-m-d H:i:s');
     $isReview = $status === 'Reviewed';
@@ -1163,9 +1339,9 @@ function update_overtime_status(PDO $pdo, array $body, array $sessionUser): void
     ]);
 
     $messages = [
-        'Reviewed' => 'Overtime request reviewed. It now awaits the Regional Director\'s final approval.',
+        'Reviewed' => 'Overtime request approved by the Chief Admin. It now awaits the Regional Director\'s final approval.',
         'Approved' => 'Overtime request approved. The rendered overtime credits were posted to the employee.',
-        'Rejected' => 'Overtime request rejected.',
+        'Rejected' => 'Overtime request disapproved.',
         'Cancelled' => 'Overtime request cancelled.',
     ];
 
@@ -1178,7 +1354,7 @@ function update_overtime_status(PDO $pdo, array $body, array $sessionUser): void
 
 function archive_overtime(PDO $pdo, array $body, array $sessionUser, bool $archived): void
 {
-    if (!overtime_can_manage($sessionUser)) {
+    if (!overtime_can_archive($sessionUser)) {
         json_response([
             'success' => false,
             'message' => 'You are not allowed to archive overtime requests.',
@@ -1186,12 +1362,28 @@ function archive_overtime(PDO $pdo, array $body, array $sessionUser, bool $archi
     }
 
     $id = (int)($body['id'] ?? 0);
+    /* An employee only ever reaches their own filings. */
+    $employeeScopeId = overtime_can_view_all($sessionUser)
+        ? null
+        : resolve_overtime_session_employee_id($pdo, $sessionUser);
+    $record = $id > 0 ? fetch_overtime($pdo, $id, $employeeScopeId) : null;
 
-    if ($id <= 0 || fetch_overtime($pdo, $id) === null) {
+    if ($record === null) {
         json_response([
             'success' => false,
             'message' => 'Overtime request not found.',
         ], 404);
+    }
+
+    if (
+        $archived
+        && overtime_is_self_service_role($sessionUser)
+        && !in_array(strtolower((string)($record['status'] ?? '')), ['approved', 'rejected', 'cancelled'], true)
+    ) {
+        json_response([
+            'success' => false,
+            'message' => 'Only approved, rejected, or cancelled overtime requests can be archived.',
+        ], 422);
     }
 
     set_record_archived($pdo, 'overtime', 'overtime_id', $id, $archived, $sessionUser, 'Overtime Request');
@@ -1199,17 +1391,22 @@ function archive_overtime(PDO $pdo, array $body, array $sessionUser, bool $archi
     json_response([
         'success' => true,
         'message' => $archived ? 'Overtime request archived.' : 'Overtime request restored.',
-        'record' => fetch_overtime($pdo, $id),
+        'record' => fetch_overtime($pdo, $id, $employeeScopeId),
     ]);
 }
 
 try {
     ensure_overtime_table($pdo);
     ensure_archive_columns($pdo, 'overtime');
+    ensure_overtime_accomplishment_table($pdo);
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
     if ($method === 'GET') {
+        if (strtolower(overtime_text($_GET['view'] ?? '')) === 'accomplishments') {
+            list_overtime_accomplishments($pdo, $sessionUser);
+        }
+
         list_overtime($pdo, $sessionUser);
     }
 
@@ -1225,6 +1422,10 @@ try {
             adjust_manual_coc_credits($pdo, $body, $sessionUser);
         }
 
+        if ($action === 'accomplishment_submit') {
+            submit_overtime_accomplishment($pdo, $body, $sessionUser);
+        }
+
         create_overtime($pdo, $body, $sessionUser);
     }
 
@@ -1238,6 +1439,10 @@ try {
 
         if ($action === 'update') {
             update_overtime_request($pdo, $body, $sessionUser);
+        }
+
+        if ($action === 'accomplishment_status') {
+            update_overtime_accomplishment_status($pdo, $body, $sessionUser);
         }
 
         update_overtime_status($pdo, $body, $sessionUser);

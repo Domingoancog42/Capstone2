@@ -11,15 +11,16 @@ import {
   SlidersHorizontal,
   UserCog,
   Users,
-  X,
 } from "lucide-react";
 import SettingsNotice from "../../components/settings/SettingsNotice";
+import { permissionActions, moduleAvailableActions } from "../../utils/permissionActions";
 
 export const permissionRoles = [
   { key: "admin", label: "Super Admin", description: "Full access to all system features and settings." },
   { key: "hrhead", label: "HR Head", description: "Oversees HR operations and approvals." },
   { key: "hrstaff", label: "HR Staff", description: "Handles employee records, leave, and reports." },
   { key: "chief", label: "Chief", description: "Manages division-level requests and team visibility." },
+  { key: "chiefadmin", label: "Chief Admin", description: "Uses the Division Chief workspace for administrative division oversight." },
   { key: "planningofficer", label: "Planning Officer", description: "Monitors division plans, performance records, and workforce requests." },
   { key: "cashier", label: "Cashier", description: "Releases approved payroll and monitors disbursement records." },
   { key: "regionaldirector", label: "Regional Director", description: "Approves regional actions and reviews analytics." },
@@ -55,6 +56,13 @@ const permissionRoleStyles = {
     dot: "bg-emerald-600",
     ring: "border-emerald-200",
   },
+  chiefadmin: {
+    accent: "text-purple-600",
+    badge: "bg-purple-50 text-purple-600",
+    bar: "bg-purple-600",
+    dot: "bg-purple-600",
+    ring: "border-purple-200",
+  },
   planningofficer: {
     accent: "text-teal-600",
     badge: "bg-teal-50 text-teal-600",
@@ -85,15 +93,7 @@ const permissionRoleStyles = {
   },
 };
 
-export const permissionActions = [
-  { key: "view", label: "View" },
-  { key: "create", label: "Create" },
-  { key: "edit", label: "Edit" },
-  { key: "delete", label: "Delete" },
-  { key: "approve", label: "Approve" },
-  { key: "reject", label: "Reject" },
-  { key: "export", label: "Export" },
-];
+export { permissionActions } from "../../utils/permissionActions";
 
 export const permissionSections = [
   {
@@ -121,7 +121,7 @@ export const permissionSections = [
         key: "users",
         label: "User Management",
         description: "View and manage system users.",
-        defaultActions: ["view", "create", "edit", "delete"],
+        defaultActions: ["view", "create", "edit"],
       },
       {
         key: "permissions",
@@ -156,7 +156,7 @@ export const permissionSections = [
         key: "employees",
         label: "Employee Management",
         description: "Create, edit, and review employee records.",
-        defaultActions: ["view", "create", "edit", "delete"],
+        defaultActions: ["view", "create", "edit"],
       },
       {
         key: "rewardsRecognition",
@@ -165,9 +165,15 @@ export const permissionSections = [
         defaultActions: ["view", "create", "edit"],
       },
       {
+        key: "promotions",
+        label: "Promotions",
+        description: "Prepare, recommend, and approve promotions up the position hierarchy.",
+        defaultActions: ["view", "create", "edit", "approve", "reject"],
+      },
+      {
         key: "attendance",
         label: "Attendance",
-        description: "Review attendance logs, DTR records, and adjustments.",
+        description: "Review attendance logs and DTR records.",
         defaultActions: ["view", "create", "edit", "approve", "reject", "export"],
       },
       {
@@ -191,7 +197,7 @@ export const permissionSections = [
       {
         key: "reports",
         label: "Reports",
-        description: "Generate and export HRIS operational reports.",
+        description: "Generate reports and manage IPCR/OPCR assignments and ratings.",
         defaultActions: ["view", "export"],
       },
       {
@@ -204,8 +210,14 @@ export const permissionSections = [
   },
 ];
 
+permissionSections.forEach((section) => {
+  section.items.forEach((item) => {
+    item.availableActions = moduleAvailableActions[item.key];
+  });
+});
+
 export const permissionItems = permissionSections.flatMap((section) => section.items);
-export const totalPermissionUnits = permissionItems.reduce((total, item) => total + 1 + item.defaultActions.length, 0);
+export const totalPermissionUnits = permissionItems.reduce((total, item) => total + 1 + item.availableActions.length, 0);
 
 const permissionSectionStyles = {
   "Core Access": {
@@ -224,12 +236,14 @@ const rolePermissionAccess = {
     "dashboard",
     "profile",
     "serviceRecord",
+    "payslip",
     "users",
     "permissions",
     "auditLogs",
     "calendar",
     "employees",
     "rewardsRecognition",
+    "promotions",
     "attendance",
     "leave",
     "leaveBalance",
@@ -240,9 +254,11 @@ const rolePermissionAccess = {
     "dashboard",
     "profile",
     "serviceRecord",
+    "payslip",
     "calendar",
     "employees",
     "rewardsRecognition",
+    "promotions",
     "attendance",
     "leave",
     "leaveBalance",
@@ -252,26 +268,44 @@ const rolePermissionAccess = {
     "dashboard",
     "profile",
     "serviceRecord",
+    "payslip",
     "calendar",
+    "rewardsRecognition",
+    // Prepares promotions for the Regular employees of their division.
+    "promotions",
+    "attendance",
+    "leave",
+    // Runtime access is limited to the Chief assigned to FAD/FAM.
+    "payroll",
+    "reports",
+  ],
+  // Chief Admin no longer participates in payroll; the FAD Division Chief owns that stage.
+  chiefadmin: [
+    "dashboard",
+    "profile",
+    "serviceRecord",
+    "payslip",
+    "calendar",
+    "rewardsRecognition",
+    "promotions",
     "attendance",
     "leave",
     "reports",
   ],
-  // Mirrors the chief: same division-scoped desk, no part in the payroll approval chain.
+  // Same division-scoped operational desk as a chief, but never the FAD payroll approval desk.
   // Keep this in step with default_role_permission_access() in backend/api/settings.php.
   planningofficer: [
     "dashboard",
     "profile",
     "serviceRecord",
+    "payslip",
     "calendar",
     "attendance",
     "leave",
     "reports",
   ],
-  // The payout desk. `leave` is here from when leave monetization was a payroll screen; it is now
-  // filed and reviewed in Leave Management, which the cashier has no address for, so the entry
-  // opens nothing and is kept only to match the stored backend default. None of these grants an
-  // approval right; releasing an approved batch is the whole job.
+  // The payout desk. `leave` opens a self-only filing page and grants no approval right;
+  // releasing an approved payroll batch remains the cashier's only management action.
   // Keep in step with default_role_permission_access() in backend/api/settings.php.
   cashier: [
     "dashboard",
@@ -286,10 +320,12 @@ const rolePermissionAccess = {
     "dashboard",
     "profile",
     "serviceRecord",
+    "payslip",
     "calendar",
     "leave",
     "reports",
     "rewardsRecognition",
+    "promotions",
     "auditLogs",
   ],
   employee: [
@@ -300,7 +336,28 @@ const rolePermissionAccess = {
     "attendance",
     "leave",
     "payslip",
+    // My Promotion: the employee's own approved promotions, read-only.
+    "promotions",
   ],
+};
+
+/*
+ * Where a role's default actions in a module are narrower than the module's own defaults. Mirrors
+ * default_role_permission_action_overrides() in backend/api/settings.php.
+ */
+const rolePermissionActionOverrides = {
+  employee: {
+    promotions: ["view", "print"],
+  },
+  // The FAD Chief approves or returns payroll but never prepares it. Other chiefs never receive the
+  // module in their workspace even though they share this role template.
+  chief: {
+    promotions: ["view", "create", "edit", "cancel", "archive", "restore", "export", "print"],
+    payroll: ["view", "approve", "return", "archive", "restore"],
+  },
+  chiefadmin: {
+    promotions: ["view", "create", "edit", "cancel", "archive", "restore", "export", "print"],
+  },
 };
 
 function isPermissionModuleEnabledByDefault(roleKey, moduleKey) {
@@ -318,7 +375,7 @@ export function createDefaultPermissionTemplates() {
 
         modules[item.key] = {
           enabled,
-          actions: enabled ? item.defaultActions : [],
+          actions: enabled ? (rolePermissionActionOverrides[role.key]?.[item.key] || item.defaultActions) : [],
         };
 
         return modules;
@@ -341,7 +398,7 @@ export function normalizePermissionTemplates(templates = {}) {
       modules: permissionItems.reduce((modules, item) => {
         const defaultModule = defaults[role.key].modules[item.key];
         const sourceModule = sourceModules[item.key] || {};
-        const allowedActionKeys = new Set(item.defaultActions);
+        const allowedActionKeys = new Set(item.availableActions);
         const sourceActions = Array.isArray(sourceModule.actions) ? sourceModule.actions : defaultModule.actions;
         const actions = sourceActions.filter((action) => allowedActionKeys.has(action));
 
@@ -377,7 +434,7 @@ export function normalizeSinglePermissionTemplate(template = {}) {
     enabled: template?.enabled !== false,
     modules: permissionItems.reduce((modules, item) => {
       const sourceModule = sourceModules[item.key] || {};
-      const allowedActionKeys = new Set(item.defaultActions);
+      const allowedActionKeys = new Set(item.availableActions);
       const sourceActions = Array.isArray(sourceModule.actions) ? sourceModule.actions : [];
       const actions = sourceActions.filter((action) => allowedActionKeys.has(action));
 
@@ -433,7 +490,7 @@ function countEnabledPermissionsInSection(roleTemplate = {}, section = {}) {
 }
 
 function countPermissionUnitsInSection(section = {}) {
-  return (section.items || []).reduce((total, item) => total + 1 + item.defaultActions.length, 0);
+  return (section.items || []).reduce((total, item) => total + 1 + item.availableActions.length, 0);
 }
 
 function permissionProgressPercent(enabledCount = 0, totalCount = totalPermissionUnits) {
@@ -442,43 +499,6 @@ function permissionProgressPercent(enabledCount = 0, totalCount = totalPermissio
   }
 
   return Math.min(100, Math.max(0, Math.round((enabledCount / totalCount) * 100)));
-}
-
-function permissionActionsLabel(actions = []) {
-  if (!actions.length) {
-    return "No access";
-  }
-
-  return actions
-    .map((actionKey) => permissionActions.find((action) => action.key === actionKey)?.label || actionKey)
-    .join(", ");
-}
-
-function getPermissionActionColor(actionKey) {
-  const colorMap = {
-    view: "bg-blue-100 text-blue-700 border-blue-200",
-    create: "bg-green-100 text-green-700 border-green-200",
-    edit: "bg-amber-100 text-amber-700 border-amber-200",
-    delete: "bg-rose-100 text-rose-700 border-rose-200",
-    approve: "bg-purple-100 text-purple-700 border-purple-200",
-    reject: "bg-orange-100 text-orange-700 border-orange-200",
-    export: "bg-teal-100 text-teal-700 border-teal-200",
-  };
-  return colorMap[actionKey] || "bg-slate-100 text-slate-700 border-slate-200";
-}
-
-function getPermissionLabelColor(actions = []) {
-  if (!actions.length) {
-    return "bg-slate-100 text-slate-600 border-slate-200";
-  }
-
-  // If multiple actions, use a neutral gradient style
-  if (actions.length > 1) {
-    return "bg-gradient-to-r from-blue-50 to-purple-50 text-slate-700 border-slate-300";
-  }
-
-  // Single action - use specific color
-  return getPermissionActionColor(actions[0]);
 }
 
 export default function PermissionSettings({
@@ -507,9 +527,6 @@ export default function PermissionSettings({
   onResetUser,
   expandedSections = {},
   onToggleSection,
-  actionPopover = null,
-  onToggleActionPopover,
-  onCloseActionPopover,
   onToggleEnabled,
   onToggleModule,
   onToggleAction,
@@ -576,7 +593,7 @@ export default function PermissionSettings({
                   {isUserMode ? "Individual access" : "Role templates"}
                 </span>
               </div>
-              <h2 className="m-0 mt-1 text-xl font-bold tracking-tight text-white">Permissions</h2>
+              <h2 className="m-0 mt-1 text-xl font-bold tracking-tight text-white">RBAC Management</h2>
               <p className="m-0 mt-1 max-w-2xl text-sm leading-5 text-slate-300">
                 {isUserMode
                   ? "Create a precise exception without changing the user’s role template."
@@ -899,40 +916,33 @@ export default function PermissionSettings({
                   const sectionEnabledCount = countEnabledPermissionsInSection(activeTemplate, section);
                   const sectionTotal = countPermissionUnitsInSection(section);
                   const sectionComplete = !activeDisabled && sectionEnabledCount === sectionTotal;
+                  const sectionActions = permissionActions.filter((action) =>
+                    section.items.some((item) => item.availableActions.includes(action.key))
+                  );
 
                   return (
                     <div key={sectionKey} className="overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-[0_10px_28px_-24px_rgba(15,23,42,0.7)]">
-                      <div className="flex flex-col gap-3 bg-slate-50/70 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-5">
                         <div className="flex min-w-0 items-center gap-4">
-                          <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${sectionStyle.badge}`}>
-                            <SectionIcon size={18} />
+                          <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl ${sectionStyle.badge}`}>
+                            <SectionIcon size={22} />
                           </div>
                           <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h4 className="m-0 text-base font-bold text-slate-950">{section.title}</h4>
-                              <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                                {sectionEnabledCount}/{sectionTotal}
-                              </span>
-                            </div>
-                            <p className="m-0 mt-1 text-xs font-medium text-slate-500">
-                              {sectionComplete ? "All permissions enabled" : `${sectionEnabledCount} permissions enabled`}
+                            <h4 className="m-0 text-lg font-bold text-slate-950">{section.title} Permissions</h4>
+                            <p className="m-0 mt-1 text-xs font-semibold text-slate-500">
+                              {section.items.length} modules · {sectionEnabledCount} of {sectionTotal} permissions enabled
                             </p>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 sm:justify-end">
-                          <span
-                            className={[
-                              "grid h-4 w-4 place-items-center rounded border text-white",
-                              sectionComplete ? "border-slate-900 bg-slate-900" : "border-slate-300 bg-white",
-                            ].join(" ")}
-                            aria-hidden="true"
-                          >
-                            {sectionComplete ? <Check size={11} /> : null}
-                          </span>
+                        <div className="flex items-center gap-3 sm:justify-end">
+                          <p className="m-0 max-w-md text-xs leading-5 text-slate-500">
+                            Choose what this {isUserMode ? "user" : "role"} can access and do within the system.
+                          </p>
                           <button
                             type="button"
                             onClick={() => onToggleSection?.(scopeKey, section.title)}
+                            aria-label={`Toggle ${section.title}`}
                             aria-expanded={sectionOpen}
                             className="grid h-9 w-9 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                           >
@@ -942,79 +952,135 @@ export default function PermissionSettings({
                       </div>
 
                       {sectionOpen ? (
-                        <div className="grid gap-2.5 p-3 sm:p-4">
-                          {section.items.map((item) => {
-                            const modulePermission = activeTemplate.modules?.[item.key] || {
-                              enabled: false,
-                              actions: [],
-                            };
-                            const rowKey = `${scopeKey}:${item.key}`;
-                            const popoverOpen = actionPopover?.rowKey === rowKey;
-                            const enabled = activeTemplate.enabled !== false && modulePermission.enabled;
-                            const canManageActions = item.defaultActions.length > 1;
-                            const actionsLabel = permissionActionsLabel(enabled ? modulePermission.actions : []);
-
-                            return (
-                              <div
-                                key={rowKey}
-                                className={[
-                                  "rounded-xl border px-3.5 py-3.5 transition sm:px-4",
-                                  enabled ? "border-slate-200 bg-white shadow-[0_4px_10px_-10px_rgba(15,23,42,0.45)] hover:border-slate-300" : "border-slate-100 bg-slate-50/70",
-                                ].join(" ")}
-                              >
-                                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                                  <label className="flex min-w-0 cursor-pointer items-start gap-3">
-                                    <span className={`relative mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md border transition focus-within:ring-2 focus-within:ring-indigo-200 ${modulePermission.enabled ? "border-indigo-600 bg-indigo-600 text-white" : "border-slate-300 bg-white text-transparent"}`}>
-                                      <input
-                                        type="checkbox"
-                                        checked={Boolean(modulePermission.enabled)}
-                                        disabled={activeDisabled}
-                                        onChange={() => onToggleModule?.(item.key)}
-                                        className="absolute h-5 w-5 cursor-pointer opacity-0 disabled:cursor-not-allowed"
-                                        aria-label={item.label}
-                                      />
-                                      <Check size={13} strokeWidth={3} aria-hidden="true" />
+                        <div className="overflow-x-auto border-t border-slate-200">
+                          <table className="w-full min-w-max border-collapse text-left">
+                            <thead>
+                              <tr className="bg-indigo-50/70 text-[11px] font-bold text-slate-600">
+                                <th scope="col" className="sticky left-0 z-20 min-w-[230px] border-r border-slate-200 bg-indigo-50 px-5 py-3.5">
+                                  <span className="flex items-center gap-3">
+                                    <span
+                                      className={[
+                                        "grid h-4 w-4 place-items-center rounded border text-white",
+                                        sectionComplete ? "border-indigo-600 bg-indigo-600" : "border-slate-300 bg-white",
+                                      ].join(" ")}
+                                      aria-hidden="true"
+                                    >
+                                      {sectionComplete ? <Check size={10} strokeWidth={3} /> : null}
                                     </span>
-                                    <span className="min-w-0">
-                                      <span className="flex flex-wrap items-center gap-2">
-                                        <span className="text-sm font-semibold text-slate-950">{item.label}</span>
-                                        {enabled ? <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-700">Active</span> : null}
-                                      </span>
-                                      <span className="mt-1 block text-xs leading-5 text-slate-500">{item.description}</span>
-                                    </span>
-                                  </label>
+                                    Module
+                                  </span>
+                                </th>
+                                {sectionActions.map((action) => (
+                                  <th
+                                    key={`${sectionKey}:heading:${action.key}`}
+                                    scope="col"
+                                    className="w-[104px] min-w-[104px] px-2 py-3.5 text-center leading-4"
+                                  >
+                                    {action.label}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {section.items.map((item, itemIndex) => {
+                                const modulePermission = activeTemplate.modules?.[item.key] || {
+                                  enabled: false,
+                                  actions: [],
+                                };
+                                const rowKey = `${scopeKey}:${item.key}`;
+                                const enabled = activeTemplate.enabled !== false && modulePermission.enabled;
 
-                                  <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                                    {canManageActions ? (
-                                      <button
-                                        type="button"
-                                        disabled={activeDisabled || !modulePermission.enabled}
-                                        onClick={(event) => onToggleActionPopover?.(event, item.key)}
-                                        aria-expanded={popoverOpen}
-                                        aria-label={`Manage ${item.label} actions`}
-                                        className={[
-                                          "inline-flex min-h-9 items-center gap-2 rounded-xl border px-3 text-[11px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-40",
-                                          popoverOpen
-                                            ? "border-slate-900 bg-slate-900 text-white"
-                                            : `hover:border-slate-300 ${getPermissionLabelColor(enabled ? modulePermission.actions : [])}`,
-                                        ].join(" ")}
-                                      >
-                                        <span className="max-w-[180px] truncate">{actionsLabel}</span>
-                                        <ChevronDown
-                                          size={14}
-                                          className={`shrink-0 transition-transform ${popoverOpen ? "rotate-180" : ""}`}
+                                return (
+                                  <tr
+                                    key={rowKey}
+                                    aria-label={`${item.label} permissions`}
+                                    className={[
+                                      "border-t border-slate-200 transition",
+                                      enabled
+                                        ? (itemIndex % 2 === 0 ? "bg-white" : "bg-slate-50/45")
+                                        : "bg-slate-50/80 text-slate-400",
+                                    ].join(" ")}
+                                  >
+                                    <th
+                                      scope="row"
+                                      className={[
+                                        "sticky left-0 z-10 min-w-[230px] border-r border-slate-200 px-5 py-4",
+                                        enabled
+                                          ? (itemIndex % 2 === 0 ? "bg-white" : "bg-slate-50")
+                                          : "bg-slate-100",
+                                      ].join(" ")}
+                                    >
+                                      <label className={activeDisabled ? "flex cursor-not-allowed items-center gap-3" : "flex cursor-pointer items-center gap-3"}>
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(modulePermission.enabled)}
+                                          disabled={activeDisabled}
+                                          onChange={() => onToggleModule?.(item.key)}
+                                          aria-label={item.label}
+                                          className="peer sr-only"
                                         />
-                                      </button>
-                                    ) : (
-                                      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getPermissionLabelColor(enabled ? modulePermission.actions : [])}`}>
-                                        {actionsLabel}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
+                                        <span
+                                          className={[
+                                            "grid h-5 w-5 shrink-0 place-items-center rounded border transition peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-300 peer-focus-visible:ring-offset-1",
+                                            modulePermission.enabled
+                                              ? "border-indigo-600 bg-indigo-600 text-white"
+                                              : "border-slate-300 bg-white text-transparent",
+                                          ].join(" ")}
+                                          aria-hidden="true"
+                                        >
+                                          <Check size={12} strokeWidth={3} />
+                                        </span>
+                                        <span className={enabled ? "text-sm font-semibold text-slate-950" : "text-sm font-semibold text-slate-500"}>
+                                          {item.label}
+                                        </span>
+                                      </label>
+                                    </th>
+
+                                    {sectionActions.map((action) => {
+                                      const available = item.availableActions.includes(action.key);
+                                      const checked = Boolean(modulePermission.actions?.includes(action.key));
+
+                                      return (
+                                        <td key={`${rowKey}:${action.key}`} className="px-2 py-4 text-center">
+                                          {available ? (
+                                            <label
+                                              className={[
+                                                "mx-auto grid h-8 w-8 place-items-center rounded-lg transition",
+                                                activeDisabled || !modulePermission.enabled
+                                                  ? "cursor-not-allowed"
+                                                  : "cursor-pointer hover:bg-indigo-50",
+                                              ].join(" ")}
+                                              title={`${item.label}: ${action.label}`}
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                disabled={activeDisabled || !modulePermission.enabled}
+                                                onChange={() => onToggleAction?.(item.key, action.key)}
+                                                aria-label={action.label}
+                                                className="peer sr-only"
+                                              />
+                                              <span
+                                                className={[
+                                                  "grid h-5 w-5 place-items-center rounded border transition peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-300 peer-focus-visible:ring-offset-1",
+                                                  checked
+                                                    ? "border-indigo-600 bg-indigo-600 text-white shadow-sm shadow-indigo-200"
+                                                    : "border-slate-300 bg-white text-transparent",
+                                                ].join(" ")}
+                                                aria-hidden="true"
+                                              >
+                                                <Check size={12} strokeWidth={3} />
+                                              </span>
+                                            </label>
+                                          ) : null /* An action the module lacks is a plain empty cell. */}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
                         </div>
                       ) : null}
                     </div>
@@ -1025,90 +1091,6 @@ export default function PermissionSettings({
           )}
         </section>
       </div>
-
-      {actionPopover ? (() => {
-        const popItem = permissionItems.find((item) => item.key === actionPopover.moduleKey);
-
-        if (!popItem) {
-          return null;
-        }
-
-        const popModule = activeTemplate.modules?.[actionPopover.moduleKey] || { enabled: false, actions: [] };
-
-        return (
-          <>
-            <button
-              type="button"
-              aria-label="Close actions"
-              onClick={onCloseActionPopover}
-              className="fixed inset-0 z-40 cursor-default bg-slate-900/5"
-            />
-            <div
-              role="dialog"
-              aria-label={`${popItem.label} actions`}
-              style={{ top: actionPopover.top, right: actionPopover.right }}
-              className="fixed z-50 w-[min(92vw,560px)] rounded-[20px] border border-slate-200 bg-white p-5 shadow-2xl ring-1 ring-slate-900/5"
-            >
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-50 text-indigo-600">
-                    <SlidersHorizontal size={16} />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="m-0 truncate text-sm font-bold text-slate-950">{popItem.label} actions</p>
-                    <p className="m-0 mt-0.5 text-xs text-slate-500">Choose what this {isUserMode ? "user" : "role"} can do.</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={onCloseActionPopover}
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-                  aria-label="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
-                {popItem.defaultActions.map((actionKey) => {
-                  const actionLabel = permissionActions.find((action) => action.key === actionKey)?.label || actionKey;
-                  const checked = popModule.actions?.includes(actionKey);
-                  const actionColor = getPermissionActionColor(actionKey);
-
-                  return (
-                    <button
-                      type="button"
-                      key={`${actionPopover.rowKey}-${actionKey}`}
-                      disabled={activeDisabled || !popModule.enabled}
-                      onClick={() => onToggleAction?.(actionPopover.moduleKey, actionKey)}
-                      className={[
-                        "inline-flex min-h-9 items-center gap-2 rounded-xl border px-3.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50",
-                        checked
-                          ? actionColor
-                          : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-950",
-                      ].join(" ")}
-                    >
-                      <span
-                        className={[
-                          "grid h-4 w-4 place-items-center rounded-full border",
-                          checked ? "border-current bg-white/60" : "border-slate-300",
-                        ].join(" ")}
-                      >
-                        {checked ? <Check size={11} /> : null}
-                      </span>
-                      {actionLabel}
-                    </button>
-                  );
-                })}
-              </div>
-              {!popModule.enabled ? (
-                <p className="m-0 mt-3 text-xs font-medium text-amber-600">
-                  Enable this module first to choose its actions.
-                </p>
-              ) : null}
-            </div>
-          </>
-        );
-      })() : null}
     </div>
   );
 }

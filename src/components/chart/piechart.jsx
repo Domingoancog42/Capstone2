@@ -1,12 +1,11 @@
+import ResponsiveContainer from "./ResponsiveChartContainer";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Cell,
   Pie,
   PieChart as RechartsPieChart,
-  ResponsiveContainer,
   Tooltip,
 } from "recharts";
-import { BarChart3, Table2 } from "lucide-react";
 import { numberFormatter } from "../../utils/format";
 import { useReportsTheme } from "../../module/reports/reportsTheme";
 import { RankedBarChart } from "../analytics/analyticsChartKit";
@@ -27,7 +26,7 @@ import { RankedBarChart } from "../analytics/analyticsChartKit";
  *
  * This component supplies the chrome only: theme-aware surfaces, a 2px surface gap
  * between slices, a legend that always prints the name and value beside the swatch,
- * and a table-view twin so no value is reachable by colour alone.
+ * and a labelled legend so no value is reachable by colour alone.
  *
  * Pass `form="bar"` when the category list is longer than a donut can carry, or when
  * the reader's job is to compare values rather than eyeball a share. The bar form
@@ -108,7 +107,6 @@ export default function AnalyticsPieChart({
 }) {
   const theme = useReportsTheme();
   const [activeDatasetId, setActiveDatasetId] = useState(datasets[0]?.id || "");
-  const [showTable, setShowTable] = useState(false);
 
   useEffect(() => {
     if (!datasets.some((dataset) => dataset.id === activeDatasetId)) {
@@ -164,17 +162,6 @@ export default function AnalyticsPieChart({
               })
             : null}
 
-          {hasData && !loading ? (
-            <button
-              type="button"
-              onClick={() => setShowTable((current) => !current)}
-              title={showTable ? "Show chart" : "Show data table"}
-              aria-label={showTable ? "Show chart" : "Show data table"}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              {showTable ? <BarChart3 size={15} aria-hidden="true" /> : <Table2 size={15} aria-hidden="true" />}
-            </button>
-          ) : null}
         </div>
       </div>
 
@@ -183,38 +170,6 @@ export default function AnalyticsPieChart({
           <PieChartSkeleton />
         ) : !hasData ? (
           <ChartEmptyState message={emptyMessage} />
-        ) : showTable ? (
-          <div className="max-h-[320px] overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
-            <table className="w-full border-collapse text-sm">
-              <thead className="sticky top-0">
-                <tr>
-                  {["Name", "Value", "Share"].map((column) => (
-                    <th
-                      key={column}
-                      className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-bold uppercase tracking-wide text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                    >
-                      {column}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {activeData.map((entry, index) => (
-                  <tr key={`${entry.name}-${index}`} className="transition hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                    <td className="border-b border-slate-100 px-3 py-2 text-slate-700 dark:border-slate-800 dark:text-slate-300">
-                      {entry.name}
-                    </td>
-                    <td className="border-b border-slate-100 px-3 py-2 tabular-nums text-slate-700 dark:border-slate-800 dark:text-slate-300">
-                      {valueFormatter(entry.value)}
-                    </td>
-                    <td className="border-b border-slate-100 px-3 py-2 tabular-nums text-slate-700 dark:border-slate-800 dark:text-slate-300">
-                      {totalValue > 0 ? `${Math.round((entry.value / totalValue) * 100)}%` : "0%"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         ) : form === "bar" ? (
           <div className="rounded-[28px] border border-slate-100 p-3 dark:border-slate-800">
             <RankedBarChart

@@ -59,7 +59,7 @@ function SignatorySlot({ slot, employees, value, onChange }) {
           {employees.map((employee) => (
             <option key={employee.employeeRecordId} value={employee.employeeRecordId}>
               {employee.name}
-              {employee.designation ? ` - ${employee.designation}` : ""}
+              {employee.position || employee.designation ? ` - ${[employee.position, employee.designation].filter(Boolean).join(" · ")}` : ""}
             </option>
           ))}
         </select>
