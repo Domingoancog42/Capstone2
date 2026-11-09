@@ -189,10 +189,10 @@ const settingsGroups = [
       },
       {
         key: "captcha",
-        label: "Captcha",
+        label: "Payroll Verification",
         icon: ShieldCheck,
-        description: "Login captcha and payroll email verification",
-        keywords: ["captcha", "login", "bot", "math", "payroll", "otp", "verification"],
+        description: "Email verification for protected payroll actions",
+        keywords: ["payroll", "email", "otp", "verification"],
       },
       {
         key: "emailDomainPolicy",
@@ -520,7 +520,6 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
   const [errors, setErrors] = useState({});
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [loginCaptchaEnabled, setLoginCaptchaEnabled] = useState(true);
   const [payrollWorkflowOtpEnabled, setPayrollWorkflowOtpEnabled] = useState(true);
   const captchaNotice = useSettingsNotice();
   const [emailDomainPolicy, setEmailDomainPolicy] = useState(defaultEmailDomainPolicy);
@@ -626,7 +625,6 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
       setLeaveTypes(result.leaveTypes || []);
       setDivisionPage(1);
       setDesignationPage(1);
-      setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
       setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setEmailDomainPolicy(nextEmailDomainPolicy);
       emailDomainPolicyNotice.clear();
@@ -666,9 +664,7 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
         divisions: result.divisions || [],
         designations: result.designations || [],
         leaveTypes: result.leaveTypes || [],
-        security: {
-          loginCaptchaEnabled: result.security?.loginCaptchaEnabled !== false,
-          payrollWorkflowOtpEnabled: result.security?.payrollWorkflowOtpEnabled !== false,
+        security: {          payrollWorkflowOtpEnabled: result.security?.payrollWorkflowOtpEnabled !== false,
           ...securityPolicyFields.reduce((settings, field) => ({
             ...settings,
             [field.key]: Number(nextSecurityPolicy[field.key]),
@@ -1400,7 +1396,6 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
       });
       setDivisions(result.divisions || []);
       setDesignations(result.designations || []);
-      setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
       setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
       setLockedAccounts(Array.isArray(result.lockedAccounts) ? result.lockedAccounts : []);
@@ -1417,39 +1412,6 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
       );
     } catch (error) {
       captchaNotice.error(error.response?.data?.message || "Unable to update payroll email OTP verification.");
-    } finally {
-      setSecuritySaving(false);
-    }
-  };
-
-  const handleToggleLoginCaptcha = async () => {
-    const nextEnabledState = !loginCaptchaEnabled;
-
-    setSecuritySaving(true);
-    captchaNotice.clear();
-    try {
-      const result = await saveSecuritySettings({
-        loginCaptchaEnabled: nextEnabledState,
-      });
-      setDivisions(result.divisions || []);
-      setDesignations(result.designations || []);
-      setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
-      setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
-      setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
-      setLockedAccounts(Array.isArray(result.lockedAccounts) ? result.lockedAccounts : []);
-      onSettingsChange?.({
-        divisions: result.divisions || [],
-        designations: result.designations || [],
-        security: result.security || {},
-      });
-      setMessage("");
-      captchaNotice.success(
-        nextEnabledState
-          ? "Login math captcha is now enabled."
-          : "Login math captcha is now disabled."
-      );
-    } catch (error) {
-      captchaNotice.error(error.response?.data?.message || "Unable to update the login math captcha.");
     } finally {
       setSecuritySaving(false);
     }
@@ -1582,7 +1544,6 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
       setDivisions(result.divisions || []);
       setDesignations(result.designations || []);
       setSecurityPolicyForm(securityPolicyFormFromSettings(result.security || {}));
-      setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
       setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
       setLockedAccounts(Array.isArray(result.lockedAccounts) ? result.lockedAccounts : []);
@@ -1884,7 +1845,6 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
 
       setDivisions(result.divisions || []);
       setDesignations(result.designations || []);
-      setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
       setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
       setSecurityPolicyForm(nextSecurityPolicy);
       setTwoFactorForm(nextTwoFactor);
@@ -1967,7 +1927,6 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
 
     setDivisions(result.divisions || []);
     setDesignations(result.designations || []);
-    setLoginCaptchaEnabled(result.security?.loginCaptchaEnabled !== false);
     setPayrollWorkflowOtpEnabled(result.security?.payrollWorkflowOtpEnabled !== false);
     setSecurityPolicyForm(securityPolicyFormFromSettings(result.security || {}));
     setTwoFactorForm(twoFactorSettingsFormFromSettings(result.security?.twoFactor || {}));
@@ -2783,12 +2742,10 @@ export default function DivisionSettings({ user, onSettingsChange, workspaceView
 
       {activeTab === "captcha" ? (
         <MathCaptchaSettings
-          mathEnabled={loginCaptchaEnabled}
           payrollOtpEnabled={payrollWorkflowOtpEnabled}
           message={captchaNotice.text}
           messageTone={captchaNotice.tone}
           saving={securitySaving}
-          onToggleMath={handleToggleLoginCaptcha}
           onTogglePayrollOtp={handleTogglePayrollWorkflowOtp}
         />
       ) : null}

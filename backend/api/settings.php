@@ -2990,7 +2990,7 @@ function list_settings(PDO $pdo): void
     ensure_audit_logs_table($pdo);
     ensure_organization_structure_columns($pdo);
 
-    $loginCaptchaEnabled = get_boolean_application_setting($pdo, 'login_captcha_enabled', true);
+    $loginCaptchaEnabled = false;
     $payrollWorkflowOtpEnabled = get_boolean_application_setting($pdo, 'payroll_workflow_otp_enabled', true);
     $securitySettings = security_settings($pdo);
     $twoFactorSettings = two_factor_settings($pdo);
@@ -3116,7 +3116,7 @@ function list_public_settings(PDO $pdo): void
     json_response([
         'success' => true,
         'csrfToken' => csrf_token(),
-        'loginCaptchaEnabled' => get_boolean_application_setting($pdo, 'login_captcha_enabled', true),
+        'loginCaptchaEnabled' => false,
         // Company name and address from Settings > System Configuration, so the login screen can
         // title itself with whatever the administrator saved.
         'branding' => system_branding($pdo),

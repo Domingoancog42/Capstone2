@@ -792,12 +792,7 @@ function LoginCard({
             unavailable={captchaUnavailable}
             verdict={captchaVerdict}
           />
-        ) : (
-          <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3.5 py-3">
-            <ShieldCheck aria-hidden="true" className="h-4 w-4 shrink-0 text-emerald-600" />
-            <p className="m-0 text-xs font-medium text-slate-600">Captcha is disabled by admin</p>
-          </div>
-        )}
+        ) : null}
 
         {/* Remember me on the left, Forgot Password on the right: one row, the way most sign-in forms read. */}
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -1159,7 +1154,7 @@ export default function Login({
   const [captchaChecking, setCaptchaChecking] = useState(false);
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [captchaUnavailable, setCaptchaUnavailable] = useState(false);
-  const [captchaEnabled, setCaptchaEnabled] = useState(true);
+  const [captchaEnabled, setCaptchaEnabled] = useState(false);
   const [captchaResetSeconds, setCaptchaResetSeconds] = useState(0);
   const [captchaSessionReady, setCaptchaSessionReady] = useState(false);
   /*
@@ -1312,7 +1307,7 @@ export default function Login({
           return;
         }
 
-        const enabled = result.loginCaptchaEnabled !== false;
+        const enabled = false;
         setCaptchaEnabled(enabled);
 
         /*

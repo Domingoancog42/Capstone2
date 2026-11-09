@@ -3,28 +3,21 @@ import { MailCheck, ShieldCheck } from "lucide-react";
 import { SettingsPanel, SettingsToggleRow } from "../../components/settings";
 
 export default function MathCaptchaSettings({
-  mathEnabled = true,
   payrollOtpEnabled = true,
   message = "",
   messageTone = "info",
   saving = false,
-  onToggleMath,
   onTogglePayrollOtp,
 }) {
   return (
     <SettingsPanel
       icon={ShieldCheck}
-      title="Captcha"
-      description="Control the login math captcha and the email OTP required for protected payroll actions."
+      title="Payroll Verification"
+      description="Control the email OTP required for protected payroll actions."
       notice={message}
       noticeTone={messageTone}
       actions={
         <div className="flex flex-wrap items-center gap-2">
-          <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
-            mathEnabled ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-700"
-          }`}>
-            {mathEnabled ? "Math enabled" : "Math disabled"}
-          </span>
           <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
             payrollOtpEnabled ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-700"
           }`}>
@@ -34,16 +27,6 @@ export default function MathCaptchaSettings({
       }
     >
       <div className="grid gap-3">
-        <SettingsToggleRow
-          id="loginMathCaptcha"
-          icon={ShieldCheck}
-          label="Login math captcha"
-          description="When enabled, users must answer a math captcha before their credentials are checked."
-          checked={mathEnabled}
-          disabled={saving}
-          onToggle={onToggleMath}
-        />
-
         <SettingsToggleRow
           id="payrollOtpVerification"
           icon={MailCheck}

@@ -95,7 +95,8 @@ const CAPTCHA_GLYPH_HEIGHT = 84;
 /** Only the login challenge is switchable; see the purposes note above. */
 function login_captcha_enabled(PDO $pdo): bool
 {
-    return get_boolean_application_setting($pdo, 'login_captcha_enabled', true);
+    // Login no longer requires a CAPTCHA. Workflow challenges remain separate.
+    return false;
 }
 
 function captcha_purpose_valid(string $purpose): bool
